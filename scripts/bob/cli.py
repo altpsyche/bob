@@ -155,6 +155,25 @@ def _handle_shell(rest: list) -> int:
     return run()
 
 
+def _handle_help(rest: list) -> int:
+    """bob help — the single generated command catalog (WI-7), rendered from the registry so it can't
+    drift. Grouped commands + drop-in plugins; the pwsh front door delegates here (no more here-string)."""
+    from rich.console import Console
+
+    from bob import render
+    from bob.theme import Theme
+
+    console = Console()
+    theme = Theme.load(None, console)
+    console.print(render.commands_view(theme))
+    plugins = render.plugins_view(theme)
+    if plugins is not None:
+        console.print(plugins)
+    console.print(f"\n[{theme.muted}]bob <command> [args] · run [bold]bob[/] with no args for the "
+                  f"interactive shell · bob tools · bob skills[/]")
+    return 0
+
+
 _HANDLERS = {
     "agent_run": _handle_agent_run,
     "agent_serve": _handle_agent_serve,
@@ -163,6 +182,7 @@ _HANDLERS = {
     "clip": _handle_clip,
     "skill": _handle_skill,
     "shell": _handle_shell,
+    "help": _handle_help,
 }
 
 

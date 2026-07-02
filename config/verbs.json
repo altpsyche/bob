@@ -60,7 +60,8 @@
     "version": "pwsh",
     "mlock": "pwsh",
     "eval": "pwsh",
-    "verify-urls": "pwsh"
+    "verify-urls": "pwsh",
+    "help": "python"
   },
   "default": "python"
 }

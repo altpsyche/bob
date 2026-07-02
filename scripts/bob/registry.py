@@ -157,6 +157,11 @@ COMMANDS = [
      "args": "<role> [task]", "runtime": "pwsh", "handler": None},
     {"name": "verify-urls", "group": "Config", "summary": "Check HuggingFace download URLs",
      "args": "[profile]", "runtime": "pwsh", "handler": None, "hidden": True},
+
+    # Meta — the generated help/catalog itself (hidden: it needn't list itself). Registering it routes
+    # `bob help` through `python -m bob help` on both front doors, retiring the pwsh here-string (WI-7).
+    {"name": "help", "group": "Run", "summary": "Show the command catalog",
+     "args": "", "runtime": "python", "handler": "help", "hidden": True},
 ]
 
 _VALID_RUNTIMES = {"python", "pwsh"}

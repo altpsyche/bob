@@ -4,6 +4,8 @@
 and `/skills` match the splash and are unit-testable. New surfaces (e.g. a voice/status view) slot in as
 another function here.
 """
+from pathlib import Path
+
 from rich.console import Group
 from rich.table import Table
 from rich.text import Text
@@ -11,6 +13,7 @@ from rich.text import Text
 from bob import registry
 
 _GROUP_ORDER = ["Talk", "Act", "Make", "Know", "Run", "Config"]
+_PLUGINS_DIR = Path(__file__).resolve().parent.parent.parent / "plugins"  # repo/plugins
 
 
 def _two_col(theme, left_style: str):
@@ -63,3 +66,26 @@ def skills_view(reg, theme):
     for name, phase, msg in getattr(reg, "errors", []):
         tbl.add_row(Text(f"{name}", style=theme.error), Text(f"[FAILED] {phase}: {msg}", style=theme.error))
     return Group(Text(f"Skills ({len(skills)})", style=f"bold {theme.accent}"), tbl)
+
+
+def plugins_view(theme, plugins_dir: Path = None):
+    """Drop-in plugins (plugins/<name>/) with their one-line description.txt — the `bob <name>` verbs
+    that live outside the command registry. Returns None if there are none."""
+    d = Path(plugins_dir) if plugins_dir else _PLUGINS_DIR
+    if not d.exists():
+        return None
+    rows = []
+    for sub in sorted(d.iterdir()):
+        if not sub.is_dir():
+            continue
+        if not ((sub / "invoke.py").exists() or (sub / "invoke.ps1").exists()):
+            continue
+        desc_file = sub / "description.txt"
+        desc = desc_file.read_text(encoding="utf-8").strip().splitlines()[0] if desc_file.exists() else ""
+        rows.append((sub.name, desc))
+    if not rows:
+        return None
+    tbl = _two_col(theme, theme.accent)
+    for name, desc in rows:
+        tbl.add_row(name, desc)
+    return Group(Text(f"Plugins ({len(rows)})", style=f"bold {theme.accent}"), tbl)

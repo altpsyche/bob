@@ -75,6 +75,14 @@ class TestSwitchParity(unittest.TestCase):
         missing = sorted(v for v in labels if v not in reg)
         self.assertEqual(missing, [], f"bob.ps1 verbs missing from the command registry: {missing}")
 
+    def test_help_is_registry_driven_not_a_here_string(self):
+        # WI-7: `help` is a registered python command (routes to `python -m bob help`), and the old
+        # hand-maintained pwsh here-string catalog is retired from bob.ps1.
+        self.assertEqual(registry.by_name()["help"]["runtime"], "python")
+        self.assertEqual(registry.by_name()["help"]["handler"], "help")
+        ps1 = (Path(registry.REPO) / "scripts" / "bob.ps1").read_text(encoding="utf-8")
+        self.assertNotIn("personal AI assistant (endpoint", ps1)  # the retired here-string marker
+
 
 class TestResolve(unittest.TestCase):
     def test_two_token_command_wins(self):

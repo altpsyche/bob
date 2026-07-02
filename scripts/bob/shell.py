@@ -394,6 +394,8 @@ class BobShell:
         import osenv
 
         self._print_splash()
+        if self._first_run_pending():
+            self._print_first_run()
         style = Style.from_dict(self.theme.prompt_style)
         message = HTML(f"<prompt>{self.theme.prompt}</prompt> <arrow>{self.theme.arrow}</arrow> ")
 
@@ -678,7 +680,36 @@ class BobShell:
             return True
         return ans in ("y", "yes")
 
-    # -- lifecycle ------------------------------------------------------------
+    # -- first run + lifecycle ------------------------------------------------
+
+    def _first_run_pending(self, flag_path=None) -> bool:
+        """True the first time the shell is opened (then False forever). Marked by a flag file in the
+        data dir; `flag_path` is injectable for tests."""
+        import osenv
+        p = Path(flag_path) if flag_path else (osenv.data_dir() / ".onboarded")
+        if p.exists():
+            return False
+        try:
+            p.write_text("1", encoding="utf-8")
+        except Exception:
+            pass
+        return True
+
+    def _print_first_run(self) -> None:
+        """A one-time welcome panel pointing at the health check + the top entry points."""
+        from rich.panel import Panel
+        from rich.text import Text
+        t = self.theme
+        body = Text()
+        body.append("Welcome — Bob runs entirely on your machine.\n\n")
+        for cmd, what in (("bob doctor", "check your setup is healthy"),
+                          ("/help", "see every command"),
+                          ("/agent <goal>", "let Bob use tools to do a task")):
+            body.append(f"{cmd:<14}", style=f"bold {t.accent}")
+            body.append(f" {what}\n", style=t.muted)
+        self.console.print(Panel(body, title="first run", title_align="left",
+                                 border_style=t.accent, expand=False, padding=t.panel_padding))
+        self.console.print()
 
     def _on_exit(self) -> None:
         self.console.print(f"[{self.theme.muted}]bye[/]")

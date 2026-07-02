@@ -203,6 +203,16 @@ class TestTheme(unittest.TestCase):
         self.assertIn("ui.json", out.file.getvalue())   # points the user at the editable file
 
 
+class TestFirstRun(unittest.TestCase):
+    def test_first_run_pending_fires_once(self):
+        import os
+        import tempfile
+        sh, _ = _make_shell()
+        flag = os.path.join(tempfile.mkdtemp(prefix="bob-onboard-"), ".onboarded")
+        self.assertTrue(sh._first_run_pending(flag))    # first time
+        self.assertFalse(sh._first_run_pending(flag))   # then never again
+
+
 class TestGate(unittest.TestCase):
     def test_non_interactive_run_prints_help_not_shell(self):
         # Under the test runner stdout/stdin are captured, not a TTY.

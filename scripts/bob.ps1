@@ -1400,103 +1400,19 @@ N8N_PORT=$($dp.n8nPort ?? (Get-BobPortDefault 'n8nPort'))
       break
     }
 
-    $wp = $d.webuiPort ?? (Get-BobPortDefault 'webuiPort')
-@"
-bob — personal AI assistant (endpoint $base)
-
-Inference:
-  bob serve                            Start API endpoint (:$port) — interactive, Ctrl+C to stop
-  bob up [-NoOpen]                     Start endpoint + Open WebUI silently [+ browser]
-  bob stop                             Stop all services (frees VRAM)
-  bob restart                          Stop then start endpoint (interactive)
-  bob status                           Loaded models and VRAM usage
-  bob ps                               Daemon processes with PID, RAM, uptime
-  bob logs [-n N]                      Tail server log (default: last 50 lines)
-
-Chat:
-  bob chat                             Interactive REPL (chat role, Ctrl+C to exit)
-  bob chat [--pro] [--think] [--code]  REPL with routed role
-  bob chat "prompt"                    One-shot with default role
-  bob chat <role> "prompt"             One-shot legacy syntax (still works)
-  bob think [--pro] ["prompt"]         Alias: planner / planner-pro
-  bob code  [--pro] ["prompt"]         Alias: coder / coder-pro
-  bob remember "fact"                  Store text to memory
-  bob recall "query"                   Search memory
-  bob memory status|clear              Memory DB info / wipe
-  bob budget                           Token and cost usage summary
-
-Models:
-  bob models                           List models with backing names and state
-  bob show <role>                      Model info: file, VRAM, SHA256, disk status
-  bob bench [gguf]                     Throughput benchmark
-
-Management:
-  bob profiles                         List VRAM profiles with sizes and active marker
-  bob profile <name|auto>              Switch profile (auto = detect from GPU VRAM)
-  bob fetch [--list] [profile]         Download models for active/specified profile
-  bob verify-urls [<profile>]          Check HuggingFace download URLs
-  bob update                           Pull latest llama.cpp and rebuild
-  bob gen                              Regenerate config/llama-swap.yaml
-
-Setup:
-  bob setup check                      Verify Phase 3 deps (venv, packages, tools, task, services)
-  bob doctor                           Full pre-flight: setup checks + endpoint, GPU/VRAM, writable dirs, config parse
-
-Agent:
-  bob agent <goal>                     Run agent loop (LLM + tools, loops until done)
-  bob agent schedule add <name> ...    Schedule a recurring agent goal (--cron --goal --notify)
-  bob agent schedule list              Show all schedules and last run results
-  bob agent schedule run <name>        Run a schedule immediately (ignores cron)
-  bob agent schedule remove <name>     Delete a schedule
-  bob agent schedule enable/disable    Toggle a schedule on/off
-  bob agent schedule install           Register BobAgent Windows Scheduled Task
-  bob agent log                        Tail agent log (live, Ctrl+C to stop)
-  bob agent tools                      List enabled tools
-  bob agent install / uninstall        Register / remove BobAgent scheduled task
-  bob agent status                     Show task state and recent log
-  bob agent serve                      Start Bob agent HTTP server (:8084) for WebUI/n8n
-  bob agent mcp                        Expose Bob's tools over MCP (stdio; needs agent.mcpEnabled)
-  bob clip <url> [--note text]         Fetch URL, summarize, and save to memory
-  bob tools list                       List all available tools and their source
-  bob tools test <name>                Run a tool's built-in test
-  bob tools info <name>                Show tool schema / parameters
-
-Tools:
-  bob aider [args]                     Start aider in current folder
-  bob webui                            Launch Open WebUI only (:$wp)
-  bob diagnose                         System and model health check
-  bob mlock                            Check/grant SeLockMemoryPrivilege (needed for --mlock)
-  bob version                          Show binary versions and submodule commits
-
-Ecosystem:
-  bob fabric-setup                     Install fabric and configure it for the local endpoint
-  bob litellm [start]                  Start LiteLLM proxy (:8081) — API gateway + retry layer
-  bob litellm stop                     Stop LiteLLM proxy
-  bob litellm status                   Check if LiteLLM proxy is running
-  bob services start|stop|status|logs  Docker services: Langfuse (:3001) SearXNG (:8888) n8n (:5678)
-  bob eval <role> [task]               Benchmark model quality (mmlu, humaneval, gsm8k)
-
-Voice (requires: bob setup-voice + voice.enabled = `$true in bob.psd1):
-  bob setup-voice                      Download piper + whisper model, build whisper-server
-  bob listen                           Record mic until silence, print transcript
-  bob transcribe <file>                Transcribe audio file via whisper-server
-  bob speak ["text"]                   Synthesize text to audio (reads stdin if no arg)
-  bob voice [--pro] [--agent]          Continuous voice loop: listen -> chat -> speak  (--agent: route through full tool loop)
-  bob whisper [start]                  Start whisper-server (STT, :8082) — WebUI STT source
-  bob whisper stop|status              Stop / check whisper-server
-  bob piper [start]                    Start piper TTS HTTP server (:8083) — WebUI TTS source
-  bob piper stop|status                Stop / check piper-server
-
-Vision (requires: bob setup-voice + bob fetch + vision.enabled = `$true in bob.psd1):
-  bob describe <image> [--pro] [prompt]  Describe image (local Qwen2-VL or --pro DeepSeek V4)
-  bob screenshot [--pro] [prompt]        Capture screen and describe it (--pro for cloud vision)
-
-Plugins (drop-in scripts in plugins/<name>/invoke.ps1 or .py):
-  bob plugins list                       List installed plugins
-  bob summarise [file]                   Summarise a file or piped text via LLM
-  bob draft [--type email|pr|slack|doc] "prompt"  Draft text from a one-liner
-  bob search "query" [--path dir]        Search files and synthesise results via LLM
-  bob play <search query>                Play music via Spotify or YouTube Music
-"@
+    # WI-7 — one generated catalog: `help` and any unknown verb render from the command registry via
+    # `python -m bob help` (the old hand-maintained here-string is retired). Falls back to a one-liner
+    # only if the venv is missing (pre-bootstrap).
+    $venvPy = Join-Path $repo 'tools\venv-litellm\Scripts\python.exe'
+    if (Test-Path $venvPy) {
+      if ($cmd -ne 'help') { Write-Host "Unknown command: $cmd`n" -ForegroundColor Yellow }
+      try { Get-BobConfig | Out-Null } catch {}
+      $env:PYTHONPATH = Join-Path $repo 'scripts'
+      $env:PYTHONIOENCODING = 'utf-8'
+      & $venvPy -m bob help
+    } else {
+      Write-Host "bob — run scripts\bootstrap-litellm.ps1 to set up, then 'bob help'."
+    }
+    break
   }
 }
