@@ -45,7 +45,7 @@ class FakeRegistry:
         self.errors = []
         self._results = results or {}
 
-    def dispatch_call(self, name, arguments_json):
+    def dispatch_call(self, name, arguments_json, context=None):
         return self._results.get(name, f"[{name} ran]")
 
 

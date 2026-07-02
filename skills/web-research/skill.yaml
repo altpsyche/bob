@@ -1,0 +1,6 @@
+name: web-research
+description: Research a topic across the web and synthesize a short, cited brief.
+group: Make
+argument-hint: "<topic>"
+# No `steps`: this is a sub-agent skill (search -> fetch several sources -> synthesize). Its execution
+# requires Module O (sub-agents); NE lists it and reports that until O's skill executor lands.

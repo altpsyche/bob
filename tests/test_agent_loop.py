@@ -214,7 +214,7 @@ class TestAgentLoop(unittest.TestCase):
         calls = []
 
         class Reg(_common.FakeRegistry):
-            def dispatch_call(self, name, args):
+            def dispatch_call(self, name, args, context=None):
                 calls.append(name)
                 tok.cancel()  # trip after the first tool
                 return "ok"
@@ -234,7 +234,7 @@ class TestAgentLoop(unittest.TestCase):
         tok = CancelToken()
 
         class Reg(_common.FakeRegistry):
-            def dispatch_call(self, name, args):
+            def dispatch_call(self, name, args, context=None):
                 tok.cancel()  # cancel after the first tool so the 2nd is skipped
                 return "ok"
 
@@ -302,6 +302,102 @@ class TestAgentLoop(unittest.TestCase):
         roles = [m["role"] for m in captured["messages"]]
         self.assertEqual(roles, ["system", "user", "assistant", "user"])
         self.assertEqual(captured["messages"][-1]["content"], "now")
+
+
+class TestApproval(unittest.TestCase):
+    """NE0 — event-driven approval: the loop asks approve() before a gated tool and fails closed
+    (deny) when no approver is wired. Replaces the old blocking input() confirm/shell prompts."""
+
+    def setUp(self):
+        self.cfg = _common.fake_config()
+        self._orig_check = bob_core.check_litellm
+        self._orig_client = bob_core.get_llm_client
+        bob_core.check_litellm = lambda config=None: True
+
+    def tearDown(self):
+        bob_core.check_litellm = self._orig_check
+        bob_core.get_llm_client = self._orig_client
+
+    def _registry(self, approval_tools=None):
+        calls = []
+
+        class Reg(_common.FakeRegistry):
+            def __init__(self):
+                super().__init__({"echo": "echoed"})
+                self.approval_required_tools = set(approval_tools or [])
+
+            def dispatch_call(self, name, args, context=None):
+                calls.append(name)
+                return super().dispatch_call(name, args)
+
+        return Reg(), calls
+
+    _TURNS = ['<tool_call>{"name": "echo", "arguments": {"x": "hi"}}</tool_call>', "done"]
+
+    def test_confirm_deny_skips_tool_and_continues(self):
+        bob_core.get_llm_client = lambda config=None: _common.scripted_client(self._TURNS)
+        reg, calls = self._registry()
+        events = list(bob_loop.run_agent_events(
+            "go", self.cfg, agency="confirm", registry=reg, approve=lambda a: False))
+        self.assertIn("approval_required", [e["type"] for e in events])
+        self.assertEqual(calls, [])  # denied → the tool never ran
+        tr = next(e for e in events if e["type"] == "tool_result")
+        self.assertIn("denied", tr["result"])
+        self.assertEqual(events[-1]["reason"], "answer")  # run continued to a final answer
+        self.assertEqual(events[-1]["result"], "done")
+
+    def test_confirm_approve_runs_tool(self):
+        bob_core.get_llm_client = lambda config=None: _common.scripted_client(self._TURNS)
+        reg, calls = self._registry()
+        events = list(bob_loop.run_agent_events(
+            "go", self.cfg, agency="confirm", registry=reg, approve=lambda a: True))
+        self.assertEqual(calls, ["echo"])
+        self.assertEqual(next(e for e in events if e["type"] == "tool_result")["result"], "echoed")
+
+    def test_requires_approval_tool_fails_closed_without_approver(self):
+        # agency 'silent', but the tool self-declares REQUIRES_APPROVAL → still gated; approve=None → deny
+        bob_core.get_llm_client = lambda config=None: _common.scripted_client(self._TURNS)
+        reg, calls = self._registry(approval_tools={"echo"})
+        events = list(bob_loop.run_agent_events("go", self.cfg, agency="silent", registry=reg))
+        self.assertEqual(calls, [])
+        self.assertIn("approval_required", [e["type"] for e in events])
+
+    def test_non_gated_tool_runs_without_approval(self):
+        bob_core.get_llm_client = lambda config=None: _common.scripted_client(self._TURNS)
+        reg, calls = self._registry()
+        events = list(bob_loop.run_agent_events("go", self.cfg, agency="silent", registry=reg))
+        self.assertEqual(calls, ["echo"])
+        self.assertNotIn("approval_required", [e["type"] for e in events])
+
+    def test_call_id_correlates_tool_call_and_result(self):
+        bob_core.get_llm_client = lambda config=None: _common.scripted_client(self._TURNS)
+        reg, _ = self._registry()
+        events = list(bob_loop.run_agent_events("go", self.cfg, agency="silent", registry=reg))
+        tc = next(e for e in events if e["type"] == "tool_call")
+        tr = next(e for e in events if e["type"] == "tool_result")
+        self.assertIn("call_id", tc)
+        self.assertEqual(tc["call_id"], tr["call_id"])
+
+
+class TestCancelTokenLink(unittest.TestCase):
+    """NE0/O1 seam — a child token is cancelled when its parent is (sub-agent teardown)."""
+
+    def test_parent_cancel_propagates_to_child(self):
+        from bob_loop import CancelToken
+        parent = CancelToken()
+        child = parent.child()
+        self.assertFalse(child.cancelled())
+        parent.cancel()
+        self.assertTrue(child.cancelled())      # parent cancel reaches the child
+        self.assertTrue(parent.cancelled())
+
+    def test_child_cancel_does_not_affect_parent(self):
+        from bob_loop import CancelToken
+        parent = CancelToken()
+        child = parent.child()
+        child.cancel()
+        self.assertTrue(child.cancelled())
+        self.assertFalse(parent.cancelled())    # child cancel is local
 
 
 if __name__ == "__main__":

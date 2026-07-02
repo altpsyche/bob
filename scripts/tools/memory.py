@@ -5,6 +5,13 @@ from pathlib import Path
 _cfg: dict = {}
 
 
+def enabled(config: dict) -> bool:
+    """Feature gate (read by ToolRegistry): the memory tools are only offered to the agent when the
+    memory feature is on. With memory.enabled=false they are NOT loaded, so the model can't recall or
+    recite saved notes unprompted. Enable via memory.enabled in config/defaults.json (or user config)."""
+    return bool(config.get("memory", {}).get("enabled", False))
+
+
 def configure(config: dict) -> None:
     global _cfg
     _cfg = config
@@ -15,7 +22,12 @@ def configure(config: dict) -> None:
 
 def _memory_recall(query: str, k: int = 5) -> str:
     from bob_core import memory_recall
-    return memory_recall(query, k=k, config=_cfg)
+    out = memory_recall(query, k=k, config=_cfg)
+    if not out or out.strip() in ("", "(no results)"):
+        return "(no saved notes match)"
+    # Frame the results as facts ABOUT THE USER so the model treats them as context, not as its own
+    # identity — the notes are stored first-person ("I prefer …"), which otherwise reads as Bob's.
+    return "Saved notes about the user (context only; do not recite):\n" + out
 
 
 def _memory_store(content: str, tags: str = "") -> str:
@@ -32,7 +44,9 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "memory_recall",
-            "description": "Search Bob's memory for relevant facts and past context",
+            "description": ("Recall the user's saved notes (their stated preferences, tools, and "
+                            "projects) when the current request needs that context. Do NOT call this "
+                            "for greetings, small talk, or general questions."),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -47,7 +61,8 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "memory_store",
-            "description": "Save a fact or note to Bob's persistent memory",
+            "description": ("Save a note ABOUT THE USER (a preference or fact they've shared) for "
+                            "future sessions. Only when the user shares something worth remembering."),
             "parameters": {
                 "type": "object",
                 "properties": {

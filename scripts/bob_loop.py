@@ -176,6 +176,94 @@ def _hermes_tool_system_addendum(tool_schemas: list, compact_after: int = 12) ->
     )
 
 
+def _openai_tools_payload(tool_schemas: list, compact_after: int = 12):
+    """The `tools=` payload for OpenAI-format calls. Past `compact_after` tools, compact each schema
+    (drop param descriptions) — mirrors the hermes addendum so `compactSchemasAfter` isn't a no-op in
+    OpenAI mode (previously the full schema list was re-sent every turn regardless of tool count)."""
+    fns = [s for s in tool_schemas if s.get("type") == "function"]
+    if compact_after and len(fns) > compact_after:
+        return [{"type": "function", "function": _compact_schema(s["function"])} for s in fns]
+    return tool_schemas
+
+
+class RunContext:
+    """NE0/O1 seam — run-scoped services carried into dispatch_call and reachable by a tool via
+    tool_registry.get_run_context(): the cancel token, the resolved config, the tool registry, the
+    run id, and the approval callback. Lets a tool (a future sub-agent tool) reach these without any
+    change to its fn(**args) signature."""
+    __slots__ = ("cancel", "config", "registry", "run_id", "approve")
+
+    def __init__(self, cancel, config, registry, run_id, approve):
+        self.cancel = cancel
+        self.config = config
+        self.registry = registry
+        self.run_id = run_id
+        self.approve = approve
+
+
+def _call_id(tc, step: int, idx: int) -> str:
+    """Stable id correlating a tool_call event with its tool_result (and approval_required). OpenAI
+    tool_calls carry an `id`; hermes-parsed calls don't, so fall back to step.idx. Forward-compat for
+    O2 parallel tools, where results arrive out of order and must be matched by id."""
+    return getattr(tc, "id", None) or f"{step}.{idx}"
+
+
+def _approval_required(tool_name: str, agency: str, registry) -> bool:
+    """NE0 approval trigger (mechanism, not O6 policy): approve when the whole run is in confirm mode,
+    or when the tool self-declares it always needs approval (e.g. shell_run's REQUIRES_APPROVAL)."""
+    return agency == "confirm" or tool_name in getattr(registry, "approval_required_tools", set())
+
+
+def _resolve_approval(approve, action: dict) -> bool:
+    """Ask the injected approve callback for a decision. Fail-closed: no approver wired (server,
+    scheduler, tests, non-TTY) → deny, so a dangerous tool never runs unattended by default."""
+    if approve is None:
+        return False
+    try:
+        return bool(approve(action))
+    except (EOFError, KeyboardInterrupt):
+        return False
+
+
+def _dispatch_with_approval(tc, call_id, *, registry, context, agency, approve, log, rid):
+    """Generator: request approval (if required) then dispatch one tool call. Yields protocol events
+    (approval_required, tool_result) and RETURNS the result string that goes into the transcript. A
+    denied call does not run and returns a denial message the model can react to."""
+    name = tc.function.name
+    args = tc.function.arguments
+    if _approval_required(name, agency, registry):
+        risk = "high" if name in getattr(registry, "approval_required_tools", set()) else "confirm"
+        yield {"type": "approval_required", "call_id": call_id, "tool": name,
+               "arguments": args, "risk": risk}
+        if not _resolve_approval(approve, {"call_id": call_id, "tool": name,
+                                           "arguments": args, "risk": risk}):
+            log.info(f"[{rid}] tool {name} denied (call_id={call_id})")
+            denied = f"Tool call to '{name}' was denied by the user; it did not run."
+            yield {"type": "tool_result", "call_id": call_id, "name": name, "result": denied}
+            return denied
+    result = registry.dispatch_call(name, args, context=context)
+    is_err = result.startswith(("Tool error", "Unknown tool", "Bad arguments"))
+    log.log(
+        logging.WARNING if is_err else logging.INFO,
+        f"[{rid}] tool {name} -> {len(result)}c (call_id={call_id})"
+        + (f" ERROR: {result[:200]}" if is_err else ""),
+    )
+    yield {"type": "tool_result", "call_id": call_id, "name": name, "result": result}
+    return result
+
+
+def _console_approve(action: dict) -> bool:
+    """Console approver for the interactive CLI, installed by main() only when stdin is a TTY (never
+    by the shared run_agent wrapper, so the server can't prompt on its own console). The NE2 shell
+    will supply its own approve callback that drives the TUI prompt instead."""
+    args = (action.get("arguments") or "")[:200].replace("\n", " ")
+    try:
+        ans = input(f"Approve {action.get('tool')}({args})? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return ans == "y"
+
+
 def parse_args():
     import argparse
 
@@ -304,16 +392,25 @@ class CancelToken:
     """Cooperative cancel shared by the loop, its LLM stream, and tool dispatch (N3). Thread-safe
     (wraps threading.Event) so a server request thread or a SIGINT handler can trip it while the
     loop reads it. A long in-flight tool can't be preempted, but the loop stops before the next
-    tool and the LLM stream stops within one chunk (~1s)."""
+    tool and the LLM stream stops within one chunk (~1s).
 
-    def __init__(self):
+    NE0/O1 seam — a token may be LINKED to a parent: cancelling the parent also cancels the child
+    (checked lazily in cancelled()), so a sub-agent run started via child() is torn down when the
+    parent run is cancelled. child() returns a fresh linked token to hand to the sub-run."""
+
+    def __init__(self, parent: "CancelToken" = None):
         self._e = threading.Event()
+        self._parent = parent
 
     def cancel(self) -> None:
         self._e.set()
 
     def cancelled(self) -> bool:
-        return self._e.is_set()
+        return self._e.is_set() or (self._parent is not None and self._parent.cancelled())
+
+    def child(self) -> "CancelToken":
+        """A new token linked to this one — cancelling this (parent) cancels the child too (O1)."""
+        return CancelToken(parent=self)
 
 
 def _close_stream(stream_resp) -> None:
@@ -481,17 +578,26 @@ def run_agent_events(
     history: list = None,
     cancel: "CancelToken" = None,
     run_id: str = None,
+    approve=None,
 ):
     """Generator core of the agent loop (M15). Yields event dicts:
-        {"type": "token",       "text": str}                       # final-answer deltas (stream=True)
-        {"type": "tool_call",   "name": str, "arguments": str}
-        {"type": "tool_result", "name": str, "result": str}
-        {"type": "final",       "result": str|None, "exit_requested": bool, "reason": str}
-        {"type": "error",       "message": str}
+        {"type": "token",             "text": str}                          # final-answer deltas (stream=True)
+        {"type": "tool_call",         "call_id": str, "name": str, "arguments": str}
+        {"type": "approval_required", "call_id": str, "tool": str, "arguments": str, "risk": str}  # NE0
+        {"type": "tool_result",       "call_id": str, "name": str, "result": str}
+        {"type": "final",             "result": str|None, "exit_requested": bool, "reason": str}
+        {"type": "error",             "message": str}
     A terminal 'final' or 'error' is always the last event. run_agent() is the blocking wrapper
     used by the CLI; the server's SSE endpoint consumes these events directly. Pass a CancelToken
     (N3) to abort in-flight — SIGINT (CLI) and client-disconnect (server) both trip it; the run
-    stops within ~1s with a final event reason='cancelled'."""
+    stops within ~1s with a final event reason='cancelled'.
+
+    NE0 — approval is event-driven, not a blocking stdin prompt: before a tool that needs approval
+    (agency=='confirm', or a tool with REQUIRES_APPROVAL like shell_run) the loop emits
+    'approval_required' and consults `approve(action) -> bool`. `approve=None` fails closed (deny), so
+    the server/scheduler never run a gated tool unattended; the CLI wrapper installs a console approver
+    on a TTY, and the NE2 shell will pass one that drives the TUI. `call_id` correlates
+    tool_call↔approval_required↔tool_result (forward-compat for O2 parallel tools)."""
     from bob_core import _port, check_litellm, get_llm_client, memory_recall
 
     agent_cfg = config.get("agent", {})
@@ -541,15 +647,18 @@ def run_agent_events(
         "systemPrompt", "You are Bob, a helpful AI assistant."
     )
 
-    # M14 — inject relevant memories into the agent's system context (gated on memory.enabled).
-    # Fulfils the persona's "memories provided in context" claim for the agent path. Best-effort:
-    # a memory/embed failure is logged and skipped, never fatal to the run.
+    # M14 — OPTIONAL per-turn memory injection, gated on memory.autoRecall (NOT memory.enabled).
+    # `enabled` only makes the memory_recall/store TOOLS available so the model recalls *sporadically*
+    # when a request needs it; autoRecall (default off) is the heavier "read memory every turn" mode.
+    # Keeping them separate stops the model reciting the same notes on every prompt. Best-effort: a
+    # memory/embed failure is logged and skipped, never fatal to the run.
     mem_cfg = config.get("memory", {})
-    if mem_cfg.get("enabled"):
+    if mem_cfg.get("autoRecall"):
         try:
             recalled = memory_recall(goal, k=int(mem_cfg.get("recallK", 5)), config=config)
             if recalled and recalled.strip() and recalled != "(no results)":
-                system_prompt += "\n\nRelevant memories from past sessions:\n" + recalled
+                system_prompt += ("\n\nSaved notes about the user (context only; use only if relevant, "
+                                  "do not recite):\n" + recalled)
                 log.info(f"[{rid}] injected memories ({len(recalled)}c)")
         except Exception as e:
             log.warning(f"[{rid}] memory recall skipped: {e}")
@@ -581,7 +690,17 @@ def run_agent_events(
         f"tools={len(tool_schemas)} stream={stream} goal={goal[:200]!r}"
     )
 
+    # OpenAI-mode tool payload, computed once (constant across steps): compacted past compact_after
+    # so the per-turn schema tokens stay bounded (hermes mode injects schemas via base_system instead).
+    openai_tools = (
+        _openai_tools_payload(tool_schemas, compact_after)
+        if (tool_schemas and not hermes_mode) else None
+    )
+
     cancel = cancel or CancelToken()
+    # NE0 — run-scoped context handed to each tool call (reachable via tool_registry.get_run_context()),
+    # and the approve callback the loop consults before a tool that requires approval.
+    run_ctx = RunContext(cancel=cancel, config=config, registry=registry, run_id=rid, approve=approve)
     prev_sigint = _install_interrupt_handler(cancel)
     try:
         for step in range(max_steps):
@@ -592,7 +711,7 @@ def run_agent_events(
                 return
 
             messages = truncate_history(messages, max_hist, max_context_tokens)
-            tools = tool_schemas if tool_schemas and not hermes_mode else None
+            tools = openai_tools
 
             # Unified LLM call (N3): always consume as a stream so `cancel` is polled between
             # chunks and an in-flight call aborts within ~1s. emit_tokens=stream gates whether
@@ -653,64 +772,47 @@ def run_agent_events(
                        "exit_requested": exit_requested, "reason": "answer"}
                 return
 
-            for tc in tool_calls:
-                yield {"type": "tool_call", "name": tc.function.name, "arguments": tc.function.arguments}
+            call_ids = [_call_id(tc, step, idx) for idx, tc in enumerate(tool_calls)]
+            for tc, cid in zip(tool_calls, call_ids):
+                yield {"type": "tool_call", "call_id": cid,
+                       "name": tc.function.name, "arguments": tc.function.arguments}
 
-            # Confirmation (interactive only; server passes silent/show agency).
-            if effective_agency == "confirm":
-                try:
-                    ok = input("Execute tool calls? [y/N] ").strip().lower()
-                except (EOFError, KeyboardInterrupt):
-                    ok = "n"
-                if ok != "y":
-                    log.info(f"[{rid}] aborted at confirm")
-                    yield {"type": "final", "result": None,
-                           "exit_requested": exit_requested, "reason": "aborted"}
-                    return
-
+            # NE0 — approval is per-tool-call and event-driven (see _dispatch_with_approval): the loop
+            # emits approval_required and consults the injected approve callback. No blocking input()
+            # here, so this works under the TUI/server, not only an interactive console.
             if hermes_mode:
                 messages.append({"role": "assistant", "content": content})
                 tool_results = []
-                for tc in tool_calls:
+                for tc, cid in zip(tool_calls, call_ids):
                     if cancel.cancelled():
                         yield {"type": "final", "result": _final_answer(last_content, hermes_mode),
                                "exit_requested": exit_requested, "reason": "cancelled"}
                         return
                     if tc.function.name in exit_on_tools:
                         exit_requested = True
-                    result = registry.dispatch_call(tc.function.name, tc.function.arguments)
+                    result = yield from _dispatch_with_approval(
+                        tc, cid, registry=registry, context=run_ctx,
+                        agency=effective_agency, approve=approve, log=log, rid=rid)
                     tools_run += 1
                     tokens_est += _estimate_tokens(result)
-                    is_err = result.startswith(("Tool error", "Unknown tool", "Bad arguments"))
-                    log.log(
-                        logging.WARNING if is_err else logging.INFO,
-                        f"[{rid}] tool {tc.function.name} -> {len(result)}c"
-                        + (f" ERROR: {result[:200]}" if is_err else ""),
-                    )
-                    yield {"type": "tool_result", "name": tc.function.name, "result": result}
                     tool_results.append(
                         f'<tool_response>{{"name": "{tc.function.name}", "content": {json.dumps(result)}}}</tool_response>'
                     )
                 messages.append({"role": "user", "content": "\n".join(tool_results)})
             else:
                 messages.append(build_assistant_message(msg))
-                for tc in tool_calls:
+                for tc, cid in zip(tool_calls, call_ids):
                     if cancel.cancelled():
                         yield {"type": "final", "result": _final_answer(last_content, hermes_mode),
                                "exit_requested": exit_requested, "reason": "cancelled"}
                         return
                     if tc.function.name in exit_on_tools:
                         exit_requested = True
-                    result = registry.dispatch_call(tc.function.name, tc.function.arguments)
+                    result = yield from _dispatch_with_approval(
+                        tc, cid, registry=registry, context=run_ctx,
+                        agency=effective_agency, approve=approve, log=log, rid=rid)
                     tools_run += 1
                     tokens_est += _estimate_tokens(result)
-                    is_err = result.startswith(("Tool error", "Unknown tool", "Bad arguments"))
-                    log.log(
-                        logging.WARNING if is_err else logging.INFO,
-                        f"[{rid}] tool {tc.function.name} -> {len(result)}c"
-                        + (f" ERROR: {result[:200]}" if is_err else ""),
-                    )
-                    yield {"type": "tool_result", "name": tc.function.name, "result": result}
                     messages.append(build_tool_message(tc, result))
 
         log.warning(f"[{rid}] stopped after {max_steps} steps without a final answer")
@@ -736,9 +838,15 @@ def run_agent(
     history: list = None,
     cancel: "CancelToken" = None,
     run_id: str = None,
+    approve=None,
 ) -> tuple[str | None, bool]:
     """Blocking wrapper over run_agent_events for the CLI: prints tool previews to stderr,
-    streams/echoes the final answer to stdout, and returns (result, exit_requested)."""
+    streams/echoes the final answer to stdout, and returns (result, exit_requested).
+
+    NE0 — `approve` is passed through neutrally (default None → fail-closed deny). The wrapper does
+    NOT auto-install a console approver: the same wrapper serves the HTTP server (bob_agent_server),
+    which must never prompt on its own console. The interactive CLI entry (main) installs the console
+    approver explicitly on a TTY; the NE2 shell will pass its own TUI approver."""
     effective_agency = agency or config.get("agent", {}).get("agency", "show")
     result = None
     exit_requested = False
@@ -746,7 +854,7 @@ def run_agent(
     for ev in run_agent_events(
         goal, config, role=role, agency=agency,
         exit_on_tools=exit_on_tools, registry=registry, stream=stream, history=history,
-        cancel=cancel, run_id=run_id,
+        cancel=cancel, run_id=run_id, approve=approve,
     ):
         t = ev["type"]
         if t == "token":
@@ -786,6 +894,9 @@ def main():
 
     goal = " ".join(args.goal)
     exit_on_tools = set(t.strip() for t in args.exit_on_tool.split(",") if t.strip()) if args.exit_on_tool else None
+    # NE0 — interactive CLI: approve gated tools at the console when attached to a TTY (piped/CI → None
+    # → fail-closed). The server passes no approver and so never prompts on its own console.
+    approve = _console_approve if getattr(sys.stdin, "isatty", lambda: False)() else None
     result, exit_requested = run_agent(
         goal,
         config,
@@ -793,6 +904,7 @@ def main():
         agency=args.agency,
         exit_on_tools=exit_on_tools,
         stream=args.stream,
+        approve=approve,
     )
 
     if args.notify and result:

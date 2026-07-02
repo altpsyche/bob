@@ -12,7 +12,13 @@ $base        = "http://localhost:$port/v1"
 $litellmBase = "http://localhost:$litellmPort/v1"
 # Copy out of the automatic $args (whose slicing unwraps oddly) into plain arrays.
 $argv = @($args)
-$cmd  = if ($argv.Count) { $argv[0] } else { 'help' }
+if ($argv.Count -eq 0) {
+  # NE2 Decision C — no-arg on an interactive terminal launches the REPL/TUI (`bob shell`, a python
+  # verb routed below); a piped/redirected/CI invocation keeps today's help so scripts are unaffected.
+  if (-not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected) { $argv = @('shell') }
+  else { $argv = @('help') }
+}
+$cmd  = $argv[0]
 $rest = @($argv | Select-Object -Skip 1)   # always an array, even for a single arg
 
 # NB4 (contract C1) — front-door dispatch. config/verbs.json (generated from the C6 command

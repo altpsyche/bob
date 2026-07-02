@@ -2,13 +2,14 @@
 import ipaddress
 import re
 import socket
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import requests
 
 _cfg: dict = {}
 _searxng_url: str = ""
 _allow_private_fetch: bool = False  # M9 — gate SSRF-prone fetches behind an explicit flag
+_MAX_REDIRECTS = 5  # NE0 — cap manual redirect following so each hop can be re-validated
 
 
 def configure(config: dict) -> None:
@@ -66,23 +67,47 @@ def _web_search(query: str, num_results: int = 5) -> str:
 
 
 def _web_fetch(url: str) -> str:
-    # M9 — allowlist http/https and block private/loopback targets unless explicitly opted in.
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        return f"web_fetch error: blocked scheme '{parsed.scheme or '(none)'}' (only http/https allowed)"
-    if not _allow_private_fetch and _is_blocked_host(parsed.hostname or ""):
-        return (
-            f"web_fetch error: blocked host '{parsed.hostname}' "
-            "(loopback/private address; set agent.allowPrivateFetch = $true to override)"
-        )
-    try:
-        r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
-        r.raise_for_status()
+    # M9 / NE0 — allowlist http(s) and re-validate the host on EVERY hop: the initial URL AND each
+    # redirect Location. Following redirects blindly (requests' default) let a public URL 302 into a
+    # loopback/private target (e.g. cloud metadata at 169.254.169.254); manual per-hop validation
+    # closes that. Residual: a DNS-rebinding TOCTOU window remains between the check and the connect —
+    # allowPrivateFetch stays the hard gate, and every resolved address is checked each hop.
+    current = url
+    hops = 0
+    while True:
+        parsed = urlparse(current)
+        if parsed.scheme not in ("http", "https"):
+            return f"web_fetch error: blocked scheme '{parsed.scheme or '(none)'}' (only http/https allowed)"
+        if not _allow_private_fetch and _is_blocked_host(parsed.hostname or ""):
+            return (
+                f"web_fetch error: blocked host '{parsed.hostname}' "
+                "(loopback/private address; set agent.allowPrivateFetch = $true to override)"
+            )
+        try:
+            r = requests.get(
+                current,
+                timeout=15,
+                headers={"User-Agent": "Mozilla/5.0"},
+                allow_redirects=False,  # follow manually so each hop is re-validated above
+            )
+        except Exception as e:
+            return f"web_fetch error: {e}"
+        if r.is_redirect:  # 301/302/303/307/308 with a Location
+            loc = r.headers.get("Location")
+            if not loc:
+                return "web_fetch error: redirect without a Location header"
+            hops += 1
+            if hops > _MAX_REDIRECTS:
+                return f"web_fetch error: too many redirects (>{_MAX_REDIRECTS})"
+            current = urljoin(current, loc)  # resolve relative redirects; re-checked next loop
+            continue
+        try:
+            r.raise_for_status()
+        except Exception as e:
+            return f"web_fetch error: {e}"
         text = re.sub(r"<[^>]+>", " ", r.text)
         text = re.sub(r"\s+", " ", text).strip()
         return text[:4000]
-    except Exception as e:
-        return f"web_fetch error: {e}"
 
 
 def test() -> str:

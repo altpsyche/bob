@@ -1,0 +1,36 @@
+{
+  "_comment": "Bob shell (bob) theme — edit and relaunch, or run /theme reload in the shell. Deleting a key falls back to the built-in default. Colors are rich style strings (name, #hex, or e.g. 'bold #ffcc00'). One mauve palette (accent) ties the header, rule, prompt, and tool markers together.",
+
+  "header": {
+    "enabled": true,
+    "text": "BOB",
+    "font": "delta_corps_priest_1",
+    "align": "center",
+    "gradient": ["#F4DBFB", "#D7A6EC", "#B579DC", "#8B54AE"],
+    "gradient_dir": "diagonal"
+  },
+
+  "colors": {
+    "accent": "#C48CD6",
+    "success": "#8FD98F",
+    "error": "#E86A8C",
+    "warn": "#E8C06A",
+    "tool": "#C48CD6",
+    "muted": "grey58"
+  },
+
+  "glyphs": { "gear": "⚙", "ok": "✓", "bad": "✗", "dot": "●", "arrow": "›", "spinner": "dots" },
+
+  "spacing": {
+    "panel_padding": [0, 1],
+    "header_margin": 1,
+    "blank_between_turns": true
+  },
+
+  "prompt": "bob",
+  "tagline": "a private AI, running on your machine",
+  "markdown": true,
+  "meta_panel": false,
+  "rule": true,
+  "prose_width": 92
+}

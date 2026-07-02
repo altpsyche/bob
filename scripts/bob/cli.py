@@ -31,6 +31,12 @@ def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     name, rest = _resolve(argv)
     if name is None:
+        # NE2 Decision C — no-arg on an interactive terminal launches the shell; piped/redirected/CI
+        # keeps today's help. (The Windows front door decides the same way in bob.ps1; the POSIX shim
+        # sends the bare `bob` straight here.)
+        from bob.shell import is_interactive
+        if is_interactive():
+            return _handle_shell([])
         _print_help()
         return 0
 
@@ -109,8 +115,44 @@ def _handle_clip(rest: list) -> int:
 
 
 def _handle_skill(rest: list) -> int:
-    print("Skills execution arrives in a later module (NE catalog / O execution).", file=sys.stderr)
+    """bob skill            -> list registered skills (catalog)
+       bob skill <name>     -> run a simple tool-sequence skill (sub-agent skills report 'requires O')
+       bob skill <name> --show -> print the skill's manifest summary"""
+    from bob import catalog
+    from bob_skills import SkillRegistry
+
+    reg = SkillRegistry.build()
+    if not rest:
+        print(catalog.render_skills(reg))
+        return 0
+    name = rest[0]
+    if name not in reg.skills:
+        print(f"Unknown skill: {name}", file=sys.stderr)
+        return 1
+    if "--show" in rest:
+        s = reg.skills[name]
+        print(f"{s['name']}: {s['description']}")
+        print(f"  group: {s['group']}   steps: {len(s['steps'])}   dir: {s['dir']}")
+        return 0
+    from bob_core import load_config
+
+    tools_dir = str(SCRIPTS / "tools")   # tool_registry lives in scripts/tools, not on path by default
+    if tools_dir not in sys.path:
+        sys.path.insert(0, tools_dir)
+    from tool_registry import ToolRegistry
+
+    config = load_config()
+    tools = ToolRegistry.build(config, set())
+    print(reg.run(name, tools))
     return 0
+
+
+def _handle_shell(rest: list) -> int:
+    """bob shell — the interactive REPL/TUI (NE2). Behind an isatty gate: a non-TTY invocation prints
+    help instead, so scripts/CI never block on a prompt."""
+    from bob.shell import run
+
+    return run()
 
 
 _HANDLERS = {
@@ -120,6 +162,7 @@ _HANDLERS = {
     "agent_tools": _handle_agent_tools,
     "clip": _handle_clip,
     "skill": _handle_skill,
+    "shell": _handle_shell,
 }
 
 
@@ -137,12 +180,17 @@ def _exec_pwsh(argv: list) -> int:
 
 # --- help ----------------------------------------------------------------------------------------
 
+_GROUP_ORDER = ["Talk", "Act", "Make", "Know", "Run", "Config"]
+
+
 def _print_help() -> None:
     print("bob — local AI assistant\n", file=sys.stderr)
     groups: dict = {}
-    for c in registry.commands():
+    for c in registry.commands(include_hidden=False):  # NE1 — hidden verbs stay out of the catalog
         groups.setdefault(c["group"], []).append(c)
-    for group, cmds in groups.items():
+    ordered = [g for g in _GROUP_ORDER if g in groups] + [g for g in groups if g not in _GROUP_ORDER]
+    for group in ordered:
+        cmds = groups[group]
         print(f"{group}:", file=sys.stderr)
         for c in cmds:
             usage = f"{c['name']} {c['args']}".strip()

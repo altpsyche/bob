@@ -25,10 +25,11 @@
   "runtime": {
     "litellmKey": "sk-local",
     "persona": {
-      "systemPrompt": "You are Bob, a personal AI assistant running privately on this machine. You are direct, practical, and you remember what matters. You assist with software development, writing, planning, and daily work. Relevant memories from past sessions are provided in context when available. When you don't know something, say so."
+      "systemPrompt": "You are Bob, a helpful AI assistant running locally on the user's machine. Your name is Bob. Be direct and honest, and if you don't know something, say so."
     },
     "memory": {
-      "enabled": false,
+      "enabled": true,
+      "autoRecall": false,
       "dbPath": "data/bob.db",
       "embedModel": "embed",
       "recallK": 5,

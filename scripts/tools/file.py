@@ -55,12 +55,32 @@ def configure(config: dict) -> None:
     _allowed_write = [Path(p) for p in raw_w if p]
 
 
+def _abs(path: str, allowed: list) -> Path:
+    """Resolve a caller-supplied path to an absolute Path. A RELATIVE path resolves against the first
+    allowed root (the repo root by default), NOT the process cwd — so `.`/`./`/`sub/file` mean "inside
+    the workspace" regardless of where `bob` was launched from (the source of the confusing
+    approve-then-"Access denied ./" case). Absolute paths pass through unchanged."""
+    p = Path(path)
+    if p.is_absolute():
+        return p
+    base = allowed[0] if allowed else Path.cwd()
+    return base / p
+
+
 def _is_allowed(target: Path, allowed: list) -> bool:
     try:
         resolved = target.resolve()
         return any(resolved.is_relative_to(a.resolve()) for a in allowed)
     except Exception:
         return False
+
+
+def _human(n: int) -> str:
+    for unit in ("B", "K", "M", "G"):
+        if n < 1024 or unit == "G":
+            return f"{n}{unit}" if unit == "B" else f"{n:.1f}{unit}"
+        n /= 1024
+    return f"{n:.1f}G"
 
 
 def _is_denied_secret(target: Path) -> bool:
@@ -79,8 +99,45 @@ def _is_denied_secret(target: Path) -> bool:
     return _in_secret_dir(rp)
 
 
+def _file_list(path: str = ".") -> str:
+    """List the entries of a directory within allowedReadPaths (directories first, then files with
+    sizes). This is the tool for "what files are here" — file_read is for a single file's contents."""
+    if not _allowed_read:
+        return "file_list: no allowedReadPaths configured"
+    p = _abs(path, _allowed_read)
+    if not _is_allowed(p, _allowed_read):
+        allowed_str = ", ".join(str(a) for a in _allowed_read)
+        return f"Access denied: {path}\nAllowed paths: {allowed_str}"
+    try:
+        rp = p.resolve()
+    except Exception:
+        return f"Access denied: {path}"
+    if not rp.exists():
+        return f"Not found: {path}"
+    if not rp.is_dir():
+        return f"Not a directory: {path} (use file_read to read a file's contents)"
+    try:
+        entries = sorted(rp.iterdir(), key=lambda e: (e.is_file(), e.name.lower()))
+    except OSError as e:
+        return f"Error listing {path}: {e}"
+    if not entries:
+        return f"(empty directory: {rp})"
+    lines = [f"{rp}  —  {len(entries)} entr{'y' if len(entries) == 1 else 'ies'}"]
+    for e in entries[:500]:
+        if e.is_dir():
+            lines.append(f"  {e.name}/")
+        else:
+            try:
+                lines.append(f"  {e.name}  ({_human(e.stat().st_size)})")
+            except OSError:
+                lines.append(f"  {e.name}")
+    if len(entries) > 500:
+        lines.append(f"  … and {len(entries) - 500} more")
+    return "\n".join(lines)
+
+
 def _file_read(path: str) -> str:
-    p = Path(path)
+    p = _abs(path, _allowed_read)
     if not _allowed_read:
         return "file_read: no allowedReadPaths configured"
     if not _is_allowed(p, _allowed_read):
@@ -105,7 +162,7 @@ def _file_write(path: str, content: str) -> str:
             "file_write is disabled.\n"
             "Add paths to agent.allowedWritePaths in config/bob.psd1 or config/user.psd1 to enable."
         )
-    p = Path(path)
+    p = _abs(path, _allowed_write)
     if not _is_allowed(p, _allowed_write):
         allowed_str = ", ".join(str(a) for a in _allowed_write)
         return f"Access denied: {path}\nAllowed write paths: {allowed_str}"
@@ -133,6 +190,25 @@ def test() -> str:
 
 
 TOOL_DEFS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "file_list",
+            "description": (
+                "List the files and subfolders in a directory (use this for 'what files are here', "
+                "not file_read). Relative paths are relative to the workspace root. Only paths within "
+                "allowedReadPaths are accessible."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string",
+                             "description": "Directory path (default '.', the workspace root)"},
+                },
+                "required": [],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -168,6 +244,7 @@ TOOL_DEFS = [
 ]
 
 DISPATCH = {
+    "file_list": _file_list,
     "file_read": _file_read,
     "file_write": _file_write,
 }

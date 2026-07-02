@@ -1,0 +1,5 @@
+name: code-review
+description: Review the current git diff for bugs and risky changes, then summarize the findings.
+group: Make
+# No `steps`: a sub-agent skill (read the diff -> reason over it -> report). Execution requires
+# Module O (sub-agents). NE lists it; O runs it.

@@ -2,6 +2,7 @@
 config/verbs.json is generated from. Proves every command declares a valid runtime, python
 commands map to a real handler, and the on-disk verbs.json is in sync with the registry."""
 import json
+import re
 import shutil
 import unittest
 from pathlib import Path
@@ -50,6 +51,29 @@ class TestRegistry(unittest.TestCase):
             self.assertEqual(registry._check(stale), 1)
         finally:
             shutil.rmtree(stale.parent, ignore_errors=True)
+
+
+class TestSwitchParity(unittest.TestCase):
+    """NE1 — the registry is the true catalog: every top-level verb in the bob.ps1 dispatch switch
+    must be registered (else it would be missing from help/catalog). Hidden entries still count."""
+
+    def _switch_labels(self) -> set:
+        text = (Path(registry.REPO) / "scripts" / "bob.ps1").read_text(encoding="utf-8")
+        region = text[text.index("switch ($cmd)"):]  # main dispatch switch to EOF
+        labels: set = set()
+        for line in region.splitlines():
+            # top-level case headers are 2-space-indented: `  'name' {` (nested switches are deeper)
+            m = re.match(r"^  ('[a-z0-9-]+'(?:\s*,\s*'[a-z0-9-]+')*)\s*\{", line)
+            if m:
+                labels.update(re.findall(r"'([a-z0-9-]+)'", m.group(1)))
+        return labels
+
+    def test_every_switch_verb_registered(self):
+        reg = {c["name"] for c in registry.commands()}
+        labels = self._switch_labels()
+        self.assertTrue(labels, "no switch labels parsed — regex/anchor drift in bob.ps1")
+        missing = sorted(v for v in labels if v not in reg)
+        self.assertEqual(missing, [], f"bob.ps1 verbs missing from the command registry: {missing}")
 
 
 class TestResolve(unittest.TestCase):

@@ -281,7 +281,23 @@ In addition to the system prompt, the voice loop runs a `Format-ForSpeech` post-
 
 ## System prompts
 
-System prompts are configured in two places:
+**Bob's persona (agent loop + interactive shell)** — the base system prompt Bob runs with lives in
+the neutral runtime layer at `config/defaults.json` → `runtime.persona.systemPrompt` (read by both
+OSes via the Python resolver and `Get-BobConfig`). The shipped default is intentionally short and
+general:
+
+```
+You are Bob, a helpful AI assistant running locally on the user's machine. Your name is Bob.
+Be direct and honest, and if you don't know something, say so.
+```
+
+Give Bob a specific role or personality by editing that value in `config/defaults.json`, or override
+it per-machine without touching the tracked file: add `persona.systemPrompt` under the `bob` section
+of `config/user.psd1` (Windows) or a `persona.systemPrompt` key in `config/user.json` (any OS). Run
+`bob gen` (or any `bob` command) to regenerate `data/config.json`. Keep it to the persona itself —
+tool usage and memory behaviour are guided by the tool descriptions, not the system prompt.
+
+The remaining two are separate surfaces:
 
 **Open WebUI** — driven from `config/models.psd1`. The top-level `prompts` key holds per-role prompts for local models:
 

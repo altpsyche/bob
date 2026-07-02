@@ -1,8 +1,9 @@
 """Bob tool: shell_run — executes a command in the OS-native shell.
 
-Always prompts for user confirmation regardless of the global agency setting.
-Timeout: 30 seconds. Process is killed on timeout. NB3: the shell is OS-native
-(pwsh on Windows, bash/sh elsewhere) via osenv.default_shell().
+NE0: approval is handled by the agent loop's event-driven approve callback (this tool sets
+REQUIRES_APPROVAL=True), NOT a blocking stdin prompt — so it works under the TUI/server, not only
+an interactive console. Timeout: 30 seconds. Process is killed on timeout. NB3: the shell is
+OS-native (pwsh on Windows, bash/sh elsewhere) via osenv.default_shell().
 """
 import subprocess
 import sys
@@ -11,6 +12,10 @@ import osenv
 
 _cfg: dict = {}
 
+# NE0 — the loop asks the approve callback before dispatching shell_run (see ToolRegistry
+# .approval_required_tools). O5 will add OS-level sandboxing; O6 adds richer per-command policy.
+REQUIRES_APPROVAL = True
+
 
 def configure(config: dict) -> None:
     global _cfg
@@ -18,17 +23,6 @@ def configure(config: dict) -> None:
 
 
 def _shell_run(command: str) -> str:
-    print(
-        f"\033[33m[shell] About to run:\033[0m {command[:200]}",
-        file=sys.stderr,
-    )
-    try:
-        answer = input("Run command? [y/N] ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        return "Cancelled (no stdin)."
-    if answer != "y":
-        return "Cancelled by user."
-
     shell = osenv.default_shell()
     try:
         r = subprocess.run(
@@ -52,8 +46,8 @@ def _shell_run(command: str) -> str:
 
 
 def test() -> str:
-    print("[shell test] Skipped — shell_run always requires confirmation.", file=sys.stderr)
-    return "shell_run test: OK (confirmation prompt would appear in interactive mode)"
+    print("[shell test] Skipped — shell_run requires loop-level approval before it runs.", file=sys.stderr)
+    return "shell_run test: OK (approval is requested by the agent loop, not this tool)"
 
 
 TOOL_DEFS = [

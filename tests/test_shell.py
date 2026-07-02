@@ -1,5 +1,6 @@
-"""NB3 — shell_run runs in the OS-native shell (osenv.default_shell) and stays fail-closed:
-no stdin => cancelled, and it never executes without an explicit 'y'."""
+"""NB3/NE0 — shell_run runs in the OS-native shell (osenv.default_shell). Approval is now handled by
+the agent loop's event-driven approve callback (shell declares REQUIRES_APPROVAL), NOT a blocking
+stdin prompt inside the tool — so shell_run works under the TUI/server, not only a console."""
 import unittest
 from unittest import mock
 
@@ -9,13 +10,23 @@ import shell
 
 
 class TestShellRun(unittest.TestCase):
-    def test_cancels_without_stdin(self):
-        with mock.patch("builtins.input", side_effect=EOFError):
-            self.assertEqual(shell._shell_run("echo hi"), "Cancelled (no stdin).")
+    def test_declares_requires_approval(self):
+        # NE0: the loop reads this flag (ToolRegistry.approval_required_tools) to gate the tool.
+        self.assertTrue(getattr(shell, "REQUIRES_APPROVAL", False))
 
-    def test_cancels_on_non_yes(self):
-        with mock.patch("builtins.input", return_value="n"):
-            self.assertEqual(shell._shell_run("echo hi"), "Cancelled by user.")
+    def test_runs_without_a_stdin_prompt(self):
+        # The tool must NOT prompt on stdin anymore; input() being called would be a regression.
+        class _R:
+            returncode = 0
+            stdout = "ok"
+            stderr = ""
+
+        def _no_input(*a, **k):
+            raise AssertionError("shell_run must not call input(); approval is loop-level now")
+
+        with mock.patch("builtins.input", side_effect=_no_input), \
+             mock.patch("shell.subprocess.run", return_value=_R()):
+            self.assertEqual(shell._shell_run("echo hi"), "ok")
 
     def test_builds_os_native_argv(self):
         captured = {}
@@ -29,8 +40,7 @@ class TestShellRun(unittest.TestCase):
             captured["argv"] = argv
             return _R()
 
-        with mock.patch("builtins.input", return_value="y"), \
-             mock.patch("shell.subprocess.run", side_effect=_fake_run):
+        with mock.patch("shell.subprocess.run", side_effect=_fake_run):
             out = shell._shell_run("echo hi")
         self.assertEqual(out, "ok")
         # wiring: default_shell() prefix + the command string, whatever the host OS

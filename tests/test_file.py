@@ -81,6 +81,34 @@ class TestFileTool(unittest.TestCase):
         out = file._file_write(str(self.dir / "config.json"), "{}")
         self.assertIn("sensitive", out)
 
+    def test_list_lists_directory_entries(self):
+        (self.dir / "sub").mkdir()
+        out = file._file_list(str(self.dir))
+        self.assertIn("normal.txt", out)
+        self.assertIn("sub/", out)                 # directories flagged with a trailing slash
+
+    def test_list_relative_resolves_to_allowed_root(self):
+        # '.' must resolve to the allowed root (the workspace), NOT the process cwd — the fix for the
+        # confusing approve-then-"Access denied ./" case.
+        out = file._file_list(".")
+        self.assertIn("normal.txt", out)
+        self.assertNotIn("Access denied", out)
+
+    def test_list_on_a_file_is_rejected(self):
+        out = file._file_list(str(self.dir / "normal.txt"))
+        self.assertIn("Not a directory", out)
+
+    def test_list_denies_outside_allowed_root(self):
+        other = Path(tempfile.mkdtemp(prefix="bob-other-"))
+        try:
+            self.assertIn("Access denied", file._file_list(str(other)))
+        finally:
+            shutil.rmtree(other, ignore_errors=True)
+
+    def test_read_relative_resolves_to_allowed_root(self):
+        # relative file paths now resolve under the workspace root too
+        self.assertEqual(file._file_read("normal.txt"), "hello")
+
 
 if __name__ == "__main__":
     unittest.main()

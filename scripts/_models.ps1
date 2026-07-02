@@ -169,7 +169,9 @@ function Get-BobConfig {
     $jsonPath = Join-Path $script:ModelsRepo 'data\config.json'
     $jsonDir = Split-Path $jsonPath
     if (-not (Test-Path $jsonDir)) { New-Item $jsonDir -ItemType Directory -Force | Out-Null }
-    $srcFiles = @($script:ModelsFile, $script:BobFile, $userFile) |
+    # defaults.json is a real source (runtime layer incl. persona.systemPrompt) — include it so an
+    # edit there marks config.json stale and regenerates (was missing → such edits went unnoticed).
+    $srcFiles = @($script:ModelsFile, $script:BobFile, $userFile, $script:DefaultsFile) |
                 Where-Object { $_ -and (Test-Path $_) } | Get-Item
     $srcMax = ($srcFiles | Measure-Object LastWriteTimeUtc -Maximum).Maximum
     $stale  = (-not (Test-Path $jsonPath)) -or

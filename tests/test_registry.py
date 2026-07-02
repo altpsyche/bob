@@ -18,8 +18,15 @@ class TestRealTools(unittest.TestCase):
         self.assertEqual(self.reg.errors, [], f"tools failed to load: {self.reg.errors}")
 
     def test_expected_tools_present(self):
-        for name in ("web", "file", "git", "memory", "shell", "fabric"):
+        for name in ("web", "file", "git", "shell", "fabric"):
             self.assertIn(name, self.reg._loaded_names)
+
+    def test_memory_tool_gated_on_feature_flag(self):
+        # memory.enabled is false in fake_config → the memory tools must NOT be offered to the agent
+        # (so the model can't recall/recite saved notes unprompted). They return when the flag is on.
+        self.assertNotIn("memory", self.reg._loaded_names)
+        on = ToolRegistry.build(_common.fake_config(memory={"enabled": True, "dbPath": "data/bob.db"}), set())
+        self.assertIn("memory", on._loaded_names)
 
     def test_schemas_have_names(self):
         for s in self.reg.tool_schemas:
@@ -83,8 +90,28 @@ class TestDispatch(unittest.TestCase):
 
     def test_result_truncated_to_cap(self):
         out = self.reg.dispatch_call("echo", '{"text": "abcdefghijklmnop"}')
-        self.assertIn("[...truncated]", out)
-        self.assertLessEqual(len(out.replace("\n[...truncated]", "")), 10)
+        self.assertIn("truncated", out)
+        self.assertIn("retained as", out)
+        kept = out.split("\n[...", 1)[0]
+        self.assertLessEqual(len(kept), 10)
+        # NE0/O3 seam: the trimmed tail is retained (not silently lost) and re-readable by handle.
+        handle = out.split("retained as ", 1)[1].rstrip("]").strip()
+        self.assertEqual(len(self.reg.read_result(handle)), 16)
+
+    def test_filtered_view_denies_tool(self):
+        # NE0/O1 seam: a filtered() view hides denied tools and refuses to dispatch them, while the
+        # allowed tool still runs through the shared dispatch — no rebuild.
+        self.reg.dispatch = {"echo": lambda text="": text, "danger": lambda: "boom"}
+        self.reg.tool_schemas = [
+            {"type": "function", "function": {"name": "echo"}},
+            {"type": "function", "function": {"name": "danger"}},
+        ]
+        self.reg.approval_required_tools = {"danger"}
+        view = self.reg.filtered(deny={"danger"})
+        self.assertEqual([s["function"]["name"] for s in view.tool_schemas], ["echo"])
+        self.assertNotIn("danger", view.approval_required_tools)
+        self.assertIn("not available", view.dispatch_call("danger", "{}"))
+        self.assertEqual(view.dispatch_call("echo", '{"text": "hi"}'), "hi")
 
 
 if __name__ == "__main__":
