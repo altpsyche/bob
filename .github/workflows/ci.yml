@@ -102,12 +102,15 @@ jobs:
         shell: pwsh
         run: pwsh -File scripts/bootstrap-litellm.ps1
 
-      # CPU tier: select the profile, build CPU-only, fetch the tiny GGUF (verified against versions.lock).
+      # CPU tier: select the profile, build CPU-only llama.cpp + the llama-swap proxy (Go, from the
+      # submodule), fetch the tiny GGUF (verified against versions.lock). llama-swap is what `bob up`
+      # launches as the endpoint, so it must be built before the stack comes up.
       - name: Select CPU profile + build + fetch (from versions.lock)
         shell: pwsh
         run: |
           pwsh -File scripts/bob.ps1 profile cpu
           pwsh -File scripts/bob.ps1 build --cpu
+          pwsh -File scripts/build-llama-swap.ps1
           pwsh -File scripts/bob.ps1 fetch cpu
 
       - name: Bring the stack up
@@ -119,6 +122,18 @@ jobs:
       - name: End-to-end smoke
         shell: pwsh
         run: pwsh -File scripts/smoke.ps1 -Up
+
+      # Surface why the endpoint died (the smoke only says "check: bob logs" — CI has no `bob logs`).
+      - name: Dump service logs on failure
+        if: failure()
+        shell: pwsh
+        run: |
+          foreach ($log in 'logs/llama-swap.log','logs/litellm.log') {
+            Write-Host "`n===== $log ====="
+            if (Test-Path $log) { Get-Content $log -Tail 120 } else { Write-Host "(missing)" }
+          }
+          Write-Host "`n===== bin/ ====="
+          Get-ChildItem bin -ErrorAction SilentlyContinue | Format-Table Name, Length -AutoSize
 
   # ND2 (contracts C5 + C7) — native-from-source CUDA + REAL inference. RELEASE TAGS ONLY (job-level
   # `if`), on a self-hosted GPU runner. This tier is NEVER on the per-PR path, so a fragile native build

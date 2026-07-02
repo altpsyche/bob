@@ -25,7 +25,7 @@
   "runtime": {
     "litellmKey": "sk-local",
     "persona": {
-      "systemPrompt": "You are Bob, a helpful AI assistant running locally on the user's machine. Your name is Bob. Be direct and honest, and if you don't know something, say so."
+      "systemPrompt": "You are Bob, a helpful AI assistant. Be direct and honest, and if you don't know something, say so."
     },
     "memory": {
       "enabled": true,

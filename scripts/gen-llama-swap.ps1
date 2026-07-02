@@ -73,7 +73,7 @@ foreach ($m in $models) {
   }
   # Flash-attn is incompatible with multimodal projection (mmproj); auto-expand srv without it.
   $srvRef = if ($m.mmproj -and $fa -ne '') {
-    (@('${env.LLAMA_LOCAL_ROOT}/bin/llama-server.exe', '--port ${PORT}', "-ngl $ngl", $batch, $ub, $numa, $par, $thr) | Where-Object { $_ -ne '' }) -join ' '
+    (@($srvBin, '--port ${PORT}', "-ngl $ngl", $batch, $ub, $numa, $par, $thr) | Where-Object { $_ -ne '' }) -join ' '
   } else { '${srv}' }
   $parts = @($srvRef, "-m `${env.LLAMA_LOCAL_ROOT}/models/$($m.gguf)")
   if ($null -ne $m.ctx)              { $parts += "-c $(Fmt $m.ctx)" }

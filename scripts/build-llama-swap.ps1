@@ -1,15 +1,17 @@
 #requires -Version 7
-# Build the llama-swap submodule (Go) into bin/.
-# Fallback if you don't want Go: download the matching native Windows binary from
-#   https://github.com/mostlygeek/llama-swap/releases  into  bin\llama-swap.exe
+# Build the llama-swap submodule (Go) into bin/ (cross-platform: llama-swap.exe on Windows, llama-swap
+# on Linux/macOS). Fallback if you don't want Go: download the matching native binary from
+#   https://github.com/mostlygeek/llama-swap/releases  into  bin/
 param([switch]$Force)
 $ErrorActionPreference = "Stop"
 $repo = Split-Path $PSScriptRoot -Parent
-$src  = Join-Path $repo "external\llama-swap"
-$bin  = Join-Path $repo "bin"
+. "$PSScriptRoot\_platform.ps1"          # NC seam: Get-BinExe / Get-BobExeName (OS-aware names)
+$src = Join-Path $repo "external" "llama-swap"
+$bin = Join-Path $repo "bin"
+$out = Get-BinExe 'llama-swap'           # bin/llama-swap(.exe)
 
-if (-not $Force -and (Test-Path (Join-Path $bin "llama-swap.exe"))) {
-  Write-Host "llama-swap.exe already built — skipping (use -Force to rebuild)." -ForegroundColor DarkGray
+if (-not $Force -and (Test-Path $out)) {
+  Write-Host "$(Split-Path $out -Leaf) already built — skipping (use -Force to rebuild)." -ForegroundColor DarkGray
   return
 }
 
@@ -17,13 +19,13 @@ if (-not (Test-Path $src)) {
   throw "llama-swap submodule not found at $src. Run: git submodule update --init --recursive"
 }
 if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
-  throw "Go not found. Either 'scoop install go', or download the llama-swap release binary into $bin\llama-swap.exe"
+  throw "Go not found. Install Go (scoop install go / your package manager), or download the llama-swap release binary into $bin"
 }
 
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
 Push-Location $src
 try {
-  go build -o (Join-Path $bin "llama-swap.exe") .
+  go build -o $out .
   if ($LASTEXITCODE -ne 0) { throw "go build failed" }
 } finally { Pop-Location }
-Write-Host "Built: $bin\llama-swap.exe" -ForegroundColor Green
+Write-Host "Built: $out" -ForegroundColor Green
