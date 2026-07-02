@@ -6,6 +6,11 @@ import unittest
 import _common  # noqa: F401 — puts scripts/ on sys.path
 from _common import fake_config
 
+try:  # rich is the shell UI dep; skip (not error) where it isn't installed (e.g. the minimal CI python)
+    import rich  # noqa: F401
+except ModuleNotFoundError as _e:  # pragma: no cover
+    raise unittest.SkipTest(f"rich not installed: {_e}")
+
 from bob import theme as th
 from bob.theme import Theme
 

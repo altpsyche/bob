@@ -343,7 +343,31 @@ vector = resp.data[0].embedding   # list of 1024 floats
 
 Phase 1 of the Bob roadmap wires a persona, interactive chat, and memory on top of the inference stack. All of this is opt-in; the raw API, Continue, aider, and every other client are unaffected.
 
-### Interactive REPL
+### The `bob` shell (default front door)
+
+Run `bob` with no arguments on a terminal to open the interactive shell — a splash (big header, model/agency/session, live tool/command/skill counts, endpoint health) and a prompt:
+
+```powershell
+bob                 # opens the shell (piped/redirected `bob` prints help instead)
+```
+
+In the shell:
+
+| Input | Does |
+|-------|------|
+| *(type anything)* | an agent turn — Bob answers and can use tools (streamed, Markdown-rendered) |
+| `/agent <goal>` | run the agent loop explicitly on a goal |
+| `/model [role]` · `/agency [show\|confirm\|silent]` | switch model / tool-approval mode |
+| `/tools` · `/skills` · `/help` | the catalog (grouped commands + tools + skills) |
+| `/session [new]` · `/status` · `/clear` | session + state |
+| `/theme [reload]` | show/reload the theme ([config/ui.json](../config/ui.json)) |
+| `/exit` | leave |
+
+Type `/` to filter the command list. Gated tools (e.g. `shell_run`, or any tool under `/agency confirm`) show an inline **y/N/a** approval; **Ctrl-C** cancels the in-flight turn and returns to the prompt. The look is themeable — see [TUNING.md → System prompts](TUNING.md) and `config/ui.json`.
+
+`bob help` (from the terminal) prints the same generated command catalog.
+
+### `bob chat` (routed REPL)
 
 ```powershell
 bob chat          # opens the REPL — multi-turn, history in session, empty line to exit
@@ -385,7 +409,7 @@ bob chat planner "design a caching layer" --sys "Be concise." --max 1024
 
 ### Persona config
 
-Bob's name, system prompt, and routing defaults live in `config/bob.psd1` (committed to the repo — it's part of the product). Override any key in `config/user.psd1` under a `bob` section:
+Bob's persona `name`/`style` and routing defaults live in `config/bob.psd1`; the base **`systemPrompt`** lives in the neutral `config/defaults.json` → `runtime.persona.systemPrompt` (shared by both OSes — see [TUNING.md → System prompts](TUNING.md)). Both are committed to the repo. Override any key in `config/user.psd1` under a `bob` section:
 
 ```powershell
 # config/user.psd1

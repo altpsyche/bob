@@ -39,7 +39,10 @@ jobs:
       # sys.exit(1)s at import if they're missing — omitting them fails the whole suite, not one test.
       - name: Install core-suite deps
         shell: pwsh
-        run: python -m pip install --upgrade pip fastapi uvicorn pydantic httpx requests openai sqlite-utils
+        # rich/prompt_toolkit/pyfiglet (NE2 shell UI) + PyYAML (NE4 skills manifests) are lightweight
+        # pure-python runtime deps — installed so the shell/theme/render/skills tests run for real
+        # (the tests also skip cleanly if these are ever absent, so the suite still passes minimally).
+        run: python -m pip install --upgrade pip fastapi uvicorn pydantic httpx requests openai sqlite-utils rich prompt_toolkit pyfiglet pyyaml
 
       # One gate, both OSes. pwsh is preinstalled on ubuntu-latest and windows-latest; BOB_PYTHON
       # points check.ps1 at the CI interpreter (there is no venv-litellm here).

@@ -88,19 +88,30 @@ $lock = try { Get-VersionsLock } catch { $null }
 $hdr = @()
 if ($env:HF_TOKEN) { $hdr = @("-H", "Authorization: Bearer $env:HF_TOKEN") }
 
-# disk-space pre-check
+# disk-space pre-check (advisory only — never fatal, and cross-platform). `Split-Path -Qualifier` is
+# Windows-only: a Linux path (/home/...) has no drive qualifier and it throws, so branch by OS and
+# swallow any provider quirk.
 $missing  = @($models | Where-Object { -not (Test-Path (Join-Path $outDir $_.gguf)) })
 $neededGB = ($missing | Measure-Object -Property sizeGB -Sum).Sum
 if ($neededGB -gt 0) {
-  $drive = Split-Path $outDir -Qualifier   # string-only parse, works before dir exists
-  $drv   = Get-PSDrive ($drive -replace ':','') -ErrorAction SilentlyContinue
-  if ($drv) {
-    $freeGB = $drv.Free / 1GB
-    if ($freeGB -lt $neededGB * 1.2) {
+  try {
+    $freeGB = $null
+    if ($IsWindows) {
+      $drive = Split-Path $outDir -Qualifier   # 'C:' — string-only parse, works before dir exists
+      $drv   = Get-PSDrive ($drive -replace ':','') -ErrorAction SilentlyContinue
+      if ($drv) { $freeGB = $drv.Free / 1GB }
+    } else {
+      # Linux/macOS: pick the FileSystem PSDrive whose root prefixes $outDir (usually '/').
+      $drv = Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue |
+             Where-Object { $_.Root -and $outDir.StartsWith($_.Root) } |
+             Sort-Object { $_.Root.Length } -Descending | Select-Object -First 1
+      if ($drv -and $null -ne $drv.Free) { $freeGB = $drv.Free / 1GB }
+    }
+    if ($null -ne $freeGB -and $freeGB -lt $neededGB * 1.2) {
       Write-Warning ("Low disk space: {0:N1} GB free, ~{1:N1} GB needed (+20% buffer = {2:N1} GB)" -f `
         $freeGB, $neededGB, ($neededGB * 1.2))
     }
-  }
+  } catch { }   # the pre-check is advisory; a resolution quirk must not fail the fetch
 }
 $staleParts = @(Get-ChildItem $outDir -Filter '*.gguf.part' -ErrorAction SilentlyContinue)
 if ($staleParts.Count -gt 0) {

@@ -5,6 +5,12 @@ import unittest
 from pathlib import Path
 
 import _common  # noqa: F401 — puts scripts/ on sys.path
+
+try:  # skill manifests are YAML; without PyYAML the registry degrades to empty, so skip (not fail)
+    import yaml  # noqa: F401
+except ModuleNotFoundError as _e:  # pragma: no cover
+    raise unittest.SkipTest(f"PyYAML not installed: {_e}")
+
 from bob_skills import SkillRegistry
 
 
