@@ -49,6 +49,7 @@
       "autoSummarize": true,
       "autoConsolidate": true,
       "consolidateTimeout": 30,
+      "reconcileTopK": 20,
       "maxRows": 2000,
       "forgetAfterDays": {"episodic": 180},
       "scopeByProject": true,

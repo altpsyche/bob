@@ -594,16 +594,31 @@ _SUMMARY_SYSTEM = (
     "Summarize the following conversation into 2-5 bullet points capturing key facts, decisions, "
     "or preferences expressed by the user. Be concise."
 )
+# MEM-8 — reconcile, not just extract. The model is shown the owner's existing durable facts (by id)
+# and tags each new fact NEW or REPLACES:<id> so contradictions supersede instead of piling up.
 _CONSOLIDATE_SYSTEM = (
     "From the conversation, extract 0-5 DURABLE facts about the USER worth remembering for future "
     "sessions (identity, stable preferences, projects, tools). Write each on its own line as a "
-    "third-person statement prefixed with a type and a colon, e.g.:\n"
-    "preference: User prefers dark mode\n"
-    "project: User is building a local AI assistant called Bob\n"
-    "Allowed types: profile, preference, project, fact. Omit greetings, small talk, and anything "
-    "ephemeral. If nothing durable was shared, return an empty response."
+    "third-person statement prefixed with a type and a colon, then a ' | ' and a NEW/REPLACES tag:\n"
+    "preference: User prefers dark mode | NEW\n"
+    "preference: User uses vscode | REPLACES:12\n"
+    "Allowed types: profile, preference, project, fact. You are given the user's EXISTING saved "
+    "facts (each with a numeric id). For every fact you extract, decide whether it is brand NEW or "
+    "whether it REPLACES an existing fact because it updates or contradicts it — use REPLACES:<id> "
+    "ONLY for a direct supersede (a changed preference, an updated status); when unsure, use NEW. "
+    "Omit greetings, small talk, and anything ephemeral. If nothing durable was shared, return an "
+    "empty response."
 )
 _CONSOLIDATE_TYPES = {"profile", "preference", "project", "fact"}
+
+
+def _build_reconcile_prompt(existing: list) -> str:
+    """MEM-8 — the consolidation system prompt with the owner's existing durable facts appended (as
+    `<id>: <content>` lines) so the model can tag each extracted fact NEW or REPLACES:<id>."""
+    if existing:
+        block = "\n".join(f"{rid}: {content}" for rid, _mtype, content in existing)
+        return f"{_CONSOLIDATE_SYSTEM}\n\nEXISTING FACTS:\n{block}"
+    return f"{_CONSOLIDATE_SYSTEM}\n\nEXISTING FACTS: (none yet)"
 
 
 def summarize_turns(turns: list, model: str = "chat", system_prompt: str = None,
@@ -649,37 +664,121 @@ def _parse_typed_bullets(text: str) -> "list[tuple[str, str]]":
     return out
 
 
+def _parse_reconciled_bullets(text: str) -> "list[tuple[str, str, int | None]]":
+    """MEM-8 — parse reconciliation output into (type, statement, replaces_id) triples. Each line is
+    `<type>: <statement> | NEW` or `... | REPLACES:<id>`; a missing/garbled tag → NEW (conservative),
+    and unrecognized text after a '|' is kept as content (not mistaken for a tag). The pre-'|' part
+    reuses the same lenient type detection as _parse_typed_bullets."""
+    out = []
+    for line in text.splitlines():
+        line = line.strip().lstrip("-*•").strip()
+        if not line:
+            continue
+        replaces = None
+        if "|" in line:
+            body, tag = line.rsplit("|", 1)
+            tag_norm = tag.strip().upper()
+            if tag_norm == "NEW" or tag_norm.startswith("REPLACES:"):
+                if tag_norm.startswith("REPLACES:"):
+                    try:
+                        replaces = int(tag_norm.split(":", 1)[1].strip())
+                    except ValueError:
+                        replaces = None            # bad id → treat as NEW
+                line = body.strip()                # strip the recognized tag only
+        mtype, stmt = "fact", line
+        if ":" in line:
+            head, rest = line.split(":", 1)
+            head_l = head.strip().lower()
+            if head_l in _CONSOLIDATE_TYPES and rest.strip():
+                mtype, stmt = head_l, rest.strip()
+        if stmt:
+            out.append((mtype, stmt, replaces))
+    return out
+
+
+def _active_durable_facts(db, owner: str, limit: int, scope: str = None) -> list:
+    """MEM-8 — top-K active durable facts for the reconciliation prompt: owner-scoped, not
+    superseded/expired, excluding episodic recaps. Global rows plus this project's scope. Ordered
+    pinned, then salience, then recency. Returns (id, type, content) rows."""
+    now = datetime.now(timezone.utc).isoformat()
+    sql = ("SELECT id, type, content FROM memories WHERE owner_id=? AND type != 'episodic' "
+           "AND superseded_by IS NULL AND (expires_at IS NULL OR expires_at > ?)")
+    params: list = [owner, now]
+    if scope is not None:
+        sql += " AND (scope IS NULL OR scope = ?)"
+        params.append(scope)
+    sql += " ORDER BY pinned DESC, salience DESC, created_at DESC LIMIT ?"
+    params.append(int(limit))
+    return db.execute(sql, params).fetchall()
+
+
+def _prose_recap(raw: str, convo: list) -> str:
+    """B6 — a prose episodic recap. Strip the `type:`/`| tag` scaffolding off the extracted facts into
+    plain sentences; if extraction produced nothing (LLM down or nothing durable), fall back to a
+    deterministic recap (turn count + first user line) so a session is never silently dropped."""
+    if raw and raw.strip():
+        stmts = [stmt for _mtype, stmt, _rep in _parse_reconciled_bullets(raw)]
+        if stmts:
+            return "Session recap: " + " ".join(s if s.endswith(".") else s + "." for s in stmts)
+    first_user = next((str(m.get("content", "")) for m in convo if m.get("role") == "user"), "")
+    return f"Session recap: {len(convo)} turn(s); opened with: {first_user[:200]}".strip()
+
+
 def consolidate_session(turns: list, db_path: Path, model: str = "chat", owner: str = "local",
                         dedup_threshold: float = 0.92, timeout: int = 60,
-                        scope: str = None) -> dict:
-    """MEM-4 — extract durable typed facts from a session's turns and store them (deduped via
-    store()), plus one episodic recap row. Returns {'facts': n_new, 'summary': text}. No-op (facts=0)
-    for <2 turns or an empty extraction. Idempotent: re-running the same turns dedups to 0 new facts.
-    `scope` (MEM-7) tags extracted type='project' facts to the project; other types stay global.
-    Called in-process by the NE shell /exit hook, the agent server on session delete, and the CLI —
-    no temp file, no subprocess (CONTRIBUTING §2)."""
+                        scope: str = None, reconcile_top_k: int = 20) -> dict:
+    """MEM-4/8 — extract durable typed facts from a session's turns and RECONCILE them against the
+    owner's existing facts (supersede, don't accumulate), plus one prose episodic recap. Returns
+    {'facts': n_new, 'superseded': n, 'summary': text}. No-op (facts=0) for <2 turns.
+
+    One LLM call: the owner's top-K active durable facts are fed into the extraction prompt so the
+    model tags each fact NEW or REPLACES:<id>; REPLACES invalidates the old row via superseded_by
+    (kept for audit, like edit()). Ambiguous → NEW (conservative). `scope` (MEM-7) tags extracted
+    type='project' facts to the project; other types stay global. B6: the episodic recap is real
+    prose with a deterministic fallback when the summarizer returns nothing. Idempotent: re-running
+    the same turns dedups new facts to 0. Called in-process by the NE shell /exit hook, the agent
+    server on session delete, and the CLI — no temp file, no subprocess (CONTRIBUTING §2)."""
     convo = [m for m in turns if m.get("role") in ("user", "assistant")]
     if len(convo) < 2:
-        return {"facts": 0, "summary": None}
-    raw = summarize_turns(convo, model=model, system_prompt=_CONSOLIDATE_SYSTEM, timeout=timeout)
-    if not raw:
-        return {"facts": 0, "summary": None}
-    stored = 0
-    for mtype, stmt in _parse_typed_bullets(raw):
-        try:
-            _, is_new = store(stmt, db_path, source="consolidation", mem_type=mtype, owner=owner,
-                              scope=(scope if mtype == "project" else None),
-                              dedup_threshold=dedup_threshold)
+        return {"facts": 0, "superseded": 0, "summary": None}
+    db = get_db(db_path)
+    existing = _active_durable_facts(db, owner, reconcile_top_k, scope=scope)
+    valid_ids = {row[0] for row in existing}
+    raw = summarize_turns(convo, model=model, system_prompt=_build_reconcile_prompt(existing),
+                          timeout=timeout)
+    stored, superseded = 0, 0
+    supersede_pairs: list = []
+    if raw:
+        for mtype, stmt, replaces in _parse_reconciled_bullets(raw):
+            try:
+                new_id, is_new = store(stmt, db_path, source="consolidation", mem_type=mtype,
+                                       owner=owner, scope=(scope if mtype == "project" else None),
+                                       dedup_threshold=dedup_threshold)
+            except RuntimeError:
+                break   # embed server down mid-run — stop; best-effort
             stored += 1 if is_new else 0
-        except RuntimeError:
-            break   # embed server down mid-run — stop; best-effort
-    # Preserve an episodic recap of the session (decays fast, prunable) — the raw extraction blob.
+            # Only supersede a real, still-active existing row, and never point a row at itself
+            # (store() may have deduped the "new" fact back onto the row we were asked to replace).
+            if replaces is not None and replaces in valid_ids and replaces != new_id:
+                supersede_pairs.append((new_id, replaces))
+        # Apply the invalidations AFTER all store() writes committed (avoids two write connections
+        # holding locks at once); the superseded row stays for audit/export.
+        if supersede_pairs:
+            stamp = datetime.now(timezone.utc).isoformat()
+            for new_id, old_id in supersede_pairs:
+                cur = db.execute(
+                    "UPDATE memories SET superseded_by=?, updated_at=? WHERE id=? AND superseded_by IS NULL",
+                    [new_id, stamp, old_id])
+                superseded += cur.rowcount
+            db.conn.commit()
+    # B6 — a real prose recap (no type:/tag scaffolding), deterministic when extraction was empty,
+    # so a session is never silently dropped.
     try:
-        store(raw, db_path, source="consolidation", mem_type="episodic",
+        store(_prose_recap(raw, convo), db_path, source="consolidation", mem_type="episodic",
               owner=owner, dedup_threshold=dedup_threshold)
     except RuntimeError:
         pass
-    return {"facts": stored, "summary": raw}
+    return {"facts": stored, "superseded": superseded, "summary": raw or None}
 
 
 def cmd_summarize_session(messages_file: str, model: str, db_path: Path) -> None:

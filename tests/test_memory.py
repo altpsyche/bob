@@ -389,11 +389,16 @@ class TestConsolidation(unittest.TestCase):
         self.assertEqual(r["facts"], 0)
         self.assertIsNone(r["summary"])
 
-    def test_empty_extraction_is_noop(self):
+    def test_empty_extraction_stores_only_recap(self):
+        # B6 — a down/empty summarizer no longer silently drops the session: no durable facts, but a
+        # deterministic episodic recap is still written.
         bob_memory.summarize_turns = lambda *a, **k: ""
         r = bob_memory.consolidate_session(self._TURNS, self.db)
         self.assertEqual(r["facts"], 0)
-        self.assertEqual(bob_memory.get_db(self.db).execute("SELECT COUNT(*) FROM memories").fetchone()[0], 0)
+        db = bob_memory.get_db(self.db)
+        rows = db.execute("SELECT type, content FROM memories").fetchall()
+        self.assertEqual([r[0] for r in rows], ["episodic"])      # only the recap
+        self.assertIn("turn(s)", rows[0][1])                       # deterministic fallback body
 
     def test_forwards_timeout_to_summarizer(self):
         captured = {}
@@ -401,6 +406,61 @@ class TestConsolidation(unittest.TestCase):
                                       max_tokens=256, timeout=60: captured.update(timeout=timeout) or "")
         bob_memory.consolidate_session(self._TURNS, self.db, timeout=17)
         self.assertEqual(captured["timeout"], 17)          # bounded exit stall reaches the LLM call
+
+    # --- MEM-8: conflict-aware reconciliation --------------------------------------------------
+    def test_parse_reconciled_bullets(self):
+        triples = bob_memory._parse_reconciled_bullets(
+            "preference: User likes tea | NEW\n"
+            "- project: builds Bob | REPLACES:7\n"
+            "fact: no tag here\n"
+            "preference: weird | REPLACES:notanint\n"
+            "fact: has | pipe but no tag\n")
+        self.assertIn(("preference", "User likes tea", None), triples)
+        self.assertIn(("project", "builds Bob", 7), triples)
+        self.assertIn(("fact", "no tag here", None), triples)        # missing tag → NEW
+        self.assertIn(("preference", "weird", None), triples)        # bad id → NEW
+        self.assertIn(("fact", "has | pipe but no tag", None), triples)  # unknown text after | kept
+
+    def test_conflict_supersedes_existing_fact(self):
+        bob_memory.store("User uses vim", self.db, source="user", mem_type="preference")
+        old = bob_memory.get_db(self.db).execute(
+            "SELECT id FROM memories WHERE type='preference'").fetchone()[0]
+        bob_memory.summarize_turns = lambda *a, **k: f"preference: User uses vscode | REPLACES:{old}\n"
+        r = bob_memory.consolidate_session(self._TURNS, self.db)
+        self.assertEqual(r["superseded"], 1)
+        self.assertIsNotNone(bob_memory.get_memory(old, self.db)["superseded_by"])  # old invalidated
+        hits = [h["content"] for h in bob_memory.recall("editor", self.db, threshold=0.0)]
+        self.assertIn("User uses vscode", hits)
+        self.assertNotIn("User uses vim", hits)                       # only the new fact recalled
+
+    def test_new_fact_added_not_superseding(self):
+        bob_memory.store("User uses vim", self.db, source="user", mem_type="preference")
+        bob_memory.summarize_turns = lambda *a, **k: "project: User is building Bob | NEW\n"
+        r = bob_memory.consolidate_session(self._TURNS, self.db)
+        self.assertEqual((r["facts"], r["superseded"]), (1, 0))
+        hits = [h["content"] for h in bob_memory.recall("anything", self.db, threshold=0.0)]
+        self.assertIn("User uses vim", hits)                          # untouched
+        self.assertIn("User is building Bob", hits)
+
+    def test_existing_facts_reach_extractor_prompt(self):
+        bob_memory.store("User uses vim", self.db, source="user", mem_type="preference")
+        captured = {}
+        bob_memory.summarize_turns = (lambda turns, model="chat", system_prompt=None,
+                                      max_tokens=256, timeout=60:
+                                      captured.update(sys=system_prompt) or "")
+        bob_memory.consolidate_session(self._TURNS, self.db)          # one LLM call, facts embedded
+        self.assertIn("EXISTING FACTS", captured["sys"])
+        self.assertIn("User uses vim", captured["sys"])
+
+    def test_bad_replace_id_is_ignored(self):
+        # A REPLACES pointing at an id that isn't in this owner's active set must not invalidate anything.
+        bob_memory.store("User uses vim", self.db, source="user", mem_type="preference")
+        bob_memory.summarize_turns = lambda *a, **k: "project: User is building Bob | REPLACES:9999\n"
+        r = bob_memory.consolidate_session(self._TURNS, self.db)
+        self.assertEqual((r["facts"], r["superseded"]), (1, 0))       # stored, but nothing superseded
+        hits = [h["content"] for h in bob_memory.recall("anything", self.db, threshold=0.0)]
+        self.assertIn("User uses vim", hits)                          # untouched — stale id ignored
+        self.assertIn("User is building Bob", hits)
 
 
 class TestOwnerThreading(unittest.TestCase):
