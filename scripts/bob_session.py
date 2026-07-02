@@ -186,3 +186,16 @@ class SessionStore:
             .execute("SELECT id FROM sessions ORDER BY updated_at DESC")
             .fetchall()
         ]
+
+    def list_owned(self, owner_id: str) -> list:
+        """Session ids for one owner, newest first. Owner-scoped counterpart of list_ids
+        (which is cross-owner) — index-covered by idx_sessions_owner."""
+        return [
+            r[0]
+            for r in self._conn()
+            .execute(
+                "SELECT id FROM sessions WHERE owner_id=? ORDER BY updated_at DESC",
+                [owner_id],
+            )
+            .fetchall()
+        ]

@@ -142,28 +142,162 @@ def _get_db_path(config: Optional[dict] = None) -> str:
     return str(REPO / rel.replace("\\", "/"))
 
 
-def memory_store(content: str, tags: str = "", config: Optional[dict] = None) -> str:
-    """Store content in bob.db directly (no subprocess)."""
+def project_key(cwd: Optional[str] = None, config: Optional[dict] = None) -> Optional[str]:
+    """MEM-7 — the project scope key for a directory: the git repo root if inside one, else the
+    directory itself. Returns None when memory.scopeByProject is off (→ everything global). Pure
+    Python (no git subprocess, per CONTRIBUTING): walk up looking for a `.git` entry."""
+    cfg = config or load_config()
+    if not cfg.get("memory", {}).get("scopeByProject", True):
+        return None
+    start = (Path(cwd).resolve() if cwd else Path.cwd())
+    for d in (start, *start.parents):
+        if (d / ".git").exists():
+            return str(d)
+    return str(start)
+
+
+# One shared frame for every surface that feeds saved memory into the model — per-turn autoRecall
+# (bob_loop), the memory_recall tool (tools/memory), and the once-per-session profile block (MEM-3).
+# A single phrasing means the model never sees three variants of "this is about the user, not you".
+MEMORY_CONTEXT_FRAME = (
+    "Notes about the user (context only — about the user, not your own identity; "
+    "use only if relevant, do not recite verbatim):"
+)
+
+
+def memory_store(content: str, tags: str = "", mem_type: str = "fact",
+                 owner: Optional[str] = None, scope: Optional[str] = None,
+                 config: Optional[dict] = None) -> str:
+    """Store content in bob.db directly (no subprocess). Threads type/tags/owner/scope and the
+    configured dedup threshold through to the typed write path (MEM-1/7). `owner` defaults to
+    agent.defaultOwner; MEM-6/7 thread the real per-run owner/scope from RunContext. Only
+    type='project' facts are scoped to the project; identity/prefs/facts stay global."""
     cfg = config or load_config()
     db_path = _get_db_path(cfg)
     _ensure_memory_importable()
     import bob_memory  # type: ignore
 
-    mid, is_new = bob_memory.store(content, db_path=db_path)
+    mem = cfg.get("memory", {})
+    owner = owner or cfg.get("agent", {}).get("defaultOwner", "local")
+    row_scope = scope if mem_type == "project" else None
+    mid, is_new = bob_memory.store(
+        content, db_path=db_path, mem_type=mem_type, owner=owner, scope=row_scope,
+        tags=(tags or None), dedup_threshold=float(mem.get("dedupThreshold", 0.92)),
+    )
     return f"Stored (id={mid}): {content[:80]}" if is_new else f"Already stored (similar id={mid})"
 
 
-def memory_recall(query: str, k: int = 5, config: Optional[dict] = None) -> str:
-    """Recall top-k results from bob.db. Returns newline-joined content strings."""
+def memory_recall(query: str, k: int = 5, config: Optional[dict] = None,
+                  owner: Optional[str] = None, scope: Optional[str] = None) -> str:
+    """Recall top-k results from bob.db. Returns newline-joined content strings. Threads the
+    configured blended-ranking threshold/weights and owner/scope through to the read path (MEM-2).
+    `owner` defaults to agent.defaultOwner; MEM-6 threads the real per-run owner in from RunContext."""
     cfg = config or load_config()
     db_path = _get_db_path(cfg)
     _ensure_memory_importable()
     import bob_memory  # type: ignore
 
-    results = bob_memory.recall(query, k=k, db_path=db_path)
+    mem = cfg.get("memory", {})
+    owner = owner or cfg.get("agent", {}).get("defaultOwner", "local")
+    ranking = mem.get("ranking") or {}
+    results = bob_memory.recall(
+        query, k=k, db_path=db_path,
+        threshold=float(mem.get("recallThreshold", 0.35)),
+        owner=owner, scope=scope,
+        weights=ranking, type_weights=mem.get("typeWeights"),
+        half_lives=ranking.get("halfLifeDays"),
+    )
     if not results:
         return "(no results)"
     return "\n".join(r["content"] for r in results)
+
+
+def memory_profile_block(owner: Optional[str] = None, config: Optional[dict] = None) -> Optional[str]:
+    """MEM-3 — the once-per-session stable-profile block (framed), or None. Gated on memory.enabled
+    AND memory.injectProfileAtStart. Owner defaults to agent.defaultOwner; MEM-6 threads the real
+    per-run owner. Best-effort: any failure (missing deps, embed server down for the DB open) yields
+    None so a session never fails to start over memory."""
+    cfg = config or load_config()
+    mem = cfg.get("memory", {})
+    if not mem.get("enabled", False) or not mem.get("injectProfileAtStart", True):
+        return None
+    db_path = _get_db_path(cfg)
+    _ensure_memory_importable()
+    owner = owner or cfg.get("agent", {}).get("defaultOwner", "local")
+    max_tokens = int(mem.get("profileMaxTokens", 200))
+    try:
+        import bob_memory  # type: ignore
+        body = bob_memory.profile_block(owner, db_path, max_chars=max_tokens * 4)
+    except Exception:
+        return None
+    if not body:
+        return None
+    return MEMORY_CONTEXT_FRAME + "\n" + body
+
+
+def _project_memory_files(project_dir: str) -> list:
+    """Ordered broad→specific: user-level BOB.md, then this project's AGENTS.md / .bob/BOB.md / BOB.md
+    (Claude Code-style load order — the more specific file is read last so it reads as most salient)."""
+    root = Path(project_dir)
+    return [
+        Path.home() / ".bob" / "BOB.md",     # user-level, all projects (broad)
+        root / "AGENTS.md",                  # cross-agent standard, if present
+        root / ".bob" / "BOB.md",
+        root / "BOB.md",                     # project (specific)
+    ]
+
+
+def project_memory_block(project_dir: Optional[str], config: Optional[dict] = None) -> Optional[str]:
+    """MEM-7b — concatenated, framed project instruction file(s) for `project_dir` (the git root/cwd),
+    or None. Human-curated + git-committable (Claude Code CLAUDE.md analogue). Gated on
+    memory.projectFiles; capped at memory.bobMdMaxTokens. Best-effort: unreadable files are skipped."""
+    cfg = config or load_config()
+    mem = cfg.get("memory", {})
+    if not mem.get("projectFiles", True) or not project_dir:
+        return None
+    parts = []
+    for p in _project_memory_files(project_dir):
+        try:
+            txt = p.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if txt:
+            parts.append(txt)
+    if not parts:
+        return None
+    body = "\n\n".join(parts)[: int(mem.get("bobMdMaxTokens", 4000)) * 4]
+    return "Project instructions (from BOB.md — follow these for this project):\n" + body
+
+
+def consolidate_session(turns: list, config: Optional[dict] = None,
+                        owner: Optional[str] = None, scope: Optional[str] = None) -> dict:
+    """MEM-4 — extract durable facts from a session's turns and store them (deduped), plus one
+    episodic recap. Resolves db path, summarizer model, owner, and dedup threshold from config, then
+    calls the importable core. `scope` (MEM-7) tags extracted type='project' facts. Best-effort:
+    returns {'facts': 0, 'summary': None} on any failure. The CALLER gates on
+    memory.enabled && memory.autoConsolidate."""
+    cfg = config or load_config()
+    db_path = _get_db_path(cfg)
+    _ensure_memory_importable()
+    mem = cfg.get("memory", {})
+    owner = owner or cfg.get("agent", {}).get("defaultOwner", "local")
+    model = cfg.get("routing", {}).get("defaultRole", "chat")
+    try:
+        import bob_memory  # type: ignore
+        result = bob_memory.consolidate_session(
+            turns, db_path=db_path, model=model, owner=owner, scope=scope,
+            dedup_threshold=float(mem.get("dedupThreshold", 0.92)),
+            timeout=int(mem.get("consolidateTimeout", 30)),   # bound end-of-session stall
+        )
+        # MEM-5 — opportunistic hygiene at end of consolidation: TTL prune + per-owner size cap.
+        try:
+            bob_memory.prune(db_path, owner=owner, forget_after_days=mem.get("forgetAfterDays"),
+                             max_rows=int(mem.get("maxRows", 2000)))
+        except Exception:
+            pass
+        return result
+    except Exception:
+        return {"facts": 0, "summary": None}
 
 
 def _ensure_memory_importable() -> None:

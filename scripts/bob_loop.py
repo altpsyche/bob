@@ -191,14 +191,22 @@ class RunContext:
     tool_registry.get_run_context(): the cancel token, the resolved config, the tool registry, the
     run id, and the approval callback. Lets a tool (a future sub-agent tool) reach these without any
     change to its fn(**args) signature."""
-    __slots__ = ("cancel", "config", "registry", "run_id", "approve")
+    __slots__ = ("cancel", "config", "registry", "run_id", "approve", "owner", "agent_depth", "scope")
 
-    def __init__(self, cancel, config, registry, run_id, approve):
+    def __init__(self, cancel, config, registry, run_id, approve, owner="local", agent_depth=0,
+                 scope=None):
         self.cancel = cancel
         self.config = config
         self.registry = registry
         self.run_id = run_id
         self.approve = approve
+        # MEM-6 — the identity this run acts as (memory scoping) and its delegation depth. `agent_depth`
+        # is 0 for a root run; O1 sets it >0 on sub-agents and propagates owner/cancel parent->child.
+        self.owner = owner
+        self.agent_depth = agent_depth
+        # MEM-7 — project scope (git-root/cwd key) for this run; None = global. Threaded from the
+        # shell/CLI; the memory tools read it via get_run_context() to scope project-type facts.
+        self.scope = scope
 
 
 def _call_id(tc, step: int, idx: int) -> str:
@@ -579,6 +587,9 @@ def run_agent_events(
     cancel: "CancelToken" = None,
     run_id: str = None,
     approve=None,
+    owner: str = None,
+    agent_depth: int = 0,
+    scope: str = None,
 ):
     """Generator core of the agent loop (M15). Yields event dicts:
         {"type": "token",             "text": str}                          # final-answer deltas (stream=True)
@@ -598,7 +609,8 @@ def run_agent_events(
     the server/scheduler never run a gated tool unattended; the CLI wrapper installs a console approver
     on a TTY, and the NE2 shell will pass one that drives the TUI. `call_id` correlates
     tool_call↔approval_required↔tool_result (forward-compat for O2 parallel tools)."""
-    from bob_core import _port, check_litellm, get_llm_client, memory_recall
+    from bob_core import (MEMORY_CONTEXT_FRAME, _port, check_litellm, get_llm_client,
+                          memory_profile_block, memory_recall, project_memory_block)
 
     agent_cfg = config.get("agent", {})
     effective_role = role or config.get("routing", {}).get("agentRole", "chat")
@@ -653,16 +665,47 @@ def run_agent_events(
     # Keeping them separate stops the model reciting the same notes on every prompt. Best-effort: a
     # memory/embed failure is logged and skipped, never fatal to the run.
     mem_cfg = config.get("memory", {})
+    # MEM-6/7 — resolve the identity (owner) + project scope this run acts as BEFORE any memory read.
+    # Owner defaults to agent.defaultOwner (server passes the authed owner, the shell its self.owner,
+    # O1 the parent's); scope is the project key threaded from the shell/CLI (None = global).
+    owner = owner or config.get("agent", {}).get("defaultOwner", "local")
+
     if mem_cfg.get("autoRecall"):
         try:
-            recalled = memory_recall(goal, k=int(mem_cfg.get("recallK", 5)), config=config)
+            # A1 fix — recall as the RUN's owner/scope, not the 'local' default.
+            recalled = memory_recall(goal, k=int(mem_cfg.get("recallK", 5)), config=config,
+                                     owner=owner, scope=scope)
             if recalled and recalled.strip() and recalled != "(no results)":
-                system_prompt += ("\n\nSaved notes about the user (context only; use only if relevant, "
-                                  "do not recite):\n" + recalled)
+                system_prompt += "\n\n" + MEMORY_CONTEXT_FRAME + "\n" + recalled
                 log.info(f"[{rid}] injected memories ({len(recalled)}c)")
         except Exception as e:
             log.warning(f"[{rid}] memory recall skipped: {e}")
             print(f"[warn] memory recall skipped: {e}", file=sys.stderr)
+
+    # MEM-3 — once-per-session profile injection. History-empty == a genuine session start (WI-6
+    # repopulates history on resume, so this fires once at the real start, not every process launch).
+    # agent_depth==0 restricts it to ROOT runs — an O1 sub-agent starts with empty isolated history by
+    # design and must NOT inherit the profile block. Gated on memory.injectProfileAtStart (distinct
+    # from autoRecall).
+    if not history and agent_depth == 0:
+        try:
+            profile = memory_profile_block(owner=owner, config=config)
+            if profile:
+                system_prompt += "\n\n" + profile
+                log.info(f"[{rid}] injected profile block ({len(profile)}c)")
+        except Exception as e:
+            log.warning(f"[{rid}] profile injection skipped: {e}")
+
+        # MEM-7b — per-project instruction file(s) (BOB.md), once at session start on a root run.
+        # `scope` is the project dir (git root/cwd); None → not in a project → skip.
+        if scope:
+            try:
+                pm = project_memory_block(scope, config=config)
+                if pm:
+                    system_prompt += "\n\n" + pm
+                    log.info(f"[{rid}] injected project memory ({len(pm)}c)")
+            except Exception as e:
+                log.warning(f"[{rid}] project memory skipped: {e}")
 
     tool_fmt = agent_cfg.get("toolFormat", "hermes").lower()
     hermes_mode = tool_fmt == "hermes"
@@ -700,7 +743,8 @@ def run_agent_events(
     cancel = cancel or CancelToken()
     # NE0 — run-scoped context handed to each tool call (reachable via tool_registry.get_run_context()),
     # and the approve callback the loop consults before a tool that requires approval.
-    run_ctx = RunContext(cancel=cancel, config=config, registry=registry, run_id=rid, approve=approve)
+    run_ctx = RunContext(cancel=cancel, config=config, registry=registry, run_id=rid,
+                         approve=approve, owner=owner, agent_depth=agent_depth, scope=scope)
     prev_sigint = _install_interrupt_handler(cancel)
     try:
         for step in range(max_steps):
@@ -839,6 +883,9 @@ def run_agent(
     cancel: "CancelToken" = None,
     run_id: str = None,
     approve=None,
+    owner: str = None,
+    agent_depth: int = 0,
+    scope: str = None,
 ) -> tuple[str | None, bool]:
     """Blocking wrapper over run_agent_events for the CLI: prints tool previews to stderr,
     streams/echoes the final answer to stdout, and returns (result, exit_requested).
@@ -854,7 +901,8 @@ def run_agent(
     for ev in run_agent_events(
         goal, config, role=role, agency=agency,
         exit_on_tools=exit_on_tools, registry=registry, stream=stream, history=history,
-        cancel=cancel, run_id=run_id, approve=approve,
+        cancel=cancel, run_id=run_id, approve=approve, owner=owner, agent_depth=agent_depth,
+        scope=scope,
     ):
         t = ev["type"]
         if t == "token":

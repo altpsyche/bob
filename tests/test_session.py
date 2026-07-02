@@ -79,6 +79,24 @@ class TestSessionStore(unittest.TestCase):
         self.assertIsNotNone(self.store.get(s["id"]))
         self.assertTrue(self.store.delete_owned(s["id"], "alice"))
 
+    def test_list_owned_isolates_owners(self):
+        a1 = self.store.create(owner_id="alice")
+        a2 = self.store.create(owner_id="alice")
+        b1 = self.store.create(owner_id="bob")
+        self.assertEqual(set(self.store.list_owned("alice")), {a1["id"], a2["id"]})
+        self.assertEqual(self.store.list_owned("bob"), [b1["id"]])
+
+    def test_list_owned_unknown_owner_is_empty(self):
+        self.store.create(owner_id="alice")
+        self.assertEqual(self.store.list_owned("nobody"), [])
+
+    def test_list_owned_orders_newest_first(self):
+        older = self.store.create(owner_id="alice")
+        newer = self.store.create(owner_id="alice")
+        # Re-stamp `older` (append_turn calls _now() strictly later) so it becomes the newest.
+        self.store.append_turn(older["id"], "bump", None)
+        self.assertEqual(self.store.list_owned("alice"), [older["id"], newer["id"]])
+
     def dir_default(self):
         import tempfile
         d = Path(tempfile.mkdtemp(prefix="bob-sess-def-"))

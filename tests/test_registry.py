@@ -33,6 +33,15 @@ class TestRealTools(unittest.TestCase):
             self.assertIn("function", s)
             self.assertTrue(s["function"].get("name"))
 
+    def test_mutating_tools_marked(self):
+        # MEM-6 — memory_store mutates (SQLite write); memory_recall is read-only. The mutating set is
+        # the O2/O6 seam and must never leak into the wire schema.
+        on = ToolRegistry.build(_common.fake_config(memory={"enabled": True, "dbPath": "data/bob.db"}), set())
+        self.assertIn("memory_store", on.mutating_tools)
+        self.assertNotIn("memory_recall", on.mutating_tools)
+        for s in on.tool_schemas:
+            self.assertNotIn("mutating", s)                 # marker stays out of the LLM schema
+
 
 class TestContractValidation(unittest.TestCase):
     """A TOOL_DEFS name with no DISPATCH entry is a hard error (M9) — the tool is skipped."""

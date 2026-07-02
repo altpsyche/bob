@@ -35,7 +35,6 @@ import json
 import queue
 import sys
 import threading
-import uuid
 from pathlib import Path
 
 # The runtime modules live in scripts/ and scripts/tools/ (tool_registry, bob_core, bob_loop, …). Under
@@ -60,7 +59,7 @@ _SLASH = {
     "/status": None,
     "/model": None,
     "/agency": {"show": None, "confirm": None, "silent": None},
-    "/session": {"new": None},
+    "/session": {"new": None, "list": None, "resume": None, "show": None},
     "/theme": {"reload": None},
     "/agent": None,
     "/skill": None,
@@ -258,14 +257,27 @@ class _TurnRenderer:
 
 
 class BobShell:
-    def __init__(self, config, tools, skills, console=None):
+    def __init__(self, config, tools, skills, console=None, sessions=None):
         self.config = config
         self.tools = tools
         self.skills = skills
         self.role = config.get("routing", {}).get("agentRole", "chat")
         self.agency = config.get("agent", {}).get("agency", "show")
-        self.session_id = uuid.uuid4().hex[:8]
-        self.history: list = []          # [{role, content}] — in-memory (persistence is WI-6/NE5)
+        # WI-6 — owner-scoped persisted sessions. The row is created LAZILY on the first turn
+        # (session_id stays None until then) so opening `bob` and leaving leaves no empty session.
+        # `sessions` is a SessionStore (injected in build()); None in unit tests unless supplied.
+        self.owner = config.get("agent", {}).get("defaultOwner", "local")
+        self._max_tokens = int(config.get("agent", {}).get("maxSessionTokens", 0) or 0)
+        # MEM-7 — the project this shell was launched in (git root / cwd, or None if scopeByProject
+        # off). Threaded into each turn so project-type memory is scoped to this repo.
+        try:
+            from bob_core import project_key
+            self.scope = project_key(config=config)
+        except Exception:
+            self.scope = None
+        self.sessions = sessions
+        self.session_id = None           # persisted id once created; None = no row yet
+        self.history: list = []          # [{role, content}] — the live context; mirrors the store
         self._always: set = set()        # tools the user chose "always" for this session
         from rich.console import Console
         # highlight=False: only the theme's colours apply — rich's ReprHighlighter must not tint
@@ -279,6 +291,7 @@ class BobShell:
     def build(cls, config=None):
         """Build the shell with warm registries (one tool build, one skill build)."""
         from bob_core import load_config
+        from bob_session import SessionStore
         from bob_skills import SkillRegistry
         from tool_registry import ToolRegistry
 
@@ -289,7 +302,12 @@ class BobShell:
                     if isinstance(disabled_raw, str) else set(disabled_raw))
         tools = ToolRegistry.build(config, disabled, quiet=True)   # clean splash — no startup summary
         skills = SkillRegistry.build()
-        return cls(config, tools, skills)
+        # WI-6 — same SessionStore the agent server uses (agent.sessionDbPath, resolved against the
+        # repo root; _SCRIPTS is scripts/, its parent is the repo), so a session persists across
+        # restarts and is resumable from either surface.
+        session_db = _SCRIPTS.parent / agent_cfg.get("sessionDbPath", "data/sessions.db")
+        sessions = SessionStore(session_db, default_owner=agent_cfg.get("defaultOwner", "local"))
+        return cls(config, tools, skills, sessions=sessions)
 
     # -- splash ---------------------------------------------------------------
 
@@ -301,7 +319,7 @@ class BobShell:
         endpoint = "endpoint ready" if check_litellm(self.config) else "endpoint DOWN — run: bob up"
         return "\n".join([
             "Bob — local AI assistant",
-            f"model: {self.role}   agency: {self.agency}   session: {self.session_id}",
+            f"model: {self.role}   agency: {self.agency}   session: {self._sid_label()}",
             f"{counts}   {endpoint}",
             "",
             "Type a message to chat, /agent <goal> to run the agent, /help for commands, /exit to quit.",
@@ -337,7 +355,7 @@ class BobShell:
         line1.append(self.agency, style=dim)
         line1.append(sep, style=dim)
         line1.append("session ", style=dim)
-        line1.append(self.session_id, style=dim)
+        line1.append(self._sid_label(), style=dim)
 
         # Line 2 — capability counts with the numbers in accent, labels dim.
         counts = [
@@ -402,7 +420,7 @@ class BobShell:
         def toolbar():
             ntools = len(getattr(self.tools, "_loaded_names", []) or [])
             nskills = len(self.skills.list()) if hasattr(self.skills, "list") else 0
-            return HTML(f" <b>{self.role}</b> · {self.agency} · {self.session_id} · "
+            return HTML(f" <b>{self.role}</b> · {self.agency} · {self._sid_label()} · "
                         f"{ntools} tools · {nskills} skills    ^C cancel · /help · /exit ")
 
         session = PromptSession(
@@ -491,7 +509,7 @@ class BobShell:
         tbl.add_column()
         tbl.add_row("model", f"[{t.accent}]{self.role}[/]")
         tbl.add_row("agency", self.agency)
-        tbl.add_row("session", self.session_id)
+        tbl.add_row("session", self._sid_label())
         tbl.add_row("turns", str(len(self.history)))
         tbl.add_row("catalog", catalog.counts(self.tools, self.skills))
         tbl.add_row("endpoint",
@@ -516,20 +534,108 @@ class BobShell:
         self.agency = arg
         self.console.print(f"[green]agency → {self.agency}[/]")
 
+    def _sid_label(self) -> str:
+        """Short display form of the current session (`new` before the first turn creates a row)."""
+        return self.session_id[:8] if self.session_id else "new"
+
     def _cmd_session(self, arg: str) -> None:
-        if arg.strip().lower() == "new":
-            self.session_id = uuid.uuid4().hex[:8]
+        """/session new | list | resume <id> | show [id] — owner-scoped persisted sessions (WI-6)."""
+        parts = arg.split(maxsplit=1)
+        sub = parts[0].lower() if parts else ""
+        rest = parts[1].strip() if len(parts) > 1 else ""
+        if sub == "new":
+            self._on_session_end(self.session_id)   # consolidate the one we're leaving (MEM-4 fills)
+            self.session_id = None                  # lazy — the row is created on the next message
             self.history = []
-            self.console.print(f"[green]new session {self.session_id}[/]")
+            self.console.print("[green]new session[/] [dim](starts on your next message)[/]")
+        elif sub == "list":
+            self._session_list()
+        elif sub == "resume":
+            self._session_resume(rest)
+        elif sub in ("show", ""):
+            self._session_show(rest)
         else:
-            self.console.print(
-                f"session: {self.session_id}   turns: {len(self.history)}\n"
-                "[dim](persist/resume across restarts lands in WI-6)[/]"
-            )
+            self.console.print(f"[yellow]/session {sub}?[/]  (new | list | resume <id> | show [id])")
+
+    def _match_session_id(self, ref: str):
+        """Resolve a full id or an unambiguous 8-char prefix (as shown by /session list) within the
+        current owner's sessions. Returns the full id, or None if unknown/ambiguous."""
+        if self.sessions is None or not ref:
+            return None
+        ids = self.sessions.list_owned(self.owner)
+        if ref in ids:
+            return ref
+        matches = [i for i in ids if i.startswith(ref)]
+        return matches[0] if len(matches) == 1 else None
+
+    def _session_list(self) -> None:
+        if self.sessions is None:
+            self.console.print("[dim]sessions unavailable[/]")
+            return
+        ids = self.sessions.list_owned(self.owner)
+        if not ids:
+            self.console.print("[dim]no saved sessions yet[/]")
+            return
+        from rich.table import Table
+        t = self.theme
+        tbl = Table(show_header=True, header_style=t.accent, box=None, pad_edge=False)
+        tbl.add_column("id", style=t.muted)
+        tbl.add_column("updated", style=t.muted)
+        tbl.add_column("turns", justify="right")
+        tbl.add_column("first message")
+        for sid in ids[:20]:
+            s = self.sessions.get(sid)
+            if not s:
+                continue
+            users = [m for m in s["history"] if m.get("role") == "user"]
+            first = users[0]["content"] if users else ""
+            marker = "→ " if sid == self.session_id else "  "
+            tbl.add_row(marker + sid[:8], (s["updated_at"] or "")[:19], str(len(users)),
+                        (first[:50] + "…") if len(first) > 50 else first)
+        self.console.print(tbl)
+
+    def _session_resume(self, ref: str) -> None:
+        if self.sessions is None:
+            self.console.print("[dim]sessions unavailable[/]")
+            return
+        if not ref:
+            self.console.print("[yellow]usage: /session resume <id>[/]  (see /session list)")
+            return
+        target = self._match_session_id(ref)
+        s = self.sessions.get_owned(target, self.owner) if target else None
+        if s is None:
+            self.console.print(f"[yellow]no such session for this owner: {ref}[/]")
+            return
+        self._on_session_end(self.session_id)   # consolidate the one we're leaving (MEM-4 fills)
+        self.session_id = s["id"]
+        self.history = s["history"]
+        turns = len([m for m in s["history"] if m.get("role") == "user"])
+        self.console.print(f"[green]resumed[/] {s['id'][:8]}  [dim]({turns} turns)[/]")
+
+    def _session_show(self, ref: str) -> None:
+        if not ref and self.session_id is None:
+            self.console.print("[dim]no active session yet — starts on your first message[/]")
+            return
+        if self.sessions is None:
+            self.console.print("[dim]sessions unavailable[/]")
+            return
+        target = self._match_session_id(ref) if ref else self.session_id
+        s = self.sessions.get_owned(target, self.owner) if target else None
+        if s is None:
+            self.console.print(f"[yellow]no such session for this owner: {ref}[/]")
+            return
+        users = [m for m in s["history"] if m.get("role") == "user"]
+        first = users[0]["content"] if users else "(empty)"
+        self.console.print(
+            f"session {s['id'][:8]}  ·  {len(users)} turns  ·  updated {(s['updated_at'] or '')[:19]}\n"
+            f"[dim]first:[/] {first[:80]}"
+        )
 
     def _cmd_clear(self, _arg: str = "") -> None:
+        # Clears only the live context window; the persisted session is untouched (resuming it later
+        # restores the full history). Use /session new to start a fresh persisted session.
         self.history = []
-        self.console.print("[green]history cleared[/]")
+        self.console.print("[green]context cleared[/] [dim](the saved session is unchanged)[/]")
 
     def _cmd_skill(self, arg: str) -> None:
         name = arg.split(maxsplit=1)[0] if arg else ""
@@ -569,20 +675,45 @@ class BobShell:
         goal = (goal or "").strip()
         if not goal:
             return
+        # Over-budget refusal — mirror the server's _load_session_or_404 402 branch. Guarded on
+        # session_id because of lazy creation (no session before the first turn); a no-op unless a
+        # positive agent.maxSessionTokens is configured (over_budget is False for a 0 budget).
+        if self.sessions is not None and self.session_id and self.sessions.over_budget(self.session_id):
+            self.console.print(
+                f"[{self.theme.warn}]session token budget exhausted — /session new to continue[/]")
+            return
         from bob_loop import run_agent_events
 
         def factory(cancel, approve):
             return run_agent_events(
                 goal, self.config, role=self.role, agency=self.agency,
                 registry=self.tools, history=self.history, stream=True,
-                cancel=cancel, approve=approve,
+                cancel=cancel, approve=approve, owner=self.owner, scope=self.scope,
             )
 
         result = self._consume(factory)
-        # In-memory continuity (WI-6 persists this). Record only a real answer.
+        # Continuity: keep the live buffer and the persisted session in lockstep. Record only a real
+        # answer (a cancelled/errored turn returns None and is not persisted).
         if result is not None:
             self.history.append({"role": "user", "content": goal})
             self.history.append({"role": "assistant", "content": result})
+            self._persist_turn(goal, result)
+
+    def _persist_turn(self, goal: str, result: str) -> None:
+        """Mirror the server's _record_turn ([bob_agent_server.py]): append the turn to the
+        owner-scoped SessionStore, creating the session lazily on the first turn. Best-effort — a
+        store hiccup must not break the turn's UX."""
+        if self.sessions is None:
+            return
+        try:
+            if self.session_id is None:
+                self.session_id = self.sessions.create(
+                    token_budget=self._max_tokens, owner_id=self.owner)["id"]
+            from bob_loop import _estimate_tokens
+            used = _estimate_tokens(goal) + _estimate_tokens(result or "")
+            self.sessions.append_turn(self.session_id, goal, result, tokens_used=used)
+        except Exception as e:
+            self.console.print(f"[{self.theme.warn}]session not saved: {e}[/]")
 
     def _consume(self, factory, on_approval=None) -> str:
         """Drive an event generator in a worker thread; render events on the main thread; bridge
@@ -697,6 +828,7 @@ class BobShell:
 
     def _print_first_run(self) -> None:
         """A one-time welcome panel pointing at the health check + the top entry points."""
+        from rich.align import Align
         from rich.panel import Panel
         from rich.text import Text
         t = self.theme
@@ -707,11 +839,45 @@ class BobShell:
                           ("/agent <goal>", "let Bob use tools to do a task")):
             body.append(f"{cmd:<14}", style=f"bold {t.accent}")
             body.append(f" {what}\n", style=t.muted)
-        self.console.print(Panel(body, title="first run", title_align="left",
-                                 border_style=t.accent, expand=False, padding=t.panel_padding))
+        panel = Panel(body, title="first run", title_align="left",
+                      border_style=t.accent, expand=False, padding=t.panel_padding)
+        # Align.center centers the panel as a block; console justify=center would also center the panel's
+        # inner text and ragged the columns.
+        self.console.print(Align.center(panel) if t.centered else panel)
         self.console.print()
 
+    def _on_session_end(self, session_id) -> None:
+        """WI-6c lifecycle seam — the point where a session is being left (on /exit, /session new,
+        /session resume). MEM-4 wires end-of-session memory consolidation in via _consolidate_session.
+        Guarded: no-op without a persisted session, and never raises into the exit path."""
+        if not session_id or self.sessions is None:
+            return
+        try:
+            self._consolidate_session(session_id)
+        except Exception as e:
+            self.console.print(f"[{self.theme.warn}]session consolidation skipped: {e}[/]")
+
+    def _consolidate_session(self, session_id) -> None:
+        """MEM-4 — end-of-session consolidation: extract durable facts from this session's turns and
+        store them (deduped) + one episodic recap. Gated on memory.enabled && memory.autoConsolidate;
+        skipped for a session with no turns. Synchronous but best-effort (the core swallows failures)."""
+        mem = self.config.get("memory", {})
+        if not (mem.get("enabled", False) and mem.get("autoConsolidate", True)):
+            return
+        if not self.history:
+            return
+        from bob_core import consolidate_session
+        # A brief status so the exit pause (one LLM call, bounded by memory.consolidateTimeout) reads
+        # as intentional, not a freeze.
+        self.console.print(f"[{self.theme.muted}]saving session memory…[/]")
+        result = consolidate_session(self.history, config=self.config, owner=self.owner,
+                                     scope=self.scope)
+        n = result.get("facts", 0)
+        if n:
+            self.console.print(f"[{self.theme.muted}]remembered {n} fact(s) from this session[/]")
+
     def _on_exit(self) -> None:
+        self._on_session_end(self.session_id)
         self.console.print(f"[{self.theme.muted}]bye[/]")
 
     # -- small queue helpers (deny/unblock a pending approval on cancel) -------

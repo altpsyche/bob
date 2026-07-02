@@ -1,5 +1,6 @@
 """M13 — agent loop event generator (M15 refactor): tool step, final, streaming, history."""
 import unittest
+from types import SimpleNamespace
 
 import _common
 import bob_core
@@ -398,6 +399,104 @@ class TestCancelTokenLink(unittest.TestCase):
         child.cancel()
         self.assertTrue(child.cancelled())
         self.assertFalse(parent.cancelled())    # child cancel is local
+
+
+class TestProfileInjection(unittest.TestCase):
+    """MEM-3 — the once-per-session profile block is injected into the system prompt only when the
+    session is starting (history empty), not on continuation turns."""
+
+    def setUp(self):
+        self.cfg = _common.fake_config()
+        self.cfg["memory"] = {"enabled": True, "injectProfileAtStart": True}
+        self._orig_check = bob_core.check_litellm
+        self._orig_client = bob_core.get_llm_client
+        self._orig_pb = bob_core.memory_profile_block
+        bob_core.check_litellm = lambda config=None: True
+        # Stub the block so the test doesn't touch the DB/embed server — the loop's history gate is
+        # what's under test, not the block's content.
+        bob_core.memory_profile_block = lambda owner=None, config=None: "PROFILE_SENTINEL"
+
+    def tearDown(self):
+        bob_core.check_litellm = self._orig_check
+        bob_core.get_llm_client = self._orig_client
+        bob_core.memory_profile_block = self._orig_pb
+
+    def _system_prompt_for(self, history, scope=None):
+        captured = {}
+
+        class _C:
+            def __init__(self):
+                self.chat = SimpleNamespace(completions=self)
+
+            def create(self, model, messages, tools, stream, timeout):
+                captured.setdefault("messages", [dict(m) for m in messages])
+                return _common._FakeStream([_common._content_chunk("done")])
+
+        bob_core.get_llm_client = lambda config=None: _C()
+        list(bob_loop.run_agent_events("hi", self.cfg, agency="silent",
+                                       registry=_common.FakeRegistry(), history=history, scope=scope))
+        return captured["messages"][0]["content"]
+
+    def test_injected_on_empty_history(self):
+        self.assertIn("PROFILE_SENTINEL", self._system_prompt_for(None))
+
+    def test_not_injected_when_history_present(self):
+        history = [{"role": "user", "content": "earlier"}, {"role": "assistant", "content": "ok"}]
+        self.assertNotIn("PROFILE_SENTINEL", self._system_prompt_for(history))
+
+    def test_project_memory_injected_only_when_scope_set(self):
+        # MEM-7b: BOB.md block injects at session start when a project scope is present, not otherwise.
+        orig = bob_core.project_memory_block
+        bob_core.project_memory_block = lambda project_dir, config=None: (
+            "BOBMD_SENTINEL" if project_dir else None)
+        try:
+            self.assertIn("BOBMD_SENTINEL", self._system_prompt_for(None, scope="/repoA"))
+            self.assertNotIn("BOBMD_SENTINEL", self._system_prompt_for(None, scope=None))
+        finally:
+            bob_core.project_memory_block = orig
+
+    def test_autorecall_uses_run_owner_and_scope(self):
+        # A1 regression (MEM-7): autoRecall must recall as the run's owner/scope, not the 'local'
+        # default, and only after owner is resolved.
+        import bob_core
+        self.cfg["memory"] = {"enabled": True, "autoRecall": True, "injectProfileAtStart": False}
+        captured = {}
+        orig = bob_core.memory_recall
+        bob_core.memory_recall = (lambda query, k=5, config=None, owner=None, scope=None:
+                                  captured.update(owner=owner, scope=scope) or "(no results)")
+
+        class _C:
+            def __init__(self):
+                self.chat = SimpleNamespace(completions=self)
+
+            def create(self, model, messages, tools, stream, timeout):
+                return _common._FakeStream([_common._content_chunk("done")])
+
+        bob_core.get_llm_client = lambda config=None: _C()
+        try:
+            list(bob_loop.run_agent_events("hi", self.cfg, agency="silent",
+                                           registry=_common.FakeRegistry(), owner="alice", scope="/repoA"))
+        finally:
+            bob_core.memory_recall = orig
+        self.assertEqual(captured.get("owner"), "alice")
+        self.assertEqual(captured.get("scope"), "/repoA")
+
+    def test_not_injected_into_subagent_depth(self):
+        # MEM-6 gate: an O1 sub-agent starts with empty isolated history but must NOT get the profile.
+        captured = {}
+
+        class _C:
+            def __init__(self):
+                self.chat = SimpleNamespace(completions=self)
+
+            def create(self, model, messages, tools, stream, timeout):
+                captured.setdefault("messages", [dict(m) for m in messages])
+                return _common._FakeStream([_common._content_chunk("done")])
+
+        bob_core.get_llm_client = lambda config=None: _C()
+        list(bob_loop.run_agent_events("hi", self.cfg, agency="silent",
+                                       registry=_common.FakeRegistry(), history=None, agent_depth=1))
+        self.assertNotIn("PROFILE_SENTINEL", captured["messages"][0]["content"])
 
 
 if __name__ == "__main__":

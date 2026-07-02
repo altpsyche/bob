@@ -15,10 +15,12 @@ Embed endpoint resolved from config (litellmPort); BGE-M3, model=embed.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
+import shutil
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # Optional deps: memory needs requests + sqlite-utils. IMPORT-SAFE — never sys.exit at import.
@@ -45,6 +47,81 @@ def _require_deps() -> None:
 
 _DEFAULT_DB = Path(__file__).parent.parent / "data" / "bob.db"
 EMBED_MODEL = "embed"
+
+# --- Schema v2 (MEM-0) -------------------------------------------------------
+# The typed/owner-scoped schema. `get_db` migrates a legacy v1 DB in place (additive ALTERs +
+# a one-time backfill), gated by PRAGMA user_version so the common path is a cheap version read.
+SCHEMA_VERSION = 2
+
+# Columns added to the v1 `memories` table (id/content/embedding/source/created_at/last_used/
+# use_count already exist). NOT NULL columns carry a literal default so ALTER ADD COLUMN is legal
+# on a populated table; owner_id's 'local' matches agent.defaultOwner's default (MEM-6 threads the
+# real owner into NEW writes — this backfill just stamps legacy rows).
+_V2_COLUMNS = [
+    ("content_hash", "TEXT"),                          # sha256(normalized) — exact-dedup fast path (MEM-1)
+    ("type", "TEXT NOT NULL DEFAULT 'fact'"),          # profile|preference|project|fact|episodic
+    ("subject", "TEXT NOT NULL DEFAULT 'user'"),
+    ("owner_id", "TEXT NOT NULL DEFAULT 'local'"),
+    ("scope", "TEXT"),                                 # optional project/cwd key (type='project')
+    ("tags", "TEXT"),
+    ("salience", "REAL NOT NULL DEFAULT 1.0"),
+    ("pinned", "INTEGER NOT NULL DEFAULT 0"),
+    ("superseded_by", "INTEGER"),                      # soft-update: id of the replacing row
+    ("updated_at", "TEXT"),
+    ("expires_at", "TEXT"),
+]
+
+# §2.3 third-person normalization — deterministic, leading-pronoun-anchored, conservative. Specific
+# forms first so `I'm`/`I've`/`I am` win over the bare `I `. NOTE: this is the cheap fast path — it
+# swaps the pronoun but does NOT conjugate the verb ("I prefer" -> "User prefer", not "prefers").
+# The conjugated forms in the design doc's §7 table are the LLM/consolidation ideal (MEM-4); the
+# deterministic path stays conservative and anything unmatched is stored as-is (framed at read time).
+_PRONOUN_PREFIXES = [
+    ("I'm ", "User is "),
+    ("I've ", "User has "),
+    ("I am ", "User is "),
+    ("My ", "User's "),
+    ("I ", "User "),
+]
+
+
+def _normalize_third_person(content: str) -> str:
+    """Rewrite a first-person note to third person via the §2.3 deterministic rules. Reused by both
+    `migrate --normalize` (MEM-0) and the write path (MEM-1)."""
+    text = content.strip()
+    for prefix, repl in _PRONOUN_PREFIXES:
+        if text.startswith(prefix):
+            text = repl + text[len(prefix):]
+            break
+    return text.replace(" my ", " the user's ")
+
+
+def _content_hash(content: str) -> str:
+    """sha256 of the (normalized) content — the exact-dedup key (MEM-1) and a migration audit field."""
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+# --- Blended ranking defaults (MEM-2) ----------------------------------------
+# Mirror config/defaults.json memory.ranking / memory.typeWeights. recall() reads config-supplied
+# overrides when given, else these. A near-immortal half-life (~100y) makes profile/preference decay
+# negligible; episodic decays in weeks.
+_DEFAULT_WEIGHTS = {"wSemantic": 1.0, "wRecency": 0.3, "wType": 0.2, "wUsage": 0.1}
+_DEFAULT_TYPE_WEIGHTS = {"profile": 1.0, "preference": 0.9, "project": 0.8, "fact": 0.7, "episodic": 0.5}
+_DEFAULT_HALF_LIVES = {"profile": 36500, "preference": 36500, "project": 90, "fact": 365, "episodic": 30}
+
+
+def _age_days(created_at, now: datetime) -> float:
+    """Age of a row in days. Tolerates both store()'s ISO8601 timestamps and SQLite's
+    'YYYY-MM-DD HH:MM:SS' default form; a missing/unparseable value ages to 0 (treated as fresh)."""
+    if not created_at:
+        return 0.0
+    try:
+        dt = datetime.fromisoformat(str(created_at).replace(" ", "T"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(0.0, (now - dt).total_seconds() / 86400.0)
+    except (ValueError, TypeError):
+        return 0.0
 
 # N7 — resolve the LiteLLM base URL + auth from config (single source of truth, CONTRIBUTING §8)
 # instead of hardcoding :8081. Memoized per process; falls back to the central port default
@@ -80,6 +157,15 @@ def get_db(db_path) -> sqlite_utils.Database:
     db_path = Path(db_path)  # accept str (e.g. bob_core._get_db_path) or Path
     db_path.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite_utils.Database(db_path)
+    _ensure_schema(db)
+    return db
+
+
+def _ensure_schema(db: sqlite_utils.Database) -> None:
+    """Create the tables (fresh DBs get the full v2 column set directly) and migrate a legacy v1 DB
+    in place. Idempotent and cheap on the hot path: a v2 DB short-circuits on the version read."""
+    # A fresh DB gets every v2 column up front. On an existing v1 DB this is a no-op and the columns
+    # are added by _migrate_to_v2 instead.
     db.execute("""
         CREATE TABLE IF NOT EXISTS memories (
             id INTEGER PRIMARY KEY,
@@ -88,9 +174,23 @@ def get_db(db_path) -> sqlite_utils.Database:
             source TEXT DEFAULT 'user',
             created_at TEXT DEFAULT (datetime('now')),
             last_used TEXT,
-            use_count INTEGER DEFAULT 0
+            use_count INTEGER DEFAULT 0,
+            content_hash TEXT,
+            type TEXT NOT NULL DEFAULT 'fact',
+            subject TEXT NOT NULL DEFAULT 'user',
+            owner_id TEXT NOT NULL DEFAULT 'local',
+            scope TEXT,
+            tags TEXT,
+            salience REAL NOT NULL DEFAULT 1.0,
+            pinned INTEGER NOT NULL DEFAULT 0,
+            superseded_by INTEGER,
+            updated_at TEXT,
+            expires_at TEXT
         )
     """)
+    # DEPRECATED (MEM-5): the legacy key/value profile table is no longer written or read — identity
+    # now lives as type='profile' rows in `memories` (cmd_init_profile + consolidation). Kept one
+    # release for back-compat on existing DBs; a later migration drops it.
     db.execute("""
         CREATE TABLE IF NOT EXISTS profile (
             key TEXT PRIMARY KEY,
@@ -98,7 +198,32 @@ def get_db(db_path) -> sqlite_utils.Database:
             updated_at TEXT DEFAULT (datetime('now'))
         )
     """)
-    return db
+    if db.execute("PRAGMA user_version").fetchone()[0] >= SCHEMA_VERSION:
+        return
+    _migrate_to_v2(db)
+
+
+def _migrate_to_v2(db: sqlite_utils.Database) -> None:
+    """One-time v1 -> v2 migration: add any missing typed/owner columns, backfill type from the
+    legacy `source`, create the v2 indexes, and stamp user_version. Runs once (version-gated) and is
+    safe to re-run — each ALTER is guarded by a column-presence check (mirrors SessionStore's
+    table_info pattern in bob_session._ensure_schema)."""
+    existing = {row[1] for row in db.execute("PRAGMA table_info(memories)").fetchall()}
+    for name, decl in _V2_COLUMNS:
+        if name not in existing:
+            db.execute(f"ALTER TABLE memories ADD COLUMN {name} {decl}")
+    # Backfill type from the legacy source (owner_id/subject already carry their column defaults).
+    db.execute("UPDATE memories SET type='preference' WHERE source='user'")
+    db.execute("UPDATE memories SET type='episodic'  WHERE source='session'")
+    for stmt in (
+        "CREATE INDEX IF NOT EXISTS idx_mem_owner_type ON memories(owner_id, type)",
+        "CREATE INDEX IF NOT EXISTS idx_mem_hash       ON memories(content_hash)",
+        "CREATE INDEX IF NOT EXISTS idx_mem_scope      ON memories(owner_id, scope)",
+        "CREATE INDEX IF NOT EXISTS idx_mem_active     ON memories(owner_id, superseded_by)",
+    ):
+        db.execute(stmt)
+    db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    db.conn.commit()   # persist the ALTERs/backfill/version across this and future connections
 
 
 def embed(text: str) -> list[float]:
@@ -127,78 +252,309 @@ def cosine(a: list[float], b: list[float]) -> float:
 # bob_core.memory_store/recall. Neither prints; callers format their own output.
 # ---------------------------------------------------------------------------
 
-def store(content: str, db_path: Path, source: str = "user") -> tuple[int, bool]:
-    """Insert a memory. Returns (id, is_new); is_new=False when a near-duplicate
-    (cosine >= 0.95) already exists — that existing id is returned instead.
-    Raises RuntimeError if the embed server is unreachable.
+def store(content: str, db_path: Path, source: str = "user", mem_type: str = "fact",
+          owner: str = "local", scope: str = None, tags: str = None, salience: float = 1.0,
+          dedup_threshold: float = 0.92) -> tuple[int, bool]:
+    """Insert a typed, owner-scoped memory (MEM-1). Returns (id, is_new).
 
-    Dedup is best-effort (M16): the read-then-insert is not transactional, so two
-    concurrent stores of the same text could both insert — benign for a personal DB."""
-    vec = embed(content)
+    Content is normalized to third person (§2.3) before hashing/embedding, so recalled text never
+    reads as Bob's own identity. Two-tier dedup — both return the existing id with is_new=False:
+      - exact: a content_hash lookup scoped to the owner — O(1), *before* any embedding call;
+      - near:  cosine >= dedup_threshold, scoped to (owner, mem_type).
+    Dedup stays best-effort (M16): read-then-insert isn't transactional — benign for a personal DB.
+    Raises RuntimeError if the embed server is unreachable."""
+    normalized = _normalize_third_person(content)
+    chash = _content_hash(normalized)
     db = get_db(db_path)
-    for eid, emb_json in db.execute("SELECT id, embedding FROM memories").fetchall():
+    # 1) exact dedup — a hash hit for the same owner short-circuits before we pay for an embedding.
+    hit = db.execute(
+        "SELECT id FROM memories WHERE content_hash=? AND owner_id=? AND superseded_by IS NULL",
+        [chash, owner],
+    ).fetchone()
+    if hit:
+        return hit[0], False
+    # 2) near dedup — cosine over this owner's rows of the same type only (scoped, not a full scan).
+    vec = embed(normalized)
+    for eid, emb_json in db.execute(
+        "SELECT id, embedding FROM memories WHERE owner_id=? AND type=? AND superseded_by IS NULL",
+        [owner, mem_type],
+    ).fetchall():
         try:
-            if cosine(vec, json.loads(emb_json)) >= 0.95:
+            if cosine(vec, json.loads(emb_json)) >= dedup_threshold:
                 return eid, False
         except Exception:
             continue
     db["memories"].insert({
-        "content": content,
+        "content": normalized,
+        "content_hash": chash,
         "embedding": json.dumps(vec),
+        "type": mem_type,
+        "subject": "user",
+        "owner_id": owner,
+        "scope": scope,
+        "tags": tags,
+        "salience": salience,
         "source": source,
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
     return db.execute("SELECT last_insert_rowid()").fetchone()[0], True
 
 
-def recall(query: str, db_path: Path, k: int = 5, threshold: float = 0.3) -> list[dict]:
-    """Return up to k memories matching query as {id, content, score} dicts (highest score
-    first) and bump last_used/use_count on the hits. Raises RuntimeError if the embed server
-    is unreachable. Returns [] for an empty query or an empty DB."""
+def recall(query: str, db_path: Path, k: int = 5, threshold: float = 0.35,
+           owner: str = "local", scope: str = None, weights: dict = None,
+           type_weights: dict = None, half_lives: dict = None, type_filter: str = None) -> list[dict]:
+    """Return up to k memories matching query as {id, content, score} dicts (highest blended score
+    first) and bump last_used/use_count on the hits. Raises RuntimeError if the embed server is
+    unreachable. Returns [] for an empty query or no candidates.
+
+    MEM-2 blended score (replaces the semantic-only cosine + magic 0.3):
+        score = wSemantic*cosine + wRecency*exp(-age_days/halfLife[type]) + wType*typeWeight + wUsage*usage
+    An owner/scope SQL prefilter closes the former cross-owner leak and skips soft-deleted (superseded)
+    and expired rows before scoring."""
     if not query.strip():
         return []
+    w = {**_DEFAULT_WEIGHTS, **(weights or {})}
+    tw = {**_DEFAULT_TYPE_WEIGHTS, **(type_weights or {})}
+    hl = {**_DEFAULT_HALF_LIVES, **(half_lives or {})}
     db = get_db(db_path)
-    rows = list(db.execute("SELECT id, content, embedding FROM memories").fetchall())
+    now = datetime.now(timezone.utc)
+    sql = ("SELECT id, content, embedding, type, created_at, use_count FROM memories "
+           "WHERE owner_id=? AND superseded_by IS NULL AND (expires_at IS NULL OR expires_at > ?)")
+    params = [owner, now.isoformat()]
+    if scope is not None:
+        sql += " AND (scope IS NULL OR scope = ?)"   # global rows + this project's rows
+        params.append(scope)
+    if type_filter:
+        sql += " AND type = ?"
+        params.append(type_filter)
+    rows = list(db.execute(sql, params).fetchall())
     if not rows:
         return []
     q_vec = embed(query)
     scored = []
-    for row_id, content, emb_json in rows:
+    for row_id, content, emb_json, mtype, created_at, use_count in rows:
         try:
-            score = cosine(q_vec, json.loads(emb_json))
+            cos = cosine(q_vec, json.loads(emb_json))
         except Exception:
             continue
+        decay = math.exp(-_age_days(created_at, now) / max(1.0, float(hl.get(mtype, 365))))
+        usage = min((use_count or 0) / 10.0, 1.0)
+        score = (w["wSemantic"] * cos + w["wRecency"] * decay
+                 + w["wType"] * tw.get(mtype, 0.5) + w["wUsage"] * usage)
         if score >= threshold:
             scored.append({"id": row_id, "content": content, "score": round(score, 4)})
     scored.sort(key=lambda x: x["score"], reverse=True)
     results = scored[:k]
     if results:
-        now = datetime.now(timezone.utc).isoformat()
+        stamp = now.isoformat()
         for r in results:
             db.execute(
                 "UPDATE memories SET last_used=?, use_count=use_count+1 WHERE id=?",
-                [now, r["id"]],
+                [stamp, r["id"]],
             )
+        db.conn.commit()
     return results
 
 
-def cmd_store(text: str, source: str, db_path: Path) -> None:
+def profile_block(owner: str, db_path: Path, limit: int = 5, max_chars: int = 800) -> "str | None":
+    """MEM-3 — the once-per-session profile body: up to `limit` durable identity rows
+    (type in profile/preference) for this owner, as third-person bullets, capped at ~max_chars.
+    Embedding-free (a single SQL read); returns None when there's nothing to inject. The caller
+    wraps this in the shared context frame."""
+    db = get_db(db_path)
+    rows = db.execute(
+        "SELECT content FROM memories WHERE owner_id=? AND type IN ('profile','preference') "
+        "AND superseded_by IS NULL ORDER BY pinned DESC, salience DESC, created_at DESC LIMIT ?",
+        [owner, int(limit)],
+    ).fetchall()
+    if not rows:
+        return None
+    lines, used = [], 0
+    for (content,) in rows:
+        line = f"- {content}"
+        if lines and used + len(line) + 1 > max_chars:   # keep at least one; then respect the cap
+            break
+        lines.append(line)
+        used += len(line) + 1
+    return "\n".join(lines) if lines else None
+
+
+# --- Hygiene + inspect/edit surface (MEM-5) ----------------------------------
+
+def list_memories(db_path: Path, owner: str = "local", type_filter: str = None,
+                  limit: int = 50, include_inactive: bool = False) -> list[dict]:
+    """Rows for one owner (active by default: not superseded, not expired). For `bob memory list`."""
+    db = get_db(db_path)
+    sql = "SELECT id, content, type, salience, pinned, created_at, source FROM memories WHERE owner_id=?"
+    params = [owner]
+    if not include_inactive:
+        sql += " AND superseded_by IS NULL AND (expires_at IS NULL OR expires_at > ?)"
+        params.append(datetime.now(timezone.utc).isoformat())
+    if type_filter:
+        sql += " AND type=?"
+        params.append(type_filter)
+    sql += " ORDER BY pinned DESC, created_at DESC LIMIT ?"
+    params.append(int(limit))
+    keys = ["id", "content", "type", "salience", "pinned", "created_at", "source"]
+    return [dict(zip(keys, r)) for r in db.execute(sql, params).fetchall()]
+
+
+def get_memory(mem_id: int, db_path: Path) -> "dict | None":
+    db = get_db(db_path)
+    cols = ("id, content, type, owner_id, scope, tags, salience, pinned, source, created_at, "
+            "updated_at, last_used, use_count, superseded_by, expires_at")
+    r = db.execute(f"SELECT {cols} FROM memories WHERE id=?", [mem_id]).fetchone()
+    return dict(zip([c.strip() for c in cols.split(",")], r)) if r else None
+
+
+def export_memories(db_path: Path, owner: str = None) -> list[dict]:
+    db = get_db(db_path)
+    sql = ("SELECT id, content, type, owner_id, scope, tags, salience, pinned, source, created_at "
+           "FROM memories")
+    params: list = []
+    if owner:
+        sql += " WHERE owner_id=?"
+        params.append(owner)
+    sql += " ORDER BY id"
+    keys = ["id", "content", "type", "owner_id", "scope", "tags", "salience", "pinned", "source", "created_at"]
+    return [dict(zip(keys, r)) for r in db.execute(sql, params).fetchall()]
+
+
+def forget(mem_id: int, db_path: Path) -> bool:
+    """Soft-delete: mark a memory expired so recall skips it, but keep the row (audit/export)."""
+    db = get_db(db_path)
+    stamp = datetime.now(timezone.utc).isoformat()
+    cur = db.execute("UPDATE memories SET expires_at=?, updated_at=? WHERE id=?", [stamp, stamp, mem_id])
+    db.conn.commit()
+    return cur.rowcount > 0
+
+
+def forget_by_query(query: str, db_path: Path, owner: str = "local", threshold: float = 0.5) -> list:
+    """Soft-delete the best-matching active memory for a query. Returns the forgotten ids (0 or 1)."""
+    hits = recall(query, db_path, k=1, threshold=threshold, owner=owner)
+    ids = [h["id"] for h in hits]
+    for i in ids:
+        forget(i, db_path)
+    return ids
+
+
+def edit(mem_id: int, new_content: str, db_path: Path) -> "int | None":
+    """Soft-update: insert a re-embedded replacement (inheriting type/owner/scope/tags/salience/pinned)
+    and point the old row's superseded_by at it. The old row stays for audit; recall sees only the new
+    one. Returns the new id, or None if mem_id is unknown."""
+    db = get_db(db_path)
+    old = db.execute(
+        "SELECT type, owner_id, scope, tags, salience, pinned FROM memories WHERE id=?", [mem_id]
+    ).fetchone()
+    if not old:
+        return None
+    mtype, owner, scope, tags, salience, pinned = old
+    normalized = _normalize_third_person(new_content)
+    vec = embed(normalized)
+    stamp = datetime.now(timezone.utc).isoformat()
+    db["memories"].insert({
+        "content": normalized, "content_hash": _content_hash(normalized), "embedding": json.dumps(vec),
+        "type": mtype, "subject": "user", "owner_id": owner, "scope": scope, "tags": tags,
+        "salience": salience, "pinned": pinned, "source": "edit", "created_at": stamp,
+    })
+    new_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+    db.execute("UPDATE memories SET superseded_by=?, updated_at=? WHERE id=?", [new_id, stamp, mem_id])
+    db.conn.commit()
+    return new_id
+
+
+def prune(db_path: Path, owner: str = "local", forget_after_days: dict = None,
+          max_rows: int = 2000) -> dict:
+    """Hygiene (MEM-5): hard-delete rows past their per-type TTL, then enforce a per-owner size cap by
+    dropping the lowest-salience/oldest rows. NEVER removes pinned rows or type in (profile, preference).
+    Run opportunistically at end of consolidation. Returns {'ttl_pruned', 'capped'}."""
+    db = get_db(db_path)
+    now = datetime.now(timezone.utc)
+    ttl_pruned = 0
+    for mtype, days in (forget_after_days or {}).items():
+        if mtype in ("profile", "preference"):
+            continue   # identity never TTL-expires
+        cutoff = (now - timedelta(days=float(days))).isoformat()
+        cur = db.execute(
+            "DELETE FROM memories WHERE owner_id=? AND type=? AND pinned=0 AND created_at < ?",
+            [owner, mtype, cutoff])
+        ttl_pruned += cur.rowcount
+    capped = 0
+    total = db.execute("SELECT COUNT(*) FROM memories WHERE owner_id=?", [owner]).fetchone()[0]
+    if max_rows and total > max_rows:
+        victims = db.execute(
+            "SELECT id FROM memories WHERE owner_id=? AND pinned=0 AND type NOT IN ('profile','preference') "
+            "ORDER BY salience ASC, created_at ASC LIMIT ?", [owner, total - max_rows]).fetchall()
+        for (vid,) in victims:
+            db.execute("DELETE FROM memories WHERE id=?", [vid])
+        capped = len(victims)
+    db.conn.commit()
+    return {"ttl_pruned": ttl_pruned, "capped": capped}
+
+
+def cmd_store(text: str, source: str, db_path: Path, mem_type: str = "fact") -> None:
     try:
-        mid, is_new = store(text, db_path, source=source)
+        mid, is_new = store(text, db_path, source=source, mem_type=mem_type)
     except RuntimeError as e:
         print(f"Cannot store memory — {e}", file=sys.stderr)
         return
     print(f"Stored memory (id={mid})" if is_new else f"Already stored (similar entry id={mid})")
 
 
-def cmd_recall(query: str, top: int, threshold: float, db_path: Path) -> None:
+def cmd_recall(query: str, top: int, threshold: float, db_path: Path, type_filter: str = None) -> None:
     try:
-        results = recall(query, db_path, k=top, threshold=threshold)
+        results = recall(query, db_path, k=top, threshold=threshold, type_filter=type_filter)
     except RuntimeError as e:
         print(f"Cannot recall — {e}", file=sys.stderr)
         print("[]")
         return
     print(json.dumps(results, ensure_ascii=False))
+
+
+def cmd_list(db_path: Path, type_filter: str, limit: int, owner: str, include_inactive: bool) -> None:
+    rows = list_memories(db_path, owner=owner, type_filter=type_filter, limit=limit,
+                         include_inactive=include_inactive)
+    if not rows:
+        print("No memories.")
+        return
+    for r in rows:
+        pin = "*" if r["pinned"] else " "
+        print(f"{r['id']:>4} {pin} [{r['type']:<10}] {r['content'][:70]}")
+
+
+def cmd_show(mem_id: int, db_path: Path) -> None:
+    m = get_memory(mem_id, db_path)
+    if not m:
+        print(f"No memory id={mem_id}")
+        return
+    for key, value in m.items():
+        print(f"{key:>14}: {value}")
+
+
+def cmd_forget(mem_id, query: str, db_path: Path, owner: str) -> None:
+    try:
+        if query:
+            ids = forget_by_query(query, db_path, owner=owner)
+            print(f"Forgot {ids}" if ids else "No matching memory to forget.")
+        elif mem_id is not None:
+            print("Forgotten." if forget(mem_id, db_path) else f"No memory id={mem_id}")
+        else:
+            print("Provide an id or --query.", file=sys.stderr)
+    except RuntimeError as e:
+        print(f"Cannot forget — {e}", file=sys.stderr)
+
+
+def cmd_edit(mem_id: int, new_text: str, db_path: Path) -> None:
+    try:
+        new_id = edit(mem_id, new_text, db_path)
+    except RuntimeError as e:
+        print(f"Cannot edit — {e}", file=sys.stderr)
+        return
+    print(f"Edited: new id={new_id} (old {mem_id} superseded)." if new_id else f"No memory id={mem_id}")
+
+
+def cmd_export(db_path: Path, owner: str) -> None:
+    print(json.dumps(export_memories(db_path, owner=owner), ensure_ascii=False, indent=2))
 
 
 def cmd_status(db_path: Path) -> None:
@@ -207,15 +563,19 @@ def cmd_status(db_path: Path) -> None:
     size_kb = db_path.stat().st_size / 1024 if db_path.exists() else 0
     last_row = db.execute("SELECT created_at FROM memories ORDER BY id DESC LIMIT 1").fetchone()
     last_stored = last_row[0] if last_row else "none"
-    profile_rows = {r[0]: r[1] for r in db.execute("SELECT key, value FROM profile").fetchall()}
+    # Breakdown by type of the active rows (replaces the dead profile key/value table).
+    by_type = db.execute(
+        "SELECT type, COUNT(*) FROM memories WHERE superseded_by IS NULL "
+        "AND (expires_at IS NULL OR expires_at > datetime('now')) GROUP BY type ORDER BY type"
+    ).fetchall()
     print(f"DB:           {db_path}")
     print(f"Size:         {size_kb:.1f} KB")
     print(f"Memories:     {count}")
     print(f"Last stored:  {last_stored}")
-    if profile_rows:
-        print("Profile:")
-        for k, v in profile_rows.items():
-            print(f"  {k}: {v}")
+    if by_type:
+        print("By type:")
+        for mtype, n in by_type:
+            print(f"  {mtype}: {n}")
 
 
 def cmd_clear(yes: bool, db_path: Path) -> None:
@@ -229,57 +589,162 @@ def cmd_clear(yes: bool, db_path: Path) -> None:
     print("Memory cleared.")
 
 
-def cmd_summarize_session(messages_file: str, model: str, db_path: Path) -> None:
+# --- Consolidation (MEM-4) ---------------------------------------------------
+_SUMMARY_SYSTEM = (
+    "Summarize the following conversation into 2-5 bullet points capturing key facts, decisions, "
+    "or preferences expressed by the user. Be concise."
+)
+_CONSOLIDATE_SYSTEM = (
+    "From the conversation, extract 0-5 DURABLE facts about the USER worth remembering for future "
+    "sessions (identity, stable preferences, projects, tools). Write each on its own line as a "
+    "third-person statement prefixed with a type and a colon, e.g.:\n"
+    "preference: User prefers dark mode\n"
+    "project: User is building a local AI assistant called Bob\n"
+    "Allowed types: profile, preference, project, fact. Omit greetings, small talk, and anything "
+    "ephemeral. If nothing durable was shared, return an empty response."
+)
+_CONSOLIDATE_TYPES = {"profile", "preference", "project", "fact"}
+
+
+def summarize_turns(turns: list, model: str = "chat", system_prompt: str = None,
+                    max_tokens: int = 256, timeout: int = 60) -> str:
+    """One LLM summarization call over a list of message dicts; returns the text ("" on failure or
+    no usable turns). The shared summarizer core — MEM-4 consolidation and O3 context compaction
+    both call this instead of re-implementing the LLM plumbing. Never raises (best-effort).
+    `timeout` bounds the call so an end-of-session consolidation can't stall exit indefinitely."""
     _require_deps()
-    with open(messages_file, encoding="utf-8") as f:
-        messages = json.load(f)
-
-    turns = [m for m in messages if m.get("role") in ("user", "assistant")]
-    if len(turns) < 2:
-        print("Not enough turns to summarize.")
-        return
-
-    summary_prompt = [
-        {
-            "role": "system",
-            "content": (
-                "Summarize the following conversation into 2-5 bullet points capturing "
-                "key facts, decisions, or preferences expressed by the user. Be concise."
-            ),
-        },
-        {"role": "user", "content": json.dumps(turns)},
-    ]
-
+    convo = [m for m in turns if m.get("role") in ("user", "assistant")]
+    if not convo:
+        return ""
+    prompt = [{"role": "system", "content": system_prompt or _SUMMARY_SYSTEM},
+              {"role": "user", "content": json.dumps(convo)}]
     base, headers = _litellm()
     try:
         resp = requests.post(
             f"{base}/chat/completions",
-            json={"model": model, "messages": summary_prompt, "max_tokens": 256},
-            headers=headers,
-            timeout=60,
+            json={"model": model, "messages": prompt, "max_tokens": max_tokens},
+            headers=headers, timeout=timeout,
         )
         resp.raise_for_status()
-        summary = resp.json()["choices"][0]["message"]["content"].strip()
-    except (requests.RequestException, KeyError, IndexError, ValueError) as e:
-        print(f"Session summary failed — LLM unreachable or bad response: {e}", file=sys.stderr)
-        return
-    if summary:
-        cmd_store(summary, source="session", db_path=db_path)
-        print("Session summarized and stored.")
+        return resp.json()["choices"][0]["message"]["content"].strip()
+    except (requests.RequestException, KeyError, IndexError, ValueError):
+        return ""
+
+
+def _parse_typed_bullets(text: str) -> "list[tuple[str, str]]":
+    """Parse the consolidation output into (type, statement) pairs. Lenient: a leading bullet glyph is
+    stripped; a recognized `type:` prefix sets the type, otherwise the whole line is a 'fact'."""
+    out = []
+    for line in text.splitlines():
+        line = line.strip().lstrip("-*•").strip()
+        if not line:
+            continue
+        if ":" in line:
+            head, rest = line.split(":", 1)
+            t, stmt = head.strip().lower(), rest.strip()
+            if t in _CONSOLIDATE_TYPES and stmt:
+                out.append((t, stmt))
+                continue
+        out.append(("fact", line))
+    return out
+
+
+def consolidate_session(turns: list, db_path: Path, model: str = "chat", owner: str = "local",
+                        dedup_threshold: float = 0.92, timeout: int = 60,
+                        scope: str = None) -> dict:
+    """MEM-4 — extract durable typed facts from a session's turns and store them (deduped via
+    store()), plus one episodic recap row. Returns {'facts': n_new, 'summary': text}. No-op (facts=0)
+    for <2 turns or an empty extraction. Idempotent: re-running the same turns dedups to 0 new facts.
+    `scope` (MEM-7) tags extracted type='project' facts to the project; other types stay global.
+    Called in-process by the NE shell /exit hook, the agent server on session delete, and the CLI —
+    no temp file, no subprocess (CONTRIBUTING §2)."""
+    convo = [m for m in turns if m.get("role") in ("user", "assistant")]
+    if len(convo) < 2:
+        return {"facts": 0, "summary": None}
+    raw = summarize_turns(convo, model=model, system_prompt=_CONSOLIDATE_SYSTEM, timeout=timeout)
+    if not raw:
+        return {"facts": 0, "summary": None}
+    stored = 0
+    for mtype, stmt in _parse_typed_bullets(raw):
+        try:
+            _, is_new = store(stmt, db_path, source="consolidation", mem_type=mtype, owner=owner,
+                              scope=(scope if mtype == "project" else None),
+                              dedup_threshold=dedup_threshold)
+            stored += 1 if is_new else 0
+        except RuntimeError:
+            break   # embed server down mid-run — stop; best-effort
+    # Preserve an episodic recap of the session (decays fast, prunable) — the raw extraction blob.
+    try:
+        store(raw, db_path, source="consolidation", mem_type="episodic",
+              owner=owner, dedup_threshold=dedup_threshold)
+    except RuntimeError:
+        pass
+    return {"facts": stored, "summary": raw}
+
+
+def cmd_summarize_session(messages_file: str, model: str, db_path: Path) -> None:
+    """CLI/legacy-REPL entry: read the turns file and run consolidation (MEM-4). Kept under the old
+    'summarize-session' verb for the PowerShell REPL; the in-memory surfaces call the core directly."""
+    _require_deps()
+    with open(messages_file, encoding="utf-8") as f:
+        messages = json.load(f)
+    result = consolidate_session(messages, db_path=db_path, model=model)
+    if result["facts"] or result["summary"]:
+        print(f"Session consolidated: {result['facts']} new fact(s) stored.")
     else:
-        print("Empty summary returned — skipped.")
+        print("Not enough to consolidate.")
 
 
 def cmd_init_profile(name: str, work: str, db_path: Path) -> None:
-    db = get_db(db_path)
+    """Seed durable identity as type='profile' memory rows (MEM-5 cleanup) — so they rank as profile
+    and get injected at session start, instead of the dead `profile` key/value table nothing read."""
+    facts = []
+    if name:
+        facts.append(f"The user's name is {name}")
+    if work:
+        facts.append(f"The user works on {work}")
+    try:
+        stored = sum(1 for f in facts if store(f, db_path, source="user", mem_type="profile")[1])
+    except RuntimeError as e:
+        print(f"Cannot save profile — {e}", file=sys.stderr)
+        return
+    print(f"Profile saved as {stored} durable memory(ies) (type=profile).")
+
+
+def cmd_migrate(db_path: Path, normalize: bool = False) -> None:
+    """MEM-0. Schema migration always runs (via get_db). With --normalize, additionally rewrite each
+    row's content to third person (§2.3) and re-embed — backs the DB up first (needs the embed
+    server up), per the backup-before-rewrite posture (CONTRIBUTING §5)."""
+    db = get_db(db_path)  # triggers the v1 -> v2 schema migration
+    version = db.execute("PRAGMA user_version").fetchone()[0]
+    print(f"Schema at v{version}.")
+    if not normalize:
+        print("Pass --normalize to rewrite content to third person (re-embeds; backs up first).")
+        return
+
+    db_path = Path(db_path)
+    if db_path.exists():
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        backup = db_path.with_name(db_path.name + f".bak.{ts}")
+        shutil.copy2(db_path, backup)
+        print(f"Backup: {backup}")
+
+    rows = db.execute("SELECT id, content FROM memories").fetchall()
     now = datetime.now(timezone.utc).isoformat()
-    for key, value in [("name", name), ("work", work)]:
+    changed = 0
+    for rid, content in rows:
+        normalized = _normalize_third_person(content)
+        if normalized == content:
+            continue
+        vec = embed(normalized)  # re-embed the rewritten text (fails loudly if the server is down)
         db.execute(
-            "INSERT INTO profile (key, value, updated_at) VALUES (?, ?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
-            [key, value, now],
+            "UPDATE memories SET content=?, embedding=?, content_hash=?, subject='user', updated_at=? "
+            "WHERE id=?",
+            [normalized, json.dumps(vec), _content_hash(normalized), now, rid],
         )
-    print(f"Profile saved: name={name}, work={work}")
+        changed += 1
+    db.conn.commit()
+    print(f"Normalized {changed} of {len(rows)} row(s); re-embedded.")
 
 
 def main() -> None:
@@ -287,19 +752,45 @@ def main() -> None:
     parser.add_argument("--db", default=str(_DEFAULT_DB), help="Path to SQLite DB")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
+    _TYPE_CHOICES = ["profile", "preference", "project", "fact", "episodic"]
+
     p_store = sub.add_parser("store")
     p_store.add_argument("text")
     p_store.add_argument("--source", default="user")
+    p_store.add_argument("--type", dest="mem_type", default="fact", choices=_TYPE_CHOICES)
 
     p_recall = sub.add_parser("recall")
     p_recall.add_argument("query")
     p_recall.add_argument("--top", type=int, default=5)
     p_recall.add_argument("--threshold", type=float, default=0.3)
+    p_recall.add_argument("--type", dest="type_filter", default=None, choices=_TYPE_CHOICES)
 
     sub.add_parser("status")
 
     p_clear = sub.add_parser("clear")
     p_clear.add_argument("--yes", action="store_true")
+
+    p_list = sub.add_parser("list")
+    p_list.add_argument("--type", dest="type_filter", default=None, choices=_TYPE_CHOICES)
+    p_list.add_argument("--owner", default="local")
+    p_list.add_argument("--limit", type=int, default=50)
+    p_list.add_argument("--all", dest="include_inactive", action="store_true",
+                        help="Include forgotten/superseded rows")
+
+    p_show = sub.add_parser("show")
+    p_show.add_argument("id", type=int)
+
+    p_forget = sub.add_parser("forget")
+    p_forget.add_argument("id", type=int, nargs="?")
+    p_forget.add_argument("--query", default=None, help="Forget the best-matching memory instead of an id")
+    p_forget.add_argument("--owner", default="local")
+
+    p_edit = sub.add_parser("edit")
+    p_edit.add_argument("id", type=int)
+    p_edit.add_argument("text")
+
+    p_export = sub.add_parser("export")
+    p_export.add_argument("--owner", default=None, help="Restrict to one owner (default: all)")
 
     p_profile = sub.add_parser("init-profile")
     p_profile.add_argument("--name", required=True)
@@ -309,22 +800,38 @@ def main() -> None:
     p_sum.add_argument("--messages-file", required=True, help="Path to JSON file with messages array")
     p_sum.add_argument("--model", default="chat", help="LiteLLM model role to use for summarization")
 
+    p_migrate = sub.add_parser("migrate")
+    p_migrate.add_argument("--normalize", action="store_true",
+                           help="Rewrite content to third person + re-embed (backs up the DB first)")
+
     args = parser.parse_args()
     db_path = Path(args.db)
 
     try:  # CLI boundary — a missing optional dep prints one line + exits 1, never a traceback.
         if args.cmd == "store":
-            cmd_store(args.text, args.source, db_path)
+            cmd_store(args.text, args.source, db_path, mem_type=args.mem_type)
         elif args.cmd == "recall":
-            cmd_recall(args.query, args.top, args.threshold, db_path)
+            cmd_recall(args.query, args.top, args.threshold, db_path, type_filter=args.type_filter)
         elif args.cmd == "status":
             cmd_status(db_path)
         elif args.cmd == "clear":
             cmd_clear(args.yes, db_path)
+        elif args.cmd == "list":
+            cmd_list(db_path, args.type_filter, args.limit, args.owner, args.include_inactive)
+        elif args.cmd == "show":
+            cmd_show(args.id, db_path)
+        elif args.cmd == "forget":
+            cmd_forget(args.id, args.query, db_path, args.owner)
+        elif args.cmd == "edit":
+            cmd_edit(args.id, args.text, db_path)
+        elif args.cmd == "export":
+            cmd_export(db_path, args.owner)
         elif args.cmd == "init-profile":
             cmd_init_profile(args.name, args.work, db_path)
         elif args.cmd == "summarize-session":
             cmd_summarize_session(args.messages_file, args.model, db_path)
+        elif args.cmd == "migrate":
+            cmd_migrate(db_path, normalize=args.normalize)
     except RuntimeError as e:
         print(f"bob memory: {e}", file=sys.stderr)
         sys.exit(1)
