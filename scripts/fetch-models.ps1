@@ -55,6 +55,9 @@ function Get-ModelRevision {
 
 $repo   = Split-Path $PSScriptRoot -Parent
 $outDir = Join-Path $repo "models"
+# Ensure the models dir exists BEFORE the fetch loop — on a fresh checkout (e.g. CI) it doesn't, and
+# `curl -o models/x.part` then fails with "No such file or directory" (curl won't create parents).
+if (-not (Test-Path -LiteralPath $outDir)) { New-Item -ItemType Directory -Force -Path $outDir | Out-Null }
 
 $resolved = Get-Models -Profile $Profile
 $name     = $resolved.profile
