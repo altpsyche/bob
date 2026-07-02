@@ -288,6 +288,7 @@ def consolidate_session(turns: list, config: Optional[dict] = None,
             turns, db_path=db_path, model=model, owner=owner, scope=scope,
             dedup_threshold=float(mem.get("dedupThreshold", 0.92)),
             timeout=int(mem.get("consolidateTimeout", 30)),   # bound end-of-session stall
+            reconcile_top_k=int(mem.get("reconcileTopK", 20)),  # MEM-8 existing-facts window
         )
         # MEM-5 — opportunistic hygiene at end of consolidation: TTL prune + per-owner size cap.
         try:
