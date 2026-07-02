@@ -30,11 +30,30 @@
     "memory": {
       "enabled": true,
       "autoRecall": false,
+      "injectProfileAtStart": true,
+      "profileMaxTokens": 200,
       "dbPath": "data/bob.db",
       "embedModel": "embed",
       "recallK": 5,
+      "recallThreshold": 0.35,
+      "dedupThreshold": 0.92,
+      "ranking": {
+        "wSemantic": 1.0,
+        "wRecency": 0.3,
+        "wType": 0.2,
+        "wUsage": 0.1,
+        "halfLifeDays": {"profile": 36500, "preference": 36500, "project": 90, "fact": 365, "episodic": 30}
+      },
+      "typeWeights": {"profile": 1.0, "preference": 0.9, "project": 0.8, "fact": 0.7, "episodic": 0.5},
       "maxSummaryTokens": 256,
-      "autoSummarize": true
+      "autoSummarize": true,
+      "autoConsolidate": true,
+      "consolidateTimeout": 30,
+      "maxRows": 2000,
+      "forgetAfterDays": {"episodic": 180},
+      "scopeByProject": true,
+      "projectFiles": true,
+      "bobMdMaxTokens": 4000
     },
     "vision": {
       "enabled": true,

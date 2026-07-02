@@ -20,19 +20,37 @@ def configure(config: dict) -> None:
         sys.path.insert(0, scripts_dir)
 
 
+# MEM-6 — memory_store mutates the DB (SQLite write + best-effort dedup race). Marking it lets O2
+# serialize it within a parallel tool batch and O6 default it to `ask`. memory_recall is read-only.
+MUTATING_TOOLS = {"memory_store"}
+
+
+def _run_ctx_attr(name):
+    """Read a field off the current run's RunContext (MEM-6/7), or None. Lets the memory tools scope
+    recall/store to the acting identity (owner) and project (scope) without changing tool signatures."""
+    try:
+        from tool_registry import get_run_context
+        ctx = get_run_context()
+        return getattr(ctx, name, None) if ctx else None
+    except Exception:
+        return None
+
+
 def _memory_recall(query: str, k: int = 5) -> str:
-    from bob_core import memory_recall
-    out = memory_recall(query, k=k, config=_cfg)
+    from bob_core import MEMORY_CONTEXT_FRAME, memory_recall
+    out = memory_recall(query, k=k, config=_cfg, owner=_run_ctx_attr("owner"),
+                        scope=_run_ctx_attr("scope"))
     if not out or out.strip() in ("", "(no results)"):
         return "(no saved notes match)"
-    # Frame the results as facts ABOUT THE USER so the model treats them as context, not as its own
-    # identity — the notes are stored first-person ("I prefer …"), which otherwise reads as Bob's.
-    return "Saved notes about the user (context only; do not recite):\n" + out
+    # Frame the results as context ABOUT THE USER (not Bob's own identity). One shared frame across
+    # every memory surface (autoRecall, this tool, MEM-3 profile injection) — bob_core.MEMORY_CONTEXT_FRAME.
+    return MEMORY_CONTEXT_FRAME + "\n" + out
 
 
-def _memory_store(content: str, tags: str = "") -> str:
+def _memory_store(content: str, tags: str = "", type: str = "fact") -> str:
     from bob_core import memory_store
-    return memory_store(content, tags=tags, config=_cfg)
+    return memory_store(content, tags=tags, mem_type=type, config=_cfg,
+                        owner=_run_ctx_attr("owner"), scope=_run_ctx_attr("scope"))
 
 
 def test() -> str:
@@ -68,6 +86,13 @@ TOOL_DEFS = [
                 "properties": {
                     "content": {"type": "string", "description": "Text to store"},
                     "tags": {"type": "string", "description": "Comma-separated tags (optional)"},
+                    "type": {
+                        "type": "string",
+                        "enum": ["profile", "preference", "project", "fact", "episodic"],
+                        "description": ("Kind of memory (optional, default 'fact'): 'profile'/'preference' "
+                                        "for durable identity, 'project' for repo-scoped, 'fact' general, "
+                                        "'episodic' session recap."),
+                    },
                 },
                 "required": ["content"],
             },

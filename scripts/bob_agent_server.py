@@ -146,6 +146,22 @@ def _record_turn(session_id: Optional[str], goal: str, result: Optional[str]) ->
     _sessions.append_turn(session_id, goal, result, tokens_used=used)
 
 
+def _maybe_consolidate(session_id: str, owner: str) -> None:
+    """MEM-4 — consolidate a session's turns into memory before it's deleted (the server's
+    session-end seam). Gated on memory.enabled && memory.autoConsolidate; best-effort."""
+    mem = (_config or {}).get("memory", {})
+    if not (mem.get("enabled", False) and mem.get("autoConsolidate", True)) or _sessions is None:
+        return
+    session = _sessions.get_owned(session_id, owner)
+    if not session or not session.get("history"):
+        return
+    try:
+        from bob_core import consolidate_session
+        consolidate_session(session["history"], config=_config, owner=owner)
+    except Exception:
+        pass
+
+
 def _drain(gen) -> None:
     """Exhaust a generator so its finally-block (SIGINT restore / stream close) runs (N3)."""
     for _ in gen:
@@ -185,6 +201,7 @@ def get_session(sid: str, authorization: str = Header(default="")):
 @app.delete("/v1/sessions/{sid}")
 def delete_session(sid: str, authorization: str = Header(default="")):
     owner = _authed_owner(authorization)
+    _maybe_consolidate(sid, owner)   # MEM-4 — extract durable facts before dropping the turns
     return {"deleted": bool(_sessions and _sessions.delete_owned(sid, owner))}
 
 
@@ -201,7 +218,7 @@ def agent_completions(req: AgentRequest, authorization: str = Header(default="")
     try:
         result, _ = run_agent(
             req.goal, _config, role=req.role, agency=req.agency,
-            registry=_registry, history=history, run_id=rid,
+            registry=_registry, history=history, run_id=rid, owner=owner,
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=503, detail=str(e))
@@ -243,7 +260,7 @@ async def agent_completions_stream(
         got_final = False
         gen = run_agent_events(
             req.goal, _config, role=req.role, agency=req.agency,
-            registry=_registry, stream=True, history=history, cancel=cancel, run_id=rid,
+            registry=_registry, stream=True, history=history, cancel=cancel, run_id=rid, owner=owner,
         )
         try:
             while True:

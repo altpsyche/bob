@@ -43,6 +43,9 @@ class ToolRegistry:
         # e.g. shell_run). The agent loop asks the approve callback before dispatching these; the tool
         # itself no longer prompts on stdin. O6 layers richer per-tool risk policy on top of this set.
         self.approval_required_tools: set = set()
+        # MEM-6 — tools whose call mutates state (module sets MUTATING_TOOLS = {names}, e.g.
+        # memory_store). O2 serializes these within a parallel batch; O6 can default them to `ask`.
+        self.mutating_tools: set = set()
         # (tool_name, phase, message) — phase: "import" | "contract" | "configure"
         self.errors: list[tuple[str, str, str]] = []
         self._loaded_names: set = set()
@@ -202,6 +205,9 @@ class ToolRegistry:
                 if fn_name:
                     self.approval_required_tools.add(fn_name)
 
+        for fn_name in getattr(mod, "MUTATING_TOOLS", ()) or ():
+            self.mutating_tools.add(fn_name)
+
     def _print_startup_summary(self) -> None:
         names = sorted(self._loaded_names)
         if names:
@@ -305,6 +311,7 @@ class _RegistryView:
         ]
         self.exit_voice_tools = {n for n in base.exit_voice_tools if visible(n)}
         self.approval_required_tools = {n for n in base.approval_required_tools if visible(n)}
+        self.mutating_tools = {n for n in base.mutating_tools if visible(n)}
         self.errors = base.errors
         self._loaded_names = base._loaded_names  # informational count reflects the underlying registry
 

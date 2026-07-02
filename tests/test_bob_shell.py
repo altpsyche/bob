@@ -45,7 +45,8 @@ class TestSplash(unittest.TestCase):
         s = sh.splash()
         self.assertIn("Bob", s)
         self.assertIn(sh.role, s)              # agentRole from config == "agent"
-        self.assertIn(sh.session_id, s)
+        self.assertIsNone(sh.session_id)       # WI-6: no persisted row until the first turn
+        self.assertIn("session: new", s)       # shown as "new" until then
         self.assertIn("commands", s)           # counts line from the catalog
 
 
@@ -85,13 +86,16 @@ class TestDispatch(unittest.TestCase):
         sh.dispatch("/agency bogus")            # rejected — unchanged
         self.assertEqual(sh.agency, "confirm")
 
-    def test_session_new_and_clear(self):
+    def test_session_new_resets_to_pending(self):
         sh, _ = _make_shell()
-        old = sh.session_id
+        sh.session_id = "deadbeefcafe"          # pretend a row already exists
         sh.history = [{"role": "user", "content": "x"}]
         sh.dispatch("/session new")
-        self.assertNotEqual(sh.session_id, old)
+        self.assertIsNone(sh.session_id)        # pending — the row is created on the next message
         self.assertEqual(sh.history, [])
+
+    def test_clear_empties_context(self):
+        sh, _ = _make_shell()
         sh.history = [{"role": "user", "content": "y"}]
         sh.dispatch("/clear")
         self.assertEqual(sh.history, [])
@@ -196,6 +200,188 @@ class TestApprovalHandshake(unittest.TestCase):
         sh._always.add("shell_run")
         # _approve returns True from the always-set WITHOUT importing/using prompt_toolkit.
         self.assertTrue(sh._approve({"tool": "shell_run", "arguments": "{}"}))
+
+
+def _make_persistent_shell(tmpdir, owner="local", max_tokens=0):
+    """A shell wired to a real (temp) SessionStore, for the WI-6 persist/resume/budget tests."""
+    import os
+    from rich.console import Console
+    from bob_session import SessionStore
+
+    console = Console(file=io.StringIO(), force_terminal=False, width=100, no_color=True)
+    store = SessionStore(os.path.join(tmpdir, "sessions.db"), default_owner=owner)
+    cfg = fake_config()
+    cfg["agent"]["defaultOwner"] = owner
+    cfg["agent"]["maxSessionTokens"] = max_tokens
+    sh = BobShell(cfg, FakeRegistry(), _FakeSkillReg(), console=console, sessions=store)
+    return sh, store, console
+
+
+class TestSessionPersistence(unittest.TestCase):
+    def setUp(self):
+        import shutil
+        import tempfile
+        self.tmp = tempfile.mkdtemp(prefix="bob-wi6-")
+        self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+
+    def test_first_turn_lazily_creates_and_persists(self):
+        sh, store, _ = _make_persistent_shell(self.tmp)
+        self.assertIsNone(sh.session_id)                 # nothing before the first turn
+        self.assertEqual(store.list_owned("local"), [])
+        sh._consume = lambda fac, on_approval=None: "the answer"
+        sh._run_turn("a question")
+        self.assertIsNotNone(sh.session_id)              # created on the first turn
+        ids = store.list_owned("local")
+        self.assertEqual(ids, [sh.session_id])
+        got = store.get(sh.session_id)["history"]
+        self.assertEqual(got, [
+            {"role": "user", "content": "a question"},
+            {"role": "assistant", "content": "the answer"},
+        ])
+        self.assertEqual(sh.history, got)                # live buffer mirrors the store
+
+    def test_resume_restores_history_owner_scoped(self):
+        # Seed a session directly in the store, then resume it in a fresh shell.
+        _, store, _ = _make_persistent_shell(self.tmp)
+        seed = store.create(owner_id="local")
+        store.append_turn(seed["id"], "hello", "hi there")
+        sh, _, out = _make_persistent_shell(self.tmp)     # same db path
+        sh.dispatch(f"/session resume {seed['id']}")
+        self.assertEqual(sh.session_id, seed["id"])
+        self.assertEqual(sh.history, [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ])
+        # A subsequent turn continues the SAME persisted session (no new row).
+        sh._consume = lambda fac, on_approval=None: "more"
+        sh._run_turn("again")
+        self.assertEqual(store.list_owned("local"), [seed["id"]])
+        self.assertEqual(len(store.get(seed["id"])["history"]), 4)
+
+    def test_resume_by_8char_prefix(self):
+        _, store, _ = _make_persistent_shell(self.tmp)
+        seed = store.create(owner_id="local")
+        store.append_turn(seed["id"], "q", "a")
+        sh, _, _ = _make_persistent_shell(self.tmp)
+        sh.dispatch(f"/session resume {seed['id'][:8]}")
+        self.assertEqual(sh.session_id, seed["id"])
+
+    def test_resume_other_owner_refused(self):
+        _, store, _ = _make_persistent_shell(self.tmp)
+        other = store.create(owner_id="alice")           # not "local"
+        store.append_turn(other["id"], "secret", "shh")
+        sh, _, out = _make_persistent_shell(self.tmp, owner="local")
+        sh.dispatch(f"/session resume {other['id']}")
+        self.assertIsNone(sh.session_id)                 # not adopted
+        self.assertEqual(sh.history, [])
+        self.assertIn("no such session", out.file.getvalue().lower())
+
+    def test_list_only_shows_owner_sessions(self):
+        _, store, _ = _make_persistent_shell(self.tmp)
+        mine = store.create(owner_id="local")
+        store.append_turn(mine["id"], "mine", "ok")
+        theirs = store.create(owner_id="alice")
+        store.append_turn(theirs["id"], "theirs", "ok")
+        sh, _, out = _make_persistent_shell(self.tmp, owner="local")
+        sh.dispatch("/session list")
+        text = out.file.getvalue()
+        self.assertIn(mine["id"][:8], text)
+        self.assertNotIn(theirs["id"][:8], text)
+
+    def test_over_budget_refuses_turn(self):
+        sh, store, out = _make_persistent_shell(self.tmp, max_tokens=50)
+        s = store.create(token_budget=50, owner_id="local")
+        store.append_turn(s["id"], "x", "y", tokens_used=60)   # spent 60 > budget 50
+        sh.session_id = s["id"]
+        sh.history = store.get(s["id"])["history"]
+        called = {"n": 0}
+        sh._consume = lambda *a, **k: called.__setitem__("n", called["n"] + 1) or "z"
+        sh._run_turn("keep going")
+        self.assertEqual(called["n"], 0)                 # refused before the model ran
+        self.assertIn("budget", out.file.getvalue().lower())
+
+    def test_zero_budget_does_not_refuse(self):
+        sh, store, _ = _make_persistent_shell(self.tmp, max_tokens=0)
+        s = store.create(token_budget=0, owner_id="local")
+        store.append_turn(s["id"], "x", "y", tokens_used=10_000)
+        sh.session_id = s["id"]
+        called = {"n": 0}
+        sh._consume = lambda *a, **k: called.__setitem__("n", called["n"] + 1) or "ok"
+        sh._run_turn("continue")
+        self.assertEqual(called["n"], 1)                 # 0 budget is unlimited — turn runs
+
+
+class TestLifecycleHooks(unittest.TestCase):
+    def setUp(self):
+        import shutil
+        import tempfile
+        self.tmp = tempfile.mkdtemp(prefix="bob-wi6c-")
+        self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+
+    def test_exit_new_resume_fire_session_end_hook(self):
+        sh, store, _ = _make_persistent_shell(self.tmp)
+        seed = store.create(owner_id="local")
+        store.append_turn(seed["id"], "q", "a")
+        calls = []
+        sh._on_session_end = lambda sid: calls.append(sid)
+
+        sh.session_id = "aaaaaaaa"
+        sh._on_exit()                                    # exit fires the hook with the current id
+        sh.session_id = "cccccccc"
+        sh.dispatch("/session new")                      # leaving a session fires it, then resets
+        sh.session_id = "bbbbbbbb"
+        sh.dispatch(f"/session resume {seed['id']}")     # so does resume, before switching
+        self.assertEqual(calls, ["aaaaaaaa", "cccccccc", "bbbbbbbb"])
+
+    def test_session_end_swallows_consolidation_errors(self):
+        sh, store, out = _make_persistent_shell(self.tmp)
+        sh.session_id = store.create(owner_id="local")["id"]
+
+        def boom(_sid):
+            raise RuntimeError("consolidation blew up")
+        sh._consolidate_session = boom
+        # Must not raise even though the seam's body throws.
+        sh._on_exit()
+        self.assertIn("consolidation skipped", out.file.getvalue().lower())
+
+    def test_session_end_noop_without_session(self):
+        sh, _, _ = _make_persistent_shell(self.tmp)
+        hit = {"n": 0}
+        sh._consolidate_session = lambda sid: hit.__setitem__("n", hit["n"] + 1)
+        sh._on_session_end(None)                         # no session id -> no consolidation
+        self.assertEqual(hit["n"], 0)
+
+    def test_consolidate_calls_core_with_history_when_enabled(self):
+        import bob_core
+        sh, _, _ = _make_persistent_shell(self.tmp)
+        sh.config["memory"] = {"enabled": True, "autoConsolidate": True}
+        sh.history = [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]
+        captured = {}
+        orig = bob_core.consolidate_session
+        bob_core.consolidate_session = (lambda turns, config=None, owner=None, scope=None:
+                                        captured.update(turns=turns, owner=owner, scope=scope)
+                                        or {"facts": 1})
+        try:
+            sh._consolidate_session("sid")
+        finally:
+            bob_core.consolidate_session = orig
+        self.assertEqual(captured["turns"], sh.history)
+        self.assertEqual(captured["owner"], sh.owner)
+        self.assertEqual(captured["scope"], sh.scope)      # MEM-7: exit consolidation carries scope
+
+    def test_consolidate_skipped_when_disabled(self):
+        import bob_core
+        sh, _, _ = _make_persistent_shell(self.tmp)
+        sh.config["memory"] = {"enabled": False, "autoConsolidate": True}
+        sh.history = [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]
+        called = {"n": 0}
+        orig = bob_core.consolidate_session
+        bob_core.consolidate_session = lambda *a, **k: called.__setitem__("n", called["n"] + 1) or {}
+        try:
+            sh._consolidate_session("sid")
+        finally:
+            bob_core.consolidate_session = orig
+        self.assertEqual(called["n"], 0)                 # gated off -> core never called
 
 
 class TestTheme(unittest.TestCase):
