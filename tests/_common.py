@@ -36,16 +36,28 @@ def fake_config(**over):
 
 
 class FakeRegistry:
-    """Stand-in for ToolRegistry with scripted dispatch results."""
+    """Stand-in for ToolRegistry with scripted dispatch results.
 
-    def __init__(self, results=None):
+    O6: carries `mutating_tools` / `approval_required_tools` (empty by default) so permission tests
+    can mark a fake tool mutating or approval-gated. `dispatched` records what actually ran, so a test
+    can assert a denied tool never reached dispatch_call."""
+
+    def __init__(self, results=None, mutating_tools=None, approval_required_tools=None, delay=0.0):
         self.tool_schemas = []
         self.exit_voice_tools = set()
         self._loaded_names = set()   # /health reads these
         self.errors = []
         self._results = results or {}
+        self.mutating_tools = set(mutating_tools or ())
+        self.approval_required_tools = set(approval_required_tools or ())
+        self.dispatched = []
+        self._delay = delay   # O2 — per-call sleep so a test can measure parallel vs sequential wall-clock
 
     def dispatch_call(self, name, arguments_json, context=None):
+        if self._delay:
+            import time
+            time.sleep(self._delay)
+        self.dispatched.append(name)   # list.append is atomic under the GIL — safe from pool threads
         return self._results.get(name, f"[{name} ran]")
 
 

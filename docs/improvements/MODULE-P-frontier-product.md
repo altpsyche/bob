@@ -1,9 +1,10 @@
 # Module P — Frontier Product (durable autonomy, multimodal, computer-use)
 
 **Status:** draft / not implemented. **Depends on:** O (sub-agents, sandbox, permissions, tracing,
-eval) + NB–ND (portable/reliable base) + NE (interface). **Read first:**
-[ARCHITECTURE-CONTRACTS.md](ARCHITECTURE-CONTRACTS.md). This is the **last** module — the one that
-takes Bob from a frontier *harness* to a frontier *product*.
+eval) + NB–ND (portable/reliable base) + NE (interface) + **NE6-MEM / MEM2** (the persisted-session +
+typed/scoped-memory layer P1/P2 build directly on). **Read first:**
+[ARCHITECTURE-CONTRACTS.md](ARCHITECTURE-CONTRACTS.md) and MODULE-O's "Already-built seams" section.
+This is the **last** module — the one that takes Bob from a frontier *harness* to a frontier *product*.
 
 **Why this module exists.** After O, Bob matches frontier agent harnesses on the *harness* axes
 (loop, context, sandbox, MCP, auth, observability, CI). The review of the roadmap flagged that this
@@ -45,6 +46,13 @@ tree (O1). If the process dies (crash, restart, `bob update`, machine reboot) mi
 is lost. Frontier products checkpoint and resume — a task can span restarts.
 
 ### Change
+> **Seam note (NE6-MEM / MEM2):** the "session store" is `bob_session.SessionStore`
+> ([bob_session.py](../../scripts/bob_session.py), N2) — which since WI-6 also backs the NE shell's persisted sessions and
+> carries `owner_id` + token budget/spend. Checkpoint run-state alongside it (a *run* ≠ a *session
+> transcript* — keep them distinct rows/tables). Crucially, the checkpoint must persist and a resume
+> must **restore `RunContext.owner`, `agent_depth`, and `scope`** (MEM-6/7), or a resumed run's memory
+> recall/store lands under the wrong identity/project. Don't re-consolidate on resume — consolidation
+> fires on real session end, not on a run checkpoint.
 - **Checkpoint** the run state (messages, step, `exit_requested`, per-sub-agent state, metrics)
   to the session store (N2, already SQLite/WAL) at each step boundary — cheap, atomic, owner-scoped.
 - **Resume**: `run_agent_events(..., resume=<run_id>)` rehydrates from the last checkpoint and
@@ -78,6 +86,9 @@ survive the client leaving. There is no task queue or worker.
   tasks. Status/metrics from N5; owner-scoped (N1); resumable (P1).
 - Disconnect no longer cancels a *detached* task (unlike an attached stream) — it keeps running; only
   an explicit cancel or the cancel token stops it.
+- Memory (NE6-MEM/MEM2): a detached task is still owner-scoped (N1) — its recall/store use the task
+  owner's memory, and end-of-run consolidation follows the same rule as any run (only a real session
+  lifecycle consolidates, not each background task tick).
 
 ### Effort: 6–8 h.
 ### Acceptance

@@ -4,6 +4,7 @@
 Called by bob.ps1 agent case and bob-agent.ps1 scheduler.
 All config is read from data/config.json (written by Get-BobConfig in _models.ps1).
 """
+import hashlib
 import json
 import logging
 import os
@@ -204,15 +205,19 @@ class RunContext:
     tool_registry.get_run_context(): the cancel token, the resolved config, the tool registry, the
     run id, and the approval callback. Lets a tool (a future sub-agent tool) reach these without any
     change to its fn(**args) signature."""
-    __slots__ = ("cancel", "config", "registry", "run_id", "approve", "owner", "agent_depth", "scope")
+    __slots__ = ("cancel", "config", "registry", "run_id", "approve", "owner", "agent_depth", "scope",
+                 "policy")
 
     def __init__(self, cancel, config, registry, run_id, approve, owner="local", agent_depth=0,
-                 scope=None):
+                 scope=None, policy=None):
         self.cancel = cancel
         self.config = config
         self.registry = registry
         self.run_id = run_id
         self.approve = approve
+        # O6 — the allow|ask|deny PermissionPolicy for this run (built from config once; None == the
+        # pre-O6 default where only the NE0 floor prompts). Reachable by dispatch via get_run_context().
+        self.policy = policy
         # MEM-6 — the identity this run acts as (memory scoping) and its delegation depth. `agent_depth`
         # is 0 for a root run; O1 sets it >0 on sub-agents and propagates owner/cancel parent->child.
         self.owner = owner
@@ -246,22 +251,55 @@ def _resolve_approval(approve, action: dict) -> bool:
         return False
 
 
+def _audit(log, rid, name, args, decision, owner):
+    """O6 — one append-only audit line per tool call: tool, an args DIGEST (never the raw args, so
+    secrets in arguments aren't logged), the decision, the owner, and the run id. Every mutation is
+    attributable via a single `grep <rid>`."""
+    digest = hashlib.sha1((args or "").encode("utf-8", "replace")).hexdigest()[:12]
+    log.info(f"[{rid}] AUDIT tool={name} decision={decision} owner={owner} args_sha1={digest}")
+
+
 def _dispatch_with_approval(tc, call_id, *, registry, context, agency, approve, log, rid):
-    """Generator: request approval (if required) then dispatch one tool call. Yields protocol events
-    (approval_required, tool_result) and RETURNS the result string that goes into the transcript. A
-    denied call does not run and returns a denial message the model can react to."""
+    """Generator: resolve the O6 permission policy, request approval if required, then dispatch one
+    tool call. Yields protocol events (approval_required, tool_result) and RETURNS the result string
+    that goes into the transcript. A denied call does not run and returns a denial message the model
+    can react to.
+
+    O6 decision = the config PermissionPolicy (allow|ask|deny per tool/owner/depth) combined with the
+    NE0 floor: 'deny' short-circuits; 'ask' — OR the NE0 floor (agency='confirm' / REQUIRES_APPROVAL) —
+    prompts the approve callback; else the call runs. An empty policy resolves to 'allow', so behavior
+    is byte-identical to pre-O6."""
     name = tc.function.name
     args = tc.function.arguments
-    if _approval_required(name, agency, registry):
+    owner = getattr(context, "owner", "local")
+    policy = getattr(context, "policy", None)
+    mutating = name in getattr(registry, "mutating_tools", set())
+    decision = (policy.resolve(name, owner=owner, agent_depth=getattr(context, "agent_depth", 0),
+                               mutating=mutating)
+                if policy is not None else "allow")
+
+    # deny — never dispatches; the model gets a clean refusal it can read and react to.
+    if decision == "deny":
+        _audit(log, rid, name, args, "deny", owner)
+        denied = f"Tool call to '{name}' was denied by policy; it did not run."
+        yield {"type": "tool_result", "call_id": call_id, "name": name, "result": denied}
+        return denied
+
+    # ask — policy 'ask' OR the NE0 floor (whole run in confirm mode, or the tool self-declares
+    # REQUIRES_APPROVAL). The floor is a lower bound the config can tighten but never loosen.
+    if decision == "ask" or _approval_required(name, agency, registry):
         risk = "high" if name in getattr(registry, "approval_required_tools", set()) else "confirm"
         yield {"type": "approval_required", "call_id": call_id, "tool": name,
                "arguments": args, "risk": risk}
         if not _resolve_approval(approve, {"call_id": call_id, "tool": name,
                                            "arguments": args, "risk": risk}):
+            _audit(log, rid, name, args, "deny(unapproved)", owner)
             log.info(f"[{rid}] tool {name} denied (call_id={call_id})")
             denied = f"Tool call to '{name}' was denied by the user; it did not run."
             yield {"type": "tool_result", "call_id": call_id, "name": name, "result": denied}
             return denied
+
+    _audit(log, rid, name, args, decision if policy is not None else "allow", owner)
     result = registry.dispatch_call(name, args, context=context)
     is_err = result.startswith(("Tool error", "Unknown tool", "Bad arguments"))
     log.log(
@@ -271,6 +309,89 @@ def _dispatch_with_approval(tc, call_id, *, registry, context, agency, approve, 
     )
     yield {"type": "tool_result", "call_id": call_id, "name": name, "result": result}
     return result
+
+
+def _parallel_cap(max_parallel) -> int:
+    """Effective worker count for O2: 1 (sequential — the default and pre-O2 behavior) unless
+    maxParallelTools>1, then min(maxParallelTools, cpu-2) with a floor of 1."""
+    try:
+        mp = int(max_parallel)
+    except (TypeError, ValueError):
+        mp = 1
+    if mp <= 1:
+        return 1
+    cpu = os.cpu_count() or 2
+    return max(1, min(mp, max(cpu - 2, 1)))
+
+
+def _parallel_eligible(name: str, registry, ctx, agency: str) -> bool:
+    """O2: a call may run concurrently only if it is side-effect-free AND unconditionally allowed —
+    not in mutating_tools, not approval-gated (NE0 floor), and the O6 policy resolves to 'allow'.
+    Anything that could deny/ask or mutate stays sequential (it needs the event/approval flow, and a
+    mutation must not race another tool)."""
+    if name in getattr(registry, "mutating_tools", set()):
+        return False
+    if _approval_required(name, agency, registry):
+        return False
+    policy = getattr(ctx, "policy", None)
+    if policy is not None and policy.resolve(
+            name, owner=getattr(ctx, "owner", "local"),
+            agent_depth=getattr(ctx, "agent_depth", 0), mutating=False) != "allow":
+        return False
+    return True
+
+
+def _run_tool_calls(tool_calls, call_ids, *, registry, run_ctx, agency, approve, log, rid,
+                    cancel, exit_on_tools, max_parallel):
+    """Dispatch a step's tool calls, yielding tool_call-result / approval events and RETURNING an
+    ordered result list (via StopIteration.value). O2: when maxParallelTools>1, side-effect-free
+    'allow' calls run concurrently in a bounded ThreadPoolExecutor while mutating / ask / deny /
+    approval-gated calls stay sequential through _dispatch_with_approval. Results are appended in
+    ORIGINAL order so the transcript is deterministic regardless of completion order; cap==1 is
+    byte-identical to the pre-O2 sequential loop.
+
+    Returns dict(results=[(tc, cid, result), ...], exit_requested, tools_run, tokens_est, cancelled).
+    On cancel it stops before dispatching the next call, abandons not-yet-started futures (a running
+    tool can't be preempted), and sets cancelled=True for the caller to end the run."""
+    out = {"results": [], "exit_requested": False, "tools_run": 0, "tokens_est": 0, "cancelled": False}
+    cap = _parallel_cap(max_parallel)
+    eligible = ([_parallel_eligible(tc.function.name, registry, run_ctx, agency) for tc in tool_calls]
+                if cap > 1 else [False] * len(tool_calls))
+
+    ex = None
+    futs = {}
+    try:
+        if cap > 1 and any(eligible):
+            from concurrent.futures import ThreadPoolExecutor
+            ex = ThreadPoolExecutor(max_workers=cap)
+            for i, tc in enumerate(tool_calls):
+                if eligible[i] and not cancel.cancelled():
+                    futs[i] = ex.submit(registry.dispatch_call, tc.function.name,
+                                        tc.function.arguments, run_ctx)
+        for i, (tc, cid) in enumerate(zip(tool_calls, call_ids)):
+            if cancel.cancelled():
+                out["cancelled"] = True
+                break
+            if tc.function.name in exit_on_tools:
+                out["exit_requested"] = True
+            if i in futs:
+                # Parallel, side-effect-free 'allow' path — audit still recorded (O6), then the
+                # already-running dispatch is awaited and its result surfaced in original order.
+                _audit(log, rid, tc.function.name, tc.function.arguments, "allow", getattr(run_ctx, "owner", "local"))
+                result = futs[i].result()
+                log.info(f"[{rid}] tool {tc.function.name} -> {len(result)}c (call_id={cid}) [parallel]")
+                yield {"type": "tool_result", "call_id": cid, "name": tc.function.name, "result": result}
+            else:
+                result = yield from _dispatch_with_approval(
+                    tc, cid, registry=registry, context=run_ctx,
+                    agency=agency, approve=approve, log=log, rid=rid)
+            out["tools_run"] += 1
+            out["tokens_est"] += _estimate_tokens(result)
+            out["results"].append((tc, cid, result))
+    finally:
+        if ex is not None:
+            ex.shutdown(wait=False, cancel_futures=True)
+    return out
 
 
 def _console_approve(action: dict) -> bool:
@@ -310,7 +431,31 @@ def parse_args():
     return p.parse_args()
 
 
-def truncate_history(messages: list, max_msgs: int, max_tokens: int = 0) -> list:
+# O3 — structured-compaction prompt: preserve the categories that matter for RESUMING a long task,
+# not a lossy prose blob. Reused via bob_memory.summarize_turns (the MEM-4 core), no new model dep.
+_COMPACT_FRAME = "[conversation so far — compacted]"
+_COMPACT_SYSTEM = (
+    "You are compacting an agent's earlier conversation so it fits a token budget without losing "
+    "what's needed to continue the task. Write a terse note capturing ONLY: the user's goal, key "
+    "decisions made, concrete facts/values discovered, files or resources touched, and any unresolved "
+    "problems, TODOs, or errors. Omit small talk and verbatim tool output. Use short bullet lines."
+)
+
+
+def _compact_span(dropped: list, model: str, max_tokens: int) -> str:
+    """Summarize the dropped span into a structured compaction note (O3). Best-effort: returns "" on
+    any failure (no reachable LLM in tests, etc.), so the caller falls back to plain truncation."""
+    try:
+        from bob_memory import summarize_turns
+        return summarize_turns(dropped, model=model, system_prompt=_COMPACT_SYSTEM,
+                               max_tokens=max_tokens)
+    except Exception:
+        return ""
+
+
+def truncate_history(messages: list, max_msgs: int, max_tokens: int = 0, *,
+                     compaction: str = "truncate", keep_last: int = 6,
+                     summary_max_tokens: int = 512, summary_model: str = "chat") -> list:
     """Sliding window that keeps the system message(s) + most recent turns.
 
     Trims by message count first (max_msgs), then by an optional token budget (max_tokens,
@@ -318,23 +463,28 @@ def truncate_history(messages: list, max_msgs: int, max_tokens: int = 0) -> list
     message is always kept. An orphaned leading tool-response (whose assistant call got
     trimmed) is dropped so the remaining sequence stays valid for the OpenAI tool format.
 
-    MEM-11 (compaction boundary — note only): this is a LOSSY drop-oldest window. Replacing the
-    dropped span with a rolling summary (summarize-the-dropped-span, reusing
-    bob_memory.summarize_turns — the MEM-4 core) is **Module O3**, which owns the rolling
-    transcript. MEM-10's injection budget (bob_core.budget_injection) is the memory-side
-    complement — it bounds what SAVED memory adds to the system message; O3 bounds the transcript
-    itself. No code lands here for O3; this note marks the seam."""
+    O3 — `compaction='summarize'` (opt-in) replaces the dropped oldest span with ONE compact
+    "conversation so far" system note (via bob_memory.summarize_turns, the MEM-4 core) instead of
+    discarding it, keeps the last `keep_last` turns verbatim, and reserves `summary_max_tokens` from
+    the budget so the note itself can't re-overflow. `compaction='truncate'` (**default**) is the
+    lossy M7 drop-oldest window, byte-identical to pre-O3. This owns the rolling TRANSCRIPT; MEM-10's
+    budget_injection bounds SAVED-memory injection — kept distinct, no double-summarizing."""
     system = [m for m in messages if m.get("role") == "system"]
     rest = [m for m in messages if m.get("role") != "system"]
+    original_rest = list(rest)
+    summarize = compaction == "summarize"
 
     # 1. Message-count window.
     if len(system) + len(rest) > max_msgs:
         keep = max(0, max_msgs - len(system))
         rest = rest[-keep:]
 
-    # 2. Token-budget window — keep as many recent messages as fit under the budget.
+    # 2. Token-budget window — keep as many recent messages as fit under the budget. In summarize
+    # mode, reserve room for the compaction note so summary + kept stays within max_tokens.
     if max_tokens:
         budget = max_tokens - sum(_message_tokens(m) for m in system)
+        if summarize:
+            budget = max(0, budget - summary_max_tokens)
         kept: list = []
         running = 0
         for m in reversed(rest):
@@ -345,7 +495,23 @@ def truncate_history(messages: list, max_msgs: int, max_tokens: int = 0) -> list
             kept.append(m)
         rest = list(reversed(kept))
 
-    # 3. Don't leave an orphaned tool response at the front.
+    if summarize:
+        # Guarantee the last `keep_last` turns survive verbatim (window may keep more; never fewer).
+        n_keep = min(len(original_rest), max(len(rest), keep_last))
+        rest = original_rest[-n_keep:] if n_keep else []
+        dropped = original_rest[: len(original_rest) - len(rest)]
+        # Drop an orphaned leading tool response from the KEPT tail before summarizing/returning.
+        while rest and rest[0].get("role") == "tool":
+            dropped.append(rest.pop(0))
+        if dropped:
+            note = _compact_span(dropped, summary_model, summary_max_tokens)
+            if note:
+                summary_msg = {"role": "system", "content": f"{_COMPACT_FRAME}\n{note}"}
+                return system + [summary_msg] + rest
+        # empty note (no LLM / failure) -> fall through to plain truncation semantics.
+        return system + rest
+
+    # 3. Don't leave an orphaned tool response at the front (truncate mode).
     while rest and rest[0].get("role") == "tool":
         rest.pop(0)
 
@@ -637,6 +803,11 @@ def run_agent_events(
     effective_agency = agency or agent_cfg.get("agency", "show")
     max_steps = int(agent_cfg.get("maxSteps", 10))
     max_hist = int(agent_cfg.get("maxHistoryMsgs", 40))
+    # O3 — context compaction. Default 'truncate' == pre-O3 drop-oldest (byte-identical); 'summarize'
+    # replaces the dropped span with one compact note via summarize_turns (opt-in — it calls the LLM).
+    compaction_mode = agent_cfg.get("compaction", "truncate")
+    compact_keep_last = int(agent_cfg.get("compactKeepLastTurns", 6))
+    compact_summary_max = int(agent_cfg.get("compactSummaryMaxTokens", 512))
     # Transient-LLM-error retry (5xx/timeout/conn, incl. the llama-swap model-swap race). Total tries
     # per step = llmRetries + 1, with an escalating backoff so a restarting backend has time to come up.
     llm_attempts = max(1, int(agent_cfg.get("llmRetries", 2)) + 1)
@@ -645,6 +816,8 @@ def run_agent_events(
     # the injected tool schemas once the tool count crosses compactSchemasAfter.
     max_context_tokens = int(agent_cfg.get("maxContextTokens", 6000))
     compact_after = int(agent_cfg.get("compactSchemasAfter", 12))
+    # O2 — max concurrent side-effect-free tools per step. Default 1 = sequential (pre-O2 behavior).
+    max_parallel_tools = int(agent_cfg.get("maxParallelTools", 1))
     # Client-side timeout must be >= the proxy's request_timeout (600s): thinking models
     # (planner/R1) can run >2 min before first output. A low value would cut them off.
     request_timeout = int(agent_cfg.get("requestTimeout", 600))
@@ -777,10 +950,15 @@ def run_agent_events(
     )
 
     cancel = cancel or CancelToken()
+    # O6 — resolve the allow|ask|deny policy once per run from config (empty config -> everything
+    # allow, i.e. pre-O6 behavior). Carried on the RunContext and consulted in _dispatch_with_approval.
+    from bob_permissions import PermissionPolicy
+    policy = PermissionPolicy(config)
     # NE0 — run-scoped context handed to each tool call (reachable via tool_registry.get_run_context()),
     # and the approve callback the loop consults before a tool that requires approval.
     run_ctx = RunContext(cancel=cancel, config=config, registry=registry, run_id=rid,
-                         approve=approve, owner=owner, agent_depth=agent_depth, scope=scope)
+                         approve=approve, owner=owner, agent_depth=agent_depth, scope=scope,
+                         policy=policy)
     prev_sigint = _install_interrupt_handler(cancel)
     try:
         for step in range(max_steps):
@@ -790,7 +968,9 @@ def run_agent_events(
                        "exit_requested": exit_requested, "reason": "cancelled"}
                 return
 
-            messages = truncate_history(messages, max_hist, max_context_tokens)
+            messages = truncate_history(messages, max_hist, max_context_tokens,
+                                        compaction=compaction_mode, keep_last=compact_keep_last,
+                                        summary_max_tokens=compact_summary_max)
             tools = openai_tools
 
             # Unified LLM call (N3): always consume as a stream so `cancel` is polled between
@@ -867,42 +1047,33 @@ def run_agent_events(
                 yield {"type": "tool_call", "call_id": cid,
                        "name": tc.function.name, "arguments": tc.function.arguments}
 
-            # NE0 — approval is per-tool-call and event-driven (see _dispatch_with_approval): the loop
-            # emits approval_required and consults the injected approve callback. No blocking input()
-            # here, so this works under the TUI/server, not only an interactive console.
+            # NE0/O2 — approval is per-tool-call and event-driven (see _dispatch_with_approval); O2
+            # may run side-effect-free 'allow' calls concurrently (maxParallelTools). _run_tool_calls
+            # yields the events and returns the ordered results; we append them per tool-format below.
+            # The final `messages` content is order-identical to the pre-O2 loop; when max_parallel==1
+            # the whole path is byte-identical (every call goes through _dispatch_with_approval).
+            step = yield from _run_tool_calls(
+                tool_calls, call_ids, registry=registry, run_ctx=run_ctx,
+                agency=effective_agency, approve=approve, log=log, rid=rid, cancel=cancel,
+                exit_on_tools=exit_on_tools, max_parallel=max_parallel_tools)
+            tools_run += step["tools_run"]
+            tokens_est += step["tokens_est"]
+            if step["exit_requested"]:
+                exit_requested = True
+            if step["cancelled"]:
+                yield {"type": "final", "result": _final_answer(last_content, hermes_mode),
+                       "exit_requested": exit_requested, "reason": "cancelled"}
+                return
             if hermes_mode:
                 messages.append({"role": "assistant", "content": content})
-                tool_results = []
-                for tc, cid in zip(tool_calls, call_ids):
-                    if cancel.cancelled():
-                        yield {"type": "final", "result": _final_answer(last_content, hermes_mode),
-                               "exit_requested": exit_requested, "reason": "cancelled"}
-                        return
-                    if tc.function.name in exit_on_tools:
-                        exit_requested = True
-                    result = yield from _dispatch_with_approval(
-                        tc, cid, registry=registry, context=run_ctx,
-                        agency=effective_agency, approve=approve, log=log, rid=rid)
-                    tools_run += 1
-                    tokens_est += _estimate_tokens(result)
-                    tool_results.append(
-                        f'<tool_response>{{"name": "{tc.function.name}", "content": {json.dumps(result)}}}</tool_response>'
-                    )
+                tool_results = [
+                    f'<tool_response>{{"name": "{tc.function.name}", "content": {json.dumps(result)}}}</tool_response>'
+                    for (tc, cid, result) in step["results"]
+                ]
                 messages.append({"role": "user", "content": "\n".join(tool_results)})
             else:
                 messages.append(build_assistant_message(msg))
-                for tc, cid in zip(tool_calls, call_ids):
-                    if cancel.cancelled():
-                        yield {"type": "final", "result": _final_answer(last_content, hermes_mode),
-                               "exit_requested": exit_requested, "reason": "cancelled"}
-                        return
-                    if tc.function.name in exit_on_tools:
-                        exit_requested = True
-                    result = yield from _dispatch_with_approval(
-                        tc, cid, registry=registry, context=run_ctx,
-                        agency=effective_agency, approve=approve, log=log, rid=rid)
-                    tools_run += 1
-                    tokens_est += _estimate_tokens(result)
+                for (tc, cid, result) in step["results"]:
                     messages.append(build_tool_message(tc, result))
 
         log.warning(f"[{rid}] stopped after {max_steps} steps without a final answer")

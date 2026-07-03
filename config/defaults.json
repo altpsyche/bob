@@ -68,9 +68,13 @@
       "agency": "show",
       "toolFormat": "hermes",
       "maxSteps": 10,
+      "maxParallelTools": 1,
       "maxHistoryMsgs": 40,
       "maxContextTokens": 6000,
       "maxToolResultTokens": 1000,
+      "compaction": "truncate",
+      "compactKeepLastTurns": 6,
+      "compactSummaryMaxTokens": 512,
       "compactSchemasAfter": 12,
       "requestTimeout": 600,
       "llmRetries": 2,
@@ -91,7 +95,10 @@
       "logMaxBytes": 5000000,
       "logBackupCount": 3,
       "maxResultChars": 500,
-      "mcpEnabled": false
+      "mcpEnabled": false,
+      "permissions": {},
+      "sandbox": "off",
+      "sandboxLimits": {"cpuSeconds": 30, "memoryMB": 2048, "allowRoots": [], "network": false}
     }
   }
 }
