@@ -303,7 +303,14 @@ def truncate_history(messages: list, max_msgs: int, max_tokens: int = 0) -> list
     Trims by message count first (max_msgs), then by an optional token budget (max_tokens,
     M7): drop oldest non-system messages until the estimated total fits. The system
     message is always kept. An orphaned leading tool-response (whose assistant call got
-    trimmed) is dropped so the remaining sequence stays valid for the OpenAI tool format."""
+    trimmed) is dropped so the remaining sequence stays valid for the OpenAI tool format.
+
+    MEM-11 (compaction boundary — note only): this is a LOSSY drop-oldest window. Replacing the
+    dropped span with a rolling summary (summarize-the-dropped-span, reusing
+    bob_memory.summarize_turns — the MEM-4 core) is **Module O3**, which owns the rolling
+    transcript. MEM-10's injection budget (bob_core.budget_injection) is the memory-side
+    complement — it bounds what SAVED memory adds to the system message; O3 bounds the transcript
+    itself. No code lands here for O3; this note marks the seam."""
     system = [m for m in messages if m.get("role") == "system"]
     rest = [m for m in messages if m.get("role") != "system"]
 

@@ -1,6 +1,13 @@
 # Module MEM2 — Project-scoped memory + frontier-parity quality pass
 
-> **Status:** ready to implement. Follows MODULE-NE6-MEM (WI-6 + MEM-0..6, all landed + live-verified). Continues the phase numbering: **MEM-7 … MEM-11**.
+> **Status:** ✅ COMPLETE (2026-07-03). All phases landed, gated (check.ps1 + test-dry-run.ps1 + unittests), and live-verified on branch `feat/memory-redesign`. Commits: MEM-7 `bb871fa`, MEM-8 `13cc87c`, MEM-9 `334a940`, MEM-10 `02a2711`, MEM-11 (this doc note + the `truncate_history`/`summarize_turns` seam comments). Follows MODULE-NE6-MEM (WI-6 + MEM-0..6). Phase numbering: **MEM-7 … MEM-11**.
+>
+> **Per-phase outcomes:**
+> - **MEM-7** ✅ project scoping (`bob_core.project_key` + `RunContext.scope`) + `BOB.md` files; fixed A1 (autoRecall owner).
+> - **MEM-8** ✅ conflict-aware consolidation (reconcile: NEW / `REPLACES:<id>` → `superseded_by`); fixed B6 (prose recap + deterministic fallback); `memory.reconcileTopK`.
+> - **MEM-9** ✅ importance 1-10 → `salience`; `wSalience` recall term; recency off `max(created_at,last_used)`; `bob memory pin|unpin`; auto-pin high-importance profile. Bonus: revived dead `maxSummaryTokens` (256→512) — the `chat` role is a reasoning model that emptied the completion at 256.
+> - **MEM-10** ✅ injection budget (`bob_core.budget_injection` + `memory.maxInjectedTokens`); provenance (`source_session` **v3 migration** + `forget --session`); timestamp fixes A3/A4.
+> - **MEM-11** ✅ doc-only: the compaction seam is documented at `truncate_history` (bob_loop) and `summarize_turns` (bob_memory) — in-run context compaction is **Module O3**, no code here.
 
 ---
 
