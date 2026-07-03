@@ -1,7 +1,8 @@
 # bob Improvement Modules
 
-Eight independent improvement modules. Each has a full implementation spec.
-Implement in the order shown — Module A is the foundation.
+The bob improvement modules, each with a full implementation spec. Implement in the order shown.
+Modules A–N plus the portability→memory track (NB, NC, ND, NE, NE6-MEM, MEM2) are **implemented**;
+**O** (frontier capability) is next, then **P**.
 
 ## Implementation Order
 
@@ -21,19 +22,23 @@ Implement in the order shown — Module A is the foundation.
 | 12 | **M** — Agent Harness Quality & Reliability ✓ implemented | [MODULE-M-harness-quality.md](MODULE-M-harness-quality.md) | ~47 h | — |
 | 13 | **N** — Road to 10/10 (multi-user / MCP hardening) ✓ implemented | [MODULE-N-road-to-10.md](MODULE-N-road-to-10.md) | ~31 h | M |
 | 14 | **NB** — Portability Foundation (OS-agnostic core) — NB1–NB6 ✓ implemented (2026-07-02); NB7 deferred | [MODULE-NB-portability-foundation.md](MODULE-NB-portability-foundation.md) | spent NB1–NB6; NB7 ~6–10 h deferred | N |
-| 15 | **NC** — Cross-Platform Provisioner (Win+Linux parity) — draft | [MODULE-NC-cross-platform-provisioner.md](MODULE-NC-cross-platform-provisioner.md) | ~40–57 h | NB |
-| 16 | **ND** — Release, Reproducibility & Cross-OS Acceptance — draft | [MODULE-ND-release-acceptance.md](MODULE-ND-release-acceptance.md) | ~19–27 h | NB, NC |
-| 17 | **NE** — Unified `bob` Interface (one front door) — draft | [MODULE-NE-unified-interface.md](MODULE-NE-unified-interface.md) | ~22–32 h | NB, NC, ND |
-| 18 | **O** — Frontier Class (capability) — draft | [MODULE-O-frontier-class.md](MODULE-O-frontier-class.md) | ~71–96 h | NB, NC, ND (NE) |
-| 19 | **P** — Frontier Product (durable autonomy, multimodal, computer-use) — draft | [MODULE-P-frontier-product.md](MODULE-P-frontier-product.md) | ~39–57 h | O |
+| 15 | **NC** — Cross-Platform Provisioner (Win+Linux parity) ✓ implemented | [MODULE-NC-cross-platform-provisioner.md](MODULE-NC-cross-platform-provisioner.md) | ~40–57 h | NB |
+| 16 | **ND** — Release, Reproducibility & Cross-OS Acceptance ✓ implemented | [MODULE-ND-release-acceptance.md](MODULE-ND-release-acceptance.md) | ~19–27 h | NB, NC |
+| 17 | **NE** — Unified `bob` Interface (one front door) ✓ implemented | [MODULE-NE-unified-interface.md](MODULE-NE-unified-interface.md) | ~22–32 h | NB, NC, ND |
+| 18 | **NE6-MEM** — In-shell sessions + memory redesign (MEM-0..6) ✓ implemented | [MODULE-NE6-MEM-sessions-memory.md](MODULE-NE6-MEM-sessions-memory.md) | — | NE |
+| 19 | **MEM2** — Project scoping + memory quality (MEM-7..11) ✓ implemented | [MODULE-MEM2-scoping-and-quality.md](MODULE-MEM2-scoping-and-quality.md) | — | NE6-MEM |
+| 20 | **O** — Frontier Class (capability) — draft (cleared to start) | [MODULE-O-frontier-class.md](MODULE-O-frontier-class.md) | ~71–96 h | NB, NC, ND, NE, MEM2 |
+| 21 | **P** — Frontier Product (durable autonomy, multimodal, computer-use) — draft | [MODULE-P-frontier-product.md](MODULE-P-frontier-product.md) | ~39–57 h | O |
 | — | **Architecture Contracts** (cross-module seams — read before building NB–P) | [ARCHITECTURE-CONTRACTS.md](ARCHITECTURE-CONTRACTS.md) | — | — |
 
 **Total estimated effort:** ~56–67 h (A–L) + ~47 h (M) + ~31 h (N) + the post-N roadmap: ~25–34 h (NB)
 + ~40–57 h (NC) + ~19–27 h (ND) + ~22–32 h (NE) + ~71–96 h (O) + ~39–57 h (P) ≈ **~216–303 h** planned.
 
-> **Sequencing:** `N (done) → NB → NC → ND → NE → O → P`. NB makes the core run OS-agnostic; NC
-> installs & runs the whole stack on Windows **and** Linux (incl. a CPU tier); ND proves it's
-> reproducible + shippable on both; NE gives it one coherent front door. **Only then** does O add
+> **Sequencing:** `N → NB → NC → ND → NE → NE6-MEM → MEM2 (all ✓ done) → O (next) → P`. NB makes the
+> core run OS-agnostic; NC installs & runs the whole stack on Windows **and** Linux (incl. a CPU tier);
+> ND proves it's reproducible + shippable on both; NE gives it one coherent front door; NE6-MEM/MEM2
+> add persisted sessions + a typed, scoped memory layer (and pre-build several O seams). **Only then**
+> does O add
 > frontier *capability* (surfaced inside NE), and P the frontier-*product* layer (durable autonomy,
 > multimodal, computer-use). The cross-module seams (dispatch, config, secrets, data-dir, CI,
 > registries) are defined **once** in [ARCHITECTURE-CONTRACTS.md](ARCHITECTURE-CONTRACTS.md) — every
@@ -177,7 +182,7 @@ wired into `test-dry-run.ps1` [12]. **MCP (N10):** `scripts/bob_mcp_server.py` e
 registry over MCP behind `agent.mcpEnabled` (`bob agent mcp`). New: `docs/SECURITY.md`,
 `docs/improvements/MODULE-N-road-to-10.md`, `scripts/{check.ps1,install-hooks.ps1,bob_mcp_server.py}`.
 
-### O — Frontier Class (capability) — draft, not implemented
+### O — Frontier Class (capability) — draft, cleared to start
 N made the harness *trustworthy*; O makes it *capable*, closing the architecture gap to frontier
 harnesses. It deliberately lifts the M/N non-goal and changes the agent loop. Runs **after** the
 portability track, so its OS-touching items are dual-platform. Eleven sub-items:
@@ -200,7 +205,7 @@ mode); **P4** computer-use / desktop automation (screenshot/click/type — opt-i
 permission-gated via O6, audited, kill-switched); **P5** long-horizon eval + a test-backed computer-use
 security review. Everything opt-in and gated. ~39–57 h. See [MODULE-P-frontier-product.md](MODULE-P-frontier-product.md).
 
-### NB — Portability Foundation (OS-agnostic core) — draft, not implemented
+### NB — Portability Foundation (OS-agnostic core) ✓ implemented (NB1–NB6; NB7 deferred)
 The PowerShell/Python split is a *drag* (port/role constants hand-mirrored across languages) and a
 *wall* (the Python runtime can only boot after PowerShell generates `config.json` from `.psd1`).
 NB is the first, verifiable step toward OS-agnostic **without** rewriting the Windows orchestration
@@ -215,7 +220,7 @@ core runs off-Windows; **NB7** (phased) a neutral authoring format (psd1 → TOM
 the whole NB→P chain builds on. ~25–34 h (+10 h phased).
 See [MODULE-NB-portability-foundation.md](MODULE-NB-portability-foundation.md).
 
-### NC — Cross-Platform Provisioner (Windows + Linux at parity) — draft, not implemented
+### NC — Cross-Platform Provisioner (Windows + Linux at parity) ✓ implemented
 NB makes the *core* portable; NC delivers the auto-install/setup experience on **Linux too**, at
 Windows parity — so Bob is an installable, working product on both. The enabler: `pwsh` runs on
 Linux, so the config-based orchestration stays and just becomes OS-aware (branch `winget`/scheduled
@@ -230,7 +235,7 @@ no-GPU build+serve tier** (`cpu` profile = Qwen2.5-0.5B; smoke scoped to serve+a
 stays in the deterministic unit tests) (required by ND2's per-PR CI on
 GPU-less runners). ~40–57 h. See [MODULE-NC-cross-platform-provisioner.md](MODULE-NC-cross-platform-provisioner.md).
 
-### NE — Unified `bob` Interface (one front door) — draft, not implemented
+### NE — Unified `bob` Interface (one front door) ✓ implemented
 Bob has ~30 verbs bolted onto a PowerShell `switch` and no single front door. NE gives it one `bob`
 command — a splash + live tool/skill catalog + interactive REPL, like Claude Code / Hermes-Agent.
 Cheap because Bob already auto-discovers tools (`ToolRegistry`), so the catalog is nearly free.
@@ -243,7 +248,23 @@ so O's features (sub-agent trees, permission prompts, parallel-tool progress) su
 not by rewriting the UI. Sits `ND → NE → O`. ~22–32 h.
 See [MODULE-NE-unified-interface.md](MODULE-NE-unified-interface.md).
 
-### ND — Release, Reproducibility & Cross-OS Acceptance — draft, not implemented
+### NE6-MEM — In-shell sessions + memory redesign (MEM-0..6) ✓ implemented
+Persisted, owner-scoped `bob` shell sessions (`data/sessions.db`, WI-6) + a redesigned memory core:
+typed rows (profile/preference/project/fact/episodic) in SQLite + BGE-M3, blended recall ranking,
+once-per-session profile injection, in-process end-of-session consolidation, hygiene, and the
+`bob memory` CLI. Threads `owner`/`agent_depth`/`scope` onto `RunContext` — the first **O1 seam**.
+See [MODULE-NE6-MEM-sessions-memory.md](MODULE-NE6-MEM-sessions-memory.md).
+
+### MEM2 — Project scoping + memory quality (MEM-7..11) ✓ implemented
+Per-project memory scoping (`scopeByProject` + `project_key`) and human-editable `BOB.md`/`AGENTS.md`
+project files; conflict-aware consolidation (supersede, don't accumulate); importance → salience + a
+`wSalience` recall term + pin/unpin; injection budget (`budget_injection` + `maxInjectedTokens`);
+provenance (`source_session` v3 migration + `forget --session`); timestamp fixes. User-facing
+reference: [../MEMORY.md](../MEMORY.md). **Pre-built O seams:** the summarizer core (`summarize_turns`),
+the injection budget (the O3 / MEM-10 split), and the `mutating_tools` / `approval_required_tools`
+registry sets (O2 / O6). See [MODULE-MEM2-scoping-and-quality.md](MODULE-MEM2-scoping-and-quality.md).
+
+### ND — Release, Reproducibility & Cross-OS Acceptance ✓ implemented
 The capstone that turns "runs on two OSes" into "reliably installs and updates on two OSes." **ND1**
 pin + checksum everything (`versions.lock` — submodule commits, dep locks, model manifest);
 **ND2** a cross-OS acceptance matrix (CI on Windows + Linux that provisions a clean machine and runs
@@ -262,12 +283,13 @@ Cross-module seams (dispatch, config, secrets, data-dir, CI, registries) are def
 
 ```
 N   ✓ done   reliable & safe on one machine (Windows)
- └─ NB       portable core            — runtime boots/runs OS-agnostic; owns C1/C2/C3/C4/C6; creates CI (C5)
-     └─ NC   cross-platform provisioner — installs & runs the whole stack on Windows + Linux (+CPU tier)
-         └─ ND  release & acceptance    — reproducible, auto-proven on both OSes (extends CI), shippable
-             └─ NE  unified interface   — one `bob`: splash + live catalog + interactive REPL
-                 └─ O  frontier capability — sub-agents, parallel tools, dual-OS sandbox, ... (surfaces in NE)
-                     └─ P  frontier product — durable/resumable runs, in-loop multimodal, computer-use
+ └─ NB       ✓ done  portable core            — runtime boots/runs OS-agnostic; owns C1/C2/C3/C4/C6; creates CI (C5)
+     └─ NC   ✓ done  cross-platform provisioner — installs & runs the whole stack on Windows + Linux (+CPU tier)
+         └─ ND  ✓ done  release & acceptance    — reproducible, auto-proven on both OSes (extends CI), shippable
+             └─ NE  ✓ done  unified interface   — one `bob`: splash + live catalog + interactive REPL
+                 └─ NE6-MEM/MEM2  ✓ done  sessions + typed/scoped memory (pre-builds several O seams)
+                     └─ O  ← NEXT  frontier capability — sub-agents, parallel tools, dual-OS sandbox, ... (surfaces in NE)
+                         └─ P  frontier product — durable/resumable runs, in-loop multimodal, computer-use
 ```
 
 **NB → NC → ND → NE land before O; O before P.** A reliable, installable, *coherent-to-use* Bob on

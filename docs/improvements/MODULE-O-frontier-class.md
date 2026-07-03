@@ -1,11 +1,14 @@
 # Module O — Frontier Class (closing the capability gap)
 
-**Status:** draft / not implemented. **Depends on:** **NB + NC + ND** (and NE for the interface it
-surfaces in) — not just N. Per the roadmap and [ARCHITECTURE-CONTRACTS.md](ARCHITECTURE-CONTRACTS.md),
-O runs *after* the portability track, so **every OS-touching O item is now dual-platform (Windows +
-Linux)**, not Windows-only — this is reflected in the O5 estimate below. O reuses N's identity,
-cancellation, streaming, observability, and the CI workflow NB6 created (C5 — O10 *extends* it).
-**Read first:** ARCHITECTURE-CONTRACTS.md (C3 secrets for O8, C5 CI for O10, C6 skills for O11).
+**Status:** draft / not implemented — **cleared to start** (2026-07-03). **Depends on:** **NB + NC +
+ND + NE — all shipped**, plus the **NE6-MEM + MEM2** memory/sessions work that landed *after* this plan
+was written. Per the roadmap and [ARCHITECTURE-CONTRACTS.md](ARCHITECTURE-CONTRACTS.md), O runs *after*
+the portability track, so **every OS-touching O item is now dual-platform (Windows + Linux)**, not
+Windows-only — this is reflected in the O5 estimate below. O reuses N's identity, cancellation,
+streaming, observability, and the CI workflow NB6 created (C5 — O10 *extends* it).
+**Read first:** ARCHITECTURE-CONTRACTS.md (C3 secrets for O8, C5 CI for O10, C6 skills for O11), then
+the **"Already-built seams"** section below — NE6-MEM/MEM2 pre-built several O seams; build on them,
+don't re-derive them.
 
 **Why this module exists.** Modules M and N made the harness *trustworthy* — reliable, safe,
 owner-scoped, cancellable, observable, tested. They deliberately did **not** touch the agent loop
@@ -47,6 +50,34 @@ land it in the dependency order below, one verifiable sub-item at a time, exactl
 **Total:** ~71–96 h (O5 grew for dual-OS sandbox; O11 added from the NE4 split). **After O:** the
 reliability/safety axes are already 8; O lifts the three architecture axes (loop, context, sandbox)
 to frontier and pushes the rest to 9–10.
+
+---
+
+## Already-built seams (NE6-MEM / MEM2 — build on these, don't rebuild)
+
+This plan predates the memory/sessions work (NE6-MEM = MEM-0..6; MEM2 = MEM-7..11). That work
+deliberately pre-built several O seams. Implement O *over* them — re-deriving them would duplicate or
+conflict.
+
+| O item | Already in place (cite) | O's remaining work |
+|--------|-------------------------|--------------------|
+| **O1** sub-agents | `RunContext.agent_depth` + `owner` + `scope` ([bob_loop.py:207-219]); `CancelToken.child()` parent→child chaining ([bob_loop.py:439]); the once-per-session profile block already gated to `agent_depth==0`, so a sub-agent starts with a clean context ([bob_loop.py:720]) | the `maxAgentDepth` **cap**, the `spawn_agent` tool, the structured-summary return, and sub-agent memory scoping (below) |
+| **O2** parallel / **O6** permissions | `ToolRegistry.mutating_tools` + `approval_required_tools` sets, populated from each module's `MUTATING_TOOLS`/exit-tool contract and recomputed for filtered views ([tool_registry.py:45-48,206-209,313-314]) | O2 serializes over `mutating_tools`; O6 enforces `allow\|ask\|deny` at `dispatch_call` **using these sets** — not a new per-tool flag |
+| **O3** compaction | the shared summarizer core is **`bob_memory.summarize_turns`** ([bob_memory.py:709]) — *not* the legacy `cmd_summarize_session` wrapper; the memory-side injection budget already ships (`bob_core.budget_injection` + `memory.maxInjectedTokens`, MEM-10) and MEM-11 marked this exact seam at `truncate_history` / `summarize_turns` | O3 owns only the **rolling transcript** (summarize-the-dropped-span), reusing `summarize_turns` |
+
+**Memory / sessions integration (the original plan had none).** MEM added a typed, owner/project-scoped
+memory + persisted-session layer O must account for:
+- **Sub-agent memory (O1):** a sub-agent inherits the parent's `owner` (recall/store stay in the right
+  identity) but runs an **isolated transcript**; the profile block is already suppressed at depth>0. A
+  sub-run must **not** trigger end-of-session consolidation — only a real session's lifecycle
+  consolidates (shell `/exit`, server session delete).
+- **Compaction vs injection (O3):** `truncate_history` (the transcript) is O3's; `budget_injection`
+  (the saved-memory injection cap) is MEM-10's. Keep them distinct — don't double-summarize.
+- **Mutating memory (O6):** `memory_store` is already in `MUTATING_TOOLS`; O6's default `ask`-on-mutate
+  covers it for free.
+
+**Effort note:** O1/O2/O3/O6 are each a few hours lighter than their estimates below because these
+seams exist — treat the totals as an upper bound.
 
 ---
 
@@ -148,8 +179,10 @@ harnesses *compact*: summarize the dropped span into a compact note and keep it.
 ### Change
 - When history crosses the token budget, summarize the oldest droppable span (tool-heavy
   assistant/user pairs first) into a single compact "conversation so far" system note instead of
-  discarding it — reuse the existing summarizer (`bob_memory.cmd_summarize_session` / the chat role)
-  rather than adding a model dependency.
+  discarding it — reuse the existing summarizer core (`bob_memory.summarize_turns`, the MEM-4 shared
+  function; `cmd_summarize_session` is only its legacy CLI wrapper) rather than adding a model
+  dependency. (The saved-memory *injection* budget is already handled by MEM-10's
+  `bob_core.budget_injection` — O3 owns the transcript side only; see "Already-built seams".)
 - Always preserve the system prompt, the original goal, and the last K turns verbatim; compact only
   the middle. Cap the summary itself to a token budget so compaction can't re-overflow.
 - Per-result compaction: large tool outputs get summarized-on-append past a size threshold (today
@@ -172,6 +205,10 @@ decomposes (spawn a focused sub-agent per subtask, each with its own clean conte
 results) run here as one ever-growing transcript — the single biggest capability gap.
 
 ### Change
+> **Seam note (NE6-MEM):** the delegation *plumbing* already exists — `RunContext.agent_depth`,
+> `CancelToken.child()`, and owner/scope threading, with the profile block already gated to
+> `agent_depth==0`. O1 adds the depth **cap**, the `spawn_agent` tool, the structured-summary return,
+> and sub-agent memory scoping (see "Already-built seams"). Do not rebuild the plumbing.
 - A first-class **`spawn_agent` tool** (Layer-1) that runs a nested `run_agent_events` with:
   - an **isolated** message history (fresh system + the delegated subtask; the parent's transcript
     is *not* inherited — the isolation is the point),
