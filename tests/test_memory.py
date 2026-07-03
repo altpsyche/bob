@@ -249,6 +249,21 @@ class TestBlendedRead(unittest.TestCase):
         self.assertIn("repo A fact", contents)
         self.assertNotIn("repo B fact", contents)      # other project's rows excluded
 
+    def test_higher_salience_outranks_lower_at_equal_cosine(self):   # MEM-9
+        now = datetime.now(timezone.utc).isoformat()
+        self._insert("low", emb_key="Q", salience=0.1, created_at=now)
+        self._insert("high", emb_key="Q", salience=1.0, created_at=now)
+        hits = bob_memory.recall("Q", self.db, k=2, threshold=0.0)
+        self.assertEqual(hits[0]["content"], "high")    # wSalience breaks the tie
+
+    def test_recent_access_beats_untouched_same_age(self):           # MEM-9 recency off last_used
+        old = "2020-01-01T00:00:00+00:00"
+        now = datetime.now(timezone.utc).isoformat()
+        self._insert("touched", emb_key="Q", created_at=old, last_used=now)
+        self._insert("stale", emb_key="Q", created_at=old)
+        hits = bob_memory.recall("Q", self.db, k=2, threshold=0.0)
+        self.assertEqual(hits[0]["content"], "touched")  # reinforced fact stops decaying
+
     def test_bob_core_threads_owner_scope_and_weights(self):
         import bob_core
         captured = {}
@@ -400,26 +415,50 @@ class TestConsolidation(unittest.TestCase):
         self.assertEqual([r[0] for r in rows], ["episodic"])      # only the recap
         self.assertIn("turn(s)", rows[0][1])                       # deterministic fallback body
 
-    def test_forwards_timeout_to_summarizer(self):
+    def test_forwards_timeout_and_max_tokens_to_summarizer(self):
         captured = {}
-        bob_memory.summarize_turns = (lambda turns, model="chat", system_prompt=None,
-                                      max_tokens=256, timeout=60: captured.update(timeout=timeout) or "")
-        bob_memory.consolidate_session(self._TURNS, self.db, timeout=17)
+        bob_memory.summarize_turns = (lambda turns, model="chat", system_prompt=None, max_tokens=256,
+                                      timeout=60: captured.update(timeout=timeout, mt=max_tokens) or "")
+        bob_memory.consolidate_session(self._TURNS, self.db, timeout=17, max_tokens=800)
         self.assertEqual(captured["timeout"], 17)          # bounded exit stall reaches the LLM call
+        self.assertEqual(captured["mt"], 800)              # reasoning-token budget reaches the LLM call
 
     # --- MEM-8: conflict-aware reconciliation --------------------------------------------------
     def test_parse_reconciled_bullets(self):
-        triples = bob_memory._parse_reconciled_bullets(
-            "preference: User likes tea | NEW\n"
-            "- project: builds Bob | REPLACES:7\n"
+        quads = bob_memory._parse_reconciled_bullets(
+            "preference: User likes tea | NEW | 4\n"
+            "- project: builds Bob | REPLACES:7 | 8\n"
             "fact: no tag here\n"
             "preference: weird | REPLACES:notanint\n"
-            "fact: has | pipe but no tag\n")
-        self.assertIn(("preference", "User likes tea", None), triples)
-        self.assertIn(("project", "builds Bob", 7), triples)
-        self.assertIn(("fact", "no tag here", None), triples)        # missing tag → NEW
-        self.assertIn(("preference", "weird", None), triples)        # bad id → NEW
-        self.assertIn(("fact", "has | pipe but no tag", None), triples)  # unknown text after | kept
+            "fact: has | pipe but no tag\n"
+            "profile: User is Siva | 10 | NEW\n")                    # metadata order-independent
+        self.assertIn(("preference", "User likes tea", None, 4), quads)
+        self.assertIn(("project", "builds Bob", 7, 8), quads)
+        self.assertIn(("fact", "no tag here", None, None), quads)    # missing tag → NEW, no importance
+        self.assertIn(("preference", "weird", None, None), quads)    # bad id → NEW
+        self.assertIn(("fact", "has | pipe but no tag", None, None), quads)  # literal | survives
+        self.assertIn(("profile", "User is Siva", None, 10), quads)  # importance before tag
+
+    def test_importance_sets_salience(self):
+        bob_memory.summarize_turns = lambda *a, **k: "preference: User loves jazz | NEW | 8\n"
+        bob_memory.consolidate_session(self._TURNS, self.db)
+        row = bob_memory.get_db(self.db).execute(
+            "SELECT salience FROM memories WHERE content='User loves jazz'").fetchone()
+        self.assertAlmostEqual(row[0], 0.8)                          # importance 8 → salience 0.8
+
+    def test_high_importance_profile_is_auto_pinned(self):
+        bob_memory.summarize_turns = lambda *a, **k: "profile: User's name is Siva | NEW | 10\n"
+        bob_memory.consolidate_session(self._TURNS, self.db)
+        row = bob_memory.get_db(self.db).execute(
+            "SELECT pinned FROM memories WHERE type='profile'").fetchone()
+        self.assertEqual(row[0], 1)                                  # core-identity fact pinned
+
+    def test_low_importance_is_not_pinned(self):
+        bob_memory.summarize_turns = lambda *a, **k: "preference: User likes tea | NEW | 3\n"
+        bob_memory.consolidate_session(self._TURNS, self.db)
+        row = bob_memory.get_db(self.db).execute(
+            "SELECT pinned FROM memories WHERE content='User likes tea'").fetchone()
+        self.assertEqual(row[0], 0)
 
     def test_conflict_supersedes_existing_fact(self):
         bob_memory.store("User uses vim", self.db, source="user", mem_type="preference")
@@ -655,6 +694,17 @@ class TestHygiene(unittest.TestCase):
         hits = [h["content"] for h in bob_memory.recall("the user likes coffee", self.db, threshold=0.0)]
         self.assertIn("the user likes coffee", hits)
         self.assertNotIn("the user likes tea", hits)        # superseded -> filtered from recall
+
+    def test_pin_unpin_and_survives_prune(self):                      # MEM-9 / B5
+        mid, _ = bob_memory.store("keep me around", self.db, mem_type="fact")
+        self.assertTrue(bob_memory.set_pinned(mid, self.db, True))
+        self.assertEqual(bob_memory.get_memory(mid, self.db)["pinned"], 1)
+        # a TTL prune that would otherwise drop this fact leaves the pinned row alone
+        bob_memory.prune(self.db, forget_after_days={"fact": 0})
+        self.assertIn("keep me around", self._contents())
+        self.assertTrue(bob_memory.set_pinned(mid, self.db, False))
+        self.assertEqual(bob_memory.get_memory(mid, self.db)["pinned"], 0)
+        self.assertFalse(bob_memory.set_pinned(999999, self.db, True))  # unknown id
 
     def test_list_filters_by_type_and_export(self):
         bob_memory.store("a fact here", self.db, mem_type="fact")
