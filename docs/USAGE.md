@@ -26,11 +26,13 @@ Chat (Bob identity):
   bob chat <role> "prompt"             One-shot legacy syntax (still works)
   bob think [--pro] ["prompt"]         Alias: planner / planner-pro
   bob code  [--pro] ["prompt"]         Alias: coder / coder-pro
-  bob remember "fact"                  Store text to Bob's memory (SQLite + BGE-M3 embeddings)
-  bob recall "query"                   Semantic search over memory
-  bob memory status                    Memory DB size, entry count, last stored
+  bob remember "fact"                  Store a fact (SQLite + BGE-M3 embeddings)
+  bob recall "query"                   Blended-rank search (semantic+recency+importance); prints JSON
+  bob memory list|show|edit|pin|forget|export|migrate|init-profile   Inspect / curate memory
+  bob memory status                    Memory DB size, entry count, per-type breakdown
   bob memory clear [--yes]             Wipe all memories
   bob budget                           Token and cost usage summary (LiteLLM + configured caps)
+  # Full memory + sessions reference: docs/MEMORY.md
 
 Voice (Phase 2 — run `bob setup-voice` once to download whisper + piper; flip voice.enabled in bob.psd1):
   bob setup-voice                      Download and wire whisper STT, piper TTS, and vision model
@@ -359,7 +361,7 @@ In the shell:
 | `/agent <goal>` | run the agent loop explicitly on a goal |
 | `/model [role]` · `/agency [show\|confirm\|silent]` | switch model / tool-approval mode |
 | `/tools` · `/skills` · `/help` | the catalog (grouped commands + tools + skills) |
-| `/session [new]` · `/status` · `/clear` | session + state |
+| `/session new\|list\|resume <id>\|show` · `/status` · `/clear` | persisted sessions (`data/sessions.db`) + state; leaving a session consolidates it into memory |
 | `/theme [reload]` | show/reload the theme ([config/ui.json](../config/ui.json)) |
 | `/exit` | leave |
 
@@ -429,42 +431,43 @@ Bob's persona `name`/`style` and routing defaults live in `config/bob.psd1`; the
 
 ### Memory
 
-Bob stores and retrieves facts using SQLite + BGE-M3 embeddings. The `embed` model is already pinned in VRAM so memory costs 0 extra VRAM.
+Bob stores and retrieves facts using SQLite + BGE-M3 embeddings. The `embed` model is already pinned
+in VRAM, so memory costs 0 extra VRAM and one embed call per store/recall. **Memory is on by default**
+(`memory.enabled = true`); disable it in `config/bob.psd1` with `memory = @{ enabled = $false }`.
 
-**Memory is disabled by default.** Enable it in `config/bob.psd1`:
-```powershell
-memory = @{ enabled = $true }
-```
+This is a summary — the full reference (typed store, ranking, scoping, sessions, every config key) is
+in **[MEMORY.md](MEMORY.md)**.
 
-**Storing and querying from the terminal:**
+**From the terminal:**
 ```powershell
 bob remember "I prefer dark mode in all editors"
-bob remember "working on a game engine plugin in Unreal 5.4"
-bob recall "editor preferences"     # semantic search, prints JSON results
-bob memory status                   # DB path, size, entry count
+bob recall  "editor preferences"    # blended-rank search (not plain semantic), prints JSON
+bob memory list                     # browse what Bob knows
+bob memory show 42                   # one row incl. its provenance (which session taught it)
+bob memory pin 42                    # protect a fact from pruning
+bob memory forget --session <id>    # retract everything a session taught Bob
+bob memory status                   # DB path, size, per-type counts
 bob memory clear --yes              # wipe all memories
 ```
 
-**Using memory inside the REPL:**
+**Automatic in the `bob` shell.** You don't manage memory by hand:
 
-Memory is **explicit-only** inside `bob chat` — it never auto-injects. Use the `!recall` meta-command to pull relevant memories into the context window:
+- At **session start** your stable profile (and any project [`BOB.md`](MEMORY.md#project-instruction-files))
+  is injected once.
+- At **session end** (`/exit`, `/session new`, …) durable facts are **consolidated** — the model
+  extracts typed facts and *supersedes* contradictions instead of accumulating them ("I use vim" →
+  later "I switched to vscode" leaves only vscode).
+- Set `memory.autoRecall = true` to also inject relevant memories on **every turn** (off by default;
+  otherwise the agent recalls on demand via the `memory_recall` tool).
 
-```
-Bob [chat | Qwen3-14B] >
-> !recall work context
-  [injected 3 memories into context]
-> what am I working on?
-  Bob: You're working on a game engine plugin in Unreal 5.4...
-> !recall editor preferences
-  [injected 1 memory into context]    # replaces previous slot, doesn't accumulate
-> what IDE do I prefer?
-  Bob: You prefer dark mode in all editors...
-> !memory                             # show DB status without leaving REPL
-```
+Injected memory is capped at `memory.maxInjectedTokens` so it can't overflow the context window.
+Memory is always local — even with `--pro`, recall and embedding stay on BGE-M3 at `:8081`.
 
-`!recall` injects into a **single replaceable slot** in the conversation history — calling it again swaps the slot rather than adding another injection. Context window stays clean.
+> The legacy `bob chat` REPL still supports the manual `!recall <query>` / `!memory` meta-commands
+> (single replaceable slot, no auto-injection). The modern front door is the `bob` shell, where
+> memory is automatic.
 
-Memory DB path defaults to `data/bob.db` (gitignored). Override in `config/bob.psd1 memory.dbPath`.
+Memory DB defaults to `data/bob.db` (gitignored); override with `memory.dbPath`.
 
 ### First run: onboarding
 

@@ -18,7 +18,9 @@ Bob chats, listens, speaks, sees, and acts as an agent that can search your code
 | `bob search "<query>"` | Ripgrep your codebase and synthesise the results. |
 | `bob play <music>` | Open a song or artist in Spotify or YouTube. |
 | `bob clip <url>` | Fetch a page, summarise it, and store it to memory. |
-| `bob recall "<query>"` | Search Bob's memory from past sessions. |
+| `bob remember "<text>"` | Store a fact for future sessions. |
+| `bob recall "<query>"` | Search Bob's memory (blended semantic + recency + importance rank). |
+| `bob memory <cmd>` | Inspect/curate memory: `list`, `show`, `edit`, `pin`, `forget`, `export`, … |
 
 Agent tools (callable by `bob agent` autonomously): memory, web, git, file, shell, fabric, summarise, draft, search, play.
 
@@ -113,6 +115,8 @@ Flags for `setup.bat`: `-Profile 12gb` (smaller model set), `-SkipModels` (skip 
 [SETUP](docs/SETUP.md): prerequisites, two-step install flow, build steps, verification.
 
 [USAGE](docs/USAGE.md): full command reference, API details, agent system, client configuration, Docker services, customization.
+
+[MEMORY](docs/MEMORY.md): the memory engine + persisted sessions — typed/owner/project-scoped store, blended recall, conflict-aware consolidation, `BOB.md` project files, the `bob memory` CLI, and every `memory.*` config key.
 
 [MANUAL-INSTALL.md](docs/MANUAL-INSTALL.md): step-by-step for advanced users with exact cmake flags, venv creation, and Docker wiring.
 

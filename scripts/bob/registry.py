@@ -83,8 +83,8 @@ COMMANDS = [
      "args": "<query>", "runtime": "pwsh", "handler": None},
     {"name": "remember", "group": "Know", "summary": "Store text to memory",
      "args": "<fact>", "runtime": "pwsh", "handler": None},
-    {"name": "memory", "group": "Know", "summary": "Memory DB info / wipe",
-     "args": "<status|clear>", "runtime": "pwsh", "handler": None},
+    {"name": "memory", "group": "Know", "summary": "Inspect/curate memory (list, show, edit, pin, forget, export, status, clear)",
+     "args": "<list|show|edit|pin|unpin|forget|export|migrate|init-profile|status|clear>", "runtime": "pwsh", "handler": None},
     {"name": "budget", "group": "Know", "summary": "Token and cost usage summary",
      "args": "", "runtime": "pwsh", "handler": None},
 
