@@ -42,13 +42,26 @@ def _message_tokens(m: dict) -> int:
 
 
 def _is_transient(e) -> bool:
-    """True for LLM errors worth exactly one retry: connection / timeout / 5xx / 429."""
+    """True for LLM errors worth a retry: connection / timeout / 5xx / 429. A llama-swap model swap
+    500s the first request after an idle-unload ('upstream command exited prematurely') and recovers
+    once the subprocess relaunches — so these are retryable after a short backoff."""
     if type(e).__name__ in (
         "APIConnectionError", "APITimeoutError", "InternalServerError",
         "RateLimitError", "ConnectionError", "Timeout", "ReadTimeout",
     ):
         return True
     return getattr(e, "status_code", None) in (429, 500, 502, 503, 504)
+
+
+def _sleep_cancellable(seconds: float, cancel=None, tick: float = 0.25) -> None:
+    """Sleep up to `seconds`, returning early if `cancel` trips — keeps retry backoff from delaying
+    an abort by more than `tick` (N3 responsiveness)."""
+    end = time.monotonic() + max(0.0, seconds)
+    while True:
+        remaining = end - time.monotonic()
+        if remaining <= 0 or (cancel is not None and cancel.cancelled()):
+            return
+        time.sleep(min(tick, remaining))
 
 
 def _parse_hermes_tool_calls(content: str) -> list | None:
@@ -624,6 +637,10 @@ def run_agent_events(
     effective_agency = agency or agent_cfg.get("agency", "show")
     max_steps = int(agent_cfg.get("maxSteps", 10))
     max_hist = int(agent_cfg.get("maxHistoryMsgs", 40))
+    # Transient-LLM-error retry (5xx/timeout/conn, incl. the llama-swap model-swap race). Total tries
+    # per step = llmRetries + 1, with an escalating backoff so a restarting backend has time to come up.
+    llm_attempts = max(1, int(agent_cfg.get("llmRetries", 2)) + 1)
+    llm_backoff = float(agent_cfg.get("llmRetryBackoffSec", 2.0))
     # M7 — token-aware context: cap history to a token budget (0 = count-only) and shrink
     # the injected tool schemas once the tool count crosses compactSchemasAfter.
     max_context_tokens = int(agent_cfg.get("maxContextTokens", 6000))
@@ -781,8 +798,10 @@ def run_agent_events(
             # content deltas surface as 'token' events. One transient retry only when NOT emitting
             # (nothing surfaced yet); never mid-stream (that would re-emit tokens).
             msg = None
-            attempts = 1 if stream else 2
-            for attempt in range(attempts):
+            # Retry transient errors with backoff. Safe to retry (even while streaming) ONLY while
+            # nothing has been emitted this step — once tokens surfaced, a retry would double them.
+            for attempt in range(llm_attempts):
+                emitted = False
                 try:
                     stream_resp = client.chat.completions.create(
                         model=effective_role, messages=messages, tools=tools,
@@ -792,15 +811,23 @@ def run_agent_events(
                     while True:
                         try:
                             _kind, text = next(gen)
+                            emitted = True
                             yield {"type": "token", "text": text}
                         except StopIteration as stop:
                             msg = stop.value
                             break
                     break
                 except Exception as e:
-                    if attempt + 1 < attempts and _is_transient(e):
-                        log.warning(f"[{rid}] transient LLM error step {step + 1}: {e}")
-                        print(f"[retry] transient LLM error at step {step + 1}: {e}", file=sys.stderr)
+                    if attempt + 1 < llm_attempts and _is_transient(e) and not emitted:
+                        delay = llm_backoff * (attempt + 1)
+                        log.warning(f"[{rid}] transient LLM error step {step + 1} (retry in {delay:.0f}s): {e}")
+                        print(f"[retry] transient LLM error at step {step + 1} (retry in {delay:.0f}s): {e}",
+                              file=sys.stderr)
+                        _sleep_cancellable(delay, cancel)
+                        if cancel is not None and cancel.cancelled():
+                            yield {"type": "final", "result": _final_answer(last_content, hermes_mode),
+                                   "exit_requested": exit_requested, "reason": "cancelled"}
+                            return
                         continue
                     log.error(f"[{rid}] LLM error step {step + 1}: {e}")
                     yield {"type": "error", "message": f"LLM error at step {step + 1}: {e}"}

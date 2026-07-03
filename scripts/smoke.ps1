@@ -117,8 +117,13 @@ try {
         $resp = Invoke-WebRequest "$agentBase/v1/agent/completions/stream" -Method Post -Headers $hdr `
                   -ContentType 'application/json' -Body $body -TimeoutSec $TimeoutSec -ErrorAction Stop
         $text = "$($resp.Content)"
-        if ($text -match 'data:' -and $text -match '"type"') { Ok "SSE stream produced events" }
-        else { Bad "SSE stream produced no recognizable events" }
+        # Require a healthy stream — a 'final' terminal event or streamed tokens. (Matching only
+        # `"type"` would let a terminal `error` event pass as success.)
+        if ($text -match 'data:' -and ($text -match '"type"\s*:\s*"final"' -or $text -match '"type"\s*:\s*"token"')) {
+          Ok "SSE stream produced events"
+        } else {
+          Bad "SSE stream produced no successful events: $($text.Substring(0, [Math]::Min(200, $text.Length)))"
+        }
       } catch { Bad "SSE stream (POST /v1/agent/completions/stream) failed: $_" }
     }
   }

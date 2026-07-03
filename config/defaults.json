@@ -73,6 +73,8 @@
       "maxToolResultTokens": 1000,
       "compactSchemasAfter": 12,
       "requestTimeout": 600,
+      "llmRetries": 2,
+      "llmRetryBackoffSec": 2.0,
       "allowPrivateFetch": false,
       "disabledTools": [],
       "allowedReadPaths": [],
