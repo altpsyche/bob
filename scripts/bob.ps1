@@ -906,11 +906,11 @@ N8N_PORT=$($dp.n8nPort ?? (Get-BobPortDefault 'n8nPort'))
   'memory' {
     if (-not $rest.Count) { & "$repo\scripts\bob-memory.ps1" status; break }
     $sub = $rest[0]
-    if ($sub -in 'status','clear','list','show','forget','edit','export','migrate','init-profile') {
+    if ($sub -in 'status','clear','list','show','forget','edit','pin','unpin','export','migrate','init-profile') {
       # bob-memory.ps1 prepends --db and forwards the rest to bob_memory.py's subparsers (MEM-5).
       & "$repo\scripts\bob-memory.ps1" @rest
     } else {
-      Write-Host "Usage: bob memory <status|clear|list|show|forget|edit|export|migrate> [args]"
+      Write-Host "Usage: bob memory <status|clear|list|show|forget|edit|pin|unpin|export|migrate> [args]"
     }
   }
   'budget' { & "$repo\scripts\bob-budget.ps1" }

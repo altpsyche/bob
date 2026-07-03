@@ -167,9 +167,9 @@ MEMORY_CONTEXT_FRAME = (
 
 def memory_store(content: str, tags: str = "", mem_type: str = "fact",
                  owner: Optional[str] = None, scope: Optional[str] = None,
-                 config: Optional[dict] = None) -> str:
-    """Store content in bob.db directly (no subprocess). Threads type/tags/owner/scope and the
-    configured dedup threshold through to the typed write path (MEM-1/7). `owner` defaults to
+                 salience: float = 1.0, config: Optional[dict] = None) -> str:
+    """Store content in bob.db directly (no subprocess). Threads type/tags/owner/scope/salience and
+    the configured dedup threshold through to the typed write path (MEM-1/7/9). `owner` defaults to
     agent.defaultOwner; MEM-6/7 thread the real per-run owner/scope from RunContext. Only
     type='project' facts are scoped to the project; identity/prefs/facts stay global."""
     cfg = config or load_config()
@@ -182,7 +182,7 @@ def memory_store(content: str, tags: str = "", mem_type: str = "fact",
     row_scope = scope if mem_type == "project" else None
     mid, is_new = bob_memory.store(
         content, db_path=db_path, mem_type=mem_type, owner=owner, scope=row_scope,
-        tags=(tags or None), dedup_threshold=float(mem.get("dedupThreshold", 0.92)),
+        tags=(tags or None), salience=salience, dedup_threshold=float(mem.get("dedupThreshold", 0.92)),
     )
     return f"Stored (id={mid}): {content[:80]}" if is_new else f"Already stored (similar id={mid})"
 
@@ -289,6 +289,7 @@ def consolidate_session(turns: list, config: Optional[dict] = None,
             dedup_threshold=float(mem.get("dedupThreshold", 0.92)),
             timeout=int(mem.get("consolidateTimeout", 30)),   # bound end-of-session stall
             reconcile_top_k=int(mem.get("reconcileTopK", 20)),  # MEM-8 existing-facts window
+            max_tokens=int(mem.get("maxSummaryTokens", 512)),   # clears the reasoning-token budget
         )
         # MEM-5 — opportunistic hygiene at end of consolidation: TTL prune + per-owner size cap.
         try:

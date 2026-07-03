@@ -105,7 +105,7 @@ def _content_hash(content: str) -> str:
 # Mirror config/defaults.json memory.ranking / memory.typeWeights. recall() reads config-supplied
 # overrides when given, else these. A near-immortal half-life (~100y) makes profile/preference decay
 # negligible; episodic decays in weeks.
-_DEFAULT_WEIGHTS = {"wSemantic": 1.0, "wRecency": 0.3, "wType": 0.2, "wUsage": 0.1}
+_DEFAULT_WEIGHTS = {"wSemantic": 1.0, "wRecency": 0.3, "wType": 0.2, "wUsage": 0.1, "wSalience": 0.3}
 _DEFAULT_TYPE_WEIGHTS = {"profile": 1.0, "preference": 0.9, "project": 0.8, "fact": 0.7, "episodic": 0.5}
 _DEFAULT_HALF_LIVES = {"profile": 36500, "preference": 36500, "project": 90, "fact": 365, "episodic": 30}
 
@@ -307,10 +307,13 @@ def recall(query: str, db_path: Path, k: int = 5, threshold: float = 0.35,
     first) and bump last_used/use_count on the hits. Raises RuntimeError if the embed server is
     unreachable. Returns [] for an empty query or no candidates.
 
-    MEM-2 blended score (replaces the semantic-only cosine + magic 0.3):
-        score = wSemantic*cosine + wRecency*exp(-age_days/halfLife[type]) + wType*typeWeight + wUsage*usage
-    An owner/scope SQL prefilter closes the former cross-owner leak and skips soft-deleted (superseded)
-    and expired rows before scoring."""
+    MEM-2/9 blended score (replaces the semantic-only cosine + magic 0.3):
+        score = wSemantic*cosine + wRecency*exp(-age_days/halfLife[type]) + wType*typeWeight
+                + wUsage*usage + wSalience*salience
+    MEM-9: recency ages off max(created_at, last_used) so a re-accessed fact stops decaying, and
+    salience (importance/10, set by consolidation) is a live ranking term. An owner/scope SQL
+    prefilter closes the former cross-owner leak and skips soft-deleted (superseded) and expired
+    rows before scoring."""
     if not query.strip():
         return []
     w = {**_DEFAULT_WEIGHTS, **(weights or {})}
@@ -318,7 +321,8 @@ def recall(query: str, db_path: Path, k: int = 5, threshold: float = 0.35,
     hl = {**_DEFAULT_HALF_LIVES, **(half_lives or {})}
     db = get_db(db_path)
     now = datetime.now(timezone.utc)
-    sql = ("SELECT id, content, embedding, type, created_at, use_count FROM memories "
+    sql = ("SELECT id, content, embedding, type, created_at, use_count, salience, last_used "
+           "FROM memories "
            "WHERE owner_id=? AND superseded_by IS NULL AND (expires_at IS NULL OR expires_at > ?)")
     params = [owner, now.isoformat()]
     if scope is not None:
@@ -332,15 +336,20 @@ def recall(query: str, db_path: Path, k: int = 5, threshold: float = 0.35,
         return []
     q_vec = embed(query)
     scored = []
-    for row_id, content, emb_json, mtype, created_at, use_count in rows:
+    for row_id, content, emb_json, mtype, created_at, use_count, salience, last_used in rows:
         try:
             cos = cosine(q_vec, json.loads(emb_json))
         except Exception:
             continue
-        decay = math.exp(-_age_days(created_at, now) / max(1.0, float(hl.get(mtype, 365))))
+        # Age off the more recent of created_at / last_used — a reinforced fact stops decaying.
+        age = _age_days(created_at, now)
+        if last_used:
+            age = min(age, _age_days(last_used, now))
+        decay = math.exp(-age / max(1.0, float(hl.get(mtype, 365))))
         usage = min((use_count or 0) / 10.0, 1.0)
         score = (w["wSemantic"] * cos + w["wRecency"] * decay
-                 + w["wType"] * tw.get(mtype, 0.5) + w["wUsage"] * usage)
+                 + w["wType"] * tw.get(mtype, 0.5) + w["wUsage"] * usage
+                 + w["wSalience"] * (salience if salience is not None else 1.0))
         if score >= threshold:
             scored.append({"id": row_id, "content": content, "score": round(score, 4)})
     scored.sort(key=lambda x: x["score"], reverse=True)
@@ -463,6 +472,16 @@ def edit(mem_id: int, new_content: str, db_path: Path) -> "int | None":
     return new_id
 
 
+def set_pinned(mem_id: int, db_path: Path, pinned: bool) -> bool:
+    """MEM-9 — pin/unpin a memory. Pinned rows are never TTL/size-pruned and rank first in the
+    profile block. Returns False if mem_id is unknown."""
+    db = get_db(db_path)
+    cur = db.execute("UPDATE memories SET pinned=?, updated_at=? WHERE id=?",
+                     [1 if pinned else 0, datetime.now(timezone.utc).isoformat(), mem_id])
+    db.conn.commit()
+    return cur.rowcount > 0
+
+
 def prune(db_path: Path, owner: str = "local", forget_after_days: dict = None,
           max_rows: int = 2000) -> dict:
     """Hygiene (MEM-5): hard-delete rows past their per-type TTL, then enforce a per-owner size cap by
@@ -553,6 +572,12 @@ def cmd_edit(mem_id: int, new_text: str, db_path: Path) -> None:
     print(f"Edited: new id={new_id} (old {mem_id} superseded)." if new_id else f"No memory id={mem_id}")
 
 
+def cmd_pin(mem_id: int, db_path: Path, pinned: bool) -> None:
+    ok = set_pinned(mem_id, db_path, pinned)
+    verb = "Pinned" if pinned else "Unpinned"
+    print(f"{verb} id={mem_id}." if ok else f"No memory id={mem_id}")
+
+
 def cmd_export(db_path: Path, owner: str) -> None:
     print(json.dumps(export_memories(db_path, owner=owner), ensure_ascii=False, indent=2))
 
@@ -599,9 +624,11 @@ _SUMMARY_SYSTEM = (
 _CONSOLIDATE_SYSTEM = (
     "From the conversation, extract 0-5 DURABLE facts about the USER worth remembering for future "
     "sessions (identity, stable preferences, projects, tools). Write each on its own line as a "
-    "third-person statement prefixed with a type and a colon, then a ' | ' and a NEW/REPLACES tag:\n"
-    "preference: User prefers dark mode | NEW\n"
-    "preference: User uses vscode | REPLACES:12\n"
+    "third-person statement prefixed with a type and a colon, then a ' | ' NEW/REPLACES tag, then a "
+    "' | ' importance score from 1 (mundane) to 10 (core identity / long-term goal):\n"
+    "preference: User prefers dark mode | NEW | 5\n"
+    "preference: User uses vscode | REPLACES:12 | 6\n"
+    "profile: User's name is Siva | NEW | 10\n"
     "Allowed types: profile, preference, project, fact. You are given the user's EXISTING saved "
     "facts (each with a numeric id). For every fact you extract, decide whether it is brand NEW or "
     "whether it REPLACES an existing fact because it updates or contradicts it — use REPLACES:<id> "
@@ -610,6 +637,7 @@ _CONSOLIDATE_SYSTEM = (
     "empty response."
 )
 _CONSOLIDATE_TYPES = {"profile", "preference", "project", "fact"}
+_AUTO_PIN_IMPORTANCE = 9   # MEM-9 — consolidation pins a profile fact at/above this importance
 
 
 def _build_reconcile_prompt(existing: list) -> str:
@@ -664,35 +692,45 @@ def _parse_typed_bullets(text: str) -> "list[tuple[str, str]]":
     return out
 
 
-def _parse_reconciled_bullets(text: str) -> "list[tuple[str, str, int | None]]":
-    """MEM-8 — parse reconciliation output into (type, statement, replaces_id) triples. Each line is
-    `<type>: <statement> | NEW` or `... | REPLACES:<id>`; a missing/garbled tag → NEW (conservative),
-    and unrecognized text after a '|' is kept as content (not mistaken for a tag). The pre-'|' part
-    reuses the same lenient type detection as _parse_typed_bullets."""
+def _parse_reconciled_bullets(text: str) -> "list[tuple[str, str, int | None, int | None]]":
+    """MEM-8/9 — parse reconciliation output into (type, statement, replaces_id, importance) quads.
+    Line: `<type>: <statement> | <NEW|REPLACES:id> | <importance 1-10>`. The `|`-delimited metadata
+    tokens (NEW, REPLACES:<id>, a bare 1-10 int) are consumed from the RIGHT and are order-
+    independent; parsing stops at the first token that isn't recognized metadata, so a statement
+    containing a literal '|' survives intact. Missing tag → NEW (conservative); missing/garbled
+    importance → None. The pre-':' part reuses the same lenient type detection as _parse_typed_bullets."""
     out = []
     for line in text.splitlines():
         line = line.strip().lstrip("-*•").strip()
         if not line:
             continue
-        replaces = None
-        if "|" in line:
-            body, tag = line.rsplit("|", 1)
-            tag_norm = tag.strip().upper()
-            if tag_norm == "NEW" or tag_norm.startswith("REPLACES:"):
-                if tag_norm.startswith("REPLACES:"):
-                    try:
-                        replaces = int(tag_norm.split(":", 1)[1].strip())
-                    except ValueError:
-                        replaces = None            # bad id → treat as NEW
-                line = body.strip()                # strip the recognized tag only
-        mtype, stmt = "fact", line
-        if ":" in line:
-            head, rest = line.split(":", 1)
+        parts = line.split("|")
+        replaces, importance = None, None
+        while len(parts) > 1:
+            tok = parts[-1].strip()
+            up = tok.upper()
+            if up == "NEW":
+                parts.pop()
+            elif up.startswith("REPLACES:"):
+                try:
+                    replaces = int(up.split(":", 1)[1].strip())
+                except ValueError:
+                    replaces = None            # bad id → treat as NEW
+                parts.pop()
+            elif tok.isdigit() and 1 <= int(tok) <= 10 and importance is None:
+                importance = int(tok)
+                parts.pop()
+            else:
+                break                          # not metadata → the rest is the statement
+        stmt = "|".join(parts).strip()
+        mtype = "fact"
+        if ":" in stmt:
+            head, rest = stmt.split(":", 1)
             head_l = head.strip().lower()
             if head_l in _CONSOLIDATE_TYPES and rest.strip():
                 mtype, stmt = head_l, rest.strip()
         if stmt:
-            out.append((mtype, stmt, replaces))
+            out.append((mtype, stmt, replaces, importance))
     return out
 
 
@@ -717,7 +755,7 @@ def _prose_recap(raw: str, convo: list) -> str:
     plain sentences; if extraction produced nothing (LLM down or nothing durable), fall back to a
     deterministic recap (turn count + first user line) so a session is never silently dropped."""
     if raw and raw.strip():
-        stmts = [stmt for _mtype, stmt, _rep in _parse_reconciled_bullets(raw)]
+        stmts = [stmt for _mtype, stmt, _rep, _imp in _parse_reconciled_bullets(raw)]
         if stmts:
             return "Session recap: " + " ".join(s if s.endswith(".") else s + "." for s in stmts)
     first_user = next((str(m.get("content", "")) for m in convo if m.get("role") == "user"), "")
@@ -726,34 +764,42 @@ def _prose_recap(raw: str, convo: list) -> str:
 
 def consolidate_session(turns: list, db_path: Path, model: str = "chat", owner: str = "local",
                         dedup_threshold: float = 0.92, timeout: int = 60,
-                        scope: str = None, reconcile_top_k: int = 20) -> dict:
-    """MEM-4/8 — extract durable typed facts from a session's turns and RECONCILE them against the
+                        scope: str = None, reconcile_top_k: int = 20,
+                        max_tokens: int = 512) -> dict:
+    """MEM-4/8/9 — extract durable typed facts from a session's turns and RECONCILE them against the
     owner's existing facts (supersede, don't accumulate), plus one prose episodic recap. Returns
     {'facts': n_new, 'superseded': n, 'summary': text}. No-op (facts=0) for <2 turns.
 
     One LLM call: the owner's top-K active durable facts are fed into the extraction prompt so the
-    model tags each fact NEW or REPLACES:<id>; REPLACES invalidates the old row via superseded_by
-    (kept for audit, like edit()). Ambiguous → NEW (conservative). `scope` (MEM-7) tags extracted
-    type='project' facts to the project; other types stay global. B6: the episodic recap is real
-    prose with a deterministic fallback when the summarizer returns nothing. Idempotent: re-running
-    the same turns dedups new facts to 0. Called in-process by the NE shell /exit hook, the agent
-    server on session delete, and the CLI — no temp file, no subprocess (CONTRIBUTING §2)."""
+    model tags each fact NEW or REPLACES:<id> and rates its importance 1-10 (MEM-9 → salience).
+    REPLACES invalidates the old row via superseded_by (kept for audit, like edit()); ambiguous →
+    NEW (conservative). A very-high-importance profile fact is auto-pinned (survives prune, ranks
+    top). `scope` (MEM-7) tags extracted type='project' facts to the project; other types stay
+    global. B6: the episodic recap is real prose with a deterministic fallback when the summarizer
+    returns nothing. Idempotent: re-running the same turns dedups new facts to 0. Called in-process
+    by the NE shell /exit hook, the agent server on session delete, and the CLI — no temp file, no
+    subprocess (CONTRIBUTING §2)."""
     convo = [m for m in turns if m.get("role") in ("user", "assistant")]
     if len(convo) < 2:
         return {"facts": 0, "superseded": 0, "summary": None}
     db = get_db(db_path)
     existing = _active_durable_facts(db, owner, reconcile_top_k, scope=scope)
     valid_ids = {row[0] for row in existing}
+    # max_tokens must clear the reasoning budget too — reasoning models spend it on hidden thinking
+    # before the answer, so a tight cap (256) yields an empty completion (finish_reason=length).
     raw = summarize_turns(convo, model=model, system_prompt=_build_reconcile_prompt(existing),
-                          timeout=timeout)
+                          max_tokens=max_tokens, timeout=timeout)
     stored, superseded = 0, 0
     supersede_pairs: list = []
+    pin_ids: list = []
     if raw:
-        for mtype, stmt, replaces in _parse_reconciled_bullets(raw):
+        for mtype, stmt, replaces, importance in _parse_reconciled_bullets(raw):
+            # MEM-9 — importance 1-10 → salience 0.1-1.0 (default 1.0 when the model omits it).
+            salience = (importance / 10.0) if importance else 1.0
             try:
                 new_id, is_new = store(stmt, db_path, source="consolidation", mem_type=mtype,
                                        owner=owner, scope=(scope if mtype == "project" else None),
-                                       dedup_threshold=dedup_threshold)
+                                       salience=salience, dedup_threshold=dedup_threshold)
             except RuntimeError:
                 break   # embed server down mid-run — stop; best-effort
             stored += 1 if is_new else 0
@@ -761,15 +807,20 @@ def consolidate_session(turns: list, db_path: Path, model: str = "chat", owner: 
             # (store() may have deduped the "new" fact back onto the row we were asked to replace).
             if replaces is not None and replaces in valid_ids and replaces != new_id:
                 supersede_pairs.append((new_id, replaces))
-        # Apply the invalidations AFTER all store() writes committed (avoids two write connections
-        # holding locks at once); the superseded row stays for audit/export.
-        if supersede_pairs:
+            # Auto-pin a core-identity profile fact so hygiene never prunes it (B5).
+            if is_new and mtype == "profile" and importance and importance >= _AUTO_PIN_IMPORTANCE:
+                pin_ids.append(new_id)
+        # Apply the invalidations/pins AFTER all store() writes committed (avoids two write
+        # connections holding locks at once); the superseded row stays for audit/export.
+        if supersede_pairs or pin_ids:
             stamp = datetime.now(timezone.utc).isoformat()
             for new_id, old_id in supersede_pairs:
                 cur = db.execute(
                     "UPDATE memories SET superseded_by=?, updated_at=? WHERE id=? AND superseded_by IS NULL",
                     [new_id, stamp, old_id])
                 superseded += cur.rowcount
+            for pid in pin_ids:
+                db.execute("UPDATE memories SET pinned=1, updated_at=? WHERE id=?", [stamp, pid])
             db.conn.commit()
     # B6 — a real prose recap (no type:/tag scaffolding), deterministic when extraction was empty,
     # so a session is never silently dropped.
@@ -888,6 +939,11 @@ def main() -> None:
     p_edit.add_argument("id", type=int)
     p_edit.add_argument("text")
 
+    p_pin = sub.add_parser("pin")
+    p_pin.add_argument("id", type=int)
+    p_unpin = sub.add_parser("unpin")
+    p_unpin.add_argument("id", type=int)
+
     p_export = sub.add_parser("export")
     p_export.add_argument("--owner", default=None, help="Restrict to one owner (default: all)")
 
@@ -923,6 +979,10 @@ def main() -> None:
             cmd_forget(args.id, args.query, db_path, args.owner)
         elif args.cmd == "edit":
             cmd_edit(args.id, args.text, db_path)
+        elif args.cmd == "pin":
+            cmd_pin(args.id, db_path, True)
+        elif args.cmd == "unpin":
+            cmd_pin(args.id, db_path, False)
         elif args.cmd == "export":
             cmd_export(db_path, args.owner)
         elif args.cmd == "init-profile":

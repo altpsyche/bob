@@ -42,10 +42,11 @@
         "wRecency": 0.3,
         "wType": 0.2,
         "wUsage": 0.1,
+        "wSalience": 0.3,
         "halfLifeDays": {"profile": 36500, "preference": 36500, "project": 90, "fact": 365, "episodic": 30}
       },
       "typeWeights": {"profile": 1.0, "preference": 0.9, "project": 0.8, "fact": 0.7, "episodic": 0.5},
-      "maxSummaryTokens": 256,
+      "maxSummaryTokens": 512,
       "autoSummarize": true,
       "autoConsolidate": true,
       "consolidateTimeout": 30,
