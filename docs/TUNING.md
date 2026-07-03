@@ -118,9 +118,39 @@ See [AGENT-SERVER.md](AGENT-SERVER.md) for the endpoint contract.
 
 **Switching the agent model:** `agentRole` in `bob.psd1` routing defaults to `'agent'` (Hermes 3 8B). If you switch to a model that uses OpenAI-format tool calling (like Qwen3), also set `agent.toolFormat = 'openai'` in `user.psd1` and run `bob gen`.
 
-**Memory in the agent loop:** when `memory.enabled = $true`, the agent recalls the top-`memory.recallK`
-memories for the goal and injects them into its system context (M14). Best-effort — a memory-server
-error is logged and skipped, never fatal.
+### Memory (`memory.*`)
+
+Bob's typed, owner/project-scoped memory store (SQLite + BGE-M3). On by default. Keys live in
+`config/defaults.json` under `runtime.memory`; override in `config/bob.psd1` (`memory = @{ … }`) or
+`config/user.psd1`. Full engine reference: [MEMORY.md](MEMORY.md).
+
+| Key | Default | Effect |
+|-----|---------|--------|
+| `memory.enabled` | `true` | Master switch — CLI, agent tools, injection, consolidation. |
+| `memory.autoRecall` | `false` | Recall + inject relevant memories **every turn**. Off = the agent recalls only via the `memory_recall` tool. |
+| `memory.injectProfileAtStart` | `true` | Inject the stable profile block once at session start. |
+| `memory.profileMaxTokens` | `200` | Cap on the profile block. |
+| `memory.maxInjectedTokens` | `1200` | Total budget for injected memory (profile + autoRecall + `BOB.md`); over budget trims autoRecall → profile → `BOB.md`. |
+| `memory.dbPath` | `data/bob.db` | Memory database (gitignored). |
+| `memory.embedModel` | `embed` | Embedding role (BGE-M3 at `:8081`). |
+| `memory.recallK` | `5` | Max results per recall. |
+| `memory.recallThreshold` | `0.35` | Minimum blended score to return. |
+| `memory.dedupThreshold` | `0.92` | Cosine at/above which a store is a duplicate. |
+| `memory.ranking.{wSemantic,wRecency,wType,wUsage,wSalience}` | `1.0/0.3/0.2/0.1/0.3` | Blended-rank term weights. |
+| `memory.ranking.halfLifeDays` | `{profile/preference 36500, project 90, fact 365, episodic 30}` | Per-type recency half-lives. |
+| `memory.typeWeights` | `{profile 1.0 … episodic 0.5}` | Per-type rank weights. |
+| `memory.maxSummaryTokens` | `512` | Token budget for the consolidation LLM call — must clear a reasoning model's hidden-reasoning budget (a tight cap yields an empty completion). |
+| `memory.autoConsolidate` | `true` | Consolidate durable facts when a session ends. |
+| `memory.autoSummarize` | `true` | Legacy `bob chat` REPL: summarise on exit. |
+| `memory.consolidateTimeout` | `30` | Seconds bounding the end-of-session consolidation call. |
+| `memory.reconcileTopK` | `20` | Existing facts shown to the extractor for supersede decisions. |
+| `memory.maxRows` | `2000` | Per-owner soft cap; excess lowest-salience/oldest rows pruned. |
+| `memory.forgetAfterDays` | `{episodic: 180}` | Per-type TTL (profile/preference exempt). |
+| `memory.scopeByProject` | `true` | Scope `project`-type facts per repo; `false` = one global pool. |
+| `memory.projectFiles` | `true` | Read `BOB.md`/`AGENTS.md` project files at session start. |
+| `memory.bobMdMaxTokens` | `4000` | Cap on the concatenated project files. |
+
+Recall/injection are best-effort — a memory-server error is logged and skipped, never fatal to a run.
 
 ### Plugins
 

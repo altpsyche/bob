@@ -110,6 +110,14 @@ llm help                     # fails — shim removed, command not found
 **Risk:** Low–Medium  
 **Goal:** `bob chat` feels like talking to an assistant, not a server. Persona is configured. Memory is available.
 
+> **⚠️ Superseded by Modules MEM / MEM2 — this Phase 1 memory spec is historical.** The shipped
+> memory engine is far beyond this: a typed/owner/project-scoped SQLite store (schema v3), blended
+> recall ranking, importance/salience, pinning, conflict-aware consolidation (supersede, not
+> accumulate), provenance + forget-by-session, `BOB.md` project files, persisted `bob` shell
+> sessions, and auto-injection at session start (the "explicit-only" note below is no longer true).
+> The schema, CLI list, and config block below are **out of date** — see **[MEMORY.md](MEMORY.md)**
+> for what actually ships.
+
 **Implementation notes (deviations from spec):**
 - Memory injection is **explicit-only** (`!recall <query>` in REPL) — no auto-injection per turn. Prevents context window bloat.
 - `autoSummarize` implemented: REPL `finally` block calls `bob_memory.py summarize-session` when `memory.enabled` and `memory.autoSummarize = $true`.

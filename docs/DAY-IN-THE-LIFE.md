@@ -127,27 +127,36 @@ bob chat --pro "explain CAP theorem with a concrete example"
 
 ### Memory
 
-Store facts you want Bob to remember across sessions:
+Bob remembers across sessions — on by default (SQLite + BGE-M3, 0 extra VRAM). Store and query
+explicitly:
 
 ```powershell
 bob remember "working on a Unreal 5.4 game engine plugin called BobBot"
 bob remember "prefer explicit error messages over silent failures"
-bob recall "current project"   # semantic search — prints matching memories
+bob recall "current project"   # blended-rank search — prints matching memories
+bob memory list                # browse what Bob knows (typed: profile/preference/project/fact/…)
 ```
 
-Pull memories into a REPL conversation with `!recall`:
+But mostly you don't manage it by hand. Open the `bob` shell and just talk:
 
 ```
-Bob [chat | Qwen3-14B] >
-> !recall current project
-  [injected 1 memory into context]
-> what am I working on?
-  Bob: You're working on a Unreal 5.4 game engine plugin called BobBot...
+bob                                    # the shell — persisted sessions
+> I just switched the plugin over to Unreal 5.5
+  Bob: Noted...
+> /exit                                # leaving consolidates the session into memory
 ```
 
-`!recall` injects into a replaceable context slot — calling it again swaps the slot rather than accumulating. Use `!memory` inside the REPL to check DB status without leaving.
+Next time you start a session, Bob injects your stable profile automatically, and a later
+contradiction *supersedes* the old fact instead of piling up ("Unreal 5.4" → "Unreal 5.5" leaves only
+5.5). Resume a past session with `/session list` then `/session resume <id>`. Retract everything one
+session taught Bob with `bob memory forget --session <id>`.
 
-Memory requires enabling in `config/bob.psd1`: `memory = @{ enabled = $true }`. The `embed` model (BGE-M3) must be running; it's pinned by default.
+Curate directly when you want to: `bob memory pin <id>` (protect a fact), `bob memory edit <id>
+"..."`, `bob memory show <id>` (see which session taught it). For **per-repo, git-committable** rules,
+drop a `BOB.md` in the project root — Bob reads it at session start.
+
+Full reference: [MEMORY.md](MEMORY.md). Disable memory with `memory = @{ enabled = $false }` in
+`config/bob.psd1`.
 
 ---
 
