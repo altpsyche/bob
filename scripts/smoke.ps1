@@ -89,24 +89,38 @@ try {
 
     $hdr = @{ Authorization = "Bearer $litellmKey" }
 
-    # 3b. owner-scoped session turn (N1)
+    # 3b. create an owner-scoped session (N1), then run a turn on it. A session_id must be minted
+    # via POST /v1/sessions — an unknown id is a deliberate 404 (no-existence-leak; AGENT-SERVER.md).
+    $sid = $null
     try {
-      $body = @{ goal = 'say hi'; session_id = 'smoke' } | ConvertTo-Json -Compress
-      $r = Invoke-RestMethod "$agentBase/v1/agent/completions" -Method Post -Headers $hdr `
-             -ContentType 'application/json' -Body $body -TimeoutSec $TimeoutSec -ErrorAction Stop
-      if ($r.result -and -not $r.error) { Ok "session turn returned a result (session_id=$($r.session_id))" }
-      else { Bad "session turn returned no result / an error: $($r.error)" }
-    } catch { Bad "session turn (POST /v1/agent/completions) failed: $_" }
+      $cr = Invoke-RestMethod "$agentBase/v1/sessions" -Method Post -Headers $hdr `
+              -ContentType 'application/json' -Body '{}' -TimeoutSec 10 -ErrorAction Stop
+      $sid = $cr.session_id
+      if ($sid) { Ok "created session ($sid)" } else { Bad "POST /v1/sessions returned no session_id" }
+    } catch { Bad "create session (POST /v1/sessions) failed: $_" }
 
-    # 3c. SSE stream (N3/N6) — assert we receive event data, incl. a terminal 'final' event
-    try {
-      $body = @{ goal = 'say hi'; session_id = 'smoke' } | ConvertTo-Json -Compress
-      $resp = Invoke-WebRequest "$agentBase/v1/agent/completions/stream" -Method Post -Headers $hdr `
-                -ContentType 'application/json' -Body $body -TimeoutSec $TimeoutSec -ErrorAction Stop
-      $text = "$($resp.Content)"
-      if ($text -match 'data:' -and $text -match '"type"') { Ok "SSE stream produced events" }
-      else { Bad "SSE stream produced no recognizable events" }
-    } catch { Bad "SSE stream (POST /v1/agent/completions/stream) failed: $_" }
+    if (-not $sid) {
+      Skip "session turn + SSE — no session to run them on"
+    } else {
+      # owner-scoped session turn (N1)
+      try {
+        $body = @{ goal = 'say hi'; session_id = $sid } | ConvertTo-Json -Compress
+        $r = Invoke-RestMethod "$agentBase/v1/agent/completions" -Method Post -Headers $hdr `
+               -ContentType 'application/json' -Body $body -TimeoutSec $TimeoutSec -ErrorAction Stop
+        if ($r.result -and -not $r.error) { Ok "session turn returned a result (session_id=$($r.session_id))" }
+        else { Bad "session turn returned no result / an error: $($r.error)" }
+      } catch { Bad "session turn (POST /v1/agent/completions) failed: $_" }
+
+      # 3c. SSE stream (N3/N6) on the same session — assert we receive event data
+      try {
+        $body = @{ goal = 'say hi'; session_id = $sid } | ConvertTo-Json -Compress
+        $resp = Invoke-WebRequest "$agentBase/v1/agent/completions/stream" -Method Post -Headers $hdr `
+                  -ContentType 'application/json' -Body $body -TimeoutSec $TimeoutSec -ErrorAction Stop
+        $text = "$($resp.Content)"
+        if ($text -match 'data:' -and $text -match '"type"') { Ok "SSE stream produced events" }
+        else { Bad "SSE stream produced no recognizable events" }
+      } catch { Bad "SSE stream (POST /v1/agent/completions/stream) failed: $_" }
+    }
   }
 }
 finally {

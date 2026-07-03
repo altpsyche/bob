@@ -103,7 +103,7 @@ if ($py) {
   )) {
     $venv = Join-Path $repo "tools\$($t.n)"
     if (-not (Test-Path $venv)) { & $py -m venv $venv }
-    $venvPy = Join-Path $venv "Scripts\python.exe"
+    $venvPy = Get-VenvExe -Venv $t.n -Exe 'python'   # NC4: OS-aware (Scripts\python.exe | bin/python)
     if (-not (Test-Path $venvPy)) { throw "venv creation failed for $($t.n) — $venvPy not found" }
     & $venvPy -m pip install --upgrade pip
     # prefer the pinned .lock (reproducible); fall back to the loose .txt on a first-ever run

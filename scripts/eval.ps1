@@ -19,7 +19,8 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $repo   = Split-Path $PSScriptRoot -Parent
-$lmEval = Join-Path $repo 'tools\venv-eval\Scripts\lm_eval.exe'
+$lmEval = if ($IsWindows) { Join-Path $repo 'tools\venv-eval\Scripts\lm_eval.exe' }
+          else            { Join-Path $repo 'tools/venv-eval/bin/lm_eval' }   # OS-aware venv layout
 
 if (-not (Test-Path $lmEval)) {
     throw "lm-eval not installed. Run: .\scripts\bootstrap-eval.ps1"

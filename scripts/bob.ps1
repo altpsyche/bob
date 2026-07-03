@@ -35,9 +35,9 @@ if (Test-Path $verbsFile) {
     if     ($two -and $verbs.commands.Contains($two)) { $route = $verbs.commands[$two] }
     elseif ($verbs.commands.Contains($cmd))           { $route = $verbs.commands[$cmd] }
     if ($route -eq 'python') {
-      $venvPy = Join-Path $repo 'tools\venv-litellm\Scripts\python.exe'
+      $venvPy = Get-VenvExe -Venv 'venv-litellm' -Exe 'python'   # NC4: OS-aware (Scripts\python.exe | bin/python)
       if (-not (Test-Path $venvPy)) {
-        Write-Host "Error: venv-litellm not found. Run: scripts\bootstrap-litellm.ps1" -ForegroundColor Red
+        Write-Host "Error: venv-litellm not found. Run: scripts/bootstrap-litellm.ps1" -ForegroundColor Red
         exit 1
       }
       # Regenerate data/config.json from the single source so the runtime sees fresh config
@@ -174,7 +174,7 @@ function Invoke-BobHealthCheck {
   param([switch]$Doctor)
 
   $bobCfg = Get-BobConfig
-  $venvPy = Join-Path $repo 'tools\venv-litellm\Scripts\python.exe'
+  $venvPy = Get-VenvExe -Venv 'venv-litellm' -Exe 'python'
   $lPort  = $bobCfg.litellmPort ?? (Get-BobPortDefault 'litellmPort')
 
   $title = if ($Doctor) { 'Bob doctor — full pre-flight' } else { 'Bob agent setup check' }
@@ -409,8 +409,8 @@ switch ($cmd) {
     Write-Host "Tailing $logFile (last $n lines, Ctrl+C to stop):`n"
     Get-Content $logFile -Wait -Tail $n
   }
-  'webui'  { & "$repo\tools\venv-webui\Scripts\open-webui.exe" serve --port ($d.webuiPort ?? (Get-BobPortDefault 'webuiPort')) }
-  'aider'  { & "$repo\tools\venv-aider\Scripts\aider.exe" @rest }   # runs in your current folder
+  'webui'  { & (Get-VenvExe -Venv 'venv-webui' -Exe 'open-webui') serve --port ($d.webuiPort ?? (Get-BobPortDefault 'webuiPort')) }
+  'aider'  { & (Get-VenvExe -Venv 'venv-aider' -Exe 'aider') @rest }   # runs in your current folder
   'models' {
     $loadedIds = @{}; $endpointUp = $false
     try {
@@ -929,7 +929,7 @@ N8N_PORT=$($dp.n8nPort ?? (Get-BobPortDefault 'n8nPort'))
 
   'listen' {
     $bobCfg  = Get-BobConfig
-    $venvPy  = Join-Path $repo 'tools\venv-litellm\Scripts\python.exe'
+    $venvPy  = Get-VenvExe -Venv 'venv-litellm' -Exe 'python'
     $capture = Join-Path $repo 'scripts\bob-voice-capture.py'
     $env:PYTHONIOENCODING = 'utf-8'
     & $venvPy $capture --port ($bobCfg.voice.sttPort ?? (Get-BobPortDefault 'sttPort')) --silence-sec ($bobCfg.voice.silenceSec ?? 1.5)
@@ -939,7 +939,7 @@ N8N_PORT=$($dp.n8nPort ?? (Get-BobPortDefault 'n8nPort'))
   'transcribe' {
     if (-not $rest.Count) { Write-Host "usage: bob transcribe <audio-file>"; break }
     $bobCfg  = Get-BobConfig
-    $venvPy  = Join-Path $repo 'tools\venv-litellm\Scripts\python.exe'
+    $venvPy  = Get-VenvExe -Venv 'venv-litellm' -Exe 'python'
     $capture = Join-Path $repo 'scripts\bob-voice-capture.py'
     $env:PYTHONIOENCODING = 'utf-8'
     & $venvPy $capture --file $rest[0] --port ($bobCfg.voice.sttPort ?? (Get-BobPortDefault 'sttPort'))
@@ -1043,7 +1043,7 @@ N8N_PORT=$($dp.n8nPort ?? (Get-BobPortDefault 'n8nPort'))
     $voiceSys  = $bobCfg.voice.systemPrompt ?? $bobCfg.persona.systemPrompt
     $voiceRole = Get-RoleForTask -Config $bobCfg -Task voice -Pro:$pro
     $voiceTok  = $bobCfg.voice.maxTokens ?? 256
-    $venvPy     = Join-Path $repo 'tools\venv-litellm\Scripts\python.exe'
+    $venvPy     = Get-VenvExe -Venv 'venv-litellm' -Exe 'python'
     $loopScript = Join-Path $repo 'scripts\bob_loop.py'
     # Auto-start whisper STT if not reachable
     $sttPort = $bobCfg.voice.sttPort ?? (Get-BobPortDefault 'sttPort')
@@ -1147,11 +1147,11 @@ N8N_PORT=$($dp.n8nPort ?? (Get-BobPortDefault 'n8nPort'))
 
   'agent' {
     $bobCfg     = Get-BobConfig
-    $venvPy     = Join-Path $repo 'tools\venv-litellm\Scripts\python.exe'
+    $venvPy     = Get-VenvExe -Venv 'venv-litellm' -Exe 'python'
     $loopScript = Join-Path $repo 'scripts\bob_loop.py'
 
     if (-not (Test-Path $venvPy)) {
-      Write-Host "Error: venv-litellm not found. Run: scripts\bootstrap-litellm.ps1" -ForegroundColor Red
+      Write-Host "Error: venv-litellm not found. Run: scripts/bootstrap-litellm.ps1" -ForegroundColor Red
       break
     }
 
@@ -1313,7 +1313,7 @@ N8N_PORT=$($dp.n8nPort ?? (Get-BobPortDefault 'n8nPort'))
           Write-Host "  WARNING: bound to 0.0.0.0 (LAN-exposed). Keep agent.allowPrivateFetch = `$false." -ForegroundColor Yellow
         }
         $env:PYTHONIOENCODING = 'utf-8'
-        & $venvPy -m uvicorn bob_agent_server:app --host $aHost --port $aPort --app-dir "$repo\scripts"
+        & $venvPy -m uvicorn bob_agent_server:app --host $aHost --port $aPort --app-dir (Join-Path $repo 'scripts')
         $env:PYTHONIOENCODING = $null
       }
 
@@ -1330,7 +1330,7 @@ N8N_PORT=$($dp.n8nPort ?? (Get-BobPortDefault 'n8nPort'))
 
   'clip' {
     if (-not $rest.Count) { Write-Host "Usage: bob clip <url> [--note <text>]"; break }
-    $venvPy = Join-Path $repo 'tools\venv-litellm\Scripts\python.exe'
+    $venvPy = Get-VenvExe -Venv 'venv-litellm' -Exe 'python'
     $env:PYTHONIOENCODING = 'utf-8'
     & $venvPy "$repo\scripts\bob_clip.py" @rest
     $env:PYTHONIOENCODING = $null
@@ -1338,7 +1338,7 @@ N8N_PORT=$($dp.n8nPort ?? (Get-BobPortDefault 'n8nPort'))
 
   'tools' {
     $bobCfg = Get-BobConfig
-    $venvPy = Join-Path $repo 'tools\venv-litellm\Scripts\python.exe'
+    $venvPy = Get-VenvExe -Venv 'venv-litellm' -Exe 'python'
     $toolSub  = if ($rest.Count) { $rest[0] } else { 'list' }
     $toolArgs = @($rest | Select-Object -Skip 1)
     $disabledTools = ($bobCfg.agent.disabledTools ?? @()) -join ','
@@ -1394,7 +1394,7 @@ N8N_PORT=$($dp.n8nPort ?? (Get-BobPortDefault 'n8nPort'))
       & "$pluginDir\invoke.ps1" @rest
       break
     } elseif (Test-Path "$pluginDir\invoke.py") {
-      $venvPy = Join-Path $repo 'tools\venv-litellm\Scripts\python.exe'
+      $venvPy = Get-VenvExe -Venv 'venv-litellm' -Exe 'python'
       $env:PYTHONIOENCODING = 'utf-8'
       & $venvPy "$pluginDir\invoke.py" @rest
       $env:PYTHONIOENCODING = $null
@@ -1404,7 +1404,7 @@ N8N_PORT=$($dp.n8nPort ?? (Get-BobPortDefault 'n8nPort'))
     # WI-7 — one generated catalog: `help` and any unknown verb render from the command registry via
     # `python -m bob help` (the old hand-maintained here-string is retired). Falls back to a one-liner
     # only if the venv is missing (pre-bootstrap).
-    $venvPy = Join-Path $repo 'tools\venv-litellm\Scripts\python.exe'
+    $venvPy = Get-VenvExe -Venv 'venv-litellm' -Exe 'python'
     if (Test-Path $venvPy) {
       if ($cmd -ne 'help') { Write-Host "Unknown command: $cmd`n" -ForegroundColor Yellow }
       try { Get-BobConfig | Out-Null } catch {}

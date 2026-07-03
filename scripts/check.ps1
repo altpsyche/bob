@@ -9,9 +9,11 @@ param([switch]$NoTests)
 $repo = Split-Path $PSScriptRoot -Parent
 # NB6 — CI (no venv-litellm) sets BOB_PYTHON to its own interpreter so this one gate runs on both
 # Linux + Windows. Locally BOB_PYTHON is unset and the venv python is used, unchanged.
-$venvPy = if ($env:BOB_PYTHON) { $env:BOB_PYTHON } else { Join-Path $repo 'tools\venv-litellm\Scripts\python.exe' }
+$venvPy = if ($env:BOB_PYTHON) { $env:BOB_PYTHON }
+          elseif ($IsWindows)  { Join-Path $repo 'tools\venv-litellm\Scripts\python.exe' }
+          else                 { Join-Path $repo 'tools/venv-litellm/bin/python' }   # Linux/macOS venv layout
 if (-not (Test-Path $venvPy) -and -not (Get-Command $venvPy -ErrorAction SilentlyContinue)) {
-  Write-Host "[check] python not found at '$venvPy' — run scripts\bootstrap-litellm.ps1 (or set BOB_PYTHON)" -ForegroundColor Red
+  Write-Host "[check] python not found at '$venvPy' — run scripts/bootstrap-litellm.ps1 (or set BOB_PYTHON)" -ForegroundColor Red
   exit 1
 }
 $failed = $false
