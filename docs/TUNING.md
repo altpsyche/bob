@@ -79,6 +79,8 @@ registration step. To exclude a tool without deleting it, add its name to `agent
 | `agent.maxToolResultTokens` | `1000` | Per-tool-result cap (~4 chars/token) applied before a result is appended to history, so one huge tool output can't blow the budget. |
 | `agent.compactSchemasAfter` | `12` | Once more than this many tools are loaded, inject **compact** tool schemas (param descriptions dropped) so the fixed per-turn prompt doesn't grow unbounded with tool count. |
 | `agent.requestTimeout` | `600` | Client-side LLM call timeout (s). Must be **≥** the litellm proxy's `request_timeout` (600) so thinking models (planner/R1) aren't cut off mid-response. |
+| `agent.llmRetries` | `2` | Retries for a transient LLM error (5xx/timeout/conn) per step — total tries = this + 1. Covers the llama-swap model-swap race (a 500 "upstream command exited prematurely" on the first request after an idle-unload). Retried only before the first token surfaces. |
+| `agent.llmRetryBackoffSec` | `2.0` | Base backoff (s) before a retry; escalates per attempt (2s, 4s, …) to give a restarting backend time to come up. |
 | `agent.allowPrivateFetch` | `$false` | When `$false`, `web_fetch` blocks `file://`/non-http schemes and loopback/RFC-1918/link-local hosts (SSRF guard, M9). Set `$true` only if you deliberately need the agent to reach private hosts. |
 | `agent.disabledTools` | `@()` | Tool names (stem/dir) to **exclude** from discovery. Denylist, not allowlist. |
 | `agent.allowedReadPaths` | (repo root) | Paths `file_read` may access. Defaults to the repo root at runtime. Add more in `config/user.psd1`. **Secrets denylist (N9):** `config.json`, `*.psd1`, `*.db`, `logs/`, `.env*` are refused even inside an allowed root. |
