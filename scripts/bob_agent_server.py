@@ -157,7 +157,7 @@ def _maybe_consolidate(session_id: str, owner: str) -> None:
         return
     try:
         from bob_core import consolidate_session
-        consolidate_session(session["history"], config=_config, owner=owner)
+        consolidate_session(session["history"], config=_config, owner=owner, session_id=session_id)
     except Exception:
         pass
 

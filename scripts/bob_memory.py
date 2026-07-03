@@ -48,10 +48,11 @@ def _require_deps() -> None:
 _DEFAULT_DB = Path(__file__).parent.parent / "data" / "bob.db"
 EMBED_MODEL = "embed"
 
-# --- Schema v2 (MEM-0) -------------------------------------------------------
-# The typed/owner-scoped schema. `get_db` migrates a legacy v1 DB in place (additive ALTERs +
-# a one-time backfill), gated by PRAGMA user_version so the common path is a cheap version read.
-SCHEMA_VERSION = 2
+# --- Schema (MEM-0 v2 typed/owner-scoped; MEM-10 v3 provenance) ---------------
+# `get_db` migrates a legacy DB in place (additive ALTERs + one-time backfill), gated by PRAGMA
+# user_version so the common path is a cheap version read. Migrations run as an incremental ladder
+# (v1→v2→v3), each step idempotent and column-presence-guarded.
+SCHEMA_VERSION = 3
 
 # Columns added to the v1 `memories` table (id/content/embedding/source/created_at/last_used/
 # use_count already exist). NOT NULL columns carry a literal default so ALTER ADD COLUMN is legal
@@ -69,6 +70,11 @@ _V2_COLUMNS = [
     ("superseded_by", "INTEGER"),                      # soft-update: id of the replacing row
     ("updated_at", "TEXT"),
     ("expires_at", "TEXT"),
+]
+
+# v3 (MEM-10) — per-row provenance: the originating session id, stamped by consolidation.
+_V3_COLUMNS = [
+    ("source_session", "TEXT"),                        # session that produced this row (audit / forget --session)
 ]
 
 # §2.3 third-person normalization — deterministic, leading-pronoun-anchored, conservative. Specific
@@ -110,18 +116,23 @@ _DEFAULT_TYPE_WEIGHTS = {"profile": 1.0, "preference": 0.9, "project": 0.8, "fac
 _DEFAULT_HALF_LIVES = {"profile": 36500, "preference": 36500, "project": 90, "fact": 365, "episodic": 30}
 
 
+_MAX_AGE_DAYS = 3_650_000.0   # ~10000y — a missing/unparseable timestamp ages to "ancient" (MEM-10 A3)
+
+
 def _age_days(created_at, now: datetime) -> float:
     """Age of a row in days. Tolerates both store()'s ISO8601 timestamps and SQLite's
-    'YYYY-MM-DD HH:MM:SS' default form; a missing/unparseable value ages to 0 (treated as fresh)."""
+    'YYYY-MM-DD HH:MM:SS' default form. A3 fix: a missing/unparseable value ages to _MAX_AGE_DAYS
+    (ranks oldest, decay≈0) instead of 0.0 — the old 'fresh' default let corrupt rows rank as the
+    freshest."""
     if not created_at:
-        return 0.0
+        return _MAX_AGE_DAYS
     try:
         dt = datetime.fromisoformat(str(created_at).replace(" ", "T"))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return max(0.0, (now - dt).total_seconds() / 86400.0)
     except (ValueError, TypeError):
-        return 0.0
+        return _MAX_AGE_DAYS
 
 # N7 — resolve the LiteLLM base URL + auth from config (single source of truth, CONTRIBUTING §8)
 # instead of hardcoding :8081. Memoized per process; falls back to the central port default
@@ -162,10 +173,11 @@ def get_db(db_path) -> sqlite_utils.Database:
 
 
 def _ensure_schema(db: sqlite_utils.Database) -> None:
-    """Create the tables (fresh DBs get the full v2 column set directly) and migrate a legacy v1 DB
-    in place. Idempotent and cheap on the hot path: a v2 DB short-circuits on the version read."""
-    # A fresh DB gets every v2 column up front. On an existing v1 DB this is a no-op and the columns
-    # are added by _migrate_to_v2 instead.
+    """Create the tables (fresh DBs get the full column set directly) and run the migration ladder on
+    an existing legacy DB. Idempotent and cheap on the hot path: a current DB short-circuits on the
+    version read."""
+    # A fresh DB gets every column up front. On an existing older DB this is a no-op and the columns
+    # are added by the _migrate_to_v* steps instead.
     db.execute("""
         CREATE TABLE IF NOT EXISTS memories (
             id INTEGER PRIMARY KEY,
@@ -185,7 +197,8 @@ def _ensure_schema(db: sqlite_utils.Database) -> None:
             pinned INTEGER NOT NULL DEFAULT 0,
             superseded_by INTEGER,
             updated_at TEXT,
-            expires_at TEXT
+            expires_at TEXT,
+            source_session TEXT
         )
     """)
     # DEPRECATED (MEM-5): the legacy key/value profile table is no longer written or read — identity
@@ -198,20 +211,30 @@ def _ensure_schema(db: sqlite_utils.Database) -> None:
             updated_at TEXT DEFAULT (datetime('now'))
         )
     """)
-    if db.execute("PRAGMA user_version").fetchone()[0] >= SCHEMA_VERSION:
+    version = db.execute("PRAGMA user_version").fetchone()[0]
+    if version >= SCHEMA_VERSION:
         return
-    _migrate_to_v2(db)
+    if version < 2:
+        _migrate_to_v2(db)
+    if version < 3:
+        _migrate_to_v3(db)
+    db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    db.conn.commit()   # persist the ALTERs/backfill/version across this and future connections
+
+
+def _add_missing_columns(db: sqlite_utils.Database, columns: list) -> None:
+    """ALTER in any columns not already present (column-presence-guarded, so safe to re-run — mirrors
+    SessionStore's table_info pattern in bob_session._ensure_schema)."""
+    existing = {row[1] for row in db.execute("PRAGMA table_info(memories)").fetchall()}
+    for name, decl in columns:
+        if name not in existing:
+            db.execute(f"ALTER TABLE memories ADD COLUMN {name} {decl}")
 
 
 def _migrate_to_v2(db: sqlite_utils.Database) -> None:
-    """One-time v1 -> v2 migration: add any missing typed/owner columns, backfill type from the
-    legacy `source`, create the v2 indexes, and stamp user_version. Runs once (version-gated) and is
-    safe to re-run — each ALTER is guarded by a column-presence check (mirrors SessionStore's
-    table_info pattern in bob_session._ensure_schema)."""
-    existing = {row[1] for row in db.execute("PRAGMA table_info(memories)").fetchall()}
-    for name, decl in _V2_COLUMNS:
-        if name not in existing:
-            db.execute(f"ALTER TABLE memories ADD COLUMN {name} {decl}")
+    """v1 -> v2: add the typed/owner columns, backfill type from the legacy `source`, create the v2
+    indexes. Version stamping is done by the caller (_ensure_schema)."""
+    _add_missing_columns(db, _V2_COLUMNS)
     # Backfill type from the legacy source (owner_id/subject already carry their column defaults).
     db.execute("UPDATE memories SET type='preference' WHERE source='user'")
     db.execute("UPDATE memories SET type='episodic'  WHERE source='session'")
@@ -222,8 +245,13 @@ def _migrate_to_v2(db: sqlite_utils.Database) -> None:
         "CREATE INDEX IF NOT EXISTS idx_mem_active     ON memories(owner_id, superseded_by)",
     ):
         db.execute(stmt)
-    db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-    db.conn.commit()   # persist the ALTERs/backfill/version across this and future connections
+
+
+def _migrate_to_v3(db: sqlite_utils.Database) -> None:
+    """v2 -> v3 (MEM-10): add the source_session provenance column + its index. Version stamping is
+    done by the caller (_ensure_schema)."""
+    _add_missing_columns(db, _V3_COLUMNS)
+    db.execute("CREATE INDEX IF NOT EXISTS idx_mem_session ON memories(owner_id, source_session)")
 
 
 def embed(text: str) -> list[float]:
@@ -254,7 +282,7 @@ def cosine(a: list[float], b: list[float]) -> float:
 
 def store(content: str, db_path: Path, source: str = "user", mem_type: str = "fact",
           owner: str = "local", scope: str = None, tags: str = None, salience: float = 1.0,
-          dedup_threshold: float = 0.92) -> tuple[int, bool]:
+          dedup_threshold: float = 0.92, source_session: str = None) -> tuple[int, bool]:
     """Insert a typed, owner-scoped memory (MEM-1). Returns (id, is_new).
 
     Content is normalized to third person (§2.3) before hashing/embedding, so recalled text never
@@ -295,6 +323,7 @@ def store(content: str, db_path: Path, source: str = "user", mem_type: str = "fa
         "tags": tags,
         "salience": salience,
         "source": source,
+        "source_session": source_session,
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
     return db.execute("SELECT last_insert_rowid()").fetchone()[0], True
@@ -410,22 +439,22 @@ def list_memories(db_path: Path, owner: str = "local", type_filter: str = None,
 
 def get_memory(mem_id: int, db_path: Path) -> "dict | None":
     db = get_db(db_path)
-    cols = ("id, content, type, owner_id, scope, tags, salience, pinned, source, created_at, "
-            "updated_at, last_used, use_count, superseded_by, expires_at")
+    cols = ("id, content, type, owner_id, scope, tags, salience, pinned, source, source_session, "
+            "created_at, updated_at, last_used, use_count, superseded_by, expires_at")
     r = db.execute(f"SELECT {cols} FROM memories WHERE id=?", [mem_id]).fetchone()
     return dict(zip([c.strip() for c in cols.split(",")], r)) if r else None
 
 
 def export_memories(db_path: Path, owner: str = None) -> list[dict]:
     db = get_db(db_path)
-    sql = ("SELECT id, content, type, owner_id, scope, tags, salience, pinned, source, created_at "
-           "FROM memories")
+    keys = ["id", "content", "type", "owner_id", "scope", "tags", "salience", "pinned", "source",
+            "source_session", "created_at"]
+    sql = "SELECT " + ", ".join(keys) + " FROM memories"
     params: list = []
     if owner:
         sql += " WHERE owner_id=?"
         params.append(owner)
     sql += " ORDER BY id"
-    keys = ["id", "content", "type", "owner_id", "scope", "tags", "salience", "pinned", "source", "created_at"]
     return [dict(zip(keys, r)) for r in db.execute(sql, params).fetchall()]
 
 
@@ -445,6 +474,19 @@ def forget_by_query(query: str, db_path: Path, owner: str = "local", threshold: 
     for i in ids:
         forget(i, db_path)
     return ids
+
+
+def forget_by_session(session_id: str, db_path: Path, owner: str = "local") -> int:
+    """MEM-10 — soft-delete every active memory a given session produced (provenance-based forget).
+    Rows stay for audit/export; recall skips them. Returns the count hidden."""
+    db = get_db(db_path)
+    stamp = datetime.now(timezone.utc).isoformat()
+    cur = db.execute(
+        "UPDATE memories SET expires_at=?, updated_at=? "
+        "WHERE owner_id=? AND source_session=? AND expires_at IS NULL",
+        [stamp, stamp, owner, session_id])
+    db.conn.commit()
+    return cur.rowcount
 
 
 def edit(mem_id: int, new_content: str, db_path: Path) -> "int | None":
@@ -493,17 +535,28 @@ def prune(db_path: Path, owner: str = "local", forget_after_days: dict = None,
     for mtype, days in (forget_after_days or {}).items():
         if mtype in ("profile", "preference"):
             continue   # identity never TTL-expires
-        cutoff = (now - timedelta(days=float(days))).isoformat()
-        cur = db.execute(
-            "DELETE FROM memories WHERE owner_id=? AND type=? AND pinned=0 AND created_at < ?",
-            [owner, mtype, cutoff])
-        ttl_pruned += cur.rowcount
+        # A4 fix — compare PARSED datetimes, not raw strings: store() writes ISO 'T' timestamps but
+        # SQLite's column default writes a space-separated form, so a naive string compare against an
+        # ISO cutoff over-prunes legacy rows (space < 'T' at the date/time boundary).
+        rows = db.execute(
+            "SELECT id, created_at FROM memories WHERE owner_id=? AND type=? AND pinned=0",
+            [owner, mtype]).fetchall()
+        for rid, created_at in rows:
+            if _age_days(created_at, now) > float(days):
+                db.execute("DELETE FROM memories WHERE id=?", [rid])
+                ttl_pruned += 1
     capped = 0
-    total = db.execute("SELECT COUNT(*) FROM memories WHERE owner_id=?", [owner]).fetchone()[0]
+    # A4 — the live size cap counts and drops ACTIVE rows only; superseded/expired rows are already
+    # inactive and must not inflate the count or be chosen as victims.
+    active = "superseded_by IS NULL AND (expires_at IS NULL OR expires_at > ?)"
+    now_iso = now.isoformat()
+    total = db.execute(
+        f"SELECT COUNT(*) FROM memories WHERE owner_id=? AND {active}", [owner, now_iso]).fetchone()[0]
     if max_rows and total > max_rows:
         victims = db.execute(
-            "SELECT id FROM memories WHERE owner_id=? AND pinned=0 AND type NOT IN ('profile','preference') "
-            "ORDER BY salience ASC, created_at ASC LIMIT ?", [owner, total - max_rows]).fetchall()
+            f"SELECT id FROM memories WHERE owner_id=? AND {active} AND pinned=0 "
+            "AND type NOT IN ('profile','preference') ORDER BY salience ASC, created_at ASC LIMIT ?",
+            [owner, now_iso, total - max_rows]).fetchall()
         for (vid,) in victims:
             db.execute("DELETE FROM memories WHERE id=?", [vid])
         capped = len(victims)
@@ -550,15 +603,19 @@ def cmd_show(mem_id: int, db_path: Path) -> None:
         print(f"{key:>14}: {value}")
 
 
-def cmd_forget(mem_id, query: str, db_path: Path, owner: str) -> None:
+def cmd_forget(mem_id, query: str, db_path: Path, owner: str, session: str = None) -> None:
     try:
-        if query:
+        if session:
+            n = forget_by_session(session, db_path, owner=owner)
+            print(f"Forgot {n} memory(ies) from session {session}." if n else
+                  f"No memories from session {session}.")
+        elif query:
             ids = forget_by_query(query, db_path, owner=owner)
             print(f"Forgot {ids}" if ids else "No matching memory to forget.")
         elif mem_id is not None:
             print("Forgotten." if forget(mem_id, db_path) else f"No memory id={mem_id}")
         else:
-            print("Provide an id or --query.", file=sys.stderr)
+            print("Provide an id, --query, or --session.", file=sys.stderr)
     except RuntimeError as e:
         print(f"Cannot forget — {e}", file=sys.stderr)
 
@@ -765,7 +822,7 @@ def _prose_recap(raw: str, convo: list) -> str:
 def consolidate_session(turns: list, db_path: Path, model: str = "chat", owner: str = "local",
                         dedup_threshold: float = 0.92, timeout: int = 60,
                         scope: str = None, reconcile_top_k: int = 20,
-                        max_tokens: int = 512) -> dict:
+                        max_tokens: int = 512, source_session: str = None) -> dict:
     """MEM-4/8/9 — extract durable typed facts from a session's turns and RECONCILE them against the
     owner's existing facts (supersede, don't accumulate), plus one prose episodic recap. Returns
     {'facts': n_new, 'superseded': n, 'summary': text}. No-op (facts=0) for <2 turns.
@@ -799,7 +856,8 @@ def consolidate_session(turns: list, db_path: Path, model: str = "chat", owner: 
             try:
                 new_id, is_new = store(stmt, db_path, source="consolidation", mem_type=mtype,
                                        owner=owner, scope=(scope if mtype == "project" else None),
-                                       salience=salience, dedup_threshold=dedup_threshold)
+                                       salience=salience, dedup_threshold=dedup_threshold,
+                                       source_session=source_session)
             except RuntimeError:
                 break   # embed server down mid-run — stop; best-effort
             stored += 1 if is_new else 0
@@ -826,7 +884,7 @@ def consolidate_session(turns: list, db_path: Path, model: str = "chat", owner: 
     # so a session is never silently dropped.
     try:
         store(_prose_recap(raw, convo), db_path, source="consolidation", mem_type="episodic",
-              owner=owner, dedup_threshold=dedup_threshold)
+              owner=owner, dedup_threshold=dedup_threshold, source_session=source_session)
     except RuntimeError:
         pass
     return {"facts": stored, "superseded": superseded, "summary": raw or None}
@@ -933,6 +991,7 @@ def main() -> None:
     p_forget = sub.add_parser("forget")
     p_forget.add_argument("id", type=int, nargs="?")
     p_forget.add_argument("--query", default=None, help="Forget the best-matching memory instead of an id")
+    p_forget.add_argument("--session", default=None, help="Forget every memory a session produced")
     p_forget.add_argument("--owner", default="local")
 
     p_edit = sub.add_parser("edit")
@@ -976,7 +1035,7 @@ def main() -> None:
         elif args.cmd == "show":
             cmd_show(args.id, db_path)
         elif args.cmd == "forget":
-            cmd_forget(args.id, args.query, db_path, args.owner)
+            cmd_forget(args.id, args.query, db_path, args.owner, session=args.session)
         elif args.cmd == "edit":
             cmd_edit(args.id, args.text, db_path)
         elif args.cmd == "pin":

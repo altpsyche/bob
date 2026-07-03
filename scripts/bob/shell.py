@@ -871,7 +871,7 @@ class BobShell:
         # as intentional, not a freeze.
         self.console.print(f"[{self.theme.muted}]saving session memory…[/]")
         result = consolidate_session(self.history, config=self.config, owner=self.owner,
-                                     scope=self.scope)
+                                     scope=self.scope, session_id=session_id)
         n = result.get("facts", 0)
         if n:
             self.console.print(f"[{self.theme.muted}]remembered {n} fact(s) from this session[/]")
