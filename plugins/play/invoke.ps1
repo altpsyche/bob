@@ -23,7 +23,10 @@ if (-not $query) {
 }
 
 $repo   = Split-Path (Split-Path $PSScriptRoot)
-$venvPy = Join-Path $repo 'tools\venv-litellm\Scripts\python.exe'
+# OS-aware venv layout (Windows Scripts\python.exe | Linux/macOS bin/python); plugins are standalone
+# so resolve inline rather than dot-sourcing the platform seam.
+$venvPy = if ($IsWindows) { Join-Path $repo 'tools\venv-litellm\Scripts\python.exe' }
+          else            { Join-Path $repo 'tools/venv-litellm/bin/python' }
 
 if (-not (Test-Path $venvPy)) {
     Write-Host "venv-litellm not found — run bootstrap-litellm.ps1 first" -ForegroundColor Red

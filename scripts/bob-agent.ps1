@@ -20,7 +20,7 @@ $schedFile = Join-Path $repo $bobCfg.agent.scheduleFile
 if (-not (Test-Path $schedFile)) { exit 0 }
 
 $logFile   = Join-Path $repo $bobCfg.agent.logFile
-$venvPy    = Join-Path $repo 'tools\venv-litellm\Scripts\python.exe'
+$venvPy    = Get-VenvExe -Venv 'venv-litellm' -Exe 'python'   # NC4: OS-aware (Scripts\python.exe | bin/python)
 $loopScript = Join-Path $repo 'scripts\bob_loop.py'
 
 if (-not (Test-Path $venvPy)) {

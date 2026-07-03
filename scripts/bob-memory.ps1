@@ -3,7 +3,8 @@
 # Reads memory.dbPath from config/bob.psd1 and passes it as --db.
 # Usage: bob-memory.ps1 <store|recall|status|clear|init-profile> [args]
 $repo   = Split-Path $PSScriptRoot -Parent
-$py     = Join-Path $repo 'tools\venv-litellm\Scripts\python.exe'
+. "$PSScriptRoot\_models.ps1"                                 # Get-VenvExe (must precede $py)
+$py     = Get-VenvExe -Venv 'venv-litellm' -Exe 'python'     # NC4: OS-aware (Scripts\python.exe | bin/python)
 $script = Join-Path $PSScriptRoot 'bob_memory.py'
 
 if (-not (Test-Path $py)) {
@@ -11,13 +12,14 @@ if (-not (Test-Path $py)) {
   exit 1
 }
 
-. "$PSScriptRoot\_models.ps1"
 try {
   $bobCfg = Get-BobConfig
-  $dbRel  = ($bobCfg.memory.dbPath ?? 'data\bob.db') -replace '/', '\'
+  # Normalize to forward slashes (works on both OSes); the old '/ -> \' forced a literal-backslash
+  # filename on Linux.
+  $dbRel  = ($bobCfg.memory.dbPath ?? 'data/bob.db') -replace '\\', '/'
   $dbPath = Join-Path $repo $dbRel
 } catch {
-  $dbPath = Join-Path $repo 'data\bob.db'
+  $dbPath = Join-Path $repo 'data/bob.db'
 }
 
 & $py $script --db $dbPath @args

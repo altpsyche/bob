@@ -411,10 +411,10 @@ Write-Host "`n[11] Python unit tests (agent harness — tools, routing, context,
 # Runs the stdlib-unittest suite in tests/ (M13). Uses pytest if it's installed, else the
 # stdlib runner — the tests are written to work under both. Skipped (not failed) if the venv
 # is missing so a fresh checkout without venv-litellm still completes the dry-run.
-$venvPy10 = Join-Path $repo 'tools\venv-litellm\Scripts\python.exe'
+$venvPy10 = Get-VenvExe -Venv 'venv-litellm' -Exe 'python'   # NC4: OS-aware (Scripts\python.exe | bin/python)
 $testsDir = Join-Path $repo 'tests'
 if (-not (Test-Path $venvPy10)) {
-  Write-Host "  skip  venv-litellm not found — Python tests skipped (run scripts\bootstrap-litellm.ps1)" -ForegroundColor DarkGray
+  Write-Host "  skip  venv-litellm not found — Python tests skipped (run scripts/bootstrap-litellm.ps1)" -ForegroundColor DarkGray
 } elseif (-not (Test-Path $testsDir)) {
   Write-Host "  skip  tests/ dir not found" -ForegroundColor DarkGray
 } else {

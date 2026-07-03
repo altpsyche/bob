@@ -96,7 +96,7 @@ Download-File $urls.piperVoiceJson (Join-Path $voicesDir "$ttsVoice.onnx.json") 
 
 # ── Step 4: install Python audio deps into venv-litellm ──────────────────────
 Write-Host "`n[4/5] Python audio deps (sounddevice, numpy)" -ForegroundColor Yellow
-$pip = Join-Path $repo 'tools\venv-litellm\Scripts\pip.exe'
+$pip = Get-VenvExe -Venv 'venv-litellm' -Exe 'pip'   # NC4: OS-aware (Scripts\pip.exe | bin/pip)
 if (-not (Test-Path $pip)) { throw "venv-litellm not found — run: bob bootstrap first" }
 & $pip install --quiet sounddevice numpy
 if ($LASTEXITCODE -ne 0) { throw "pip install sounddevice numpy failed" }
