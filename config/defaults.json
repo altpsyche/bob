@@ -32,6 +32,7 @@
       "autoRecall": false,
       "injectProfileAtStart": true,
       "profileMaxTokens": 200,
+      "maxInjectedTokens": 1200,
       "dbPath": "data/bob.db",
       "embedModel": "embed",
       "recallK": 5,

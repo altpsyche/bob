@@ -264,6 +264,13 @@ class TestBlendedRead(unittest.TestCase):
         hits = bob_memory.recall("Q", self.db, k=2, threshold=0.0)
         self.assertEqual(hits[0]["content"], "touched")  # reinforced fact stops decaying
 
+    def test_corrupt_timestamp_ranks_oldest(self):                    # MEM-10 A3
+        now = datetime.now(timezone.utc).isoformat()
+        self._insert("good", emb_key="Q", created_at=now)
+        self._insert("corrupt", emb_key="Q", created_at="not-a-date")
+        hits = bob_memory.recall("Q", self.db, k=2, threshold=0.0)
+        self.assertEqual([h["content"] for h in hits], ["good", "corrupt"])  # unparseable → oldest
+
     def test_bob_core_threads_owner_scope_and_weights(self):
         import bob_core
         captured = {}
@@ -501,6 +508,19 @@ class TestConsolidation(unittest.TestCase):
         self.assertIn("User uses vim", hits)                          # untouched — stale id ignored
         self.assertIn("User is building Bob", hits)
 
+    def test_provenance_stamped_and_forget_by_session(self):          # MEM-10 B3
+        bob_memory.summarize_turns = lambda *a, **k: "preference: User likes go | NEW | 5\n"
+        bob_memory.consolidate_session(self._TURNS, self.db, source_session="sess-42")
+        db = bob_memory.get_db(self.db)
+        fact = db.execute("SELECT source_session FROM memories WHERE content='User likes go'").fetchone()
+        recap = db.execute("SELECT source_session FROM memories WHERE type='episodic'").fetchone()
+        self.assertEqual(fact[0], "sess-42")                          # fact + recap both stamped
+        self.assertEqual(recap[0], "sess-42")
+        n = bob_memory.forget_by_session("sess-42", self.db)
+        self.assertEqual(n, 2)                                        # both hidden
+        self.assertEqual(bob_memory.recall("go", self.db, threshold=0.0), [])
+        self.assertEqual(db.execute("SELECT COUNT(*) FROM memories").fetchone()[0], 2)  # kept for audit
+
 
 class TestOwnerThreading(unittest.TestCase):
     """MEM-6 — RunContext carries owner/agent_depth; the memory tools scope to the run's owner."""
@@ -706,6 +726,24 @@ class TestHygiene(unittest.TestCase):
         self.assertEqual(bob_memory.get_memory(mid, self.db)["pinned"], 0)
         self.assertFalse(bob_memory.set_pinned(999999, self.db, True))  # unknown id
 
+    def test_prune_keeps_legacy_space_format_within_ttl(self):        # MEM-10 A4
+        # SQLite's default 'YYYY-MM-DD HH:MM:SS' (space, tz-naive) vs an ISO 'T' cutoff — a raw string
+        # compare over-prunes; the parsed compare keeps a clearly-within-TTL row.
+        recent = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        self._insert("legacy recent recap", type="episodic", created_at=recent)
+        r = bob_memory.prune(self.db, forget_after_days={"episodic": 30})
+        self.assertEqual(r["ttl_pruned"], 0)
+        self.assertIn("legacy recent recap", self._contents())
+
+    def test_size_cap_ignores_superseded_rows(self):                 # MEM-10 A4
+        self._insert("active1", salience=0.5)
+        self._insert("active2", salience=0.6)
+        self._insert("dead low", salience=0.1, superseded_by=999)    # inactive — must not count/drop
+        r = bob_memory.prune(self.db, max_rows=2)
+        self.assertEqual(r["capped"], 0)                              # only 2 ACTIVE rows → not over cap
+        self.assertIn("active1", self._contents())
+        self.assertIn("dead low", self._contents())                  # superseded row not chosen as victim
+
     def test_list_filters_by_type_and_export(self):
         bob_memory.store("a fact here", self.db, mem_type="fact")
         bob_memory.store("a pref here", self.db, mem_type="preference")
@@ -753,7 +791,7 @@ class TestNormalize(unittest.TestCase):
 @unittest.skipUnless(bob_memory._DEPS_ERROR is None,
                      f"memory deps (sqlite-utils/requests) not installed: {bob_memory._DEPS_ERROR}")
 class TestSchemaV2(unittest.TestCase):
-    """MEM-0 — PRAGMA user_version migration in get_db + migrate --normalize."""
+    """MEM-0/10 — PRAGMA user_version migration ladder in get_db + migrate --normalize."""
 
     def setUp(self):
         self._orig = bob_memory.embed
@@ -767,12 +805,13 @@ class TestSchemaV2(unittest.TestCase):
 
     _V2_COLS = ("content_hash", "type", "subject", "owner_id", "scope", "tags",
                 "salience", "pinned", "superseded_by", "updated_at", "expires_at")
+    _V3_COLS = ("source_session",)
 
-    def test_fresh_db_is_version_2_with_all_columns(self):
+    def test_fresh_db_is_current_version_with_all_columns(self):
         db = bob_memory.get_db(self.db)
-        self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 2)
+        self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], bob_memory.SCHEMA_VERSION)
         cols = {r[1] for r in db.execute("PRAGMA table_info(memories)").fetchall()}
-        for c in self._V2_COLS:
+        for c in (*self._V2_COLS, *self._V3_COLS):
             self.assertIn(c, cols)
 
     def _seed_v1(self):
@@ -795,10 +834,12 @@ class TestSchemaV2(unittest.TestCase):
         conn.commit()
         conn.close()
 
-    def test_legacy_v1_migrates_and_backfills_type(self):
+    def test_legacy_v1_migrates_through_ladder_and_backfills_type(self):
         self._seed_v1()
-        db = bob_memory.get_db(self.db)                       # triggers migration
-        self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 2)
+        db = bob_memory.get_db(self.db)                       # triggers v1→v2→v3 ladder
+        self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], bob_memory.SCHEMA_VERSION)
+        cols = {r[1] for r in db.execute("PRAGMA table_info(memories)").fetchall()}
+        self.assertIn("source_session", cols)                # v3 column added by the ladder
         type_by_content = {r[0]: r[1]
                            for r in db.execute("SELECT content, type FROM memories").fetchall()}
         self.assertEqual(type_by_content["I prefer dark mode in all editors"], "preference")  # source=user
@@ -810,7 +851,7 @@ class TestSchemaV2(unittest.TestCase):
         self._seed_v1()
         bob_memory.get_db(self.db)
         db2 = bob_memory.get_db(self.db)                      # second open must not error or change data
-        self.assertEqual(db2.execute("PRAGMA user_version").fetchone()[0], 2)
+        self.assertEqual(db2.execute("PRAGMA user_version").fetchone()[0], bob_memory.SCHEMA_VERSION)
         self.assertEqual(db2.execute("SELECT COUNT(*) FROM memories").fetchone()[0], 4)
 
     def test_migrate_normalize_rewrites_first_person_and_reembeds(self):
@@ -833,6 +874,40 @@ class TestSchemaV2(unittest.TestCase):
         self.assertIn("The sky is blue", by_content)
         self.assertIsNone(by_content["The sky is blue"]["hash"])
         self.assertEqual(by_content["The sky is blue"]["emb"], "[0.0]")
+
+
+class TestInjectionBudget(unittest.TestCase):
+    """MEM-10 B4 — bob_core.budget_injection: fit injected memory into a token budget; trim autoRecall
+    before profile before BOB.md. Pure function — no memory deps needed."""
+
+    def test_fits_all_when_under_budget(self):
+        import bob_core
+        blocks = [("autoRecall", "a" * 10, 1), ("profile", "p" * 10, 2), ("bobmd", "b" * 10, 3)]
+        joined, kept, dropped = bob_core.budget_injection(blocks, max_tokens=100)
+        self.assertEqual(set(kept), {"autoRecall", "profile", "bobmd"})
+        self.assertEqual(dropped, [])
+        self.assertIn("a" * 10, joined)
+
+    def test_trims_lowest_priority_first(self):
+        import bob_core
+        blocks = [("autoRecall", "a" * 40, 1), ("profile", "p" * 40, 2), ("bobmd", "b" * 40, 3)]
+        joined, kept, dropped = bob_core.budget_injection(blocks, max_tokens=25)  # 100 chars
+        self.assertIn("bobmd", kept)
+        self.assertIn("profile", kept)
+        self.assertEqual(dropped, ["autoRecall"])            # least-protected dropped first
+
+    def test_keeps_top_priority_even_if_over_budget(self):
+        import bob_core
+        blocks = [("autoRecall", "a" * 10, 1), ("bobmd", "b" * 1000, 3)]
+        joined, kept, dropped = bob_core.budget_injection(blocks, max_tokens=1)  # 4 chars
+        self.assertEqual(kept, ["bobmd"])                    # never inject nothing when BOB.md present
+        self.assertEqual(dropped, ["autoRecall"])
+
+    def test_skips_empty_blocks(self):
+        import bob_core
+        joined, kept, dropped = bob_core.budget_injection(
+            [("autoRecall", "   ", 1), ("profile", "p", 2)], max_tokens=100)
+        self.assertEqual(kept, ["profile"])
 
 
 if __name__ == "__main__":

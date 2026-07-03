@@ -269,13 +269,35 @@ def project_memory_block(project_dir: Optional[str], config: Optional[dict] = No
     return "Project instructions (from BOB.md — follow these for this project):\n" + body
 
 
+def budget_injection(blocks: list, max_tokens: int) -> tuple:
+    """MEM-10 — fit optional injected-memory blocks into ~max_tokens (≈4 chars/token) before they are
+    concatenated into the system prompt. `blocks` is a list of (label, text, priority); higher
+    priority is kept longer. Greedy by priority desc; the single highest-priority block is always kept
+    even if it alone exceeds the budget (so we never inject nothing when a large BOB.md is present).
+    Trim order therefore drops autoRecall before profile before BOB.md. Returns
+    (joined_text, kept_labels, dropped_labels)."""
+    max_chars = max(0, int(max_tokens) * 4)
+    ordered = sorted([b for b in blocks if b[1] and b[1].strip()], key=lambda b: -b[2])
+    kept, dropped, used = [], [], 0
+    for label, text, _prio in ordered:
+        need = len(text) + 2   # +2 for the blank-line separator
+        if not kept or used + need <= max_chars:
+            kept.append((label, text))
+            used += need
+        else:
+            dropped.append(label)
+    joined = "\n\n".join(text for _label, text in kept)
+    return joined, [label for label, _ in kept], dropped
+
+
 def consolidate_session(turns: list, config: Optional[dict] = None,
-                        owner: Optional[str] = None, scope: Optional[str] = None) -> dict:
+                        owner: Optional[str] = None, scope: Optional[str] = None,
+                        session_id: Optional[str] = None) -> dict:
     """MEM-4 — extract durable facts from a session's turns and store them (deduped), plus one
     episodic recap. Resolves db path, summarizer model, owner, and dedup threshold from config, then
-    calls the importable core. `scope` (MEM-7) tags extracted type='project' facts. Best-effort:
-    returns {'facts': 0, 'summary': None} on any failure. The CALLER gates on
-    memory.enabled && memory.autoConsolidate."""
+    calls the importable core. `scope` (MEM-7) tags extracted type='project' facts; `session_id`
+    (MEM-10) stamps each stored row's provenance. Best-effort: returns {'facts': 0, 'summary': None}
+    on any failure. The CALLER gates on memory.enabled && memory.autoConsolidate."""
     cfg = config or load_config()
     db_path = _get_db_path(cfg)
     _ensure_memory_importable()
@@ -290,6 +312,7 @@ def consolidate_session(turns: list, config: Optional[dict] = None,
             timeout=int(mem.get("consolidateTimeout", 30)),   # bound end-of-session stall
             reconcile_top_k=int(mem.get("reconcileTopK", 20)),  # MEM-8 existing-facts window
             max_tokens=int(mem.get("maxSummaryTokens", 512)),   # clears the reasoning-token budget
+            source_session=session_id,                          # MEM-10 provenance stamp
         )
         # MEM-5 — opportunistic hygiene at end of consolidation: TTL prune + per-owner size cap.
         try:

@@ -609,8 +609,8 @@ def run_agent_events(
     the server/scheduler never run a gated tool unattended; the CLI wrapper installs a console approver
     on a TTY, and the NE2 shell will pass one that drives the TUI. `call_id` correlates
     tool_call↔approval_required↔tool_result (forward-compat for O2 parallel tools)."""
-    from bob_core import (MEMORY_CONTEXT_FRAME, _port, check_litellm, get_llm_client,
-                          memory_profile_block, memory_recall, project_memory_block)
+    from bob_core import (MEMORY_CONTEXT_FRAME, _port, budget_injection, check_litellm,
+                          get_llm_client, memory_profile_block, memory_recall, project_memory_block)
 
     agent_cfg = config.get("agent", {})
     effective_role = role or config.get("routing", {}).get("agentRole", "chat")
@@ -670,14 +670,20 @@ def run_agent_events(
     # O1 the parent's); scope is the project key threaded from the shell/CLI (None = global).
     owner = owner or config.get("agent", {}).get("defaultOwner", "local")
 
+    # MEM-10 — gather every injected-memory block, then fit them into memory.maxInjectedTokens before
+    # concatenating into the one system message truncate_history always keeps (so injected memory can't
+    # overflow the context window). Priority (kept longest): BOB.md > profile > autoRecall.
+    inject_blocks: list = []   # (label, text, priority)
+    inject_budget = int(mem_cfg.get("maxInjectedTokens", 1200))
+
     if mem_cfg.get("autoRecall"):
         try:
             # A1 fix — recall as the RUN's owner/scope, not the 'local' default.
             recalled = memory_recall(goal, k=int(mem_cfg.get("recallK", 5)), config=config,
                                      owner=owner, scope=scope)
             if recalled and recalled.strip() and recalled != "(no results)":
-                system_prompt += "\n\n" + MEMORY_CONTEXT_FRAME + "\n" + recalled
-                log.info(f"[{rid}] injected memories ({len(recalled)}c)")
+                recalled = recalled[: inject_budget * 4]   # B4 — hard-cap autoRecall length
+                inject_blocks.append(("autoRecall", MEMORY_CONTEXT_FRAME + "\n" + recalled, 1))
         except Exception as e:
             log.warning(f"[{rid}] memory recall skipped: {e}")
             print(f"[warn] memory recall skipped: {e}", file=sys.stderr)
@@ -691,8 +697,7 @@ def run_agent_events(
         try:
             profile = memory_profile_block(owner=owner, config=config)
             if profile:
-                system_prompt += "\n\n" + profile
-                log.info(f"[{rid}] injected profile block ({len(profile)}c)")
+                inject_blocks.append(("profile", profile, 2))
         except Exception as e:
             log.warning(f"[{rid}] profile injection skipped: {e}")
 
@@ -702,10 +707,17 @@ def run_agent_events(
             try:
                 pm = project_memory_block(scope, config=config)
                 if pm:
-                    system_prompt += "\n\n" + pm
-                    log.info(f"[{rid}] injected project memory ({len(pm)}c)")
+                    inject_blocks.append(("bobmd", pm, 3))
             except Exception as e:
                 log.warning(f"[{rid}] project memory skipped: {e}")
+
+    if inject_blocks:
+        joined, kept, dropped = budget_injection(inject_blocks, inject_budget)
+        if joined:
+            system_prompt += "\n\n" + joined
+            log.info(f"[{rid}] injected memory {kept} ({len(joined)}c)")
+        if dropped:
+            log.info(f"[{rid}] memory injection over budget; dropped {dropped}")
 
     tool_fmt = agent_cfg.get("toolFormat", "hermes").lower()
     hermes_mode = tool_fmt == "hermes"

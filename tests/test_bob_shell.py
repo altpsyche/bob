@@ -358,8 +358,9 @@ class TestLifecycleHooks(unittest.TestCase):
         sh.history = [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]
         captured = {}
         orig = bob_core.consolidate_session
-        bob_core.consolidate_session = (lambda turns, config=None, owner=None, scope=None:
-                                        captured.update(turns=turns, owner=owner, scope=scope)
+        bob_core.consolidate_session = (lambda turns, config=None, owner=None, scope=None, session_id=None:
+                                        captured.update(turns=turns, owner=owner, scope=scope,
+                                                        session_id=session_id)
                                         or {"facts": 1})
         try:
             sh._consolidate_session("sid")
@@ -368,6 +369,7 @@ class TestLifecycleHooks(unittest.TestCase):
         self.assertEqual(captured["turns"], sh.history)
         self.assertEqual(captured["owner"], sh.owner)
         self.assertEqual(captured["scope"], sh.scope)      # MEM-7: exit consolidation carries scope
+        self.assertEqual(captured["session_id"], "sid")    # MEM-10: provenance stamp
 
     def test_consolidate_skipped_when_disabled(self):
         import bob_core
