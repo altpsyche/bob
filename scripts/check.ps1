@@ -71,6 +71,23 @@ Write-Host '[check] versions.lock in sync...' -ForegroundColor Cyan
 . (Join-Path $repo 'scripts\_models.ps1')   # dot-sources _versions.ps1 (Test-VersionsLockSync)
 if ((Test-VersionsLockSync) -ne 0) { Write-Host '[check] versions.lock STALE — run: bob lock' -ForegroundColor Red; $failed = $true }
 
+# 3c. executable bits on the Linux entrypoints (NC2) ------------------------
+# git tracks the +x bit; a file committed 100644 makes './install_prereqs.sh' die with
+# 'permission denied' on every fresh Linux/macOS clone (Windows .bat ignores the bit, so it hides).
+# Assert the shell entrypoints + hook source stay executable. Static, git-only (no venv), runs
+# even with -NoTests, and works on Windows since it reads the tracked mode, not the filesystem.
+Write-Host '[check] entrypoint exec bits...' -ForegroundColor Cyan
+$mustExec = @('bob', 'install_prereqs.sh', 'setup.sh', 'scripts/hooks/pre-commit')
+foreach ($f in $mustExec) {
+  $entry = git -C $repo ls-files --stage -- $f
+  if (-not $entry) { Write-Host "[check] MISSING from index: $f" -ForegroundColor Red; $failed = $true; continue }
+  $mode = ($entry -split '\s+')[0]
+  if ($mode -ne '100755') {
+    Write-Host "[check] NOT EXECUTABLE: $f (git mode $mode) — run: git update-index --chmod=+x $f" -ForegroundColor Red
+    $failed = $true
+  }
+}
+
 # 4. unittest suite --------------------------------------------------------
 if (-not $NoTests) {
   Write-Host '[check] unittest suite...' -ForegroundColor Cyan

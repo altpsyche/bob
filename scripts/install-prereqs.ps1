@@ -27,9 +27,10 @@ function Install-LinuxPrereqs {
         'dnf'    { @('git', 'curl', 'gcc-c++', 'make', 'cmake', 'ninja-build', 'golang', 'nodejs', 'npm', 'python3', 'python3-pip') }
         'pacman' { @('git', 'curl', 'base-devel', 'cmake', 'ninja', 'go', 'nodejs', 'npm', 'python') }
     }
+    $failed = @()
     foreach ($p in $pkgs) {
         Write-Host "  install $p ..." -ForegroundColor DarkGray
-        try { Install-Package -Package $p } catch { Write-Warning "  $p failed: $_ (install it manually and re-run)" }
+        try { Install-Package -Package $p } catch { Write-Warning "  $p failed: $_ (install it manually and re-run)"; $failed += $p }
     }
 
     # Python 3.12+ is required by bootstrap.ps1. Distros vary; warn (don't fail) if the default is older.
@@ -57,6 +58,16 @@ function Install-LinuxPrereqs {
     # Docker is optional (compose services); already cross-platform where present.
     if (Have 'docker') { Write-Host "  docker ok" -ForegroundColor DarkGray }
     else { Write-Host "  docker not found (optional — needed only for the compose services). Install docker + add your user to the docker group." -ForegroundColor DarkGray }
+
+    # Fail honestly: if any toolchain package didn't install, the build in ./setup.sh will fail later
+    # with far more confusing errors. Abort non-zero here so the user fixes the base first.
+    if ($failed.Count) {
+        throw @"
+Prerequisite install FAILED for: $($failed -join ', ').
+Fix the errors above, then re-run ./install_prereqs.sh$(if ($Cpu) { ' --cpu' }) — do NOT run ./setup.sh yet.
+(If the failures were 'sudo: a terminal is required', run this in an interactive terminal where sudo can prompt, or configure passwordless sudo / an askpass helper.)
+"@
+    }
 
     Write-Host "`nLinux prerequisites done. Run: ./setup.sh$(if ($Cpu) { ' --cpu' })" -ForegroundColor Green
 }
