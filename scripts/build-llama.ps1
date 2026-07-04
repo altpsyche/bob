@@ -45,20 +45,26 @@ if ($flags.Cuda) {
     $CudaRoot = Get-BestCudaRoot -CudaArch $Arch
     if (-not $CudaRoot) {
       if ($Arch -ge 120) {
-        throw "CUDA Toolkit 12.8 not found. Required for Blackwell (sm_120). Install it, pass -CudaRoot, or build CPU-only with -Cpu."
+        throw "CUDA Toolkit >= 12.8 not found. Blackwell (sm_120) needs CUDA 12.8 or newer (12.8, 12.9, 13.x — the sm_120 + MMQ floor). Install it (Linux: ./install_prereqs.sh installs it), pass -CudaRoot, or build CPU-only with -Cpu."
       } else {
         throw "No compatible CUDA toolkit found for sm_$Arch. Install CUDA 12.x, pass -CudaRoot, or build CPU-only with -Cpu."
       }
     }
   }
 
-  # Blackwell with a non-12.8 toolkit still builds, but the MMQ fast path won't activate.
-  if ($Arch -ge 120 -and $CudaRoot -notmatch 'v?12\.8') {
-    Write-Warning "Blackwell (sm_120) needs CUDA 12.8 for the fast MMQ path. Toolkit: $CudaRoot. Prefill may be ~5x slower."
-  }
+  # Discovery (Get-CudaRoot) guarantees CudaRoot >= 12.8 for Blackwell — the MMQ-capable floor — so no
+  # "toolkit too old" warning here. Whether the fast MMQ path actually activated is a per-llama.cpp-commit
+  # property (TUNING.md notes it can regress): verify it after building — see docs/TUNING.md
+  # "Verifying the fast path" — rather than inferring it from the toolkit version.
 
   Write-Host "Architecture : sm_$Arch" -ForegroundColor Cyan
   Write-Host "CUDA toolkit : $CudaRoot" -ForegroundColor Cyan
+
+  # Linux CUDA host compiler: nvcc rejects a too-new default g++ (e.g. CachyOS gcc 16). Resolve a
+  # compatible one (honors $NVCC_CCBIN, else newest older g++-NN); pass it to cmake below. $null on
+  # Windows / when the default is fine.
+  $cudaHostCxx = if ($os -ne 'windows') { Get-CudaHostCompiler } else { $null }
+  if ($cudaHostCxx) { Write-Host "CUDA host g++: $cudaHostCxx" -ForegroundColor DarkGray }
 
   if ($os -eq 'windows') {
     # Set env vars the VS build system uses to locate the toolkit (winget installs don't always set these).
@@ -135,13 +141,16 @@ try {
       -DGGML_CUDA_FORCE_CUBLAS=OFF `
       -DCUDAToolkit_ROOT="$CudaRoot"
   } elseif ($flags.Cuda) {
-    # Linux CUDA — Ninja generator, single-config; no VS toolset selector.
+    # Linux CUDA — Ninja generator, single-config; no VS toolset selector. Pin the host compiler when
+    # the default g++ is too new for nvcc (-DCMAKE_CUDA_HOST_COMPILER); omit the flag otherwise.
+    $hostCxxArg = if ($cudaHostCxx) { @("-DCMAKE_CUDA_HOST_COMPILER=$cudaHostCxx") } else { @() }
     & $cmakeExe -B build -G $flags.Generator `
       -DGGML_CUDA=ON `
       -DCMAKE_CUDA_ARCHITECTURES="$Arch" `
       -DGGML_CUDA_FORCE_CUBLAS=OFF `
       -DCUDAToolkit_ROOT="$CudaRoot" `
-      -DCMAKE_BUILD_TYPE=Release
+      -DCMAKE_BUILD_TYPE=Release `
+      @hostCxxArg
   } elseif ($os -eq 'windows') {
     # Windows CPU-only.
     & $cmakeExe -B build -G "Visual Studio 17 2022" -DGGML_CUDA=OFF

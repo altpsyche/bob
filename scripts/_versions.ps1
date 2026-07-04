@@ -25,7 +25,9 @@ $script:ManifestFile   = Join-Path $script:VersionsRepo 'models\manifest.json'
 # though the ND doc listed three by example — it builds the llama-swap binary and must be pinned too.
 $script:LockSubmodules = @('external/llama.cpp', 'external/llama-swap', 'external/whisper.cpp', 'external/fabric')
 # Minimum toolchain versions (floors, not the live installed versions). Recorded so an install can
-# assert "you have at least this" and so a release documents its build floor.
+# assert "you have at least this" and so a release documents its build floor. NOTE: `cuda` is the
+# GLOBAL floor (older GPUs); the Blackwell-specific floor (sm_120 needs >= 12.8, accepts 13.x) is
+# enforced per-arch in _platform.ps1 (Resolve-CudaRootCandidates MinVer / Get-CudaRoot), not here.
 $script:LockToolchain  = [ordered]@{ python = '3.12'; cmake = '3.24'; cuda = '12.0' }
 $script:LockRequirements = [ordered]@{ 'venv-litellm' = 'tools/litellm-requirements.lock' }
 

@@ -99,12 +99,16 @@ try {
   Assert "win Ada minMajor 11"            ($c.MinMajor -eq 11)
   $c = Resolve-CudaRootCandidates -CudaArch 120 -Os windows
   Assert "win Blackwell pins v12.8"       ($c.Pin -eq 'v12.8')
+  Assert "win Blackwell MinVer 12.8"      ($c.MinVer -eq '12.8')
   $c = Resolve-CudaRootCandidates -CudaArch 89 -Os linux
   Assert "linux base is /usr/local"       ($c.Base -eq '/usr/local')
   Assert "linux probes /usr/local/cuda"   ($c.Fixed -contains '/usr/local/cuda')
+  Assert "linux probes /opt/cuda (Arch)"  ($c.Fixed -contains '/opt/cuda')
+  Assert "linux Ada MinVer 11.0"          ($c.MinVer -eq '11.0')
   Assert "linux dir prefix cuda-"         ($c.DirPrefix -eq 'cuda-')
   $c = Resolve-CudaRootCandidates -CudaArch 120 -Os linux
   Assert "linux Blackwell pins cuda-12.8" ($c.Pin -eq '/usr/local/cuda-12.8')
+  Assert "linux Blackwell MinVer 12.8"    ($c.MinVer -eq '12.8')
 
   # ------------------------------------------------------------------------
   Write-Host "`n[6] Get-AgentTaskSpec — scheduled task vs cron" -ForegroundColor Cyan

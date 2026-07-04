@@ -152,41 +152,97 @@ function Resolve-CudaRootCandidates {
   param([int]$CudaArch = 0, [string]$Os = (Get-BobOS))
   if ($Os -eq 'windows') {
     $base = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA'
-    if ($CudaArch -ge 120) { return @{ Base = $base; DirPrefix = 'v'; Pin = 'v12.8'; MinMajor = 12 } }
-    return @{ Base = $base; DirPrefix = 'v'; Pin = $null; MinMajor = ($CudaArch -ge 75 ? 11 : 10) }
+    if ($CudaArch -ge 120) { return @{ Base = $base; DirPrefix = 'v'; Pin = 'v12.8'; MinMajor = 12; MinVer = '12.8' } }
+    return @{ Base = $base; DirPrefix = 'v'; Pin = $null; MinMajor = ($CudaArch -ge 75 ? 11 : 10); MinVer = ($CudaArch -ge 75 ? '11.0' : '10.0') }
   }
-  # Linux: canonical /usr/local/cuda symlink first, then versioned /usr/local/cuda-<maj.min>, plus
-  # $CUDA_HOME / $CUDA_PATH if the caller has set them. Blackwell pins cuda-12.8 like Windows.
-  $fixed = @('/usr/local/cuda')
+  # Linux: canonical /usr/local/cuda (NVIDIA/Ubuntu) + /opt/cuda (Arch/pacman) symlinks first, then
+  # versioned /usr/local/cuda-<maj.min>, plus $CUDA_HOME / $CUDA_PATH if the caller has set them.
+  # Blackwell (sm_120) needs CUDA >= 12.8 (the sm_120 + MMQ fast-path floor); the canonical 12.8 path
+  # is preferred, but any newer toolkit (12.9, 13.x) also qualifies — Get-CudaRoot enforces MinVer,
+  # not an exact pin (the old code rejected 13.x and never looked in /opt/cuda).
+  $fixed = @('/usr/local/cuda', '/opt/cuda')
   if ($env:CUDA_HOME) { $fixed += $env:CUDA_HOME }
   if ($env:CUDA_PATH) { $fixed += $env:CUDA_PATH }
   return @{
     Base = '/usr/local'; DirPrefix = 'cuda-'; Fixed = $fixed
     Pin = ($CudaArch -ge 120 ? '/usr/local/cuda-12.8' : $null)
     MinMajor = ($CudaArch -ge 120 ? 12 : ($CudaArch -ge 75 ? 11 : 10))
+    MinVer = ($CudaArch -ge 120 ? '12.8' : ($CudaArch -ge 75 ? '11.0' : '10.0'))
   }
 }
 
+function Get-CudaToolkitVersion {
+  # Best-effort CUDA toolkit version at a root dir. Reads version.json (12.x/13.x layout), then the
+  # older version.txt, then falls back to `bin/nvcc --version`. Returns [version] or $null. Lets
+  # Get-CudaRoot enforce the arch's minimum against unversioned canonical roots (e.g. Arch's
+  # /opt/cuda, whose name carries no version).
+  param([string]$Root)
+  if (-not $Root -or -not (Test-Path $Root)) { return $null }
+  $vj = Join-Path $Root 'version.json'
+  if (Test-Path $vj) {
+    try {
+      $v = (Get-Content $vj -Raw | ConvertFrom-Json).cuda.version
+      if ($v -match '(\d+)\.(\d+)') { return [version]"$($Matches[1]).$($Matches[2])" }
+    } catch {}
+  }
+  $vt = Join-Path $Root 'version.txt'
+  if (Test-Path $vt) {
+    if ((Get-Content $vt -Raw) -match '(\d+)\.(\d+)') { return [version]"$($Matches[1]).$($Matches[2])" }
+  }
+  $nvcc = Join-Path $Root 'bin' (Get-BobExeName 'nvcc')
+  if (Test-Path $nvcc) {
+    try { if (((& $nvcc --version 2>$null) -join "`n") -match 'release (\d+)\.(\d+)') { return [version]"$($Matches[1]).$($Matches[2])" } } catch {}
+  }
+  return $null
+}
+
 function Get-CudaRoot {
-  # EXECUTOR: probe on disk for the best CUDA toolkit for the arch, or $null. Windows behavior is
-  # byte-identical to the old _models.ps1 Get-BestCudaRoot; Linux resolves /usr/local/cuda*.
+  # EXECUTOR: probe on disk for the NEWEST CUDA toolkit meeting the arch's minimum version, or $null.
+  # Canonical/pinned/env roots (version read from disk) and versioned <prefix><maj.min> dirs (version
+  # from the name) are pooled and ranked >= MinVer. Blackwell (sm_120) requires >= 12.8 but accepts
+  # 12.9 / 13.x — the old exact-12.8 pin rejected newer toolkits and never probed Arch's /opt/cuda.
   param([int]$CudaArch = 0)
   $c = Resolve-CudaRootCandidates -CudaArch $CudaArch
-  # Blackwell pin: exactly 12.8 or nothing (Windows old behavior; Linux mirrors it).
-  if ($c.Pin) {
-    $pinPath = if ($c.Pin -match '^[/~]|^[A-Za-z]:') { $c.Pin } else { Join-Path $c.Base $c.Pin }
-    if (Test-Path $pinPath) { return (Resolve-Path $pinPath).Path }
-    if ($CudaArch -ge 120) { return $null }
-  }
-  foreach ($f in @($c.Fixed)) { if ($f -and (Test-Path $f)) { return (Resolve-Path $f).Path } }
-  if (-not (Test-Path $c.Base)) { return $null }
-  $pat = "^$([regex]::Escape($c.DirPrefix))(\d+)\.(\d+)$"
-  $installed = Get-ChildItem $c.Base -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-    if ($_.Name -match $pat) {
-      [pscustomobject]@{ Path = $_.FullName; Major = [int]$Matches[1]; Minor = [int]$Matches[2] }
+  $minVer = [version]($c.MinVer ?? '0.0')
+  $found = [System.Collections.Generic.List[object]]::new()
+
+  # explicit roots: canonical pin + fixed symlinks + env vars (unversioned -> read version from disk)
+  $explicit = @()
+  if ($c.Pin) { $explicit += (($c.Pin -match '^[/~]|^[A-Za-z]:') ? $c.Pin : (Join-Path $c.Base $c.Pin)) }
+  $explicit += @($c.Fixed)
+  foreach ($p in $explicit) {
+    if ($p -and (Test-Path $p)) {
+      $v = Get-CudaToolkitVersion -Root $p
+      if ($v) { $found.Add([pscustomobject]@{ Path = (Resolve-Path $p).Path; Ver = $v }) }
     }
-  } | Where-Object { $_ -and $_.Major -ge $c.MinMajor } | Sort-Object Major, Minor -Descending
-  if ($installed) { return $installed[0].Path }
+  }
+  # versioned dirs under the base (version comes from the directory name, no disk read)
+  if (Test-Path $c.Base) {
+    $pat = "^$([regex]::Escape($c.DirPrefix))(\d+)\.(\d+)$"
+    Get-ChildItem $c.Base -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+      if ($_.Name -match $pat) { $found.Add([pscustomobject]@{ Path = $_.FullName; Ver = [version]"$($Matches[1]).$($Matches[2])" }) }
+    }
+  }
+
+  $ok = $found | Where-Object { $_.Ver -ge $minVer } | Sort-Object Ver -Descending
+  if ($ok) { return (@($ok)[0]).Path }
+  return $null
+}
+
+function Get-CudaHostCompiler {
+  # EXECUTOR (Linux CUDA): the g++ nvcc should use as its host compiler. Some distros ship a default
+  # g++ newer than nvcc supports (e.g. CachyOS gcc 16 vs CUDA's ceiling) which fails the build with
+  # "unsupported GNU version". Honor $NVCC_CCBIN if it resolves (Arch's /etc/profile.d/cuda.sh and the
+  # fish drop-in install_prereqs writes both set it); else pick the newest versioned g++-NN older than
+  # the default (Arch: g++-15 under default 16). Returns a path, or $null to use the default g++.
+  if ((Get-BobOS) -eq 'windows') { return $null }
+  if ($env:NVCC_CCBIN) { $cc = Get-Command $env:NVCC_CCBIN -ErrorAction SilentlyContinue; if ($cc) { return $cc.Source } }
+  $defMajor = 0
+  if ((Get-Command g++ -ErrorAction SilentlyContinue) -and (((& g++ -dumpversion 2>$null) -join '') -match '^(\d+)')) { $defMajor = [int]$Matches[1] }
+  $cands = Get-ChildItem '/usr/bin' -Filter 'g++-*' -ErrorAction SilentlyContinue |
+    ForEach-Object { if ($_.Name -match '^g\+\+-(\d+)$') { [pscustomobject]@{ Path = $_.FullName; Major = [int]$Matches[1] } } } |
+    Where-Object { $_ -and ($defMajor -eq 0 -or $_.Major -lt $defMajor) } | Sort-Object Major -Descending
+  if ($cands) { return (@($cands)[0]).Path }
   return $null
 }
 
