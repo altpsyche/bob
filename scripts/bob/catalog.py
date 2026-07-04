@@ -38,13 +38,13 @@ def render_tools(tool_registry) -> str:
 
 
 def render_skills(skill_registry) -> str:
-    """Registered skills; sub-agent skills (no steps) marked [needs Module O]; failures shown."""
+    """Registered skills; sub-agent skills (no steps) marked [sub-agent] — runnable via O11; failures shown."""
     skills = skill_registry.list()
     lines = [f"Skills ({len(skills)}):"]
     if not skills and not skill_registry.errors:
         lines.append("  (none — add skills/<name>/skill.yaml)")
     for s in sorted(skills, key=lambda x: x["name"]):
-        tag = "" if s["steps"] else "   [needs Module O]"
+        tag = "" if s["steps"] else "   [sub-agent]"
         lines.append(f"  {s['name']:<20} {(s['description'] or '')[:56]}{tag}")
     for name, phase, msg in getattr(skill_registry, "errors", []):
         lines.append(f"  [FAILED] {name} ({phase}): {msg}")

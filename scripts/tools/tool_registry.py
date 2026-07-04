@@ -16,6 +16,7 @@ Usage:
 import contextvars
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -46,6 +47,10 @@ class ToolRegistry:
         # MEM-6 — tools whose call mutates state (module sets MUTATING_TOOLS = {names}, e.g.
         # memory_store). O2 serializes these within a parallel batch; O6 can default them to `ask`.
         self.mutating_tools: set = set()
+        # O7 — namespaced names (mcp:<server>:<tool>) of tools served by a remote MCP server, registered
+        # by bob_mcp_client.register_mcp_tools. The loop defaults these to O6 'ask' (a remote call is a
+        # side effect worth a prompt). Empty unless agent.mcpServers is configured -> byte-identical.
+        self.remote_tools: set = set()
         # (tool_name, phase, message) — phase: "import" | "contract" | "configure"
         self.errors: list[tuple[str, str, str]] = []
         self._loaded_names: set = set()
@@ -90,9 +95,16 @@ class ToolRegistry:
         """
         registry = cls()
         disabled = disabled_names or set()
+        agent_cfg = config.get("agent", {})
         # M7 — token-aware per-result cap (approx 4 chars/token) so one large tool output
         # can't blow the context budget. maxToolResultTokens defaults to keep the prior 4000-char cap.
-        registry.max_result_chars = int(config.get("agent", {}).get("maxToolResultTokens", 1000)) * 4
+        registry.max_result_chars = int(agent_cfg.get("maxToolResultTokens", 1000)) * 4
+        # O15 — when context-editing (clearToolResults) is on, a cleared message must stay re-fetchable,
+        # so retain enough handles to cover the whole history window (default 8 keeps memory flat but
+        # would evict the OLD results clearing targets). Default off leaves the store at 8 (pre-O15).
+        if agent_cfg.get("clearToolResults", False):
+            registry._result_store_max = max(registry._result_store_max,
+                                             int(agent_cfg.get("maxHistoryMsgs", 40)))
 
         all_tools = list(cls.iter_all_tools())
 
@@ -109,6 +121,15 @@ class ToolRegistry:
             if tool_name in disabled:
                 continue
             registry._load_one(tool_name, path, config)
+
+        # O7 — connect to any configured MCP servers (agent.mcpServers) and register their tools as
+        # synthetic mcp:<server>:<tool> entries. Default {} == no servers == no-op (byte-identical
+        # toolset). A failure here is logged and swallowed — a bad MCP config never blocks local tools.
+        try:
+            from bob_mcp_client import register_mcp_tools
+            register_mcp_tools(registry, config, quiet=quiet)
+        except Exception as e:
+            print(f"[warn] MCP client init failed: {e}", file=sys.stderr)
 
         if not quiet:
             registry._print_startup_summary()
@@ -274,12 +295,29 @@ class ToolRegistry:
         return out[: self.max_result_chars] + f"\n[...truncated {cut} chars; retained as {handle}]"
 
     def read_result(self, handle: str, offset: int = 0, length: int = 4000) -> str:
-        """O3 seam — return a window of a previously-truncated result so the trimmed tail can be
-        re-read rather than lost. Not yet exposed as a model-callable tool (O3 wires that)."""
+        """O3/O15 seam — return a window of a previously-truncated-or-cleared result so the text can be
+        re-read rather than lost. Exposed as the model-callable `read_result` tool (scripts/tools/
+        read_result.py) when agent.clearToolResults is on."""
         full = self._result_store.get(handle)
         if full is None:
             return f"Unknown result handle: {handle}"
         return full[offset: offset + length]
+
+    _RETAIN_RE = re.compile(r"retained as (r\d+)\]\s*$")
+
+    def clear_stub(self, result_text: str):
+        """O15 — if `result_text` carries a retained handle (from _truncate_and_retain) whose full text
+        is still in the store, return a compact stub to replace the bulky message with — re-fetchable
+        via read_result(rN). Returns None when there's no handle or it was evicted (so we never leave a
+        dangling stub, and an already-cleared stub is idempotently left alone)."""
+        m = self._RETAIN_RE.search(result_text)
+        if not m:
+            return None
+        handle = m.group(1)
+        full = self._result_store.get(handle)
+        if full is None:
+            return None
+        return f"[tool result {handle} cleared; {len(full)} chars retained — read_result('{handle}')]"
 
     def filtered(self, deny=None, allow=None) -> "_RegistryView":
         """NE0/O1 seam — a lightweight VIEW of this registry with a narrowed tool set, so a sub-agent
@@ -312,6 +350,7 @@ class _RegistryView:
         self.exit_voice_tools = {n for n in base.exit_voice_tools if visible(n)}
         self.approval_required_tools = {n for n in base.approval_required_tools if visible(n)}
         self.mutating_tools = {n for n in base.mutating_tools if visible(n)}
+        self.remote_tools = {n for n in getattr(base, "remote_tools", set()) if visible(n)}
         self.errors = base.errors
         self._loaded_names = base._loaded_names  # informational count reflects the underlying registry
 
@@ -322,3 +361,6 @@ class _RegistryView:
 
     def read_result(self, handle: str, offset: int = 0, length: int = 4000) -> str:
         return self._base.read_result(handle, offset, length)
+
+    def clear_stub(self, result_text: str):
+        return self._base.clear_stub(result_text)

@@ -22,6 +22,12 @@ REPO = Path(__file__).parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 sys.path.insert(0, str(REPO / "scripts" / "tools"))
 
+from bob_tracing import Tracer, make_tracer   # O9 — import-light span seam (stdlib-only at rest)
+
+# O9 — fallback tracer for a dispatch whose context carries none (older callers / unit tests). Disabled,
+# so every span() is the shared no-op — byte-identical to pre-O9.
+_NOOP_TRACER = Tracer(enabled=False)
+
 
 def _estimate_tokens(text: str) -> int:
     """Rough token estimate (~4 chars/token for English + JSON). No tokenizer dependency —
@@ -52,6 +58,20 @@ def _is_transient(e) -> bool:
     ):
         return True
     return getattr(e, "status_code", None) in (429, 500, 502, 503, 504)
+
+
+def _is_unsupported_constraint(e) -> bool:
+    """O12 — True when a request failed specifically because the backend didn't accept the tool-call
+    constraint kwargs (tools / tool_choice): a 400/BadRequest whose message names one of them, or a
+    client that doesn't accept the kwarg at all ('unexpected keyword argument'). Lets the loop drop the
+    constraint for the rest of the run and fall back to today's hermes-text parse, so a non-grammar
+    endpoint degrades gracefully instead of erroring. Distinct from _is_transient (do NOT retry-loop)."""
+    msg = str(e).lower()
+    named = any(k in msg for k in ("tool_choice", "tools", "response_format", "grammar",
+                                   "json_schema", "not supported", "unsupported"))
+    status = getattr(e, "status_code", None)
+    return ("unexpected keyword argument" in msg
+            or ((status == 400 or "badrequest" in type(e).__name__.lower()) and named))
 
 
 def _sleep_cancellable(seconds: float, cancel=None, tick: float = 0.25) -> None:
@@ -206,15 +226,22 @@ class RunContext:
     run id, and the approval callback. Lets a tool (a future sub-agent tool) reach these without any
     change to its fn(**args) signature."""
     __slots__ = ("cancel", "config", "registry", "run_id", "approve", "owner", "agent_depth", "scope",
-                 "policy")
+                 "policy", "todos", "tracer", "trace_span")
 
     def __init__(self, cancel, config, registry, run_id, approve, owner="local", agent_depth=0,
-                 scope=None, policy=None):
+                 scope=None, policy=None, todos=None, tracer=None, trace_span=None):
         self.cancel = cancel
         self.config = config
         self.registry = registry
         self.run_id = run_id
         self.approve = approve
+        # O9 — the run's Tracer + its current parent span, so dispatch_call can open a child tool span
+        # and spawn_agent can parent a sub-run's span. Disabled tracer => all no-op (byte-identical).
+        self.tracer = tracer if tracer is not None else _NOOP_TRACER
+        self.trace_span = trace_span
+        # O16 — run-local living TODO list (list of {task, status}); the `todo` tool mutates it and the
+        # recitation hook re-emits the open items at the context tail. Per-run (sub-agents get their own).
+        self.todos = todos if todos is not None else []
         # O6 — the allow|ask|deny PermissionPolicy for this run (built from config once; None == the
         # pre-O6 default where only the NE0 floor prompts). Reachable by dispatch via get_run_context().
         self.policy = policy
@@ -274,9 +301,14 @@ def _dispatch_with_approval(tc, call_id, *, registry, context, agency, approve, 
     owner = getattr(context, "owner", "local")
     policy = getattr(context, "policy", None)
     mutating = name in getattr(registry, "mutating_tools", set())
+    # O7 — a remote MCP tool (mcp:<server>:<tool>) defaults to 'ask': reaching an external server is a
+    # side effect worth a prompt. A local tool keeps the pre-O7 'allow' default. Either way an explicit
+    # O6 policy rule (per tool/owner/depth) wins over this default.
+    remote = name in getattr(registry, "remote_tools", set())
+    tool_default = "ask" if remote else "allow"
     decision = (policy.resolve(name, owner=owner, agent_depth=getattr(context, "agent_depth", 0),
-                               mutating=mutating)
-                if policy is not None else "allow")
+                               mutating=mutating, default=tool_default)
+                if policy is not None else tool_default)
 
     # deny — never dispatches; the model gets a clean refusal it can read and react to.
     if decision == "deny":
@@ -300,8 +332,21 @@ def _dispatch_with_approval(tc, call_id, *, registry, context, agency, approve, 
             return denied
 
     _audit(log, rid, name, args, decision if policy is not None else "allow", owner)
-    result = registry.dispatch_call(name, args, context=context)
-    is_err = result.startswith(("Tool error", "Unknown tool", "Bad arguments"))
+    # O9 — one tool span per dispatch (child of the run span). No yield inside the block, so the span's
+    # timing is just the dispatch. Disabled tracer => shared no-op (byte-identical).
+    tracer = getattr(context, "tracer", None) or _NOOP_TRACER
+    with tracer.span("agent.tool", {"tool": name, "owner": owner, "decision": decision},
+                     parent=getattr(context, "trace_span", None)) as _sp:
+        result = registry.dispatch_call(name, args, context=context)
+        is_err = result.startswith(("Tool error", "Unknown tool", "Bad arguments"))
+        # O4 — self-repair: retry a failed tool call ONCE, catching a flaky/transient tool failure. A
+        # deterministic error just fails again and is returned as today. Default off (agent.selfRepair).
+        if is_err and _self_repair_on(context):
+            retried = registry.dispatch_call(name, args, context=context)
+            if not retried.startswith(("Tool error", "Unknown tool", "Bad arguments")):
+                log.info(f"[{rid}] self-repair: {name} succeeded on retry (call_id={call_id})")
+                result, is_err = retried, False
+        _sp.set("result_chars", len(result)).set_status("error" if is_err else "ok")
     log.log(
         logging.WARNING if is_err else logging.INFO,
         f"[{rid}] tool {name} -> {len(result)}c (call_id={call_id})"
@@ -428,6 +473,8 @@ def parse_args():
                    help="Comma-separated tool names: exit with code 42 after any of them fire")
     p.add_argument("--stream", action="store_true",
                    help="Stream the final answer token-by-token to stdout (M15)")
+    p.add_argument("--deep", action="store_true",
+                   help="O4 — enable plan + verify + self-repair for this run")
     return p.parse_args()
 
 
@@ -442,6 +489,63 @@ _COMPACT_SYSTEM = (
 )
 
 
+# O4 — optional plan/verify turns (default off). Both reuse the streaming path (so the fake test
+# clients + cancel handling apply) but surface NO 'token' events — they're internal reasoning turns.
+_PLAN_SYSTEM = (
+    "You are planning how an AI agent with tools should accomplish the user's task. Output a SHORT "
+    "numbered list (3-6 steps) of concrete actions — no prose, no preamble. If the task is trivial, "
+    "output a single step."
+)
+_VERIFY_SYSTEM = (
+    "You are reviewing whether the assistant's final answer fully satisfies the user's goal and that "
+    "no tool silently failed or was skipped. If it is complete and correct, reply with exactly the "
+    "word DONE. Otherwise reply with a terse list of what is missing or wrong."
+)
+
+
+def _single_turn(client, role, messages, cancel, timeout, hermes) -> str:
+    """O4 — one internal, non-emitting LLM turn (plan or verify). Consumed as a stream so `cancel` is
+    honored, but yields no 'token' events; returns the assistant content ('' on empty / cancel / error
+    so a plan/verify hiccup degrades to today's behavior rather than failing the run)."""
+    try:
+        resp = client.chat.completions.create(model=role, messages=messages, tools=None,
+                                               stream=True, timeout=timeout)
+        gen = _consume_stream(resp, cancel=cancel, emit_tokens=False, hermes=hermes)
+        msg = None
+        while True:
+            try:
+                next(gen)
+            except StopIteration as stop:
+                msg = stop.value
+                break
+        if msg is None or getattr(msg, "cancelled", False):
+            return ""
+        return getattr(msg, "content", None) or ""
+    except Exception:
+        return ""
+
+
+def _recitation_block(goal: str, todos, max_items: int = 10, max_task_chars: int = 200) -> str:
+    """O16 — the goal-recitation text re-emitted at the CONTEXT TAIL each step (beats 'lost in the
+    middle'): the standing goal plus the still-open TODO items (the O4 plan seeds them; the `todo` tool
+    keeps them living). Bounded. Always returns at least the goal reminder when recitation is on."""
+    lines = [f"[reminder] Current goal: {goal.strip()[:400]}"]
+    open_items = [t for t in (todos or []) if t.get("status") != "done"]
+    if open_items:
+        lines.append("Open TODO (keep working until these are done):")
+        for t in open_items[:max_items]:
+            mark = "~" if t.get("status") == "in_progress" else " "
+            lines.append(f"- [{mark}] {str(t.get('task', '')).strip()[:max_task_chars]}")
+    return "\n".join(lines)
+
+
+def _self_repair_on(context) -> bool:
+    """O4 — whether a failed tool call should be retried once (agent.selfRepair). Read off the run's
+    config via the RunContext so no tool/dispatch signature changes. Default False == pre-O4."""
+    cfg = getattr(context, "config", None) or {}
+    return bool(cfg.get("agent", {}).get("selfRepair", False))
+
+
 def _compact_span(dropped: list, model: str, max_tokens: int) -> str:
     """Summarize the dropped span into a structured compaction note (O3). Best-effort: returns "" on
     any failure (no reachable LLM in tests, etc.), so the caller falls back to plain truncation."""
@@ -453,9 +557,140 @@ def _compact_span(dropped: list, model: str, max_tokens: int) -> str:
         return ""
 
 
+def _truncate_stable_prefix(messages: list, max_msgs: int, max_tokens: int, *,
+                            keep_last: int, summary_max_tokens: int, summary_model: str,
+                            pin_goal: dict, summarize: bool) -> list:
+    """O13 — prefix-cache-aware variant of truncate_history (stablePrefix=on).
+
+    Keeps a FROZEN head — base system message(s) + the single compaction summary block + the pinned
+    goal — byte-stable across turns, and only slides the recent tail. On a compaction event the
+    summary block is *appended to* (its existing bytes never rewritten), so llama.cpp's KV prefix
+    cache is reused up to the previous divergence point instead of being busted every turn. Between
+    compaction events the whole head is byte-identical, so the shared prefix keeps growing with the
+    tail. See truncate_history for the semantics of each window step; only the layout differs."""
+    sys_msgs = [m for m in messages if m.get("role") == "system"]
+    base_sys, prior_summary = [], None
+    for m in sys_msgs:
+        if prior_summary is None and str(m.get("content", "")).startswith(_COMPACT_FRAME):
+            prior_summary = m           # the one canonical, append-only compaction block
+        else:
+            base_sys.append(m)
+    rest = [m for m in messages if m.get("role") != "system"]
+    goal_msg = None
+    if pin_goal is not None:
+        for i, m in enumerate(rest):
+            if m is pin_goal:           # identity match — the goal never falls out of the prefix
+                goal_msg = rest.pop(i)
+                break
+
+    # Frozen head: systems (incl. the summary block) grouped first, then the pinned goal.
+    head = list(base_sys) + ([prior_summary] if prior_summary is not None else [])
+    if goal_msg is not None:
+        head.append(goal_msg)
+
+    original_tail = list(rest)
+    tail = original_tail
+
+    # 1. Message-count window on the tail (head is always kept).
+    if len(head) + len(tail) > max_msgs:
+        tail = tail[-max(0, max_msgs - len(head)):]
+
+    # 2. Token-budget window on the tail; reserve room for a (possibly new) summary block.
+    if max_tokens:
+        budget = max_tokens - sum(_message_tokens(m) for m in head)
+        if summarize and prior_summary is None:
+            budget = max(0, budget - summary_max_tokens)
+        kept, running = [], 0
+        for m in reversed(tail):
+            t = _message_tokens(m)
+            if kept and running + t > budget:
+                break
+            running += t
+            kept.append(m)
+        tail = list(reversed(kept))
+
+    if summarize:
+        n_keep = min(len(original_tail), max(len(tail), keep_last))
+        tail = original_tail[-n_keep:] if n_keep else []
+        dropped = original_tail[: len(original_tail) - len(tail)]
+        while tail and tail[0].get("role") == "tool":
+            dropped.append(tail.pop(0))
+        if dropped:
+            note = _compact_span(dropped, summary_model, summary_max_tokens)
+            if note:
+                # APPEND to the frozen block (prior bytes unchanged) — or create it after base system.
+                content = (prior_summary["content"] + "\n" + note if prior_summary is not None
+                           else f"{_COMPACT_FRAME}\n{note}")
+                summary_msg = {"role": "system", "content": content}
+                out = list(base_sys) + [summary_msg]
+                if goal_msg is not None:
+                    out.append(goal_msg)
+                return out + tail
+        # empty note / nothing dropped -> head (goal + any prior summary still pinned) + tail.
+        return head + tail
+
+    # Truncate mode with a stable prefix: goal + system pinned, tail slid, no summary.
+    while tail and tail[0].get("role") == "tool":
+        tail.pop(0)
+    return head + tail
+
+
+def _clear_hermes_responses(content: str, registry) -> tuple:
+    """O15 — rewrite each <tool_response>{...}</tool_response> in a hermes tool-result message,
+    replacing any whose inner content is a clearable (retained) result with a compact stub. Returns
+    (new_content, changed). A segment that doesn't parse as JSON is left untouched (safe no-op)."""
+    changed = False
+
+    def _repl(match):
+        nonlocal changed
+        try:
+            obj = json.loads(match.group(1))
+        except Exception:
+            return match.group(0)
+        c = obj.get("content")
+        if isinstance(c, str):
+            stub = registry.clear_stub(c)
+            if stub:
+                obj["content"] = stub
+                changed = True
+                return f"<tool_response>{json.dumps(obj)}</tool_response>"
+        return match.group(0)
+
+    return re.sub(r"<tool_response>(.*?)</tool_response>", _repl, content, flags=re.DOTALL), changed
+
+
+def _clear_old_tool_results(messages: list, registry, keep_last: int, hermes: bool) -> list:
+    """O15 — context editing: replace OLD bulky tool-result messages with compact stubs that stay
+    re-fetchable via read_result, shrinking the biggest context hogs while keeping the last `keep_last`
+    messages verbatim. Returns a new list; a message is cleared only when its result carried a retained
+    handle still resolvable (else left as-is, so nothing becomes unrecoverable). Idempotent — an
+    already-cleared stub has no 'retained as rN]' handle for clear_stub to match."""
+    if not messages or not hasattr(registry, "clear_stub"):
+        return messages
+    protect_from = max(0, len(messages) - keep_last)
+    out = list(messages)
+    for i in range(protect_from):
+        m = out[i]
+        content = m.get("content")
+        if not isinstance(content, str):
+            continue
+        if hermes:
+            if m.get("role") != "user" or "<tool_response>" not in content:
+                continue
+            new_content, changed = _clear_hermes_responses(content, registry)
+            if changed:
+                out[i] = {**m, "content": new_content}
+        elif m.get("role") == "tool":
+            stub = registry.clear_stub(content)
+            if stub:
+                out[i] = {**m, "content": stub}
+    return out
+
+
 def truncate_history(messages: list, max_msgs: int, max_tokens: int = 0, *,
                      compaction: str = "truncate", keep_last: int = 6,
-                     summary_max_tokens: int = 512, summary_model: str = "chat") -> list:
+                     summary_max_tokens: int = 512, summary_model: str = "chat",
+                     stable_prefix: bool = False, pin_goal: dict = None) -> list:
     """Sliding window that keeps the system message(s) + most recent turns.
 
     Trims by message count first (max_msgs), then by an optional token budget (max_tokens,
@@ -468,7 +703,16 @@ def truncate_history(messages: list, max_msgs: int, max_tokens: int = 0, *,
     discarding it, keeps the last `keep_last` turns verbatim, and reserves `summary_max_tokens` from
     the budget so the note itself can't re-overflow. `compaction='truncate'` (**default**) is the
     lossy M7 drop-oldest window, byte-identical to pre-O3. This owns the rolling TRANSCRIPT; MEM-10's
-    budget_injection bounds SAVED-memory injection — kept distinct, no double-summarizing."""
+    budget_injection bounds SAVED-memory injection — kept distinct, no double-summarizing.
+
+    O13 — `stable_prefix=True` (opt-in, default off) routes to the prefix-cache-aware layout: a frozen
+    head (system + append-only summary block + `pin_goal`) so llama.cpp reuses the KV prefix across
+    turns. Default `stable_prefix=False` keeps the exact pre-O13 behavior below (byte-identical)."""
+    if stable_prefix:
+        return _truncate_stable_prefix(
+            messages, max_msgs, max_tokens, keep_last=keep_last,
+            summary_max_tokens=summary_max_tokens, summary_model=summary_model,
+            pin_goal=pin_goal, summarize=(compaction == "summarize"))
     system = [m for m in messages if m.get("role") == "system"]
     rest = [m for m in messages if m.get("role") != "system"]
     original_rest = list(rest)
@@ -776,6 +1020,7 @@ def run_agent_events(
     owner: str = None,
     agent_depth: int = 0,
     scope: str = None,
+    trace_parent=None,
 ):
     """Generator core of the agent loop (M15). Yields event dicts:
         {"type": "token",             "text": str}                          # final-answer deltas (stream=True)
@@ -808,6 +1053,27 @@ def run_agent_events(
     compaction_mode = agent_cfg.get("compaction", "truncate")
     compact_keep_last = int(agent_cfg.get("compactKeepLastTurns", 6))
     compact_summary_max = int(agent_cfg.get("compactSummaryMaxTokens", 512))
+    # O13 — prefix-cache-aware context. Default False == pre-O13 assembly (byte-identical). When on,
+    # truncate_history freezes the head (system + append-only summary + pinned goal) so llama.cpp's
+    # KV prefix cache is reused across turns; co-designed with O3's summarize compaction.
+    stable_prefix = bool(agent_cfg.get("stablePrefix", False))
+    # O15 — context editing: once the transcript passes clearToolResultsAfterTokens, replace OLD bulky
+    # tool-result messages with compact stubs re-fetchable via read_result. Default off == pre-O15.
+    clear_tool_results = bool(agent_cfg.get("clearToolResults", False))
+    clear_after_tokens = int(agent_cfg.get("clearToolResultsAfterTokens", 4000))
+    # O12 — grammar-constrained tool calls: attach the structured `tools` payload + tool_choice='auto'
+    # so a grammar-capable backend (llama.cpp) can only emit a well-formed tool call, killing the
+    # malformed-JSON (__parse_error__) class, while still allowing free-text answers. Default off ==
+    # pre-O12 request bytes. Capability-gated at runtime: an endpoint that rejects it is detected once
+    # and the run falls back to today's hermes-text parse.
+    constrained_tool_calls = bool(agent_cfg.get("constrainedToolCalls", False))
+    # O4 — optional plan / verify loop phases (self-repair is read per-call in _dispatch_with_approval).
+    # All default false → the loop is byte-identical to pre-O4. `bob agent --deep` flips them on.
+    plan_enabled = bool(agent_cfg.get("plan", False))
+    verify_enabled = bool(agent_cfg.get("verify", False))
+    # O16 — goal recitation: re-emit the goal + open TODO at the context TAIL each step (default off ==
+    # pre-O16; the block is appended only to the per-step request, never stored in `messages`).
+    recite_enabled = bool(agent_cfg.get("recite", False))
     # Transient-LLM-error retry (5xx/timeout/conn, incl. the llama-swap model-swap race). Total tries
     # per step = llmRetries + 1, with an escalating backoff so a restarting backend has time to come up.
     llm_attempts = max(1, int(agent_cfg.get("llmRetries", 2)) + 1)
@@ -873,7 +1139,10 @@ def run_agent_events(
     inject_blocks: list = []   # (label, text, priority)
     inject_budget = int(mem_cfg.get("maxInjectedTokens", 1200))
 
-    if mem_cfg.get("autoRecall"):
+    # O1 (decision #4) — autoRecall is a ROOT-run behavior only: an O1 sub-agent runs an isolated
+    # transcript by design and must not pull the owner's saved notes every turn (mirrors the
+    # profile/BOB.md gate below). Sporadic recall via the memory_recall TOOL is still available to it.
+    if mem_cfg.get("autoRecall") and agent_depth == 0:
         try:
             # A1 fix — recall as the RUN's owner/scope, not the 'local' default.
             recalled = memory_recall(goal, k=int(mem_cfg.get("recallK", 5)), config=config,
@@ -928,7 +1197,10 @@ def run_agent_events(
     messages = [{"role": "system", "content": base_system}]
     if history:
         messages.extend(history)
-    messages.append({"role": "user", "content": goal})
+    # O13 — keep a reference to the goal message so truncate_history can pin it (by identity) into the
+    # stable prefix when stable_prefix is on; a plain user turn otherwise.
+    goal_msg = {"role": "user", "content": goal}
+    messages.append(goal_msg)
 
     client = get_llm_client(config)
     exit_requested = False
@@ -949,16 +1221,42 @@ def run_agent_events(
         if (tool_schemas and not hermes_mode) else None
     )
 
+    # O12 — the structured tool payload the constraint rides on. In openai mode it's already `openai_tools`;
+    # in hermes mode (where malformed <tool_call> JSON actually occurs) it's built on demand. `constrain_active`
+    # is a run-local latch flipped off if the backend rejects the constraint (see _is_unsupported_constraint).
+    constrain_tools_payload = None
+    if constrained_tool_calls and tool_schemas:
+        constrain_tools_payload = openai_tools or _openai_tools_payload(tool_schemas, compact_after)
+    constrain_active = constrain_tools_payload is not None
+
     cancel = cancel or CancelToken()
     # O6 — resolve the allow|ask|deny policy once per run from config (empty config -> everything
     # allow, i.e. pre-O6 behavior). Carried on the RunContext and consulted in _dispatch_with_approval.
     from bob_permissions import PermissionPolicy
     policy = PermissionPolicy(config)
+    # O9 — build the run's tracer (disabled == no-op == byte-identical) and open the root run span,
+    # parented to trace_parent when a sub-agent passes its caller's span (cross-run nesting).
+    tracer = make_tracer(config)
+    run_span = tracer.start("agent.run",
+                            {"run_id": rid, "owner": owner or "local", "role": effective_role,
+                             "agent_depth": agent_depth, "goal_chars": len(goal or "")},
+                            parent=trace_parent)
     # NE0 — run-scoped context handed to each tool call (reachable via tool_registry.get_run_context()),
     # and the approve callback the loop consults before a tool that requires approval.
     run_ctx = RunContext(cancel=cancel, config=config, registry=registry, run_id=rid,
                          approve=approve, owner=owner, agent_depth=agent_depth, scope=scope,
-                         policy=policy)
+                         policy=policy, tracer=tracer, trace_span=run_span)
+    # O4 — plan phase: one bounded planner turn whose step list is injected as context before the loop.
+    if plan_enabled:
+        plan_text = _single_turn(client, effective_role,
+                                 [{"role": "system", "content": _PLAN_SYSTEM},
+                                  {"role": "user", "content": goal}],
+                                 cancel, request_timeout, hermes_mode)
+        if plan_text.strip():
+            messages.insert(1, {"role": "system", "content": f"Plan for this task:\n{plan_text.strip()}"})
+            log.info(f"[{rid}] plan injected ({len(plan_text)}c)")
+
+    verified = False   # O4 — verify pass runs at most once per run (bounded)
     prev_sigint = _install_interrupt_handler(cancel)
     try:
         for step in range(max_steps):
@@ -968,9 +1266,20 @@ def run_agent_events(
                        "exit_requested": exit_requested, "reason": "cancelled"}
                 return
 
+            # O15 — clear old bulky tool results (context editing) BEFORE the window trims, so the
+            # freed budget lets more conversational turns survive. Only fires past the token trigger.
+            if clear_tool_results and sum(_message_tokens(m) for m in messages) > clear_after_tokens:
+                messages = _clear_old_tool_results(messages, registry, compact_keep_last, hermes_mode)
             messages = truncate_history(messages, max_hist, max_context_tokens,
                                         compaction=compaction_mode, keep_last=compact_keep_last,
-                                        summary_max_tokens=compact_summary_max)
+                                        summary_max_tokens=compact_summary_max,
+                                        stable_prefix=stable_prefix, pin_goal=goal_msg)
+            # O16 — the recitation rides only on THIS request (never persisted to `messages`, so it can't
+            # accumulate or disturb truncate/O13's stable prefix); rebuilt each step from the live TODOs.
+            send_messages = messages
+            if recite_enabled:
+                send_messages = messages + [{"role": "system",
+                                             "content": _recitation_block(goal, run_ctx.todos)}]
             tools = openai_tools
 
             # Unified LLM call (N3): always consume as a stream so `cancel` is polled between
@@ -983,10 +1292,28 @@ def run_agent_events(
             for attempt in range(llm_attempts):
                 emitted = False
                 try:
-                    stream_resp = client.chat.completions.create(
-                        model=effective_role, messages=messages, tools=tools,
-                        stream=True, timeout=request_timeout,
-                    )
+                    # O13 — we never pass cache_prompt, so llama.cpp's default (prompt/KV caching ON)
+                    # applies; the stable-prefix assembly above is what makes that reuse pay off. Adding
+                    # the kwarg would also change request bytes and break OpenAI-compat, so we don't.
+                    # Default (no O12/O13 opt-in) => exactly {model, messages, tools, stream, timeout}.
+                    base_kwargs = dict(model=effective_role, messages=send_messages, tools=tools,
+                                       stream=True, timeout=request_timeout)
+                    if constrain_active:
+                        # O12 — attach the structured tools + tool_choice='auto' so the backend
+                        # grammar-constrains any tool call. On rejection, latch the constraint off for
+                        # the run and retry unconstrained (NOT a transient retry — no attempt consumed).
+                        try:
+                            stream_resp = client.chat.completions.create(
+                                **{**base_kwargs, "tools": constrain_tools_payload, "tool_choice": "auto"})
+                        except Exception as ce:
+                            if not _is_unsupported_constraint(ce):
+                                raise
+                            log.warning(f"[{rid}] backend rejected tool-call constraint; "
+                                        f"falling back to unconstrained parse: {ce}")
+                            constrain_active = False
+                            stream_resp = client.chat.completions.create(**base_kwargs)
+                    else:
+                        stream_resp = client.chat.completions.create(**base_kwargs)
                     gen = _consume_stream(stream_resp, cancel=cancel, emit_tokens=stream, hermes=hermes_mode)
                     while True:
                         try:
@@ -1037,6 +1364,20 @@ def run_agent_events(
             # No tool calls — final answer.
             if not tool_calls:
                 final = _strip_tool_calls(content) if hermes_mode else content
+                # O4 — verify pass (once): a critic turn checks the answer satisfies the goal / no tool
+                # silently failed. On "not done" (and steps remain) inject the critique and continue.
+                if verify_enabled and not verified and step + 1 < max_steps:
+                    verified = True
+                    critique = _single_turn(client, effective_role,
+                        [{"role": "system", "content": _VERIFY_SYSTEM},
+                         {"role": "user", "content": f"Goal:\n{goal}\n\nProposed final answer:\n{final}"}],
+                        cancel, request_timeout, hermes_mode)
+                    if critique.strip() and not critique.strip().upper().startswith("DONE"):
+                        log.info(f"[{rid}] verify: not done — continuing ({critique[:120]!r})")
+                        messages.append({"role": "user", "content":
+                            f"A reviewer flagged issues with your answer:\n{critique.strip()}\n"
+                            "Address them, using tools if needed, then give the corrected final answer."})
+                        continue
                 log.info(f"[{rid}] final len={len(final)}")
                 yield {"type": "final", "result": final,
                        "exit_requested": exit_requested, "reason": "answer"}
@@ -1081,6 +1422,8 @@ def run_agent_events(
         yield {"type": "final", "result": None, "exit_requested": exit_requested, "reason": "max_steps"}
     finally:
         _restore_interrupt_handler(prev_sigint)
+        # O9 — close the run span with the same counters as the N5 metrics line (no-op when disabled).
+        run_span.end(attributes={"steps": steps_done, "tools": tools_run, "tokens_est": tokens_est})
         # N5 — one metrics line per run so a single `grep <rid>` reconstructs it end to end.
         log.info(
             f"[{rid}] done steps={steps_done} tools={tools_run} tokens~={tokens_est} "
@@ -1158,6 +1501,10 @@ def main():
         sys.exit(1)
 
     goal = " ".join(args.goal)
+    # O4 — --deep turns on the plan/verify/self-repair phases for this CLI run (config default is off).
+    if getattr(args, "deep", False):
+        ag = config.setdefault("agent", {})
+        ag["plan"] = ag["verify"] = ag["selfRepair"] = True
     exit_on_tools = set(t.strip() for t in args.exit_on_tool.split(",") if t.strip()) if args.exit_on_tool else None
     # NE0 — interactive CLI: approve gated tools at the console when attached to a TTY (piped/CI → None
     # → fail-closed). The server passes no approver and so never prompts on its own console.

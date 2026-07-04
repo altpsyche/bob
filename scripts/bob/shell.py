@@ -638,14 +638,26 @@ class BobShell:
         self.console.print("[green]context cleared[/] [dim](the saved session is unchanged)[/]")
 
     def _cmd_skill(self, arg: str) -> None:
-        name = arg.split(maxsplit=1)[0] if arg else ""
+        parts = arg.split(maxsplit=1) if arg else []
+        name = parts[0] if parts else ""
+        skill_args = parts[1] if len(parts) > 1 else ""
         if not name:
             self.console.print(catalog.render_skills(self.skills))
             return
         if name not in self.skills.skills:
             self.console.print(f"[yellow]Unknown skill: {name}[/]  (try /skills)")
             return
-        self.console.print(self.skills.run(name, self.tools))
+        if self.skills.skills[name]["steps"]:            # tool-sequence — synchronous, no model
+            self.console.print(self.skills.run(name, self.tools))
+            return
+        # Sub-agent skill (O11): drive it as an event stream through the SAME renderer as an agent
+        # turn (C6 — surface through run_agent_events, never bespoke skill-rendering in the shell).
+        def factory(cancel, approve):
+            return self.skills.run_events(
+                name, self.tools, config=self.config, args=skill_args,
+                cancel=cancel, approve=approve, owner=self.owner, scope=self.scope)
+
+        self._consume(factory)
 
     def _cmd_theme(self, arg: str) -> None:
         """Show the active theme and where to edit it. `/theme reload` re-reads config/ui.json after you

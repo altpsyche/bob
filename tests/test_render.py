@@ -62,7 +62,7 @@ class TestRender(unittest.TestCase):
         ])
         out = _render(render.skills_view(reg, _theme()))
         self.assertIn("repo-brief", out)
-        self.assertIn("needs Module O", out)      # no-steps skill tagged
+        self.assertIn("sub-agent", out)      # no-steps skill tagged runnable (O11)
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ import argparse
 import hashlib
 import json
 import math
+import re
 import shutil
 import sys
 from datetime import datetime, timedelta, timezone
@@ -329,9 +330,133 @@ def store(content: str, db_path: Path, source: str = "user", mem_type: str = "fa
     return db.execute("SELECT last_insert_rowid()").fetchone()[0], True
 
 
+# --- O14: hybrid recall (dense + BM25/FTS5 + Reciprocal Rank Fusion) ----------
+
+def _nonsemantic_score(w, tw, hl, mtype, created_at, use_count, salience, last_used, now) -> float:
+    """The recency+type+usage+salience half of the MEM-2/9 blended score. Hybrid recall adds this on
+    top of the RRF-fused relevance; the dense path inlines the identical math (kept inline there so its
+    float arithmetic stays byte-for-byte the pre-O14 result)."""
+    age = _age_days(created_at, now)
+    if last_used:
+        age = min(age, _age_days(last_used, now))
+    decay = math.exp(-age / max(1.0, float(hl.get(mtype, 365))))
+    usage = min((use_count or 0) / 10.0, 1.0)
+    return (w["wRecency"] * decay + w["wType"] * tw.get(mtype, 0.5)
+            + w["wUsage"] * usage + w["wSalience"] * (salience if salience is not None else 1.0))
+
+
+def _fts_match_query(query: str) -> "str | None":
+    """A safe FTS5 MATCH expression from arbitrary natural language: an OR of quoted word tokens.
+    Quoting each token avoids FTS5 treating punctuation / bare operators as syntax (which would raise).
+    None when the query has no word characters."""
+    tokens = re.findall(r"\w+", query.lower())
+    return " OR ".join(f'"{t}"' for t in tokens) if tokens else None
+
+
+def _fts5_available(db) -> bool:
+    try:
+        db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS _fts5_probe USING fts5(x)")
+        db.execute("DROP TABLE IF EXISTS _fts5_probe")
+        return True
+    except Exception:
+        return False
+
+
+def _ensure_fts(db) -> bool:
+    """O14 — lazily build the external-content FTS5 index + sync triggers over memories.content and
+    backfill it, once, the FIRST time hybrid recall runs. Deliberately NOT in _ensure_schema, so
+    dense-mode DBs are byte-unchanged (no extra table, no per-write trigger overhead). Returns False if
+    this SQLite build lacks FTS5 (caller falls back to dense)."""
+    try:
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memories_fts'").fetchone():
+            return True
+        if not _fts5_available(db):
+            return False
+        db.execute("CREATE VIRTUAL TABLE memories_fts USING fts5(content, content='memories', content_rowid='id')")
+        db.execute("CREATE TRIGGER memories_fts_ai AFTER INSERT ON memories BEGIN "
+                   "INSERT INTO memories_fts(rowid, content) VALUES (new.id, new.content); END")
+        db.execute("CREATE TRIGGER memories_fts_ad AFTER DELETE ON memories BEGIN "
+                   "INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.id, old.content); END")
+        db.execute("CREATE TRIGGER memories_fts_au AFTER UPDATE ON memories BEGIN "
+                   "INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.id, old.content); "
+                   "INSERT INTO memories_fts(rowid, content) VALUES (new.id, new.content); END")
+        db.execute("INSERT INTO memories_fts(rowid, content) SELECT id, content FROM memories")
+        db.conn.commit()
+        return True
+    except Exception:
+        return False
+
+
+def _bm25_ranked_ids(db, query, owner, scope, now_iso, type_filter, limit) -> list:
+    """Lexical retrieval: memory ids matching `query` best-first by BM25, under the SAME owner/scope/
+    active prefilter recall() applies. [] on no match, no word tokens, or any FTS error."""
+    match = _fts_match_query(query)
+    if not match:
+        return []
+    sql = ("SELECT f.rowid FROM memories_fts f JOIN memories m ON m.id = f.rowid "
+           "WHERE memories_fts MATCH ? AND m.owner_id = ? AND m.superseded_by IS NULL "
+           "AND (m.expires_at IS NULL OR m.expires_at > ?)")
+    params = [match, owner, now_iso]
+    if scope is not None:
+        sql += " AND (m.scope IS NULL OR m.scope = ?)"
+        params.append(scope)
+    if type_filter:
+        sql += " AND m.type = ?"
+        params.append(type_filter)
+    sql += " ORDER BY f.rank, f.rowid LIMIT ?"   # bm25 best-first, id tiebreak for determinism
+    params.append(limit)
+    try:
+        return [r[0] for r in db.execute(sql, params).fetchall()]
+    except Exception:
+        return []
+
+
+def _recall_hybrid(query, q_vec, rows, db, owner, scope, type_filter, now, w, tw, hl,
+                   threshold, k, rrf_k) -> list:
+    """Fuse the dense (cosine) and lexical (BM25) rankings with Reciprocal Rank Fusion, then apply the
+    recency/type/usage/salience terms on top of the fused candidates. Falls back to a dense scan over
+    the candidate set when FTS5 is unavailable or the query has no lexical hits. `rows` already carries
+    the owner/scope/active prefilter, so every candidate id resolves here."""
+    meta = {}   # id -> (content, mtype, created_at, use_count, salience, last_used)
+    cos = {}
+    for row_id, content, emb_json, mtype, created_at, use_count, salience, last_used in rows:
+        meta[row_id] = (content, mtype, created_at, use_count, salience, last_used)
+        try:
+            cos[row_id] = cosine(q_vec, json.loads(emb_json))
+        except Exception:
+            pass
+    per_list = max(k * 5, 25)
+    dense_ranked = sorted(cos, key=lambda i: (-cos[i], i))[:per_list]
+    bm25_ranked = (_bm25_ranked_ids(db, query, owner, scope, now.isoformat(), type_filter, per_list)
+                   if _ensure_fts(db) else [])
+
+    def _blend(sem, i):
+        return round(w["wSemantic"] * sem + _nonsemantic_score(w, tw, hl, *meta[i][1:], now), 4)
+
+    if not bm25_ranked:
+        # No lexical half -> dense over the candidate set (still returns [] to threshold like dense).
+        return [{"id": i, "content": meta[i][0], "score": _blend(cos[i], i)}
+                for i in dense_ranked if _blend(cos[i], i) >= threshold]
+
+    rrf = {}
+    for rank, i in enumerate(dense_ranked):
+        rrf[i] = rrf.get(i, 0.0) + 1.0 / (rrf_k + rank)
+    for rank, i in enumerate(bm25_ranked):
+        if i in meta:
+            rrf[i] = rrf.get(i, 0.0) + 1.0 / (rrf_k + rank)
+    max_rrf = max(rrf.values())               # normalize so the best candidate ~= a perfect cosine (1.0)
+    scored = []
+    for i, rscore in rrf.items():
+        s = _blend(rscore / max_rrf, i)
+        if s >= threshold:
+            scored.append({"id": i, "content": meta[i][0], "score": s})
+    return scored
+
+
 def recall(query: str, db_path: Path, k: int = 5, threshold: float = 0.35,
            owner: str = "local", scope: str = None, weights: dict = None,
-           type_weights: dict = None, half_lives: dict = None, type_filter: str = None) -> list[dict]:
+           type_weights: dict = None, half_lives: dict = None, type_filter: str = None,
+           retrieval: str = "dense", rrf_k: int = 60) -> list[dict]:
     """Return up to k memories matching query as {id, content, score} dicts (highest blended score
     first) and bump last_used/use_count on the hits. Raises RuntimeError if the embed server is
     unreachable. Returns [] for an empty query or no candidates.
@@ -342,7 +467,12 @@ def recall(query: str, db_path: Path, k: int = 5, threshold: float = 0.35,
     MEM-9: recency ages off max(created_at, last_used) so a re-accessed fact stops decaying, and
     salience (importance/10, set by consolidation) is a live ranking term. An owner/scope SQL
     prefilter closes the former cross-owner leak and skips soft-deleted (superseded) and expired
-    rows before scoring."""
+    rows before scoring.
+
+    O14: `retrieval='hybrid'` fuses dense cosine + BM25 (SQLite FTS5) via Reciprocal Rank Fusion
+    (`rrf_k`) before applying the recency/type/usage/salience terms — catching lexically-exact hits a
+    dense-only scan misses. `retrieval='dense'` (**default**) is the pre-O14 path, byte-identical; it
+    also silently backstops hybrid when this SQLite build lacks FTS5."""
     if not query.strip():
         return []
     w = {**_DEFAULT_WEIGHTS, **(weights or {})}
@@ -364,23 +494,27 @@ def recall(query: str, db_path: Path, k: int = 5, threshold: float = 0.35,
     if not rows:
         return []
     q_vec = embed(query)
-    scored = []
-    for row_id, content, emb_json, mtype, created_at, use_count, salience, last_used in rows:
-        try:
-            cos = cosine(q_vec, json.loads(emb_json))
-        except Exception:
-            continue
-        # Age off the more recent of created_at / last_used — a reinforced fact stops decaying.
-        age = _age_days(created_at, now)
-        if last_used:
-            age = min(age, _age_days(last_used, now))
-        decay = math.exp(-age / max(1.0, float(hl.get(mtype, 365))))
-        usage = min((use_count or 0) / 10.0, 1.0)
-        score = (w["wSemantic"] * cos + w["wRecency"] * decay
-                 + w["wType"] * tw.get(mtype, 0.5) + w["wUsage"] * usage
-                 + w["wSalience"] * (salience if salience is not None else 1.0))
-        if score >= threshold:
-            scored.append({"id": row_id, "content": content, "score": round(score, 4)})
+    if retrieval == "hybrid":
+        scored = _recall_hybrid(query, q_vec, rows, db, owner, scope, type_filter,
+                                now, w, tw, hl, threshold, k, rrf_k)
+    else:
+        scored = []
+        for row_id, content, emb_json, mtype, created_at, use_count, salience, last_used in rows:
+            try:
+                cos = cosine(q_vec, json.loads(emb_json))
+            except Exception:
+                continue
+            # Age off the more recent of created_at / last_used — a reinforced fact stops decaying.
+            age = _age_days(created_at, now)
+            if last_used:
+                age = min(age, _age_days(last_used, now))
+            decay = math.exp(-age / max(1.0, float(hl.get(mtype, 365))))
+            usage = min((use_count or 0) / 10.0, 1.0)
+            score = (w["wSemantic"] * cos + w["wRecency"] * decay
+                     + w["wType"] * tw.get(mtype, 0.5) + w["wUsage"] * usage
+                     + w["wSalience"] * (salience if salience is not None else 1.0))
+            if score >= threshold:
+                scored.append({"id": row_id, "content": content, "score": round(score, 4)})
     scored.sort(key=lambda x: x["score"], reverse=True)
     results = scored[:k]
     if results:

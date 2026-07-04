@@ -61,7 +61,7 @@ def skills_view(reg, theme):
         desc = (s["description"] or "")[:64]
         right = Text(desc)
         if not s["steps"]:
-            right.append("  [needs Module O]", style=theme.warn)
+            right.append("  [sub-agent]", style=theme.warn)
         tbl.add_row(s["name"], right)
     for name, phase, msg in getattr(reg, "errors", []):
         tbl.add_row(Text(f"{name}", style=theme.error), Text(f"[FAILED] {phase}: {msg}", style=theme.error))

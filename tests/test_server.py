@@ -10,6 +10,7 @@ from pathlib import Path
 import _common
 import bob_agent_server as srv
 import bob_loop
+from bob_authstore import AuthStore
 from bob_session import SessionStore
 from fastapi import HTTPException
 
@@ -205,6 +206,106 @@ class TestServer(unittest.TestCase):
             bob_loop.run_agent_events = orig
         self.assertEqual(lines, [])  # nothing emitted to a dead socket
         self.assertEqual(len(srv.get_session(sid, authorization=GOOD)["history"]), 0)  # no bogus turn
+
+
+class TestServerAuthO8(unittest.TestCase):
+    """O8 — DB token store (hot revoke), RBAC scopes (tool + role), per-owner rate limits."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp(prefix="bob-auth-srv-"))
+        srv._config = _common.fake_config()
+        srv._token_owner = {"sk-test": "alice"}
+        srv._token_meta = {}
+        srv._registry = _common.FakeRegistry()
+        srv._sessions = SessionStore(self.dir / "s.db")
+        srv._authstore = AuthStore(self.dir / "s.db", salt="t")
+        srv._rate_buckets = {}
+        self._orig_mono = srv._monotonic
+
+    def tearDown(self):
+        srv._monotonic = self._orig_mono
+        srv._authstore.close()
+        srv._sessions.close()
+        srv._authstore = None
+        srv._token_meta = {}
+        srv._rate_buckets = {}
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    # --- DB token store + hot revoke -----------------------------------------
+    def test_db_token_authenticates(self):
+        tok = srv._authstore.issue("carol")
+        self.assertEqual(srv._authed_owner(f"Bearer {tok}"), "carol")
+
+    def test_hot_revoke_401_without_restart(self):
+        tok = srv._authstore.issue("carol")
+        self.assertEqual(srv._authed_owner(f"Bearer {tok}"), "carol")
+        srv._authstore.revoke(tok)
+        with self.assertRaises(HTTPException) as ctx:
+            srv._authed_owner(f"Bearer {tok}")           # next call already 401 — no restart
+        self.assertEqual(ctx.exception.status_code, 401)
+
+    def test_config_token_still_works_with_store(self):
+        self.assertEqual(srv._authed_owner("Bearer sk-test"), "alice")
+
+    def test_unknown_token_401(self):
+        with self.assertRaises(HTTPException) as ctx:
+            srv._authed_owner("Bearer bob_nope")
+        self.assertEqual(ctx.exception.status_code, 401)
+
+    # --- rate limit ----------------------------------------------------------
+    def test_rate_limit_429_then_recovers(self):
+        ident = srv._Identity("dave", None, 2)          # 2 requests / min
+        srv._check_rate(ident)
+        srv._check_rate(ident)                           # bucket now empty
+        with self.assertRaises(HTTPException) as ctx:
+            srv._check_rate(ident)
+        self.assertEqual(ctx.exception.status_code, 429)
+        srv._monotonic = lambda: self._orig_mono() + 60  # a minute later -> refilled
+        srv._check_rate(ident)                            # must not raise
+
+    def test_rate_zero_is_unlimited(self):
+        ident = srv._Identity("eve", None, 0)
+        for _ in range(50):
+            srv._check_rate(ident)                        # never raises
+
+    # --- tool scopes ---------------------------------------------------------
+    @staticmethod
+    def _reg_with(names):
+        from tool_registry import ToolRegistry
+        reg = ToolRegistry()
+        for n in names:
+            reg.tool_schemas.append({"type": "function",
+                                     "function": {"name": n, "parameters": {"type": "object"}}})
+            reg.dispatch[n] = lambda **k: "ok"
+        return reg
+
+    def test_out_of_scope_tool_hidden_and_refused(self):
+        srv._registry = self._reg_with(["file_read", "file_write", "web_fetch"])
+        scoped = srv._scoped_registry(srv._Identity("alice", ["file_*"], 0))
+        names = {s["function"]["name"] for s in scoped.tool_schemas}
+        self.assertEqual(names, {"file_read", "file_write"})       # web_fetch hidden
+        self.assertIn("not available", scoped.dispatch_call("web_fetch", "{}"))
+        self.assertEqual(scoped.dispatch_call("file_read", "{}"), "ok")
+
+    def test_no_scopes_returns_base_registry(self):
+        srv._registry = self._reg_with(["file_read"])
+        self.assertIs(srv._scoped_registry(srv._Identity("a", None, 0)), srv._registry)
+
+    def test_only_role_scopes_leaves_tools_unrestricted(self):
+        srv._registry = self._reg_with(["file_read", "web_fetch"])
+        self.assertIs(srv._scoped_registry(srv._Identity("a", ["role:code"], 0)), srv._registry)
+
+    # --- role scopes ---------------------------------------------------------
+    def test_role_scope_refused_403(self):
+        ident = srv._Identity("alice", ["role:code"], 0)
+        with self.assertRaises(HTTPException) as ctx:
+            srv._check_role_scope(ident, "chat")
+        self.assertEqual(ctx.exception.status_code, 403)
+        srv._check_role_scope(ident, "code")   # allowed -> no raise
+        srv._check_role_scope(ident, None)     # default role -> no raise
+
+    def test_no_role_scopes_allows_any_role(self):
+        srv._check_role_scope(srv._Identity("a", ["file_*"], 0), "chat")  # no role: entries -> ok
 
 
 if __name__ == "__main__":

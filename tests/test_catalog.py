@@ -43,7 +43,7 @@ class TestCatalog(unittest.TestCase):
         ])
         out = catalog.render_skills(reg)
         self.assertIn("repo-brief", out)
-        self.assertIn("[needs Module O]", out)   # web-research has no steps
+        self.assertIn("[sub-agent]", out)   # web-research has no steps → runnable sub-agent skill (O11)
 
     def test_counts_from_registries(self):
         c = catalog.counts(

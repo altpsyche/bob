@@ -115,9 +115,10 @@ def _handle_clip(rest: list) -> int:
 
 
 def _handle_skill(rest: list) -> int:
-    """bob skill            -> list registered skills (catalog)
-       bob skill <name>     -> run a simple tool-sequence skill (sub-agent skills report 'requires O')
-       bob skill <name> --show -> print the skill's manifest summary"""
+    """bob skill                 -> list registered skills (catalog)
+       bob skill <name> [args…]  -> run a skill: a tool-sequence skill runs its steps; a sub-agent
+                                    skill runs as an isolated agent sub-run (O11) with the args as input
+       bob skill <name> --show   -> print the skill's manifest summary"""
     from bob import catalog
     from bob_skills import SkillRegistry
 
@@ -143,7 +144,8 @@ def _handle_skill(rest: list) -> int:
 
     config = load_config()
     tools = ToolRegistry.build(config, set())
-    print(reg.run(name, tools))
+    args = " ".join(a for a in rest[1:] if not a.startswith("--"))   # skill input; flags aren't args
+    print(reg.run(name, tools, config=config, args=args))
     return 0
 
 

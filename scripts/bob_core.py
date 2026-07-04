@@ -206,6 +206,8 @@ def memory_recall(query: str, k: int = 5, config: Optional[dict] = None,
         owner=owner, scope=scope,
         weights=ranking, type_weights=mem.get("typeWeights"),
         half_lives=ranking.get("halfLifeDays"),
+        # O14 — hybrid recall (dense + BM25/FTS5 + RRF). Default 'dense' == pre-O14.
+        retrieval=mem.get("retrieval", "dense"), rrf_k=int(mem.get("rrfK", 60)),
     )
     if not results:
         return "(no results)"

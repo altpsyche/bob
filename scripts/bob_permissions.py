@@ -59,15 +59,17 @@ class PermissionPolicy:
         self.configured = bool(perms)
 
     def resolve(self, tool: str, owner: str = "local", agent_depth: int = 0,
-                mutating: bool = False) -> str:
-        """Return 'allow' | 'ask' | 'deny' for this call. Unknown/malformed modes fall through to
-        'allow' (a config typo can't silently deny reads; the NE0 floor still guards mutations)."""
+                mutating: bool = False, default: str = ALLOW) -> str:
+        """Return 'allow' | 'ask' | 'deny' for this call. ``default`` is the mode used when nothing in
+        the policy matches (and when the policy is empty) — 'allow' preserves pre-O6/O7 behavior, while
+        O7 passes 'ask' for a remote MCP tool so it prompts unless a config rule overrides it. Unknown/
+        malformed modes fall through to ``default`` (a config typo can't silently deny reads)."""
         if not self.configured:
-            return ALLOW
+            return default
         for scope in (self._per_depth.get(str(agent_depth)),
                       self._per_owner.get(owner),
                       self._perms):
             mode = _lookup(scope, tool, mutating)
             if mode in _MODES:
                 return mode
-        return ALLOW
+        return default

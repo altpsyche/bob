@@ -3,6 +3,7 @@
 #
 # Jobs:
 #   core-suite     (NB6)  — Python core + check.ps1 gate on Linux + Windows, no GPU. Every PR.
+#   eval           (O10)  — agent-capability eval (records-based, no live model), both OSes. NON-GATING.
 #   acceptance-cpu (ND2)  — fresh-install + e2e smoke on the NC8 CPU tier, both OSes. Every PR (GATES).
 #   acceptance-gpu (ND2)  — native-from-source CUDA + real inference on a self-hosted GPU. RELEASE TAGS ONLY.
 #
@@ -51,6 +52,35 @@ jobs:
         env:
           BOB_PYTHON: python
         run: pwsh -File scripts/check.ps1
+
+  # O10 (contracts C5 + C7) — agent-capability eval on the existing Win+Linux matrix, EVERY PR but
+  # NON-GATING (continue-on-error): it reports a deterministic capability score from a records-based run
+  # (scripted client + FakeRegistry, NO live model — CPU-safe, mirrors the smoke's CPU-tier tolerance).
+  # A threshold gate is added later once baselines stabilize (run_eval.py --gate). Tracks O1/O2/O6 wins.
+  eval:
+    name: eval (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true           # non-gating first — reports the score, never reds a PR
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Same lightweight core deps as core-suite — the eval imports the agent runtime (bob_core/bob_loop)
+      # and injects fakes, so no GPU / inference stack is needed.
+      - name: Install core deps
+        shell: pwsh
+        run: python -m pip install --upgrade pip fastapi uvicorn pydantic httpx requests openai sqlite-utils
+
+      - name: Agent-capability eval (records-based, non-gating)
+        shell: pwsh
+        run: python tests/eval/run_eval.py --json
 
   # ND2 (contracts C5 + C7) — fresh-install acceptance on the CPU tier, both OSes, EVERY PR (gates).
   # Provisions a clean runner per the documented one-command entry, builds the NC8 CPU llama.cpp,

@@ -63,6 +63,9 @@ _config: dict = {}
 _registry = None          # ToolRegistry | None
 _sessions = None          # SessionStore | None
 _token_owner: dict = {}   # N1 — bearer token -> owner id (litellm key + agent.apiTokens)
+_token_meta: dict = {}    # O8 — bearer token -> {"scopes": [...]|None, "rate": int} for config tokens
+_authstore = None         # O8 — AuthStore | None (DB-backed tokens: hot revoke + scopes + rate)
+_rate_buckets: dict = {}  # O8 — owner -> [tokens_float, last_monotonic] token bucket
 
 
 def _build_token_owner(config: dict) -> dict:
@@ -80,9 +83,26 @@ def _build_token_owner(config: dict) -> dict:
     return owners
 
 
+def _build_token_meta(config: dict) -> dict:
+    """O8 — per-config-token scopes + rate, parallel to _build_token_owner. A dict apiTokens entry may
+    carry optional `scopes` (tool globs / role:<name>) and `rate` (per-min); everything else defaults to
+    unrestricted scopes + agent.defaultRatePerMin, so pre-O8 config tokens are unchanged (scopes None +
+    rate 0 => no filtering, no rate limit)."""
+    agent = config.get("agent", {})
+    default_rate = int(agent.get("defaultRatePerMin", 0) or 0)
+    meta = {config.get("litellmKey", "sk-local"): {"scopes": None, "rate": default_rate}}
+    for entry in agent.get("apiTokens", []):
+        if isinstance(entry, dict) and entry.get("token"):
+            meta[entry["token"]] = {"scopes": entry.get("scopes"),
+                                    "rate": int(entry.get("rate", default_rate) or 0)}
+        elif isinstance(entry, str) and entry:
+            meta[entry] = {"scopes": None, "rate": default_rate}
+    return meta
+
+
 @app.on_event("startup")
 def _startup():
-    global _config, _registry, _sessions, _token_owner
+    global _config, _registry, _sessions, _token_owner, _token_meta, _authstore
     from bob_core import load_config
     from tool_registry import ToolRegistry
     from bob_session import SessionStore
@@ -92,6 +112,12 @@ def _startup():
 
     # Auth + identity (N1): each accepted token maps to an owner id used to scope sessions.
     _token_owner = _build_token_owner(_config)
+    _token_meta = _build_token_meta(_config)   # O8 — scopes + rate per config token
+
+    # O8 — DB-backed token store (hot revoke / scopes / rate). Additive: off => config tokens only.
+    if agent.get("authStore", False):
+        from bob_authstore import AuthStore
+        _authstore = AuthStore(REPO / agent.get("sessionDbPath", "data/sessions.db").replace("\\", "/"))
 
     disabled_raw = agent.get("disabledTools", [])
     disabled = set(disabled_raw) if isinstance(disabled_raw, list) else {
@@ -107,18 +133,91 @@ def _startup():
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _authed_owner(authorization: str) -> str:
-    """Validate the bearer token and return its owner id (N1). Raises 401 for an unknown token."""
+class _Identity:
+    """O8 — the resolved caller: owner id (N1) + optional RBAC scopes + per-minute rate. `scopes=None`
+    means unrestricted (pre-O8); a list restricts tools (globs) and roles (`role:<name>` entries)."""
+    __slots__ = ("owner", "scopes", "rate")
+
+    def __init__(self, owner: str, scopes, rate: int):
+        self.owner = owner
+        self.scopes = scopes
+        self.rate = int(rate or 0)
+
+
+def _authenticate(authorization: str) -> "_Identity":
+    """Resolve a bearer token to an _Identity. Checks the static config map first (N1, byte-identical),
+    then — only when the O8 store is enabled — hashes the bearer and looks it up (hot revocation: a
+    revoked/unknown store token yields None). Raises 401 for an unknown token."""
     token = authorization[7:] if authorization.startswith("Bearer ") else ""
     owner = _token_owner.get(token)
-    if owner is None:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    return owner
+    if owner is not None:
+        meta = _token_meta.get(token) or {}
+        return _Identity(owner, meta.get("scopes"), meta.get("rate", 0))
+    if _authstore is not None and token:
+        rec = _authstore.lookup(token)   # None if absent or revoked
+        if rec is not None:
+            return _Identity(rec["owner"], rec.get("scopes"), rec.get("rate_per_min", 0))
+    raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def _authed_owner(authorization: str) -> str:
+    """Validate the bearer token and return its owner id (N1). Raises 401 for an unknown token."""
+    return _authenticate(authorization).owner
 
 
 def _require_auth(authorization: str) -> None:
     """Back-compat shim: raise 401 unless the token is valid (identity discarded)."""
-    _authed_owner(authorization)
+    _authenticate(authorization)
+
+
+def _monotonic() -> float:
+    import time
+    return time.monotonic()
+
+
+def _check_rate(identity: "_Identity") -> None:
+    """O8 — per-owner token-bucket rate limit. rate<=0 => unlimited (default, no-op). Raises 429 when
+    the owner has spent its allowance; the bucket refills at `rate` tokens/min."""
+    rate = identity.rate
+    if rate <= 0:
+        return
+    now = _monotonic()
+    tokens, last = _rate_buckets.get(identity.owner, (float(rate), now))
+    tokens = min(float(rate), tokens + (now - last) * rate / 60.0)
+    if tokens < 1.0:
+        _rate_buckets[identity.owner] = (tokens, now)
+        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+    _rate_buckets[identity.owner] = (tokens - 1.0, now)
+
+
+def _expand_scopes(registry, globs) -> set:
+    """Tool names in `registry` matching any glob in `globs` (fnmatch). The allow-set for filtered()."""
+    import fnmatch
+    names = [s.get("function", {}).get("name") for s in getattr(registry, "tool_schemas", [])]
+    return {n for n in names if n and any(fnmatch.fnmatch(n, g) for g in globs)}
+
+
+def _scoped_registry(identity: "_Identity"):
+    """O8 — a registry VIEW restricted to the identity's tool scopes (reusing O1's filtered() seam), so
+    an out-of-scope tool is neither offered to the model nor dispatchable. No scopes / only role-scopes
+    => the base registry unchanged (byte-identical)."""
+    reg = _registry
+    if reg is None or not identity.scopes:
+        return reg
+    tool_globs = [s for s in identity.scopes if not s.startswith("role:")]
+    if not tool_globs:
+        return reg
+    return reg.filtered(allow=_expand_scopes(reg, tool_globs))
+
+
+def _check_role_scope(identity: "_Identity", role) -> None:
+    """O8 — if the identity carries `role:<name>` scopes, an explicitly-requested role must be among
+    them (else 403). No role scopes, or no explicit role, => unrestricted (uses the default role)."""
+    if not identity.scopes or not role:
+        return
+    allowed = [s[5:] for s in identity.scopes if s.startswith("role:")]
+    if allowed and role not in allowed:
+        raise HTTPException(status_code=403, detail=f"Role '{role}' not permitted for this token")
 
 
 def _session_max_tokens() -> int:
@@ -209,16 +308,19 @@ def delete_session(sid: str, authorization: str = Header(default="")):
 def agent_completions(req: AgentRequest, authorization: str = Header(default="")):
     from bob_loop import run_agent
 
-    owner = _authed_owner(authorization)
+    identity = _authenticate(authorization)
     if _registry is None:
         raise HTTPException(status_code=503, detail="Server not yet initialized")
+    _check_rate(identity)              # O8 — per-owner rate limit (429)
+    _check_role_scope(identity, req.role)   # O8 — RBAC role gate (403)
+    owner = identity.owner
 
     _, history = _load_session_or_404(req.session_id, owner)
     rid = uuid.uuid4().hex[:8]  # N5 — request id threaded into the loop's log lines
     try:
         result, _ = run_agent(
             req.goal, _config, role=req.role, agency=req.agency,
-            registry=_registry, history=history, run_id=rid, owner=owner,
+            registry=_scoped_registry(identity), history=history, run_id=rid, owner=owner,
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=503, detail=str(e))
@@ -246,9 +348,13 @@ async def agent_completions_stream(
     import anyio
     from bob_loop import run_agent_events, CancelToken
 
-    owner = _authed_owner(authorization)
+    identity = _authenticate(authorization)
     if _registry is None:
         raise HTTPException(status_code=503, detail="Server not yet initialized")
+    _check_rate(identity)              # O8 — per-owner rate limit (429)
+    _check_role_scope(identity, req.role)   # O8 — RBAC role gate (403)
+    owner = identity.owner
+    scoped = _scoped_registry(identity)     # O8 — tool-scope restricted view
 
     _, history = _load_session_or_404(req.session_id, owner)
     cancel = CancelToken()
@@ -260,7 +366,7 @@ async def agent_completions_stream(
         got_final = False
         gen = run_agent_events(
             req.goal, _config, role=req.role, agency=req.agency,
-            registry=_registry, stream=True, history=history, cancel=cancel, run_id=rid, owner=owner,
+            registry=scoped, stream=True, history=history, cancel=cancel, run_id=rid, owner=owner,
         )
         try:
             while True:
