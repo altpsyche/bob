@@ -7,7 +7,17 @@
 # reads verbs.json in pwsh so bootstrap works with no venv. A native POSIX provisioner/bootstrap is
 # a later module — for now the runtime is what must work here.
 set -e
-REPO="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+# Resolve symlinks so REPO is the real repo dir even when invoked via a symlink on PATH
+# (install-cli.ps1 links this into ~/.local/bin). POSIX: walk the chain — readlink -f is GNU-only.
+SELF="$0"
+while [ -h "$SELF" ]; do
+  _link="$(readlink "$SELF")"
+  case "$_link" in
+    /*) SELF="$_link" ;;
+    *)  SELF="$(dirname -- "$SELF")/$_link" ;;
+  esac
+done
+REPO="$(CDPATH= cd -- "$(dirname -- "$SELF")" && pwd)"
 PYTHON="${BOB_PYTHON:-python3}"
 export PYTHONPATH="$REPO/scripts${PYTHONPATH:+:$PYTHONPATH}"
 exec "$PYTHON" -m bob "$@"

@@ -3,10 +3,10 @@
 # Run once. After this, 'bob litellm' starts the proxy on port 8081.
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot '_platform.ps1')   # NC1 seam: Get-VenvExe (Scripts\ on Windows, bin/ on Linux)
-$pyVer = & python --version 2>&1
-if ($pyVer -notmatch '3\.12') {
-    $hint = if ((Get-BobOS) -eq 'windows') { 'scoop install python312' } else { 'your package manager (e.g. apt install python3.12-venv)' }
-    throw "Python 3.12 required (found: $pyVer). Install: $hint"
+if (-not (Test-PythonVersionAtLeast -Exe python -MinVer '3.12')) {
+    $pyVer = & python --version 2>&1
+    $hint = if ((Get-BobOS) -eq 'windows') { 'scoop install python312' } else { 'your package manager (e.g. apt install python3, pacman -S python)' }
+    throw "Python 3.12+ required (found: $pyVer). Install: $hint"
 }
 $repo = Split-Path $PSScriptRoot -Parent
 $venv = Join-Path (Join-Path $repo 'tools') 'venv-litellm'   # not 'tools\venv-litellm' — backslash is a literal filename char on Linux
