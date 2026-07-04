@@ -367,6 +367,17 @@ function Get-LinuxOsFamily {
   return ($kv['ID'] ? $kv['ID'] : $null)
 }
 
+function Test-PythonVersionAtLeast {
+  # $true if `& $Exe --version` reports >= $MinVer. Bob needs Python 3.12+ but NOT exactly 3.12 —
+  # Ubuntu 24.04 ships 3.12, Arch/CachyOS ship 3.14. The old exact-'3.12' checks skipped every venv on
+  # a newer interpreter. (Very new interpreters may still lack wheels for pinned deps — that surfaces
+  # loudly at pip time, which is the right place, not a version gate that silently disables everything.)
+  param([string]$Exe = 'python', [string]$MinVer = '3.12')
+  try { $v = (& $Exe --version 2>&1) -replace 'Python\s+', '' } catch { return $false }
+  if ($v -match '(\d+)\.(\d+)') { return ([version]"$($Matches[1]).$($Matches[2])" -ge [version]$MinVer) }
+  return $false
+}
+
 function Resolve-PackageCmd {
   # PURE. The install command spec for the OS (and, on Linux, the detected package manager). Callers
   # in setup/install-prereqs pass -Manager in tests; the executor auto-detects.

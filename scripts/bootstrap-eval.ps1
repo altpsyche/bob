@@ -2,9 +2,11 @@
 # Create the lm-evaluation-harness venv (tools/venv-eval/).
 # Run once. After this, 'bob eval <role> [task]' benchmarks any model.
 $ErrorActionPreference = "Stop"
-$pyVer = & python --version 2>&1
-if ($pyVer -notmatch '3\.12') {
-    throw "Python 3.12 required (found: $pyVer). Install: scoop install python312"
+. (Join-Path $PSScriptRoot '_platform.ps1')   # NC1 seam: Test-PythonVersionAtLeast, Get-BobOS
+if (-not (Test-PythonVersionAtLeast -Exe python -MinVer '3.12')) {
+    $pyVer = & python --version 2>&1
+    $hint = if ((Get-BobOS) -eq 'windows') { 'scoop install python312' } else { 'your package manager (e.g. apt install python3, pacman -S python)' }
+    throw "Python 3.12+ required (found: $pyVer). Install: $hint"
 }
 $repo = Split-Path $PSScriptRoot -Parent
 $venv = Join-Path $repo 'tools\venv-eval'

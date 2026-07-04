@@ -52,16 +52,14 @@ if (-not $py -and (Have py)) {
         if ($resolved -and (Test-Path $resolved)) { $py = $resolved }
     } catch {}
 }
-# 3. python / python3 on PATH — accept only 3.12.x
+# 3. python / python3 on PATH — accept 3.12+ (prefer an explicit 3.12, else the newest >= 3.12).
 if (-not $py) {
-    foreach ($cand in 'python', 'python3', 'python3.12') {
-        if (Have $cand) {
-            $ver = (& $cand --version 2>&1) -replace 'Python\s+', ''
-            if ($ver -match '^3\.12') { $py = $cand; break }
-        }
+    foreach ($cand in 'python3.12', 'python3', 'python') {
+        if ((Have $cand) -and (Test-PythonVersionAtLeast -Exe $cand -MinVer '3.12')) { $py = $cand; break }
     }
 }
-"python : $(if ($py) { $py } else { 'MISSING — scoop install python312' })"
+$pyHint = if ((Get-BobOS) -eq 'windows') { 'scoop install python312' } else { 'your package manager (e.g. apt install python3, pacman -S python)' }
+"python : $(if ($py) { $py } else { "MISSING — $pyHint" })"
 
 # --- submodules ---
 Step "Submodules"
@@ -93,7 +91,7 @@ if (-not $SkipBuild) {
 } else { Write-Host "Skipping builds (-SkipBuild)" -ForegroundColor DarkGray }
 
 # --- Python tools: ISOLATED venvs (open-webui & aider have conflicting dep pins) ---
-Step "Python venvs (3.12) + tools"
+Step "Python venvs (3.12+) + tools"
 if ($py) {
   foreach ($t in @(
     @{n='venv-webui';   base='webui-requirements'},
@@ -112,7 +110,7 @@ if ($py) {
     & $venvPy -m pip install -r $req
     if ($LASTEXITCODE -ne 0) { throw "pip install failed for $($t.n) — re-run scripts\bootstrap.ps1 to retry" }
   }
-} else { Write-Warning "Skipping venvs — Python 3.12 not found." }
+} else { Write-Warning "Skipping venvs — Python 3.12+ not found." }
 
 # --- runtime config (generated from config/models.psd1; runs even with -SkipModels) ---
 Step "Generate llama-swap config"

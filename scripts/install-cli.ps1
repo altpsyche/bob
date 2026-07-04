@@ -1,9 +1,39 @@
 #requires -Version 7
-# Install the 'bob' command on PATH (a .cmd shim in scoop\shims pointing at scripts/bob.ps1).
-# Removes the retired 'llm' shim if a previous install left one (bob is the single CLI now).
-# Works from any shell (cmd or PowerShell). Idempotent.
+# Install the 'bob' command on PATH. Windows: a .cmd shim in scoop\shims -> scripts/bob.ps1, plus
+# PowerShell tab completions. Linux/macOS: symlink the repo-root ./bob POSIX shim into ~/.local/bin.
+# Removes the retired 'llm' shim if a previous install left one (bob is the single CLI now). Idempotent.
 $ErrorActionPreference = "Stop"
 $repo = Split-Path $PSScriptRoot -Parent
+. "$PSScriptRoot\_models.ps1"   # NC1 seam: Get-BobOS, Get-BobExeName
+
+if ((Get-BobOS) -ne 'windows') {
+    # ── Linux/macOS: symlink the repo-root ./bob POSIX shim (and fabric) into ~/.local/bin (XDG user bin).
+    #    The old body was Windows-only (scoop\shims) and THREW here, aborting setup.ps1 at step 9. ──
+    $binDir = Join-Path $HOME '.local/bin'
+    New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+    $bobLink = Join-Path $binDir 'bob'
+    if (Test-Path $bobLink) { Remove-Item $bobLink -Force }
+    New-Item -ItemType SymbolicLink -Path $bobLink -Target (Join-Path $repo 'bob') | Out-Null
+    Write-Host "'bob' installed -> $bobLink" -ForegroundColor Green
+
+    $fabricExe = Join-Path $repo (Join-Path 'bin' (Get-BobExeName 'fabric'))
+    if (Test-Path $fabricExe) {
+        $fabricLink = Join-Path $binDir 'fabric'
+        if (Test-Path $fabricLink) { Remove-Item $fabricLink -Force }
+        New-Item -ItemType SymbolicLink -Path $fabricLink -Target $fabricExe | Out-Null
+        Write-Host "'fabric' installed -> $fabricLink" -ForegroundColor Green
+    } else {
+        Write-Host "'fabric' shim skipped — not built yet. Run: bob fabric-setup" -ForegroundColor DarkGray
+    }
+
+    if (($env:PATH -split [IO.Path]::PathSeparator) -notcontains $binDir) {
+        Write-Host "NOTE: $binDir is not on PATH. fish: fish_add_path $binDir | bash/zsh: add it to your rc, then open a new shell." -ForegroundColor Yellow
+    }
+    Write-Host "Open a NEW terminal (with ~/.local/bin on PATH), then try:  bob help" -ForegroundColor Cyan
+    return
+}
+
+# ── Windows: a bob.cmd shim in scoop\shims -> scripts/bob.ps1, plus PowerShell tab completions. ──
 $bob  = Join-Path $repo "scripts\bob.ps1"
 $pwsh = (Get-Command pwsh -ErrorAction Stop).Source
 
