@@ -51,8 +51,9 @@ if ($os -eq 'windows') {
     }
     if (-not $cmakeExe) { throw "cmake not found. Install: winget install Kitware.CMake --version 3.31.7" }
 } else {
-    $cmakeExe = (Get-Command cmake -ErrorAction SilentlyContinue)?.Source
-    if (-not $cmakeExe) { throw "cmake not found. Install it: sudo apt-get install -y cmake ninja-build (or the dnf/pacman equivalent)." }
+    # cmake must be < 4.0 (4.x breaks CUDA-arch validation) — Get-LinuxCmake3 returns system cmake if
+    # 3.x, else fetches the pinned Kitware 3.x. Same helper build-llama.ps1 uses.
+    $cmakeExe = Get-LinuxCmake3 -Repo $repo
     if ($genArgs -contains 'Ninja' -and -not (Get-Command ninja -ErrorAction SilentlyContinue)) {
         throw "Ninja not found. Install it: sudo apt-get install -y ninja-build (or the dnf/pacman equivalent)."
     }

@@ -121,9 +121,9 @@ if ($os -eq 'windows') {
       if (-not $cmakeExe) { throw "cmake still not found after install — open a new terminal and retry." }
   }
 } else {
-  # Linux: cmake (< 4.0 for the CUDA path) + Ninja from PATH. install_prereqs.sh provisions both.
-  $cmakeExe = (Get-Command cmake -ErrorAction SilentlyContinue)?.Source
-  if (-not $cmakeExe) { throw "cmake not found. Install it: sudo apt-get install -y cmake ninja-build (or the dnf/pacman equivalent)." }
+  # Linux: cmake MUST be < 4.0 (4.x fails llama.cpp's CUDA-arch validation). Get-LinuxCmake3 returns
+  # the system cmake if it's 3.x, else fetches the pinned Kitware 3.x (rolling distros ship only 4.x).
+  $cmakeExe = Get-LinuxCmake3 -Repo $repo
   if ($flags.Generator -eq 'Ninja' -and -not (Get-Command ninja -ErrorAction SilentlyContinue)) {
     throw "Ninja not found. Install it: sudo apt-get install -y ninja-build (or the dnf/pacman equivalent)."
   }
