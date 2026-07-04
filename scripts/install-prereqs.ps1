@@ -125,6 +125,22 @@ function Install-LinuxPrereqs {
         Write-Host "  No NVIDIA GPU (nvidia-smi absent) — CPU tier. Skipping CUDA." -ForegroundColor DarkGray
     }
 
+    # Cron scheduler — Linux parity for Windows Scheduled Tasks, the backend for `bob agent install`
+    # (NC4). Optional (skip if you won't schedule agents), so best-effort: warn, don't fail the install.
+    # Windows gets Task Scheduler built in; on Linux the daemon is a package + an enabled service.
+    $cronPkg = switch ($mgr) { 'apt' { 'cron' } default { 'cronie' } }   # cronie on Arch/Fedora, cron on Debian
+    if (Have 'crontab') {
+        Write-Host "  cron ok (crontab present)" -ForegroundColor DarkGray
+    } else {
+        Write-Host "  install $cronPkg (cron scheduler for 'bob agent install') ..." -ForegroundColor DarkGray
+        try { Install-Package -Package $cronPkg } catch { Write-Warning "  $cronPkg failed: $_ (optional — needed only for scheduled agents)" }
+    }
+    # Enable the daemon so scheduled jobs actually fire (systemd only; best-effort — no-op elsewhere).
+    if ((Have 'crontab') -and (Have 'systemctl')) {
+        $cronSvc = switch ($mgr) { 'apt' { 'cron' } default { 'cronie' } }
+        try { & sudo systemctl enable --now $cronSvc 2>$null } catch {}
+    }
+
     # Docker is optional (compose services); already cross-platform where present.
     if (Have 'docker') { Write-Host "  docker ok" -ForegroundColor DarkGray }
     else { Write-Host "  docker not found (optional — needed only for the compose services). Install docker + add your user to the docker group." -ForegroundColor DarkGray }

@@ -379,6 +379,14 @@ function Start-BobBackgroundProcess {
 # running bob-agent.ps1 every minute. The runner (bob-agent.ps1) + Test-CronDue already do the
 # cron-expression evaluation, so the OS task only has to fire it once a minute — identical on both.
 
+function Test-CrontabAvailable {
+  # The Linux agent scheduler (NC4) shells out to a `crontab` binary, which minimal installs lack
+  # (e.g. CachyOS ships no cron by default). A missing command is a terminating CommandNotFound that
+  # `2>$null` does NOT swallow, so callers must guard: status/remove no-op, register throws a clear
+  # error. Returns $true when crontab is on PATH.
+  return [bool](Get-Command crontab -ErrorAction SilentlyContinue)
+}
+
 function Get-AgentTaskSpec {
   # PURE. The registration spec for the OS. Windows 'argument' is byte-identical to bob.ps1:1073.
   param(
@@ -410,6 +418,9 @@ function Register-AgentTask {
     $g = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes $spec.TimeLimitMinutes) -MultipleInstances IgnoreNew
     Register-ScheduledTask -TaskName $spec.Name -Action $a -Trigger $t -Settings $g -RunLevel Limited -Force | Out-Null
   } else {
+    if (-not (Test-CrontabAvailable)) {
+      throw "cron not found — the Linux agent scheduler needs a 'crontab' binary. Install it (Arch: 'sudo pacman -S cronie' + 'sudo systemctl enable --now cronie'; Debian/Ubuntu: 'sudo apt-get install -y cron'), then re-run 'bob agent install'."
+    }
     $existing = @(& crontab -l 2>$null) | Where-Object { $_ -notmatch "# $($spec.Name)$" }   # idempotent
     (@($existing) + $spec.Crontab | Where-Object { $_ -ne '' }) -join "`n" | & crontab -
   }
@@ -420,6 +431,7 @@ function Unregister-AgentTask {
   if ((Get-BobOS) -eq 'windows') {
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
   } else {
+    if (-not (Test-CrontabAvailable)) { return }   # no cron installed -> nothing scheduled to remove
     (@(& crontab -l 2>$null) | Where-Object { $_ -notmatch "# $TaskName$" }) -join "`n" | & crontab -
   }
 }
@@ -433,6 +445,7 @@ function Get-AgentTaskStatus {
     $info = Get-ScheduledTaskInfo -TaskName $TaskName -ErrorAction SilentlyContinue
     return @{ Registered = $true; State = "$($task.State)"; NextRun = $info.NextRunTime }
   }
+  if (-not (Test-CrontabAvailable)) { return @{ Registered = $false; State = $null; NextRun = $null } }
   $line = @(& crontab -l 2>$null) | Where-Object { $_ -match "# $TaskName$" } | Select-Object -First 1
   return @{ Registered = [bool]$line; State = ($line ? 'Ready' : $null); NextRun = $null }
 }
