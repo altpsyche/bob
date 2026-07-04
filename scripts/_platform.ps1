@@ -306,6 +306,67 @@ function Send-Notification {
 
 # --- package install -----------------------------------------------------------------------------
 
+# Logical package name -> concrete name per manager (the single source; Resolve-PackageName reads it).
+# The SAME tool is named differently on each distro family, so Bob's installer asks for a *logical*
+# name and this table resolves it. A $null entry means "that manager bundles it elsewhere — skip it"
+# (e.g. make ships inside build-essential/base-devel; pip/venv ship inside Arch's python). Adding a new
+# manager (zypper/apk) is a pure data change: add its column here + a probe in Get-LinuxPackageManager.
+# Keys are the normalized managers Get-LinuxPackageManager returns (apt/dnf/pacman).
+$script:PackageMap = @{
+  'git'          = @{ apt = 'git';            dnf = 'git';          pacman = 'git' }
+  'curl'         = @{ apt = 'curl';           dnf = 'curl';         pacman = 'curl' }
+  'toolchain-cc' = @{ apt = 'build-essential'; dnf = 'gcc-c++';     pacman = 'base-devel' }
+  'make'         = @{ apt = $null;            dnf = 'make';         pacman = $null }        # bundled in the toolchain meta-pkg elsewhere
+  'cmake'        = @{ apt = 'cmake';          dnf = 'cmake';        pacman = 'cmake' }
+  'ninja'        = @{ apt = 'ninja-build';    dnf = 'ninja-build';  pacman = 'ninja' }
+  'go'           = @{ apt = 'golang-go';      dnf = 'golang';       pacman = 'go' }
+  'node'         = @{ apt = 'nodejs';         dnf = 'nodejs';       pacman = 'nodejs' }
+  'npm'          = @{ apt = 'npm';            dnf = 'npm';          pacman = 'npm' }
+  'python'       = @{ apt = 'python3';        dnf = 'python3';      pacman = 'python' }
+  'python-pip'   = @{ apt = 'python3-pip';    dnf = 'python3-pip';  pacman = $null }        # bundled in Arch 'python'
+  'python-venv'  = @{ apt = 'python3-venv';   dnf = $null;          pacman = $null }        # bundled in dnf python3 / arch python
+  'cron'         = @{ apt = 'cron';           dnf = 'cronie';       pacman = 'cronie' }     # Linux parity for Windows Task Scheduler
+  'cuda'         = @{ apt = 'nvidia-cuda-toolkit'; dnf = 'cuda-toolkit'; pacman = 'cuda' }  # apt/dnf may need NVIDIA's repo (see Install-LinuxCuda)
+}
+
+function Resolve-PackageName {
+  # Map a logical package Bob installs to the concrete name for a manager. Returns $null when that
+  # manager bundles it (caller skips). THROWS on an unknown logical name (a bug) or a manager with no
+  # column — so a mapping gap fails loudly instead of silently no-op'ing an install.
+  param([Parameter(Mandatory)][string]$Logical, [string]$Manager = (Get-LinuxPackageManager))
+  if (-not $script:PackageMap.ContainsKey($Logical)) {
+    throw "Resolve-PackageName: no mapping for logical package '$Logical' — add it to `$script:PackageMap in _platform.ps1."
+  }
+  $row = $script:PackageMap[$Logical]
+  if (-not $row.ContainsKey($Manager)) {
+    throw "Resolve-PackageName: logical '$Logical' has no entry for manager '$Manager' — add the '$Manager' column to `$script:PackageMap."
+  }
+  return $row[$Manager]
+}
+
+function Get-LinuxOsFamily {
+  # Distro family from /etc/os-release: 'debian' | 'rhel' | 'arch' | 'suse' | <ID> | $null. Reads ID
+  # then ID_LIKE (freedesktop standard) so derivatives resolve to their base without enumerating every
+  # distro (CachyOS/Manjaro -> arch; Mint/Pop -> debian; Rocky/Alma -> rhel). For repo-setup decisions
+  # (e.g. the NVIDIA CUDA repo) where the manager alone isn't enough.
+  param([string]$OsReleasePath = '/etc/os-release')
+  if (-not (Test-Path $OsReleasePath)) { return $null }
+  $kv = @{}
+  foreach ($line in (Get-Content -LiteralPath $OsReleasePath -ErrorAction SilentlyContinue)) {
+    if ($line -match '^\s*(ID|ID_LIKE|VERSION_ID)\s*=\s*"?([^"]*)"?\s*$') { $kv[$Matches[1]] = $Matches[2] }
+  }
+  $tokens = @($kv['ID']) + (($kv['ID_LIKE'] ?? '') -split '\s+')
+  foreach ($t in $tokens) {
+    switch -Regex ($t) {
+      '^(debian|ubuntu)$'       { return 'debian' }
+      '^(rhel|fedora|centos)$'  { return 'rhel' }
+      '^arch$'                  { return 'arch' }
+      '^(suse|opensuse.*|sles)$' { return 'suse' }
+    }
+  }
+  return ($kv['ID'] ? $kv['ID'] : $null)
+}
+
 function Resolve-PackageCmd {
   # PURE. The install command spec for the OS (and, on Linux, the detected package manager). Callers
   # in setup/install-prereqs pass -Manager in tests; the executor auto-detects.

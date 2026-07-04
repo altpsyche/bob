@@ -58,13 +58,10 @@ function Install-LinuxCuda {
     # toolkit by probing disk (Get-CudaRoot: /usr/local/cuda*, /opt/cuda, $CUDA_PATH), so PATH is a
     # convenience for the user's own `nvcc`, not a build requirement. Blackwell (sm_120) needs >= 12.8.
     param([Parameter(Mandatory)][string]$Manager)
-    $cudaPkg = switch ($Manager) {
-        'pacman' { 'cuda' }                 # -> /opt/cuda, ships a bash /etc/profile.d/cuda.sh
-        'apt'    { 'nvidia-cuda-toolkit' }  # distro pkg; may be too old for Blackwell (see warning below)
-        'dnf'    { 'cuda-toolkit' }         # needs NVIDIA's dnf repo enabled
-        default  { $null }
-    }
-    if (-not $cudaPkg) { Write-Warning "  unknown package manager '$Manager' — install the CUDA toolkit manually."; return }
+    # pacman 'cuda' -> /opt/cuda (ships a bash /etc/profile.d/cuda.sh). apt 'nvidia-cuda-toolkit' /
+    # dnf 'cuda-toolkit' come from the distro and may be too old for Blackwell / need NVIDIA's own repo
+    # enabled first — the post-install "not found" check below points there.
+    $cudaPkg = Resolve-PackageName -Logical cuda -Manager $Manager
 
     $arch = (Get-GpuArch)?.CudaArch ?? 120
     $root = Get-CudaRoot -CudaArch $arch
@@ -99,15 +96,16 @@ function Install-LinuxPrereqs {
     if (-not $mgr) { throw "No supported package manager (apt/dnf/pacman) found. Install the toolchain manually — see docs/MANUAL-INSTALL.md." }
     Write-Host "=== Linux prerequisites ($mgr) ===" -ForegroundColor Cyan
 
-    # Toolchain package names per manager (git/curl/compiler/cmake/ninja/go/node/python+venv).
-    $pkgs = switch ($mgr) {
-        'apt'    { @('git', 'curl', 'build-essential', 'cmake', 'ninja-build', 'golang-go', 'nodejs', 'npm', 'python3', 'python3-venv', 'python3-pip') }
-        'dnf'    { @('git', 'curl', 'gcc-c++', 'make', 'cmake', 'ninja-build', 'golang', 'nodejs', 'npm', 'python3', 'python3-pip') }
-        'pacman' { @('git', 'curl', 'base-devel', 'cmake', 'ninja', 'go', 'nodejs', 'npm', 'python') }
-    }
+    # Toolchain by LOGICAL name — Resolve-PackageName (_platform.ps1) maps each to this distro's concrete
+    # package, or $null when it's bundled in another (make in build-essential/base-devel; pip/venv in
+    # Arch's python). One list for every manager; adding a distro is a data change in $script:PackageMap,
+    # not here (the C2 "single source, never re-inline" rule — these names were re-inlined before).
+    $toolchain = @('git', 'curl', 'toolchain-cc', 'make', 'cmake', 'ninja', 'go', 'node', 'npm', 'python', 'python-pip', 'python-venv')
     $failed = @()
-    foreach ($p in $pkgs) {
-        Write-Host "  install $p ..." -ForegroundColor DarkGray
+    foreach ($lg in $toolchain) {
+        $p = Resolve-PackageName -Logical $lg -Manager $mgr
+        if (-not $p) { continue }   # bundled on this manager -> nothing to install
+        Write-Host "  install $p ($lg) ..." -ForegroundColor DarkGray
         try { Install-Package -Package $p } catch { Write-Warning "  $p failed: $_ (install it manually and re-run)"; $failed += $p }
     }
 
@@ -128,17 +126,16 @@ function Install-LinuxPrereqs {
     # Cron scheduler — Linux parity for Windows Scheduled Tasks, the backend for `bob agent install`
     # (NC4). Optional (skip if you won't schedule agents), so best-effort: warn, don't fail the install.
     # Windows gets Task Scheduler built in; on Linux the daemon is a package + an enabled service.
-    $cronPkg = switch ($mgr) { 'apt' { 'cron' } default { 'cronie' } }   # cronie on Arch/Fedora, cron on Debian
+    $cronPkg = Resolve-PackageName -Logical cron -Manager $mgr   # cron (Debian) | cronie (Arch/Fedora)
     if (Have 'crontab') {
         Write-Host "  cron ok (crontab present)" -ForegroundColor DarkGray
     } else {
         Write-Host "  install $cronPkg (cron scheduler for 'bob agent install') ..." -ForegroundColor DarkGray
         try { Install-Package -Package $cronPkg } catch { Write-Warning "  $cronPkg failed: $_ (optional — needed only for scheduled agents)" }
     }
-    # Enable the daemon so scheduled jobs actually fire (systemd only; best-effort — no-op elsewhere).
+    # Enable the daemon so scheduled jobs actually fire (systemd only; best-effort). Service name == pkg.
     if ((Have 'crontab') -and (Have 'systemctl')) {
-        $cronSvc = switch ($mgr) { 'apt' { 'cron' } default { 'cronie' } }
-        try { & sudo systemctl enable --now $cronSvc 2>$null } catch {}
+        try { & sudo systemctl enable --now $cronPkg 2>$null } catch {}
     }
 
     # Docker is optional (compose services); already cross-platform where present.
