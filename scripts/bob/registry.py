@@ -25,12 +25,12 @@ VERBS_FILE = REPO / "config" / "verbs.json"
 # enforces it), so the catalog/help can be generated with no verb missing.
 COMMANDS = [
     # --- Talk: converse + senses --------------------------------------------------------------
-    {"name": "chat", "group": "Talk", "summary": "Interactive chat REPL (routed role)",
-     "args": "[--pro|--think|--code] [prompt]", "runtime": "pwsh", "handler": None},
+    {"name": "chat", "group": "Talk", "summary": "Chat with Bob — one-shot or REPL, routed role (S2: on the agent loop)",
+     "args": "[--pro|--think|--code] [--raw] [--max N] [--sys <text>] [prompt]", "runtime": "python", "handler": "chat"},
     {"name": "code", "group": "Talk", "summary": "Code-focused chat (coder / coder-pro)",
-     "args": "[--pro] [prompt]", "runtime": "pwsh", "handler": None},
+     "args": "[--pro] [--raw] [--max N] [prompt]", "runtime": "python", "handler": "code"},
     {"name": "think", "group": "Talk", "summary": "Deep-reasoning chat (planner / planner-pro)",
-     "args": "[--pro] [prompt]", "runtime": "pwsh", "handler": None},
+     "args": "[--pro] [--raw] [--max N] [prompt]", "runtime": "python", "handler": "think"},
     {"name": "voice", "group": "Talk", "summary": "Continuous voice loop: listen -> chat -> speak",
      "args": "[--pro] [--agent]", "runtime": "pwsh", "handler": None},
     {"name": "listen", "group": "Talk", "summary": "Record mic until silence, print transcript",

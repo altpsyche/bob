@@ -149,6 +149,80 @@ def _handle_skill(rest: list) -> int:
     return 0
 
 
+_CHAT_KNOWN_ROLES = {"chat", "coder", "planner", "fim", "embed",
+                     "chat-pro", "coder-pro", "planner-pro"}
+
+
+def _chat(task: str, rest: list) -> int:
+    """Unified `bob chat|code|think` (S2 — one loop, no tools). One-shot when a prompt is given, else
+    the interactive shell in chat mode. Preserves the pwsh flags: --pro/--think/--code role routing
+    (via get_role), --max N, --raw, --sys <text>, and legacy `bob chat <role> <prompt>`."""
+    from bob_core import get_role, load_config
+
+    rest = list(rest)
+    pro = "--pro" in rest
+    raw = "--raw" in rest
+    if "--think" in rest:
+        task = "think"
+    elif "--code" in rest:
+        task = "code"
+
+    max_tokens = None
+    sys_prompt = None
+    prompt: list = []
+    i = 0
+    while i < len(rest):
+        tok = rest[i]
+        if tok in ("--pro", "--think", "--code", "--raw"):
+            i += 1
+        elif tok == "--max" and i + 1 < len(rest):
+            try:
+                max_tokens = int(rest[i + 1])
+            except ValueError:
+                max_tokens = None
+            i += 2
+        elif tok == "--sys" and i + 1 < len(rest):
+            sys_prompt = rest[i + 1]
+            i += 2
+        else:
+            prompt.append(tok)
+            i += 1
+
+    config = load_config()
+    # Legacy `bob chat <knownRole> <prompt...>` — first token is an explicit model/role.
+    if len(prompt) >= 2 and prompt[0] in _CHAT_KNOWN_ROLES:
+        role = prompt[0]
+        prompt = prompt[1:]
+    else:
+        role = get_role(config, task, pro=pro)
+    if sys_prompt:
+        config = {**config, "persona": {**config.get("persona", {}), "systemPrompt": sys_prompt}}
+
+    if not prompt:
+        # Interactive: the NE shell in chat mode (preset role, tools off) — inherits persisted
+        # sessions, MEM-3/autoRecall/consolidate, rich streaming, and approval.
+        from bob.shell import run as shell_run
+        return shell_run(config=config, role=role, no_tools=True)
+
+    # One-shot: run_agent prints the answer (streams + newline unless --raw, which prints bare text).
+    import bob_loop
+    bob_loop.run_agent(" ".join(prompt), config, role=role, agency="silent",
+                       stream=not raw, no_tools=True, max_tokens=max_tokens)
+    return 0
+
+
+def _handle_chat(rest: list) -> int:
+    return _chat("chat", rest)
+
+
+def _handle_code(rest: list) -> int:
+    return _chat("code", rest)
+
+
+def _handle_think(rest: list) -> int:
+    return _chat("think", rest)
+
+
 def _handle_shell(rest: list) -> int:
     """bob shell — the interactive REPL/TUI (NE2). Behind an isatty gate: a non-TTY invocation prints
     help instead, so scripts/CI never block on a prompt."""
@@ -184,6 +258,9 @@ _HANDLERS = {
     "clip": _handle_clip,
     "skill": _handle_skill,
     "shell": _handle_shell,
+    "chat": _handle_chat,     # S2 — unified text conversation onto the loop
+    "code": _handle_code,
+    "think": _handle_think,
     "help": _handle_help,
 }
 

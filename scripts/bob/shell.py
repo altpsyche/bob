@@ -257,11 +257,15 @@ class _TurnRenderer:
 
 
 class BobShell:
-    def __init__(self, config, tools, skills, console=None, sessions=None):
+    def __init__(self, config, tools, skills, console=None, sessions=None, role=None,
+                 no_tools=False):
         self.config = config
         self.tools = tools
         self.skills = skills
-        self.role = config.get("routing", {}).get("agentRole", "chat")
+        # S2 — `bob chat/code/think` launch the shell in chat mode: a preset role + no_tools (a plain
+        # conversation). Default (bare `bob`/`bob shell`) keeps the agent role + full toolset.
+        self.role = role or config.get("routing", {}).get("agentRole", "chat")
+        self.no_tools = no_tools
         self.agency = config.get("agent", {}).get("agency", "show")
         # WI-6 — owner-scoped persisted sessions. The row is created LAZILY on the first turn
         # (session_id stays None until then) so opening `bob` and leaving leaves no empty session.
@@ -288,7 +292,7 @@ class BobShell:
     # -- construction ---------------------------------------------------------
 
     @classmethod
-    def build(cls, config=None):
+    def build(cls, config=None, role=None, no_tools=False):
         """Build the shell with warm registries (one tool build, one skill build)."""
         from bob_core import load_config
         from bob_session import SessionStore
@@ -307,7 +311,7 @@ class BobShell:
         # restarts and is resumable from either surface.
         session_db = _SCRIPTS.parent / agent_cfg.get("sessionDbPath", "data/sessions.db")
         sessions = SessionStore(session_db, default_owner=agent_cfg.get("defaultOwner", "local"))
-        return cls(config, tools, skills, sessions=sessions)
+        return cls(config, tools, skills, sessions=sessions, role=role, no_tools=no_tools)
 
     # -- splash ---------------------------------------------------------------
 
@@ -701,6 +705,7 @@ class BobShell:
                 goal, self.config, role=self.role, agency=self.agency,
                 registry=self.tools, history=self.history, stream=True,
                 cancel=cancel, approve=approve, owner=self.owner, scope=self.scope,
+                no_tools=self.no_tools,
             )
 
         result = self._consume(factory)
@@ -906,11 +911,12 @@ class BobShell:
         self._put(answers, False)
 
 
-def run(config=None) -> int:
-    """Entry point for `python -m bob shell` (and the no-arg interactive front door)."""
+def run(config=None, role=None, no_tools=False) -> int:
+    """Entry point for `python -m bob shell` (and the no-arg interactive front door). S2: `role` +
+    `no_tools` let `bob chat/code/think` launch the shell in chat mode (preset role, tools off)."""
     if not is_interactive():
         from bob.cli import _print_help
         _print_help()
         return 0
     _force_utf8()   # before build() creates the rich Console, so it inherits a UTF-8 stdout
-    return BobShell.build(config).run()
+    return BobShell.build(config, role=role, no_tools=no_tools).run()

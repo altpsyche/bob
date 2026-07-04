@@ -1,8 +1,8 @@
 {
   "commands": {
-    "chat": "pwsh",
-    "code": "pwsh",
-    "think": "pwsh",
+    "chat": "python",
+    "code": "python",
+    "think": "python",
     "voice": "pwsh",
     "listen": "pwsh",
     "transcribe": "pwsh",

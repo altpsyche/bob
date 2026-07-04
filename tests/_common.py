@@ -90,7 +90,7 @@ def scripted_client(turns):
         def __init__(self):
             self.chat = SimpleNamespace(completions=self)
 
-        def create(self, model, messages, tools, stream, timeout):
+        def create(self, model, messages, tools, stream, timeout, **kwargs):
             i = state["i"]
             state["i"] += 1
             content = turns[min(i, len(turns) - 1)]
@@ -105,7 +105,7 @@ def stream_client(deltas):
         def __init__(self):
             self.chat = SimpleNamespace(completions=self)
 
-        def create(self, model, messages, tools, stream, timeout):
+        def create(self, model, messages, tools, stream, timeout, **kwargs):
             return _FakeStream([_content_chunk(d) for d in deltas])
 
     return _C()
@@ -120,7 +120,7 @@ def multi_turn_stream_client(turns):
         def __init__(self):
             self.chat = SimpleNamespace(completions=self)
 
-        def create(self, model, messages, tools, stream, timeout):
+        def create(self, model, messages, tools, stream, timeout, **kwargs):
             i = state["i"]
             state["i"] += 1
             deltas = turns[min(i, len(turns) - 1)]
@@ -156,7 +156,7 @@ def slow_stream_client(deltas, sleep_s=0.02, on_chunk=None):
             self.chat = SimpleNamespace(completions=self)
             self.last_stream = the_stream
 
-        def create(self, model, messages, tools, stream, timeout):
+        def create(self, model, messages, tools, stream, timeout, **kwargs):
             return the_stream
 
     return _C()

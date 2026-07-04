@@ -1021,6 +1021,8 @@ def run_agent_events(
     agent_depth: int = 0,
     scope: str = None,
     trace_parent=None,
+    no_tools: bool = False,
+    max_tokens: int = None,
 ):
     """Generator core of the agent loop (M15). Yields event dicts:
         {"type": "token",             "text": str}                          # final-answer deltas (stream=True)
@@ -1097,15 +1099,23 @@ def run_agent_events(
     # registry). Timed for the N5 metrics line / N4 cold-start visibility.
     if registry is None:
         from tool_registry import ToolRegistry
-        disabled_raw = agent_cfg.get("disabledTools", [])
-        if isinstance(disabled_raw, str):
-            disabled = {t.strip() for t in disabled_raw.split(",") if t.strip()}
+        if no_tools:
+            # S1 — chat mode: skip the tool load entirely (an empty registry) so `bob chat` starts
+            # fast and prints no tool summary; the run is a plain chat completion.
+            registry = ToolRegistry()
         else:
-            disabled = set(disabled_raw)
-        _t0 = time.monotonic()
-        registry = ToolRegistry.build(config, disabled)
-        reg_build_ms = (time.monotonic() - _t0) * 1000
-
+            disabled_raw = agent_cfg.get("disabledTools", [])
+            if isinstance(disabled_raw, str):
+                disabled = {t.strip() for t in disabled_raw.split(",") if t.strip()}
+            else:
+                disabled = set(disabled_raw)
+            _t0 = time.monotonic()
+            registry = ToolRegistry.build(config, disabled)
+            reg_build_ms = (time.monotonic() - _t0) * 1000
+    elif no_tools and hasattr(registry, "filtered"):
+        # S1 — chat mode over a caller-supplied registry (e.g. the shell): an EMPTY tool view via the
+        # O1/NE0 filtered() seam, no rebuild. Default no_tools=False -> registry unchanged.
+        registry = registry.filtered(allow=[])
     tool_schemas = registry.tool_schemas
     exit_on_tools = exit_on_tools if exit_on_tools is not None else registry.exit_voice_tools
     exit_on_tools = exit_on_tools or set()
@@ -1298,6 +1308,8 @@ def run_agent_events(
                     # Default (no O12/O13 opt-in) => exactly {model, messages, tools, stream, timeout}.
                     base_kwargs = dict(model=effective_role, messages=send_messages, tools=tools,
                                        stream=True, timeout=request_timeout)
+                    if max_tokens:   # S1 (--max) — cap output tokens; None/0 omits it (unchanged)
+                        base_kwargs["max_tokens"] = max_tokens
                     if constrain_active:
                         # O12 — attach the structured tools + tool_choice='auto' so the backend
                         # grammar-constrains any tool call. On rejection, latch the constraint off for
@@ -1446,6 +1458,8 @@ def run_agent(
     owner: str = None,
     agent_depth: int = 0,
     scope: str = None,
+    no_tools: bool = False,
+    max_tokens: int = None,
 ) -> tuple[str | None, bool]:
     """Blocking wrapper over run_agent_events for the CLI: prints tool previews to stderr,
     streams/echoes the final answer to stdout, and returns (result, exit_requested).
@@ -1462,7 +1476,7 @@ def run_agent(
         goal, config, role=role, agency=agency,
         exit_on_tools=exit_on_tools, registry=registry, stream=stream, history=history,
         cancel=cancel, run_id=run_id, approve=approve, owner=owner, agent_depth=agent_depth,
-        scope=scope,
+        scope=scope, no_tools=no_tools, max_tokens=max_tokens,
     ):
         t = ev["type"]
         if t == "token":

@@ -31,7 +31,9 @@ class TestRegistry(unittest.TestCase):
         self.assertEqual(rt["clip"], "python")
         self.assertEqual(rt["serve"], "pwsh")       # inference stack stays pwsh (C1 fix)
         self.assertEqual(rt["setup"], "pwsh")
-        self.assertEqual(rt["chat"], "pwsh")        # phased — still pwsh
+        self.assertEqual(rt["chat"], "python")      # S2 — chat/code/think ported onto the agent loop
+        self.assertEqual(rt["code"], "python")
+        self.assertEqual(rt["think"], "python")
         self.assertEqual(rt["agent schedule"], "pwsh")
 
     def test_verbs_json_on_disk_in_sync(self):
