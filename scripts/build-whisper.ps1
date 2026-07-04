@@ -74,6 +74,10 @@ try {
         if ($CudaRoot) {
             if ($os -eq 'windows') { $env:CUDA_PATH = $CudaRoot }
             $cudaArgs = @('-DWHISPER_CUDA=ON', "-DCMAKE_CUDA_ARCHITECTURES=$arch", "-DCUDAToolkit_ROOT=$CudaRoot")
+            # Pin the nvcc host compiler on Linux when the default g++ is too new for nvcc (same gap as
+            # build-llama.ps1 — e.g. CachyOS gcc 16). $null on Windows / when the default is fine.
+            $hostCxx = if ($os -ne 'windows') { Get-CudaHostCompiler } else { $null }
+            if ($hostCxx) { $cudaArgs += "-DCMAKE_CUDA_HOST_COMPILER=$hostCxx"; Write-Host "CUDA host g++: $hostCxx" -ForegroundColor DarkGray }
             Write-Host "Building whisper.cpp (CUDA sm_$arch)..." -ForegroundColor Cyan
         } else {
             Write-Warning "CUDA toolkit not found — falling back to CPU-only build."
