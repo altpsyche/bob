@@ -8,8 +8,9 @@
 param([switch]$Force)
 $ErrorActionPreference = "Stop"
 $repo = Split-Path $PSScriptRoot -Parent
+. "$PSScriptRoot\_models.ps1"   # NC1 seam: Get-BobExeName, Get-HomeConfigDir, Get-ModelsConfig, Get-BobPortDefault
 $src  = Join-Path $repo 'external\fabric'
-$out  = Join-Path $repo 'bin\fabric.exe'
+$out  = Join-Path $repo (Join-Path 'bin' (Get-BobExeName 'fabric'))   # bin/fabric.exe (win) | bin/fabric (linux)
 
 # 1. Ensure submodule is initialised
 if (-not (Test-Path (Join-Path $src 'go.mod'))) {
@@ -26,13 +27,12 @@ if ($Force -or -not (Test-Path $out)) {
         go build -o $out ./cmd/fabric/
         if ($LASTEXITCODE -ne 0) { throw "go build failed for fabric" }
     } finally { Pop-Location }
-    Write-Host "  -> bin\fabric.exe" -ForegroundColor Green
+    Write-Host "  -> $out" -ForegroundColor Green
 } else {
-    Write-Host "bin\fabric.exe already built — skipping (pass -Force to rebuild)." -ForegroundColor DarkGray
+    Write-Host "$out already built — skipping (pass -Force to rebuild)." -ForegroundColor DarkGray
 }
 
 # 3. Write ~/.config/fabric/.env (endpoint config)
-. "$PSScriptRoot\_models.ps1"
 $cfg  = Get-ModelsConfig
 $port = $cfg.defaults.litellmPort ?? (Get-BobPortDefault 'litellmPort')
 

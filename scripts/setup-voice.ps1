@@ -20,11 +20,17 @@ $voiceParts = $ttsVoice -split '-'   # ['en_GB', 'alan', 'medium']
 $voiceLang  = ($voiceParts[0] -split '_')[0]   # 'en'
 $voiceBase  = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/$voiceLang/$($voiceParts[0])/$($voiceParts[1])/$($voiceParts[2])/$ttsVoice"
 
+$os = Get-BobOS
+# piper release 2023.11.14-2 — OS-specific archive: Windows .zip (piper.exe + .dll), Linux .tar.gz
+# (piper binary + .so). macOS would be piper_macos_*.tar.gz (unsupported tier).
+$piperUrl = if ($os -eq 'windows') {
+    'https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_windows_amd64.zip'
+} else {
+    'https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_x86_64.tar.gz'
+}
 $urls = @{
     # whisper model from ggerganov's official HF repo — config-driven
     whisperModel    = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-$sttModel.bin"
-    # piper Windows AMD64 release (2023-11-14-2 is the stable release)
-    piperZip        = 'https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_windows_amd64.zip'
     # piper voice model — config-driven (URL derived from voice name)
     piperVoice      = "$voiceBase.onnx"
     piperVoiceJson  = "$voiceBase.onnx.json"
@@ -42,9 +48,9 @@ function Download-File($url, $dest, $label) {
     Write-Host "  Saved: $dest" -ForegroundColor Green
 }
 
-# ── Step 1: build whisper-server.exe if missing ──────────────────────────────
-Write-Host "`n[1/5] whisper-server.exe" -ForegroundColor Yellow
-$serverExe = Join-Path $repo 'bin\whisper-server.exe'
+# ── Step 1: build whisper-server if missing ──────────────────────────────────
+Write-Host "`n[1/5] whisper-server" -ForegroundColor Yellow
+$serverExe = Get-BinExe -Base whisper-server   # NC4: OS-aware (bin/whisper-server.exe | bin/whisper-server)
 if ($Force -or -not (Test-Path $serverExe)) {
     Write-Host "  Building whisper.cpp..." -ForegroundColor Cyan
     & "$PSScriptRoot\build-whisper.ps1" $(if ($Force) { '-Force' })
@@ -63,33 +69,48 @@ Download-File $urls.whisperModel (Join-Path $whisperDir $whisperFile) $whisperFi
 Write-Host "`n[3/5] Piper TTS binary + voice model" -ForegroundColor Yellow
 $voicesDir = Join-Path $repo 'bin\voices'
 New-Item -ItemType Directory -Force $voicesDir | Out-Null
-$piperExe  = Join-Path $repo 'bin\piper.exe'
+$piperExe  = Get-BinExe -Base piper   # NC4: OS-aware (bin/piper.exe | bin/piper)
+$binDir    = Join-Path $repo 'bin'
 if ($Force -or -not (Test-Path $piperExe)) {
-    Write-Host "  Downloading piper Windows release zip..." -ForegroundColor Cyan
-    $piperZip = [System.IO.Path]::GetTempFileName() + '.zip'
-    Invoke-WebRequest -Uri $urls.piperZip -OutFile $piperZip -UseBasicParsing
-    $piperTmp = [System.IO.Path]::GetTempPath() + 'piper_extract'
-    Expand-Archive -Path $piperZip -DestinationPath $piperTmp -Force
-    # The zip contains a piper/ folder with piper.exe inside
-    $extracted = Get-ChildItem $piperTmp -Recurse -Filter 'piper.exe' | Select-Object -First 1
-    if (-not $extracted) { throw "piper.exe not found in extracted zip at $piperTmp" }
-    Copy-Item $extracted.FullName $piperExe -Force
-    # Copy DLLs piper needs (same folder as piper.exe)
-    Copy-Item (Join-Path $extracted.DirectoryName '*.dll') (Join-Path $repo 'bin') -Force -ErrorAction SilentlyContinue
-    # Copy espeak-ng-data/ directory (required for phonemization; piper looks here by default)
-    $piperDir = $extracted.DirectoryName
-    $espeakSrc = Join-Path $piperDir 'espeak-ng-data'
+    $piperTmp = Join-Path ([System.IO.Path]::GetTempPath()) 'piper_extract'
+    if (Test-Path $piperTmp) { Remove-Item $piperTmp -Recurse -Force }
+    New-Item -ItemType Directory -Force $piperTmp | Out-Null
+    if ($os -eq 'windows') {
+        Write-Host "  Downloading piper Windows release (.zip)..." -ForegroundColor Cyan
+        $piperArc = [System.IO.Path]::GetTempFileName() + '.zip'
+        Invoke-WebRequest -Uri $piperUrl -OutFile $piperArc -UseBasicParsing
+        Expand-Archive -Path $piperArc -DestinationPath $piperTmp -Force
+        $extracted = Get-ChildItem $piperTmp -Recurse -Filter 'piper.exe' | Select-Object -First 1
+        if (-not $extracted) { throw "piper.exe not found in extracted zip at $piperTmp" }
+        Copy-Item $extracted.FullName $piperExe -Force
+        Copy-Item (Join-Path $extracted.DirectoryName '*.dll') $binDir -Force -ErrorAction SilentlyContinue
+    } else {
+        Write-Host "  Downloading piper Linux release (.tar.gz)..." -ForegroundColor Cyan
+        $piperArc = [System.IO.Path]::GetTempFileName() + '.tar.gz'
+        Invoke-WebRequest -Uri $piperUrl -OutFile $piperArc -UseBasicParsing
+        & tar -xzf $piperArc -C $piperTmp
+        if ($LASTEXITCODE -ne 0) { throw "tar extraction failed for the piper tarball ($piperArc)" }
+        $extracted = Get-ChildItem $piperTmp -Recurse -File | Where-Object { $_.Name -eq 'piper' } | Select-Object -First 1
+        if (-not $extracted) { throw "piper binary not found in extracted tarball at $piperTmp" }
+        Copy-Item $extracted.FullName $piperExe -Force
+        & chmod +x $piperExe
+        # piper's shared libs (libpiper_phonemize / onnxruntime / espeak-ng .so) sit beside the binary.
+        Copy-Item (Join-Path $extracted.DirectoryName '*.so*') $binDir -Force -ErrorAction SilentlyContinue
+    }
+    # espeak-ng-data/ ships beside the binary on both OSes — piper needs it for phonemization.
+    $espeakSrc = Join-Path $extracted.DirectoryName 'espeak-ng-data'
     if (Test-Path $espeakSrc) {
-        $espeakDest = Join-Path $repo 'bin\espeak-ng-data'
+        $espeakDest = Join-Path $binDir 'espeak-ng-data'
+        if (Test-Path $espeakDest) { Remove-Item $espeakDest -Recurse -Force }
         Copy-Item $espeakSrc $espeakDest -Recurse -Force
         Write-Host "  espeak-ng-data/ copied to bin/" -ForegroundColor Green
     } else {
-        Write-Warning "espeak-ng-data not found in piper zip — TTS phonemization may fail"
+        Write-Warning "espeak-ng-data not found beside piper — TTS phonemization may fail"
     }
-    Remove-Item $piperZip, $piperTmp -Recurse -Force -ErrorAction SilentlyContinue
-    Write-Host "  piper.exe extracted to bin/" -ForegroundColor Green
+    Remove-Item $piperArc, $piperTmp -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "  piper extracted to bin/" -ForegroundColor Green
 } else {
-    Write-Host "  piper.exe already present — skipping." -ForegroundColor DarkGray
+    Write-Host "  piper already present — skipping." -ForegroundColor DarkGray
 }
 Download-File $urls.piperVoice     (Join-Path $voicesDir "$ttsVoice.onnx")      "$ttsVoice.onnx"
 Download-File $urls.piperVoiceJson (Join-Path $voicesDir "$ttsVoice.onnx.json") "$ttsVoice.onnx.json"
