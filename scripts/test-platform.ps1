@@ -142,6 +142,32 @@ try {
   Assert "linux install needs sudo" ((Resolve-PackageCmd -Package git -Os linux -Manager apt).Sudo)
 
   # ------------------------------------------------------------------------
+  Write-Host "`n[8b] Resolve-PackageName — logical -> concrete per manager" -ForegroundColor Cyan
+  # ------------------------------------------------------------------------
+  Assert "cc apt=build-essential"  ((Resolve-PackageName -Logical toolchain-cc -Manager apt) -eq 'build-essential')
+  Assert "cc dnf=gcc-c++"          ((Resolve-PackageName -Logical toolchain-cc -Manager dnf) -eq 'gcc-c++')
+  Assert "cc pacman=base-devel"    ((Resolve-PackageName -Logical toolchain-cc -Manager pacman) -eq 'base-devel')
+  Assert "cron apt=cron"           ((Resolve-PackageName -Logical cron -Manager apt) -eq 'cron')
+  Assert "cron pacman=cronie"      ((Resolve-PackageName -Logical cron -Manager pacman) -eq 'cronie')
+  Assert "cuda pacman=cuda"        ((Resolve-PackageName -Logical cuda -Manager pacman) -eq 'cuda')
+  Assert "cuda apt=nvidia-cuda-toolkit" ((Resolve-PackageName -Logical cuda -Manager apt) -eq 'nvidia-cuda-toolkit')
+  Assert "make apt is bundled(null)"    ($null -eq (Resolve-PackageName -Logical make -Manager apt))
+  Assert "make dnf=make"                ((Resolve-PackageName -Logical make -Manager dnf) -eq 'make')
+  Assert "pip pacman is bundled(null)"  ($null -eq (Resolve-PackageName -Logical python-pip -Manager pacman))
+  Assert "unknown logical throws"  $(try { $null = Resolve-PackageName -Logical nope -Manager apt;  $false } catch { $true })
+  Assert "unknown manager throws"  $(try { $null = Resolve-PackageName -Logical git  -Manager brew; $false } catch { $true })
+
+  # ------------------------------------------------------------------------
+  Write-Host "`n[8c] Get-LinuxOsFamily — ID/ID_LIKE -> family" -ForegroundColor Cyan
+  # ------------------------------------------------------------------------
+  $mk = { param($content) $t = New-TemporaryFile; Set-Content -Path $t -Value $content -Encoding utf8; $t }
+  $f1 = & $mk "ID=cachyos`nID_LIKE=arch";                     Assert "cachyos -> arch"   ((Get-LinuxOsFamily -OsReleasePath $f1) -eq 'arch');   Remove-Item $f1 -EA SilentlyContinue
+  $f2 = & $mk "ID=linuxmint`nID_LIKE=`"ubuntu debian`"";      Assert "mint -> debian"    ((Get-LinuxOsFamily -OsReleasePath $f2) -eq 'debian'); Remove-Item $f2 -EA SilentlyContinue
+  $f3 = & $mk "ID=`"rocky`"`nID_LIKE=`"rhel centos fedora`""; Assert "rocky -> rhel"     ((Get-LinuxOsFamily -OsReleasePath $f3) -eq 'rhel');   Remove-Item $f3 -EA SilentlyContinue
+  $f4 = & $mk "ID=debian";                                    Assert "debian -> debian"  ((Get-LinuxOsFamily -OsReleasePath $f4) -eq 'debian'); Remove-Item $f4 -EA SilentlyContinue
+  Assert "missing os-release -> null" ($null -eq (Get-LinuxOsFamily -OsReleasePath '/nonexistent/os-release'))
+
+  # ------------------------------------------------------------------------
   Write-Host "`n[9] Resolve-BuildCmakeFlags — CPU vs CUDA, per OS" -ForegroundColor Cyan
   # ------------------------------------------------------------------------
   Assert "cpu -> CUDA off"          (-not (Resolve-BuildCmakeFlags -Cpu -Os linux).Cuda)

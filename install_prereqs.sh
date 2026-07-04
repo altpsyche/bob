@@ -49,6 +49,18 @@ install_pwsh() {
       curl -fsSL https://packages.microsoft.com/config/rhel/9/prod.repo | sudo tee /etc/yum.repos.d/microsoft.repo >/dev/null || true
       sudo dnf install -y powershell || snap_fallback
       ;;
+    pacman)
+      # pwsh is not in Arch's official repos — it's in the AUR (powershell-bin). Use an AUR helper if
+      # one is present; otherwise fall back to snap, else print manual guidance.
+      if command -v paru >/dev/null 2>&1; then
+        paru -S --noconfirm powershell-bin || snap_fallback
+      elif command -v yay >/dev/null 2>&1; then
+        yay -S --noconfirm powershell-bin || snap_fallback
+      else
+        log "pwsh is in the AUR (powershell-bin) — no AUR helper (paru/yay) found. Trying snap; otherwise install pwsh manually and re-run."
+        snap_fallback
+      fi
+      ;;
     *)
       snap_fallback
       ;;
