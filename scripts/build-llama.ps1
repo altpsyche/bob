@@ -141,13 +141,17 @@ try {
       -DGGML_CUDA_FORCE_CUBLAS=OFF `
       -DCUDAToolkit_ROOT="$CudaRoot"
   } elseif ($flags.Cuda) {
-    # Linux CUDA — Ninja generator, single-config; no VS toolset selector. Pin the host compiler when
-    # the default g++ is too new for nvcc (-DCMAKE_CUDA_HOST_COMPILER); omit the flag otherwise.
-    # NB: wrap the whole `if` in @() — PowerShell unwraps a 1-element array returned from an if-block
-    # to a scalar string, and `@scalarString` splats CHARACTER-BY-CHARACTER (mangled the cmake args).
+    # Linux CUDA — Ninja generator, single-config. nvcc is NOT on PATH (Arch installs to /opt/cuda and
+    # Bob never pollutes PATH), so cmake's enable_language(CUDA) can't find the compiler even with
+    # CUDAToolkit_ROOT set — point CMAKE_CUDA_COMPILER at the toolkit's nvcc explicitly. Pin the host
+    # compiler too when the default g++ is too new for nvcc.
+    $nvcc = Join-Path (Join-Path $CudaRoot 'bin') (Get-BobExeName 'nvcc')
+    # NB: wrap the whole `if` in @() — PowerShell unwraps a 1-element array from an if-block to a scalar
+    # string, and `@scalarString` splats CHARACTER-BY-CHARACTER (mangled the cmake args).
     $hostCxxArg = @(if ($cudaHostCxx) { "-DCMAKE_CUDA_HOST_COMPILER=$cudaHostCxx" })
     & $cmakeExe -B build -G $flags.Generator `
       -DGGML_CUDA=ON `
+      -DCMAKE_CUDA_COMPILER="$nvcc" `
       -DCMAKE_CUDA_ARCHITECTURES="$Arch" `
       -DGGML_CUDA_FORCE_CUBLAS=OFF `
       -DCUDAToolkit_ROOT="$CudaRoot" `
