@@ -122,7 +122,10 @@ if (-not $cmakeOk) {
         Write-Host "Installing cmake 3.31.7 via winget..." -ForegroundColor Cyan
         Install-WithWinget 'Kitware.CMake' @('--version', '3.31.7')
     } else {
-        throw "cmake (3.x) not found. Install it: sudo apt-get install -y cmake ninja-build (or the dnf/pacman equivalent), then re-run ./setup.sh."
+        # Rolling distros (Arch/CachyOS) ship only cmake 4.x, which llama.cpp rejects. Provision the
+        # pinned Kitware 3.x now so it's cached in tools/ before the build (build-llama/whisper reuse it).
+        $cm = Get-LinuxCmake3 -Repo $repo
+        Write-Host "cmake 3.x ready: $cm" -ForegroundColor DarkGray
     }
 }
 

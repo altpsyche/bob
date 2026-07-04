@@ -564,6 +564,37 @@ function Get-HomeConfigDir {
 
 # --- build flags (NC3 / NC8) ---------------------------------------------------------------------
 
+function Get-LinuxCmake3 {
+  # Linux/macOS: return a path to a cmake < 4.0 (llama.cpp / whisper.cpp reject 4.x — its policy
+  # changes fail CUDA-architecture validation). Prefer the system cmake when it's already 3.x; else
+  # download + cache the pinned Kitware build into tools/ and return that. Arch/CachyOS and other
+  # rolling distros ship ONLY cmake 4.x with no 3.x package — this is the Linux parity for the Windows
+  # winget pin. Cached across runs; throws if the download fails.
+  param([Parameter(Mandatory)][string]$Repo, [string]$PinnedVersion = '3.31.7')
+  $pathCmake = Get-Command cmake -ErrorAction SilentlyContinue
+  if ($pathCmake) {
+    $ver = ((& cmake --version 2>&1 | Select-Object -First 1) -replace 'cmake version\s+', '') -replace '(\d+\.\d+\.\d+).*', '$1'
+    if ($ver -and [version]$ver -lt [version]'4.0') { return $pathCmake.Source }
+    Write-Host "  system cmake is $ver (4.x) — llama.cpp/whisper.cpp need 3.x." -ForegroundColor Yellow
+  }
+  $arch = (((& uname -m) 2>$null | Select-Object -First 1) -as [string]).Trim()
+  if (-not $arch) { $arch = 'x86_64' }
+  $stem = "cmake-$PinnedVersion-linux-$arch"
+  $dir  = Join-Path (Join-Path $Repo 'tools') $stem
+  $exe  = Join-Path (Join-Path $dir 'bin') 'cmake'
+  if (-not (Test-Path $exe)) {
+    $url = "https://github.com/Kitware/CMake/releases/download/v$PinnedVersion/$stem.tar.gz"
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) "$stem.tar.gz"
+    Write-Host "  fetching pinned cmake $PinnedVersion ($arch) from Kitware..." -ForegroundColor Cyan
+    Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
+    New-Item -ItemType Directory -Force (Join-Path $Repo 'tools') | Out-Null
+    & tar -xzf $tmp -C (Join-Path $Repo 'tools')
+    Remove-Item $tmp -ErrorAction SilentlyContinue
+  }
+  if (-not (Test-Path $exe)) { throw "Failed to provision cmake $PinnedVersion (expected $exe). Install a cmake 3.x manually and re-run." }
+  return $exe
+}
+
 function Resolve-BuildCmakeFlags {
   # PURE. The cmake generator / CUDA toggle / DLL-staging decision for a build. CPU (-Cpu) => CUDA
   # off, no DLL staging, both OSes. GPU build => CUDA on; Windows uses the VS generator + stages

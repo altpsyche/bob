@@ -10,6 +10,9 @@
 /tools/venv-litellm/
 /tools/venv-eval/
 
+# Pinned cmake 3.x fetched by Get-LinuxCmake3 when the distro ships only cmake 4.x (Arch/rolling)
+/tools/cmake-*/
+
 # Open WebUI runtime state (db, uploads, secret key)
 /tools/webui-data/
 .webui_secret_key
