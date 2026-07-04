@@ -143,7 +143,9 @@ try {
   } elseif ($flags.Cuda) {
     # Linux CUDA — Ninja generator, single-config; no VS toolset selector. Pin the host compiler when
     # the default g++ is too new for nvcc (-DCMAKE_CUDA_HOST_COMPILER); omit the flag otherwise.
-    $hostCxxArg = if ($cudaHostCxx) { @("-DCMAKE_CUDA_HOST_COMPILER=$cudaHostCxx") } else { @() }
+    # NB: wrap the whole `if` in @() — PowerShell unwraps a 1-element array returned from an if-block
+    # to a scalar string, and `@scalarString` splats CHARACTER-BY-CHARACTER (mangled the cmake args).
+    $hostCxxArg = @(if ($cudaHostCxx) { "-DCMAKE_CUDA_HOST_COMPILER=$cudaHostCxx" })
     & $cmakeExe -B build -G $flags.Generator `
       -DGGML_CUDA=ON `
       -DCMAKE_CUDA_ARCHITECTURES="$Arch" `
