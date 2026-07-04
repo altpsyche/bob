@@ -115,6 +115,15 @@ function Install-LinuxPrereqs {
         Write-Warning "python3 is $pyv — Bob needs 3.12+. Install it (e.g. deadsnakes PPA on Ubuntu) and ensure it's on PATH."
     }
 
+    # cmake version: llama.cpp / whisper.cpp reject cmake >= 4.0, but the toolchain step above installs
+    # the DISTRO cmake — which is 4.x on rolling distros (Arch/CachyOS). Guarantee a build-usable 3.x
+    # here (cached in tools/) so ./setup.sh has one; no-op where the distro cmake is already 3.x (Ubuntu
+    # 24.04). setup.ps1 also calls this (idempotent) as a backstop. Best-effort — setup.sh retries.
+    try {
+        $cm3 = Get-LinuxCmake3 -Repo $repo
+        Write-Host "  cmake 3.x ready: $cm3" -ForegroundColor DarkGray
+    } catch { Write-Warning "  couldn't provision cmake 3.x: $_ (./setup.sh will retry)" }
+
     if ($Cpu) {
         Write-Host "  -Cpu: skipping CUDA toolkit (CPU-only tier)." -ForegroundColor DarkGray
     } elseif (Have 'nvidia-smi') {
