@@ -73,12 +73,14 @@ try {
         $arch     = if ($gpuInfo) { $gpuInfo.CudaArch } else { 120 }
         $CudaRoot = Get-BestCudaRoot -CudaArch $arch
         if ($CudaRoot) {
-            if ($os -eq 'windows') { $env:CUDA_PATH = $CudaRoot }
             $cudaArgs = @('-DWHISPER_CUDA=ON', "-DCMAKE_CUDA_ARCHITECTURES=$arch", "-DCUDAToolkit_ROOT=$CudaRoot")
-            # Pin the nvcc host compiler on Linux when the default g++ is too new for nvcc (same gap as
-            # build-llama.ps1 — e.g. CachyOS gcc 16). $null on Windows / when the default is fine.
-            $hostCxx = if ($os -ne 'windows') { Get-CudaHostCompiler } else { $null }
-            if ($hostCxx) { $cudaArgs += "-DCMAKE_CUDA_HOST_COMPILER=$hostCxx"; Write-Host "CUDA host g++: $hostCxx" -ForegroundColor DarkGray }
+            if ($os -ne 'windows') {
+                # Linux: nvcc isn't on PATH (Arch /opt/cuda) so point cmake at it; pin the host compiler
+                # when the default g++ is too new for nvcc. Same gaps build-llama.ps1 handles.
+                $cudaArgs += "-DCMAKE_CUDA_COMPILER=$(Join-Path (Join-Path $CudaRoot 'bin') (Get-BobExeName 'nvcc'))"
+                $hostCxx = Get-CudaHostCompiler
+                if ($hostCxx) { $cudaArgs += "-DCMAKE_CUDA_HOST_COMPILER=$hostCxx"; Write-Host "CUDA host g++: $hostCxx" -ForegroundColor DarkGray }
+            } else { $env:CUDA_PATH = $CudaRoot }
             Write-Host "Building whisper.cpp (CUDA sm_$arch)..." -ForegroundColor Cyan
         } else {
             Write-Warning "CUDA toolkit not found — falling back to CPU-only build."
