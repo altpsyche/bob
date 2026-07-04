@@ -55,8 +55,9 @@ $searxngPort  = $d.searxngPort  ?? (Get-BobPortDefault 'searxngPort')
 $n8nPort      = $d.n8nPort      ?? (Get-BobPortDefault 'n8nPort')
 $n8nTimezone  = $d.n8nTimezone  ?? 'UTC'
 
-# 4. Write .env for docker-compose
-$envFile = "$repo\tools\compose\.env"
+# 4. Write .env for docker-compose (Join-Path, not a backslash literal — the path is handed to the
+#    native `docker` binary, which doesn't normalize `\` on Linux).
+$envFile = Join-Path $repo 'tools' 'compose' '.env'
 @"
 REPO_PATH=$repo
 LANGFUSE_PORT=$langfusePort
@@ -91,8 +92,8 @@ search:
 '@ | Set-Content $sxCfg -Encoding utf8
 }
 
-# 7. Pull images and start stack
-$compose = "$repo\tools\compose\docker-compose.yml"
+# 7. Pull images and start stack (Join-Path — path goes to native `docker compose -f`)
+$compose = Join-Path $repo 'tools' 'compose' 'docker-compose.yml'
 Write-Host "Pulling images (first run may take a few minutes)..." -ForegroundColor Cyan
 docker compose -f $compose pull
 Write-Host "Starting services..." -ForegroundColor Cyan
