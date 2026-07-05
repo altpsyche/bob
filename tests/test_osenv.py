@@ -110,5 +110,43 @@ class TestNotify(unittest.TestCase):
             self.assertFalse(osenv.notify("t", "b"))
 
 
+class TestAudioSeam(unittest.TestCase):
+    """ONE-B3 — the mic-in / speaker-out seam. Playback backends are exercised by monkeypatching
+    platform.system + shutil.which + subprocess.run; capture is exercised for its no-audio-stack path."""
+
+    def test_play_audio_linux_uses_first_available_player(self):
+        ran = {}
+        with mock.patch("osenv.platform.system", return_value="Linux"), \
+             mock.patch("osenv.shutil.which", side_effect=lambda n: "/usr/bin/paplay" if n == "paplay" else None), \
+             mock.patch("osenv.subprocess.run", side_effect=lambda argv, check=False: ran.update(argv=argv)):
+            self.assertTrue(osenv.play_audio("/tmp/x.wav"))
+        self.assertEqual(ran["argv"], ["/usr/bin/paplay", "/tmp/x.wav"])
+
+    def test_play_audio_ffplay_gets_quiet_flags(self):
+        ran = {}
+        with mock.patch("osenv.platform.system", return_value="Linux"), \
+             mock.patch("osenv.shutil.which", side_effect=lambda n: "/usr/bin/ffplay" if n == "ffplay" else None), \
+             mock.patch("osenv.subprocess.run", side_effect=lambda argv, check=False: ran.update(argv=argv)):
+            self.assertTrue(osenv.play_audio("/tmp/x.wav"))
+        self.assertEqual(ran["argv"],
+                         ["/usr/bin/ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", "/tmp/x.wav"])
+
+    def test_play_audio_no_backend_returns_false(self):
+        with mock.patch("osenv.platform.system", return_value="Linux"), \
+             mock.patch("osenv.shutil.which", return_value=None):
+            self.assertFalse(osenv.play_audio("/tmp/x.wav"))
+
+    def test_record_audio_without_audio_stack_raises(self):
+        # Forcing the module entry to None makes `import sounddevice` raise ImportError.
+        with mock.patch.dict(sys.modules, {"sounddevice": None}):
+            with self.assertRaises(RuntimeError):
+                osenv.record_audio(0.1)
+
+    def test_pcm_to_wav_produces_valid_wav(self):
+        wav = osenv._pcm_to_wav(b"\x00\x00\x01\x00")
+        self.assertTrue(wav.startswith(b"RIFF"))
+        self.assertIn(b"WAVE", wav[:16])
+
+
 if __name__ == "__main__":
     unittest.main()

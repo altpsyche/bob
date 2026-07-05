@@ -155,3 +155,85 @@ def _notify_windows(title: str, body: str) -> bool:  # pragma: no cover — exer
         # WinRT/toast is handled by scripts/bob-toast.ps1 in the PowerShell layer today; the
         # Python seam is a no-op fallback rather than a hard dependency.
         return False
+
+
+# --- audio I/O (ONE-B3: mic-in / speaker-out seam for the /voice mode + speak) -------------------
+# The one place that knows how this OS records the mic and plays a clip, so the voice capability and
+# the shell /voice mode stay OS-neutral. sounddevice/numpy are optional and imported lazily (like
+# keyring/win10toast) so the base runtime never depends on the audio stack.
+
+_AUDIO_SAMPLE_RATE = 16000   # whisper prefers 16 kHz mono
+_AUDIO_CHANNELS = 1
+
+
+def play_audio(path: str) -> bool:
+    """Play a WAV file through the OS. Windows -> winsound; macOS -> afplay; Linux -> first of
+    paplay/aplay/ffplay. Returns True if a backend played it, False when none is available (the
+    caller can then point the user at the file). Replaces the inline pwsh SoundPlayer/paplay branch."""
+    if is_windows():
+        try:
+            import winsound  # type: ignore
+
+            winsound.PlaySound(path, winsound.SND_FILENAME)
+            return True
+        except Exception:
+            return False
+    if platform.system() == "Darwin":
+        exe = shutil.which("afplay")
+        if not exe:
+            return False
+        subprocess.run([exe, path], check=False)
+        return True
+    for name in ("paplay", "aplay", "ffplay"):
+        exe = shutil.which(name)
+        if not exe:
+            continue
+        argv = ([exe, "-nodisp", "-autoexit", "-loglevel", "quiet", path]
+                if name == "ffplay" else [exe, path])
+        subprocess.run(argv, check=False)
+        return True
+    return False
+
+
+def _pcm_to_wav(pcm_bytes: bytes) -> bytes:
+    import io
+    import wave
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(_AUDIO_CHANNELS)
+        wf.setsampwidth(2)  # 16-bit
+        wf.setframerate(_AUDIO_SAMPLE_RATE)
+        wf.writeframes(pcm_bytes)
+    return buf.getvalue()
+
+
+def record_audio(silence_sec: float = 1.5, rms_silence: int = 200) -> bytes:
+    """Record the mic until `silence_sec` of continuous silence; return 16 kHz mono WAV bytes (b'' if
+    nothing was captured). Discards leading silence so recording starts when speech does. Cross-platform
+    via sounddevice (PortAudio). Raises RuntimeError if the audio stack isn't installed — single source
+    of the RMS-silence capture used by `bob listen`/`transcribe` and the /voice mode."""
+    try:
+        import numpy as np
+        import sounddevice as sd
+    except ImportError as e:
+        raise RuntimeError("mic capture needs sounddevice + numpy (pip install sounddevice numpy)") from e
+    chunk_secs = 0.1
+    silence_chunks = int(silence_sec / chunk_secs)
+    chunk_samples = int(_AUDIO_SAMPLE_RATE * chunk_secs)
+    frames, consecutive_silence, started = [], 0, False
+    with sd.InputStream(samplerate=_AUDIO_SAMPLE_RATE, channels=_AUDIO_CHANNELS, dtype="int16") as stream:
+        while True:
+            data, _ = stream.read(chunk_samples)
+            rms = np.sqrt(np.mean(data.astype(np.float32) ** 2))
+            if rms > rms_silence:
+                started, consecutive_silence = True, 0
+                frames.append(data.copy())
+            elif started:
+                consecutive_silence += 1
+                frames.append(data.copy())
+                if consecutive_silence >= silence_chunks:
+                    break
+    if not frames:
+        return b""
+    return _pcm_to_wav(np.concatenate(frames, axis=0).tobytes())

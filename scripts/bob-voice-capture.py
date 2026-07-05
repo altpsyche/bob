@@ -7,67 +7,17 @@ Usage:
 Exit code 0 = success, 1 = error (server unreachable or no speech).
 """
 import argparse
-import io
 import os
 import sys
 import tempfile
-import wave
 
 # Force UTF-8 stdout so whisper transcripts with non-ASCII chars print cleanly on Windows.
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
-import numpy as np
 import requests
-import sounddevice as sd
 
-SAMPLE_RATE = 16000  # whisper prefers 16 kHz
-CHANNELS    = 1
-DTYPE       = 'int16'
-CHUNK_SECS  = 0.1    # RMS window size
-RMS_SILENCE = 200    # amplitude threshold below = silence (tune if env is loud)
-
-
-def record_until_silence(silence_sec: float) -> bytes:
-    """Record mic until silence_sec of continuous silence. Return raw PCM bytes."""
-    silence_chunks = int(silence_sec / CHUNK_SECS)
-    chunk_samples  = int(SAMPLE_RATE * CHUNK_SECS)
-    frames = []
-    consecutive_silence = 0
-    started = False
-
-    print("Listening... (speak now, recording stops after silence)", file=sys.stderr)
-
-    with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=DTYPE) as stream:
-        while True:
-            data, _ = stream.read(chunk_samples)
-            rms = np.sqrt(np.mean(data.astype(np.float32) ** 2))
-
-            if rms > RMS_SILENCE:
-                started = True
-                consecutive_silence = 0
-                frames.append(data.copy())
-            elif started:
-                consecutive_silence += 1
-                frames.append(data.copy())
-                if consecutive_silence >= silence_chunks:
-                    break
-            # if not started yet, discard leading silence (don't record)
-
-    if not frames:
-        return b''
-    return np.concatenate(frames, axis=0).tobytes()
-
-
-def pcm_to_wav(pcm_bytes: bytes) -> bytes:
-    """Wrap raw PCM bytes in a WAV container."""
-    buf = io.BytesIO()
-    with wave.open(buf, 'wb') as wf:
-        wf.setnchannels(CHANNELS)
-        wf.setsampwidth(2)  # 16-bit
-        wf.setframerate(SAMPLE_RATE)
-        wf.writeframes(pcm_bytes)
-    return buf.getvalue()
+import osenv  # ONE-B3 — mic capture lives in the OS seam (single-sourced); this is the STT client
 
 
 def transcribe(wav_path: str, port: int) -> str:
@@ -99,11 +49,11 @@ def main():
         wav_path = args.file
         tmp_path = None
     else:
-        pcm = record_until_silence(args.silence_sec)
-        if not pcm:
+        print("Listening... (speak now, recording stops after silence)", file=sys.stderr)
+        wav_bytes = osenv.record_audio(args.silence_sec)
+        if not wav_bytes:
             print("Error: no speech detected", file=sys.stderr)
             sys.exit(1)
-        wav_bytes = pcm_to_wav(pcm)
         fd, tmp_path = tempfile.mkstemp(suffix='.wav')
         try:
             with os.fdopen(fd, 'wb') as f:
