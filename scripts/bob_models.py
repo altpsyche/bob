@@ -91,20 +91,24 @@ def list_profiles(config: Optional[dict] = None) -> dict:
 
 
 def regenerate_configs() -> bool:
-    """Interim bridge (ONE-C): regenerate the runtime configs (llama-swap.yaml + litellm.yaml) from
-    models.json via the still-PowerShell generators, best-effort. Returns True if pwsh ran them, False
-    when pwsh is absent (leaving the existing configs in place). Single-sourced here so the stack
-    bring-up (scripts/tools/stack.py) and profile switch (scripts/tools/models.py) share ONE bridge;
-    when Slice 6 ports `gen` to Python this body swaps to the Python generator and callers are unchanged."""
-    import shutil
-    import subprocess
+    """Regenerate the runtime configs (llama-swap.yaml + litellm.yaml) the running stack needs, from
+    models.json via the Python generators (ONE-C Slice 6 — the interim pwsh bridge is retired; this was
+    the last pwsh in the lifecycle hot path). Best-effort: True on success, False if generation raised
+    (leaving the existing configs in place). Single-sourced here so the stack bring-up
+    (scripts/tools/stack.py) and profile switch (scripts/tools/models.py) share ONE regen. `bob gen`
+    regenerates all four (adds Continue + WebUI); the hot path only needs these two."""
+    import sys as _sys
 
-    pwsh = shutil.which("pwsh") or shutil.which("powershell")
-    if not pwsh:
+    tools = str(REPO / "scripts" / "tools")
+    if tools not in _sys.path:
+        _sys.path.insert(0, tools)
+    try:
+        import generate
+
+        from bob_core import load_config
+        generate.configure(load_config())
+        generate.gen_llama_swap()
+        generate.gen_litellm()
+        return True
+    except Exception:
         return False
-    for gen in ("gen-llama-swap.ps1", "gen-litellm.ps1"):
-        script = REPO / "scripts" / gen
-        if script.exists():
-            subprocess.run([pwsh, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
-                           check=False, capture_output=True)
-    return True

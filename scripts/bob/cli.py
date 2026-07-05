@@ -808,6 +808,17 @@ def _handle_diagnose(rest: list) -> int:
     return 0
 
 
+def _handle_gen(rest: list) -> int:
+    """bob gen [profile] — regenerate all runtime configs from config/models.json (ONE-C Slice 6)."""
+    tools_dir = str(SCRIPTS / "tools")
+    if tools_dir not in sys.path:
+        sys.path.insert(0, tools_dir)
+    import generate
+    generate.configure(_cfg())
+    print(generate.gen_all(rest[0] if rest else None))
+    return 0
+
+
 def _handle_shell(rest: list) -> int:
     """bob shell — the interactive REPL/TUI (NE2). Behind an isatty gate: a non-TTY invocation prints
     help instead, so scripts/CI never block on a prompt."""
@@ -882,6 +893,7 @@ _HANDLERS = {
     "profile": _handle_profile,
     "verify-urls": _handle_verify_urls,
     "bench": _handle_bench,
+    "gen": _handle_gen,               # ONE-C Slice 6 — config generators (scripts/tools/generate.py)
     "setup": _handle_setup,           # ONE-C Slice 3 — health / diagnostics (scripts/tools/health.py)
     "doctor": _handle_doctor,
     "version": _handle_version,

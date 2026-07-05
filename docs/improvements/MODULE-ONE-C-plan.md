@@ -1,12 +1,13 @@
 # Module ONE-C — Capabilities-as-tools + the deterministic invoker (detailed plan)
 
-**Status:** executing. **C0 ✓ · Slice 1 ✓ · Slice 2 ✓ · C0c ✓ · Slice 4 ✓ · Slice 3 ✓ · Slice 5 ✓ DONE**
-(all on main; 669 tests green) — the models.psd1 gating risk is retired, the registry readers + health/
-diagnostics are on Python, and scheduling (the agent-lifecycle piece) is fully ported: the pwsh runner +
-scheduler seams are retired. Decisions D1–D6 resolved (see Part 5). **Next:** Slice 6 (generators; then
-drop the `bob_models.regenerate_configs` pwsh bridge — the last pwsh in the lifecycle hot path).
-**Prereq:** ONE-A ✓ (config single-sourced), ONE-B ✓ (one engine; text/vision/voice on the loop).
-**Read first:**
+**Status:** ONE-C **feature-complete** — **C0 · Slice 1 · Slice 2 · C0c · Slice 4 · Slice 3 · Slice 5 ·
+Slice 6 all ✓ DONE** (on main; 685 tests green). Every ONE-C-scoped verb is on Python: registry readers,
+health/diagnostics, scheduling (pwsh runner + seams retired), and the config generators — and
+`bob_models.regenerate_configs` now runs the Python generators, so **there is no pwsh in the lifecycle hot
+path**. Decisions D1–D6 resolved (see Part 5). **Remaining pwsh (10 verbs, all deferred to ONE-D by D2):**
+`build`/`update`/`setup`(full)/`setup-voice`/`fabric-setup`/`fetch`/`mlock`/`lock`/`eval`/`status` —
+toolchain/privilege/git-heavy or pre-venv bootstrap; the `gen-*.ps1` scripts stay too (the pre-venv
+cold-start path still calls them). **Prereq:** ONE-A ✓, ONE-B ✓. **Read first:**
 [MODULE-ONE-bob.md](MODULE-ONE-bob.md) (§ONE-C, the deprecation ledger, the architectural invariant),
 [ARCHITECTURE-CONTRACTS.md](ARCHITECTURE-CONTRACTS.md) (C1 dispatch, C6 registries, **C7 provisioner
 native-first**), [../../plugins/AUTHORING.md](../../plugins/AUTHORING.md) (three-layer placement rule).
@@ -286,7 +287,17 @@ Ordered by dependency and value; a slice is the template the rest follow.
   `_platform.ps1` scheduler seams, `_models.ps1` `Test-CronDue`, and their `test-platform.ps1` tests are
   deleted. tests/test_slice5_schedule.py (24, incl. cron parity + crontab-idempotency). Runner verified to
   boot + short-circuit on `agent.enabled=false`.
-- **Slice 6 — Generators:** port `gen` (llama-swap/litellm/continue/webui). Largest; depends on C0c.
+- **Slice 6 — Generators** ✅ **DONE** (on main; 685 tests green): `scripts/tools/generate.py` (D6) ports
+  all four generators — `gen_llama_swap`/`gen_litellm`/`gen_continue`/`gen_webui` + `enabled_peers` +
+  `gen_all`. **Byte-parity verified** against the pwsh output across every profile incl. the cpu tier
+  (llama-swap macros + per-model cmd assembly with draft/mmproj/mlock/no-mmap, litellm local+pro, continue
+  role-mapping, webui sqlite writer). `gen` flipped to python (agent tool `gen` [mutating] + `bob gen
+  [profile]` + `--run`). **`bob_models.regenerate_configs` swapped from the pwsh bridge to the Python
+  generators** — the last pwsh in the lifecycle hot path is gone. Dead bob.ps1 `gen` case deleted. **The
+  `gen-*.ps1` scripts STAY** (scope decision): the pre-venv cold-start/bootstrap path
+  (`bootstrap.ps1`/`start.ps1`/`setup-clients.ps1`/`test-dry-run.ps1`) still calls them directly and can't
+  depend on the venv — they retire in ONE-D with that path (byte-parity means zero drift meanwhile).
+  tests/test_slice6_generate.py (16). Slice-2 regen-bridge test updated to the Python delegate.
 - **Deferred to ONE-D:** `setup`(full)/`setup-voice`/`build`/`update`/`mlock`/`lock`/`fabric-setup`/`fetch`
   (toolchain/privilege/git-heavy; need build-time seams). Keep `runtime=pwsh` meanwhile.
 

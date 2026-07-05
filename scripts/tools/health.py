@@ -194,8 +194,7 @@ def health_check(config: dict, doctor: bool = False) -> str:
     else:
         check("Agent tools load without error", False, "venv-litellm missing")
 
-    check("config/litellm.yaml exists", (REPO / "config" / "litellm.yaml").exists(),
-          "scripts/gen-litellm.ps1")
+    check("config/litellm.yaml exists", (REPO / "config" / "litellm.yaml").exists(), "bob gen")
 
     if doctor:
         lines.append("  ── runtime ──")

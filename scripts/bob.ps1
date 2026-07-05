@@ -103,13 +103,11 @@ switch ($cmd) {
   # 'aider' -> runtime=python (cli.py _handle_aider); routed by the dispatch prologue. (ONE-C Slice 1)
   # 'models' and 'show' -> runtime=python (cli.py handlers over scripts/tools/models.py, built on the
   # neutral config/models.json); routed by the dispatch prologue before this switch. (ONE-C Slice 4)
-  'gen'    {                                                   # regenerate config from models.json
-    & "$repo\scripts\gen-llama-swap.ps1" @rest
-    & "$repo\scripts\gen-litellm.ps1"
-    & "$repo\scripts\gen-webui.ps1"
-    & "$repo\scripts\gen-continue.ps1"
-    Assert-BobPortKeys   # M6 — fail loudly if the merged config is missing a service port
-  }
+  # 'gen' -> runtime=python (cli.py _handle_gen over scripts/tools/generate.py:gen_all — byte-parity
+  # port of the four gen-*.ps1). Routed by the dispatch prologue before this switch. The gen-*.ps1
+  # scripts STAY: the pre-venv cold-start/bootstrap path (bootstrap.ps1/start.ps1/setup-clients.ps1)
+  # still calls them directly and can't depend on the venv; they retire in ONE-D with that path.
+  # (ONE-C Slice 6)
   'fetch'  {                                                   # download models for a profile
     $fa = @{}
     if ($rest -contains '--list') { $fa['ListOnly'] = $true }

@@ -143,9 +143,13 @@ class TestServiceControl(unittest.TestCase):
 
 
 class TestConfigBridge(unittest.TestCase):
-    def test_regen_noop_without_pwsh(self):
-        with mock.patch.object(stack.shutil, "which", return_value=None):
-            self.assertFalse(stack._regen_configs())
+    def test_regen_delegates_to_python_generators(self):
+        # ONE-C Slice 6 — the regen bridge runs the Python generators (no pwsh); _regen_configs is a
+        # thin delegate to bob_models.regenerate_configs.
+        import bob_models
+        with mock.patch.object(bob_models, "regenerate_configs", return_value=True) as rc:
+            self.assertTrue(stack._regen_configs())
+        rc.assert_called_once()
 
     def test_ensure_configs_ok_when_yaml_present(self):
         # The real repo has config/llama-swap.yaml locally; regen is best-effort.

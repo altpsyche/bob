@@ -81,8 +81,8 @@ def _poll(check, timeout: float, interval: float = 0.3) -> bool:
 
 def _regen_configs() -> bool:
     """Best-effort refresh of config/llama-swap.yaml + litellm.yaml from models.json (so profile edits
-    take effect). Delegates to the single-sourced bridge in bob_models (shared with the profile switch);
-    no-op when pwsh is absent — the ONE goal. Swaps to the Python generator in Slice 6."""
+    take effect). Delegates to the single-sourced regen in bob_models (shared with the profile switch),
+    which since ONE-C Slice 6 runs the Python generators directly — no pwsh in this hot path."""
     import bob_models
     return bob_models.regenerate_configs()
 
