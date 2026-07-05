@@ -41,7 +41,9 @@ class TestRegistry(unittest.TestCase):
         self.assertEqual(rt["chat"], "python")      # S2 — chat/code/think ported onto the agent loop
         self.assertEqual(rt["code"], "python")
         self.assertEqual(rt["think"], "python")
-        self.assertEqual(rt["agent schedule"], "pwsh")
+        self.assertEqual(rt["agent schedule"], "python")   # ONE-C Slice 5 — scheduling ported (schedule.py)
+        self.assertEqual(rt["agent install"], "python")
+        self.assertEqual(rt["agent status"], "python")
 
     def test_verbs_json_on_disk_in_sync(self):
         disk = json.loads((Path(registry.REPO) / "config" / "verbs.json").read_text(encoding="utf-8"))

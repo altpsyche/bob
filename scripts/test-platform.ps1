@@ -110,19 +110,8 @@ try {
   Assert "linux Blackwell pins cuda-12.8" ($c.Pin -eq '/usr/local/cuda-12.8')
   Assert "linux Blackwell MinVer 12.8"    ($c.MinVer -eq '12.8')
 
-  # ------------------------------------------------------------------------
-  Write-Host "`n[6] Get-AgentTaskSpec — scheduled task vs cron" -ForegroundColor Cyan
-  # ------------------------------------------------------------------------
-  $s = '/repo/scripts/bob-agent.ps1'
-  $win = Get-AgentTaskSpec -ScriptPath $s -Os windows
-  Assert "win spec is schtasks"       ($win.Kind -eq 'schtasks')
-  Assert "win argument byte-identical" ($win.Argument -eq "-WindowStyle Hidden -NonInteractive -File `"$s`"")
-  Assert "win interval 1 min"          ($win.IntervalMinutes -eq 1)
-  $lin = Get-AgentTaskSpec -ScriptPath $s -Os linux
-  Assert "linux spec is cron"          ($lin.Kind -eq 'cron')
-  Assert "linux crontab every minute"  ($lin.Crontab -match '^\* \* \* \* \* ')
-  Assert "linux runs pwsh -File"       ($lin.Crontab -match 'pwsh -NonInteractive -File')
-  Assert "linux crontab tagged"        ($lin.Crontab -match '# BobAgent$')
+  # [6] the agent-task scheduler seams (Get-AgentTaskSpec/Register/Unregister/Status) moved to Python
+  # (osenv scheduler quartet) in ONE-C Slice 5 — tested in tests/test_slice5_schedule.py.
 
   # ------------------------------------------------------------------------
   Write-Host "`n[7] Resolve-BgLaunchSpec — hidden vs nohup" -ForegroundColor Cyan
@@ -231,10 +220,7 @@ try {
   # ------------------------------------------------------------------------
   $ram = Get-SystemRamGB
   Assert "Get-SystemRamGB returns TotalGB > 0" ($ram -and $ram.TotalGB -gt 0)
-  if ($IsLinux) {
-    $st = Get-AgentTaskStatus
-    Assert "linux Get-AgentTaskStatus returns a shape" ($st.ContainsKey('Registered'))
-  }
+  # (agent-task-status live check moved to Python — osenv.agent_task_status, ONE-C Slice 5)
 }
 finally {
   $env:BOB_FORCE_OS  = $savedForceOs

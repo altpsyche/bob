@@ -158,6 +158,97 @@ def _handle_agent_tools(rest: list) -> int:
     return 0
 
 
+# --- ONE-C Slice 5: agent scheduling (scripts/tools/schedule.py) ---------------------------------
+# schedule CRUD + the OS-task lifecycle + the runner core. install/uninstall are CLI-only (they touch
+# the OS scheduler); the CRUD + status/log cores are also agent tools.
+
+def _sched_mod():
+    tools_dir = str(SCRIPTS / "tools")
+    if tools_dir not in sys.path:
+        sys.path.insert(0, tools_dir)
+    import schedule as sched_mod
+    return sched_mod
+
+
+def _flag(rest: list, name: str, default=None):
+    """--flag <value> extractor mirroring the pwsh schedule-arg parsing."""
+    if name in rest:
+        i = rest.index(name)
+        if i + 1 < len(rest):
+            return rest[i + 1]
+    return default
+
+
+def _handle_agent_schedule(rest: list) -> int:
+    sched, cfg = _sched_mod(), _cfg()
+    sub = rest[0] if rest else "list"
+    args = rest[1:]
+    if sub == "list":
+        print(sched.schedule_list(cfg))
+    elif sub == "add":
+        name = next((a for a in args if not a.startswith("--")), None)
+        print(sched.schedule_add(
+            cfg, name, cron=_flag(args, "--cron", "0 9 * * 1-5"), goal=_flag(args, "--goal"),
+            role=_flag(args, "--role", "agent"), notify=("--notify" in args),
+            title=_flag(args, "--title")))
+    elif sub == "remove":
+        print(sched.schedule_remove(cfg, args[0] if args else None))
+    elif sub == "run":
+        print(sched.schedule_run(cfg, args[0] if args else None))
+    elif sub == "enable":
+        print(sched.schedule_enable(cfg, args[0] if args else None))
+    elif sub == "disable":
+        print(sched.schedule_disable(cfg, args[0] if args else None))
+    elif sub == "install":
+        print(sched.agent_install(cfg))
+    elif sub == "status":
+        print(sched.agent_status(cfg))
+    else:
+        print("bob agent schedule <add|list|run|remove|enable|disable|install|status>")
+    return 0
+
+
+def _handle_agent_install(rest: list) -> int:
+    print(_sched_mod().agent_install(_cfg()))
+    return 0
+
+
+def _handle_agent_uninstall(rest: list) -> int:
+    print(_sched_mod().agent_uninstall(_cfg()))
+    return 0
+
+
+def _handle_agent_status(rest: list) -> int:
+    print(_sched_mod().agent_status(_cfg()))
+    return 0
+
+
+def _handle_agent_log(rest: list) -> int:
+    """bob agent log [-n N] — bounded tail, or follow with -f/--wait (CLI-only concern)."""
+    rest = list(rest)
+    follow = any(f in rest for f in ("-f", "--wait", "-Wait"))
+    sched, cfg = _sched_mod(), _cfg()
+    if not follow:
+        print(sched.agent_log(cfg, n=int(_flag(rest, "-n", 50))))
+        return 0
+    import time
+    log = sched._log_file(cfg)
+    print(sched.agent_log(cfg, n=50))
+    if not log.exists():
+        return 0
+    with open(log, encoding="utf-8", errors="replace") as fh:
+        fh.seek(0, 2)
+        try:
+            while True:
+                line = fh.readline()
+                if line:
+                    print(line, end="")
+                else:
+                    time.sleep(1)
+        except KeyboardInterrupt:
+            return 0
+
+
 def _handle_clip(rest: list) -> int:
     import bob_clip  # lazy
 
@@ -749,6 +840,11 @@ _HANDLERS = {
     "agent_serve": _handle_agent_serve,
     "agent_mcp": _handle_agent_mcp,
     "agent_tools": _handle_agent_tools,
+    "agent_schedule": _handle_agent_schedule,   # ONE-C Slice 5 — scheduling (scripts/tools/schedule.py)
+    "agent_log": _handle_agent_log,
+    "agent_install": _handle_agent_install,
+    "agent_uninstall": _handle_agent_uninstall,
+    "agent_status": _handle_agent_status,
     "clip": _handle_clip,
     "skill": _handle_skill,
     "shell": _handle_shell,

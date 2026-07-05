@@ -1,11 +1,12 @@
 # Module ONE-C — Capabilities-as-tools + the deterministic invoker (detailed plan)
 
-**Status:** executing. **C0 ✓ · Slice 1 ✓ · Slice 2 ✓ · C0c ✓ · Slice 4 ✓ · Slice 3 ✓ DONE** (all on main;
-645 tests green) — the models.psd1 gating risk is retired, the registry readers are live, and health/
-diagnostics are on Python. Decisions D1–D6 resolved (see Part 5). **Next:** Slice 5 (scheduling: osenv
-scheduler quartet + exact Test-CronDue port + runner) → Slice 6 (generators; then drop the
-`bob_models.regenerate_configs` pwsh bridge). **Prereq:** ONE-A ✓ (config single-sourced), ONE-B ✓ (one
-engine; text/vision/voice on the loop). **Read first:**
+**Status:** executing. **C0 ✓ · Slice 1 ✓ · Slice 2 ✓ · C0c ✓ · Slice 4 ✓ · Slice 3 ✓ · Slice 5 ✓ DONE**
+(all on main; 669 tests green) — the models.psd1 gating risk is retired, the registry readers + health/
+diagnostics are on Python, and scheduling (the agent-lifecycle piece) is fully ported: the pwsh runner +
+scheduler seams are retired. Decisions D1–D6 resolved (see Part 5). **Next:** Slice 6 (generators; then
+drop the `bob_models.regenerate_configs` pwsh bridge — the last pwsh in the lifecycle hot path).
+**Prereq:** ONE-A ✓ (config single-sourced), ONE-B ✓ (one engine; text/vision/voice on the loop).
+**Read first:**
 [MODULE-ONE-bob.md](MODULE-ONE-bob.md) (§ONE-C, the deprecation ledger, the architectural invariant),
 [ARCHITECTURE-CONTRACTS.md](ARCHITECTURE-CONTRACTS.md) (C1 dispatch, C6 registries, **C7 provisioner
 native-first**), [../../plugins/AUTHORING.md](../../plugins/AUTHORING.md) (three-layer placement rule).
@@ -271,7 +272,20 @@ Ordered by dependency and value; a slice is the template the rest follow.
   share it; deleted in Slice 6). `verify-urls.ps1` deleted; `Get-Models`/`Get-GpuVramGB`/etc kept (still
   used by the generators/diagnose/fetch). `eval` stays pwsh (very long, separate venv → ONE-D). Verified
   live (models/show/profiles/profile/bench all ran). tests/test_slice4_models.py (18).
-- **Slice 5 — Scheduling:** the Part 3 seam + runner + `agent install/uninstall/status/log/schedule`.
+- **Slice 5 — Scheduling** ✅ **DONE** (on main; 669 tests green): the Part 3 seam, both layers, on Python.
+  **Layer 1** — osenv scheduler quartet `crontab_available`/`agent_task_spec` (pure)/`register_agent_task`/
+  `unregister_agent_task`/`agent_task_status` (schtasks on Windows, tagged idempotent crontab line on
+  POSIX), firing the new `scripts/bob_agent_runner.py`. **Layer 2** — `scripts/tools/schedule.py` (D6):
+  `cron_due` (the **exact Test-CronDue port**, D3 — UTC, 5 fields, `*`/comma/`a-b` ranges only, Sunday=0,
+  60s guard; parity cross-checked against the pwsh) + `data/schedules.json` CRUD (atomic, D4) +
+  `run_due_schedules` (the runner core: `bob_loop.run_agent` **in-process**, persist lastRun/lastRunResult
+  truncated to maxResultChars, log, notify). Verbs `agent schedule|log|install|uninstall|status` flipped to
+  python. Agent-tool surface (scope decision): schedule list/add/remove/enable/disable/run + task-status +
+  log are agent tools (mutating flagged); **install/uninstall are CLI/--run only** (they touch the OS
+  scheduler). **pwsh retired** (scope decision): the whole bob.ps1 `agent` case, `bob-agent.ps1`, the
+  `_platform.ps1` scheduler seams, `_models.ps1` `Test-CronDue`, and their `test-platform.ps1` tests are
+  deleted. tests/test_slice5_schedule.py (24, incl. cron parity + crontab-idempotency). Runner verified to
+  boot + short-circuit on `agent.enabled=false`.
 - **Slice 6 — Generators:** port `gen` (llama-swap/litellm/continue/webui). Largest; depends on C0c.
 - **Deferred to ONE-D:** `setup`(full)/`setup-voice`/`build`/`update`/`mlock`/`lock`/`fabric-setup`/`fetch`
   (toolchain/privilege/git-heavy; need build-time seams). Keep `runtime=pwsh` meanwhile.

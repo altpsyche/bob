@@ -507,3 +507,104 @@ def open_url(url: str) -> bool:
         return True
     except OSError:
         return False
+
+
+# --- agent scheduler quartet (ONE-C Slice 5) -----------------------------------------------------
+# The OS task that ticks every minute and fires the Python runner (scripts/bob_agent_runner.py); the
+# runner evaluates the per-schedule cron expressions itself (schedule.cron_due). Windows uses
+# schtasks.exe (the ScheduledTasks cmdlets aren't callable from Python); POSIX uses an idempotent
+# crontab edit tagged "# <task_name>". Ports the pwsh Get-AgentTaskSpec/Register-AgentTask/
+# Unregister-AgentTask/Get-AgentTaskStatus/Test-CrontabAvailable (retired from _platform.ps1).
+
+
+def crontab_available() -> bool:
+    """True when a `crontab` binary is on PATH. Minimal installs (e.g. CachyOS) ship none, so callers
+    guard: status/unregister no-op, register raises a clear error."""
+    return bool(shutil.which("crontab"))
+
+
+def agent_task_spec(python_exe: str, script_path: str, task_name: str = "BobAgent", os: str = None) -> dict:
+    """PURE. The every-minute registration spec for the OS (no side effects). Windows -> schtasks kind;
+    POSIX -> a cron line whose trailing '# <task_name>' tag is the removal/detection key."""
+    os = os or os_name()
+    if os == "windows":
+        return {
+            "kind": "schtasks", "name": task_name, "execute": python_exe,
+            "argument": f'"{script_path}"', "interval_minutes": 1, "time_limit_minutes": 5,
+            "command": f'"{python_exe}" "{script_path}"',
+        }
+    return {
+        "kind": "cron", "name": task_name,
+        "crontab": f'* * * * * "{python_exe}" "{script_path}" # {task_name}',
+    }
+
+
+def _crontab_lines() -> list:
+    """Current crontab entries as a list of lines ([] if none / no crontab installed)."""
+    proc = subprocess.run(["crontab", "-l"], capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        return []
+    return [ln for ln in proc.stdout.splitlines()]
+
+
+def _crontab_write(lines: list) -> None:
+    """Replace the crontab with `lines` (piped to `crontab -`)."""
+    payload = "\n".join(ln for ln in lines if ln != "")
+    subprocess.run(["crontab", "-"], input=(payload + "\n") if payload else "", text=True, check=False)
+
+
+def register_agent_task(python_exe: str, script_path: str, task_name: str = "BobAgent") -> None:
+    """Register the every-minute OS task firing `python_exe script_path`. Idempotent. Windows: schtasks
+    /Create /F (replaces). POSIX: rewrite the crontab minus any prior tagged line, plus the new one;
+    warn if no cron daemon is active (the entry is written but never fires)."""
+    spec = agent_task_spec(python_exe, script_path, task_name)
+    if spec["kind"] == "schtasks":  # pragma: no cover — exercised only on Windows
+        subprocess.run(["schtasks", "/Create", "/SC", "MINUTE", "/MO", "1", "/TN", task_name,
+                        "/TR", spec["command"], "/F"], check=True)
+        return
+    if not crontab_available():
+        raise RuntimeError(
+            "cron not found — the Linux agent scheduler needs a 'crontab' binary. Install it "
+            "(Arch: 'sudo pacman -S cronie' + 'sudo systemctl enable --now cronie'; Debian/Ubuntu: "
+            "'sudo apt-get install -y cron'), then re-run 'bob agent install'.")
+    kept = [ln for ln in _crontab_lines() if not ln.rstrip().endswith(f"# {task_name}")]
+    _crontab_write(kept + [spec["crontab"]])
+    if shutil.which("systemctl"):
+        active = [subprocess.run(["systemctl", "is-active", d], capture_output=True, text=True,
+                                 check=False).stdout.strip() for d in ("cronie", "cron", "crond")]
+        if "active" not in active:
+            print("cron entry written, but no cron daemon appears to be running — scheduled agents "
+                  "won't fire. Enable it, e.g.: sudo systemctl enable --now cronie (Arch/Fedora) or "
+                  "cron (Debian/Ubuntu).", file=sys.stderr)
+
+
+def unregister_agent_task(task_name: str = "BobAgent") -> None:
+    """Remove the OS task. Windows: schtasks /Delete /F. POSIX: rewrite the crontab minus the tagged
+    line (no-op if no crontab is installed)."""
+    if os_name() == "windows":  # pragma: no cover — exercised only on Windows
+        subprocess.run(["schtasks", "/Delete", "/TN", task_name, "/F"], check=False, capture_output=True)
+        return
+    if not crontab_available():
+        return
+    _crontab_write([ln for ln in _crontab_lines() if not ln.rstrip().endswith(f"# {task_name}")])
+
+
+def agent_task_status(task_name: str = "BobAgent") -> dict:
+    """{'registered': bool, 'state': str|None, 'next_run': str|None}. Windows queries schtasks; POSIX
+    greps the tagged crontab line."""
+    if os_name() == "windows":  # pragma: no cover — exercised only on Windows
+        proc = subprocess.run(["schtasks", "/Query", "/TN", task_name, "/FO", "LIST"],
+                              capture_output=True, text=True, check=False)
+        if proc.returncode != 0:
+            return {"registered": False, "state": None, "next_run": None}
+        state = next_run = None
+        for line in proc.stdout.splitlines():
+            if line.lower().startswith("status:"):
+                state = line.split(":", 1)[1].strip()
+            elif line.lower().startswith("next run time:"):
+                next_run = line.split(":", 1)[1].strip()
+        return {"registered": True, "state": state or "Ready", "next_run": next_run}
+    if not crontab_available():
+        return {"registered": False, "state": None, "next_run": None}
+    line = next((ln for ln in _crontab_lines() if ln.rstrip().endswith(f"# {task_name}")), None)
+    return {"registered": bool(line), "state": "Ready" if line else None, "next_run": None}

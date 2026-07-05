@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Bob agent loop — LLM reasons about what tools to call, executes them, loops until done.
 
-Called by bob.ps1 agent case and bob-agent.ps1 scheduler.
+Entered via `bob agent <goal>` (cli.py) and, in-process, by the scheduled-agent runner
+(scripts/tools/schedule.py:run_due_schedules, fired by scripts/bob_agent_runner.py).
 All config is read from data/config.json (written by Get-BobConfig in _models.ps1).
 """
 import base64

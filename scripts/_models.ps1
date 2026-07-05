@@ -414,34 +414,6 @@ function Test-PortInUse {
   } catch { return $false }
 }
 
-function Test-CronDue {
-  # Returns $true if a 5-field cron expression is due at $Now, given $LastRun.
-  # 60-second guard prevents double-firing when the task runs multiple times per minute.
-  param(
-    [Parameter(Mandatory)][string]$Cron,
-    [Parameter(Mandatory)][DateTime]$Now,
-    [DateTime]$LastRun = [DateTime]::MinValue
-  )
-  if ($LastRun -ne [DateTime]::MinValue -and ($Now - $LastRun).TotalSeconds -lt 60) {
-    return $false
-  }
-  $f = $Cron -split '\s+'
-  if ($f.Count -ne 5) { Write-Warning "Test-CronDue: expected 5 fields, got $($f.Count) in '$Cron'"; return $false }
-  function Test-CronField([string]$field, [int]$val) {
-    if ($field -eq '*') { return $true }
-    foreach ($part in $field -split ',') {
-      if ($part -match '^(\d+)-(\d+)$' -and $val -ge [int]$Matches[1] -and $val -le [int]$Matches[2]) { return $true }
-      elseif ($part -match '^\d+$' -and [int]$part -eq $val) { return $true }
-    }
-    return $false
-  }
-  return (Test-CronField $f[0] $Now.Minute)  -and
-         (Test-CronField $f[1] $Now.Hour)    -and
-         (Test-CronField $f[2] $Now.Day)     -and
-         (Test-CronField $f[3] $Now.Month)   -and
-         (Test-CronField $f[4] ([int]$Now.DayOfWeek))
-}
-
 function Set-ActiveProfile {
   # ONE-C C0c (D4) — write the writable override to data/active-profile.json instead of rewriting the
   # (now read-only) registry. Mirrors bob_models.set_active_profile on the Python side.
