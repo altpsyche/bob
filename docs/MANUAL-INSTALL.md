@@ -7,8 +7,8 @@ automated install, or want to understand what the scripts actually do.
 **If you just want to get running quickly, use `install_prereqs.bat` then `setup.bat` instead.**
 This document is for advanced users who prefer to drive each step manually.
 
-The bulk of this guide (steps 3–13) is Windows-specific commands. On **Linux** the same steps run
-under `pwsh` via the OS-aware seam ([PORTABILITY.md](PORTABILITY.md), Module NC) — see the Linux
+The bulk of this guide (steps 3 to 13) is Windows-specific commands. On **Linux** the same steps run
+under `pwsh` via the OS-aware seam ([PORTABILITY.md](PORTABILITY.md), Module NC). See the Linux
 section below.
 
 ---
@@ -47,9 +47,9 @@ What differs from Windows (all behind [`scripts/_platform.ps1`](../scripts/_plat
 | Secrets | env → `data/secrets.json` | env → `secret-tool` → `data/secrets.json` |
 | Notifications | WinRT toast | `notify-send` |
 
-CUDA toolkit install on Linux is distro-specific — `install_prereqs.sh` installs the toolchain and
+CUDA toolkit install on Linux is distro-specific: `install_prereqs.sh` installs the toolchain and
 flags CUDA as a manual step (or use `--cpu`). Verify a fresh install end-to-end with
-`pwsh scripts/smoke.ps1 -Up` (the shared cross-OS smoke, formerly `smoke-linux.ps1`) — the same gate the
+`pwsh scripts/smoke.ps1 -Up` (the shared cross-OS smoke, formerly `smoke-linux.ps1`), the same gate the
 [ND2 CI acceptance matrix](../.github/workflows/ci.yml) runs on Ubuntu and Windows on every change.
 
 **Reproducibility (Module ND).** Whichever path you take, the install is pinned by
@@ -166,13 +166,13 @@ python3.12 --version       # or: py -3.12 --version
 
 ### 1.9 CUDA Toolkit
 
-#### Blackwell (RTX 5080, 5090) — requires exactly CUDA 12.8
+#### Blackwell (RTX 5080, 5090): requires exactly CUDA 12.8
 
 ```powershell
 winget install Nvidia.CUDA --version 12.8 --accept-package-agreements --accept-source-agreements
 ```
 
-#### Ada Lovelace (RTX 4090, 4080, 4070 …) or Ampere (RTX 3090, 3080 …) — any CUDA 12.x
+#### Ada Lovelace (RTX 4090, 4080, 4070 …) or Ampere (RTX 3090, 3080 …): any CUDA 12.x
 
 ```powershell
 winget install Nvidia.CUDA --version 12.8 --accept-package-agreements --accept-source-agreements
@@ -187,9 +187,9 @@ Restart your terminal after CUDA installs to pick up the new PATH entries.
 
 ### 1.10 cmake 3.x
 
-**Do not use cmake 4.x** — it is explicitly excluded by llama.cpp's `CMakeLists.txt`.
+**Do not use cmake 4.x**: it is explicitly excluded by llama.cpp's `CMakeLists.txt`.
 
-Check first — VS2022 bundles cmake 3.31.x and that's sufficient:
+Check first (VS2022 bundles cmake 3.31.x and that's sufficient):
 ```powershell
 $vsI = & 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe' `
     -latest -products * -requires Microsoft.VisualStudio.Component.VC.CMake.Project `
@@ -202,7 +202,7 @@ If that's not present, install via winget:
 winget install Kitware.CMake --version 3.31.7 --accept-package-agreements --accept-source-agreements
 ```
 
-After install: `cmake --version` — confirm output starts with `cmake version 3.`.
+After install: `cmake --version`; confirm output starts with `cmake version 3.`.
 
 ### 1.11 Docker Desktop
 
@@ -216,9 +216,9 @@ winget install Docker.DockerDesktop --accept-package-agreements --accept-source-
 `docker-users` group and this only takes effect at login.
 
 After logging back in, launch Docker Desktop from the Start menu and wait for the whale
-icon in the system tray to go solid (60–90 seconds).
+icon in the system tray to go solid (60 to 90 seconds).
 
-**Disable the containerd snapshotter** before pulling any images — otherwise SearXNG fails:
+**Disable the containerd snapshotter** before pulling any images, otherwise SearXNG fails:
 Docker Desktop → Settings → General → uncheck **"Use containerd for pulling and storing images"**
 → Apply & Restart.
 
@@ -261,7 +261,7 @@ $env:PATH            = "$cudaRoot\bin;$env:PATH"
 
 Verify nvcc is reachable: `nvcc --version`.
 
-Identify your GPU's CUDA compute architecture — you need this for the cmake step:
+Identify your GPU's CUDA compute architecture; you need this for the cmake step:
 
 ```powershell
 nvidia-smi --query-gpu=compute_cap --format=csv,noheader
@@ -324,7 +324,7 @@ Expected output ends with `-- Build files have been written to: .../external/lla
 & $cmake --build build --config Release -j
 ```
 
-This takes 5–20 minutes depending on your machine. Expected output ends with
+This takes 5 to 20 minutes depending on your machine. Expected output ends with
 `Build succeeded.`
 
 ### 4.4 Copy binaries and CUDA DLLs
@@ -421,7 +421,7 @@ tools\venv-litellm\Scripts\python.exe -m pip install --upgrade pip
 tools\venv-litellm\Scripts\python.exe -m pip install -r tools\litellm-requirements.txt
 ```
 
-### 6.4 Eval venv (optional — benchmarking only)
+### 6.4 Eval venv (optional, benchmarking only)
 
 `venv-eval` (lm-eval + transformers) is **not** built by setup; it's provisioned on demand by the
 first `bob eval` run, or explicitly with `pwsh scripts/bootstrap-eval.ps1` (both go through the shared
@@ -433,15 +433,15 @@ tools\venv-eval\Scripts\python.exe -m pip install --upgrade pip
 tools\venv-eval\Scripts\python.exe -m pip install -r tools\eval-requirements.txt
 ```
 
-Each venv install takes 2–10 minutes. `venv-webui` (Open WebUI) is the largest (torch/transformers,
-multi-GB) and is **opt-in** — build it via `setup … -WithWebui` or `pwsh scripts/bootstrap.ps1 -WithWebui`.
+Each venv install takes 2 to 10 minutes. `venv-webui` (Open WebUI) is the largest (torch/transformers,
+multi-GB) and is **opt-in**: build it via `setup … -WithWebui` or `pwsh scripts/bootstrap.ps1 -WithWebui`.
 
 ---
 
 ## 7. Generate runtime configs
 
 Two config files are generated from `config/models.psd1`. Both are overwritten on every
-`bob serve` and `bob gen` — do not edit them by hand.
+`bob serve` and `bob gen`; do not edit them by hand.
 
 ```powershell
 .\scripts\gen-llama-swap.ps1   # writes config/llama-swap.yaml (local model routing)
@@ -472,7 +472,7 @@ Test-Path config\litellm.yaml      # True
 ```
 
 This downloads all GGUF files for the active profile (~38 GB for 16gb, ~21 GB for 12gb).
-Files go to `models/`. Downloads are resumable — if interrupted, re-run the same command.
+Files go to `models/`. Downloads are resumable: if interrupted, re-run the same command.
 
 Useful flags:
 
@@ -510,12 +510,12 @@ Link the repo's Continue config into your home directory so Continue finds it au
 # Create the directory if it doesn't exist
 New-Item -ItemType Directory -Force "$HOME\.continue" | Out-Null
 
-# Symlink (requires Developer Mode or admin — preferred)
+# Symlink (requires Developer Mode or admin, preferred)
 New-Item -ItemType SymbolicLink `
     -Path "$HOME\.continue\config.yaml" `
     -Target "C:\bob\config\continue\config.yaml"
 
-# Fallback — plain copy (re-run this whenever you edit the repo config)
+# Fallback, plain copy (re-run this whenever you edit the repo config)
 Copy-Item "C:\bob\config\continue\config.yaml" "$HOME\.continue\config.yaml" -Force
 ```
 
@@ -527,7 +527,7 @@ New-Item -ItemType SymbolicLink `
     -Path "$HOME\.aider.conf.yml" `
     -Target "C:\bob\config\aider\.aider.conf.yml"
 
-# Fallback — copy
+# Fallback, copy
 Copy-Item "C:\bob\config\aider\.aider.conf.yml" "$HOME\.aider.conf.yml" -Force
 ```
 
@@ -568,12 +568,12 @@ Replace `8081` if you changed `litellmPort` in `config/user.psd1`.
 ### 10.3 Link the patterns
 
 ```powershell
-# Symlink (preferred — patterns update automatically with submodule bumps)
+# Symlink (preferred, patterns update automatically with submodule bumps)
 New-Item -ItemType SymbolicLink `
     -Path "$HOME\.config\fabric\patterns" `
     -Target "C:\bob\external\fabric\data\patterns"
 
-# Fallback — copy
+# Fallback, copy
 Copy-Item "C:\bob\external\fabric\data\patterns" "$HOME\.config\fabric\patterns" -Recurse
 ```
 
@@ -590,7 +590,7 @@ Verify: `bin\fabric.exe -l` lists 200+ patterns.
 This creates a `.cmd` shim in your Scoop shims directory so `llm` is available from any
 terminal (cmd or PowerShell), and registers tab completions in your PowerShell profile.
 
-**Open a new terminal** after this step — the PATH change only takes effect in new sessions.
+**Open a new terminal** after this step: the PATH change only takes effect in new sessions.
 
 Verify: `bob help` prints the command list.
 
@@ -617,13 +617,13 @@ What it does, in order:
 2. Waits up to 90 seconds for the Docker daemon; launches Docker Desktop automatically if not running
 3. Reads port and timezone config from `config/models.psd1` (overridable via `config/user.psd1`)
 4. Writes `tools/compose/.env` with `REPO_PATH`, `LANGFUSE_PORT`, `SEARXNG_PORT`, `N8N_PORT`, `N8N_TIMEZONE`
-5. Creates `tools/langfuse-data/` and `tools/n8n-data/` (gitignored — persistent data lives here)
+5. Creates `tools/langfuse-data/` and `tools/n8n-data/` (gitignored; persistent data lives here)
 6. Writes `config/searxng/settings.yml` if it doesn't already exist
 7. Pulls all four images from Docker Hub (~3 GB total on first run):
-   - `postgres:17-alpine` (~80 MB) — database for Langfuse
-   - `langfuse/langfuse:2` (~200 MB) — observability UI
-   - `searxng/searxng:<date>` (~100 MB) — search engine
-   - `n8nio/n8n:latest` (~2.5 GB) — workflow automation
+   - `postgres:17-alpine` (~80 MB): database for Langfuse
+   - `langfuse/langfuse:2` (~200 MB): observability UI
+   - `searxng/searxng:<date>` (~100 MB): search engine
+   - `n8nio/n8n:latest` (~2.5 GB): workflow automation
 8. Starts all four containers with `docker compose up -d`
 
 ### 12.2 Expected output
@@ -665,7 +665,7 @@ bob services status
 
 ```powershell
 bob services start    # start all containers (Docker Desktop must be running)
-bob services stop     # stop containers — data is preserved
+bob services stop     # stop containers, data is preserved
 bob services status   # container names, state, uptime
 bob services logs     # tail all container logs (Ctrl+C to stop)
 ```
@@ -677,11 +677,11 @@ The full `setup-docker.ps1` only needs to run once. Use `bob services start` aft
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `exec /bin/sh: exec format error` on any container | Image layers corrupted by interrupted download | `docker system prune -af` then re-run `.\scripts\setup-docker.ps1` |
-| `langfuse-postgres unhealthy` / `dependency failed to start` | Postgres failed — almost always the corrupted-layer issue | Same: `docker system prune -af`, re-run |
+| `langfuse-postgres unhealthy` / `dependency failed to start` | Postgres failed, almost always the corrupted-layer issue | Same: `docker system prune -af`, re-run |
 | `exec format error` only on SearXNG | Containerd snapshotter enabled | Docker Desktop → Settings → General → uncheck containerd → Apply & Restart → re-run |
 | `docker info` returns 500 Internal Server Error | WSL2 backend crashed or still initializing | Wait 60 s; or restart Docker Desktop from system tray |
 | `docker: command not found` | PATH not refreshed after install | Open new terminal, or add `C:\Program Files\Docker\Docker\resources\bin` to PATH |
-| Port conflict — address already in use | Another process on 3001, 8888, or 5678 | Set `langfusePort`, `searxngPort`, or `n8nPort` in `config/user.psd1`, re-run `.\scripts\setup-docker.ps1` |
+| Port conflict, address already in use | Another process on 3001, 8888, or 5678 | Set `langfusePort`, `searxngPort`, or `n8nPort` in `config/user.psd1`, re-run `.\scripts\setup-docker.ps1` |
 | Daemon timeout (90 s) | Docker Desktop very slow to start | Launch Docker Desktop manually from Start menu, wait for solid whale icon, re-run |
 
 ---

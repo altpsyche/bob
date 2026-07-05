@@ -14,11 +14,11 @@ The server is pure Python (FastAPI + uvicorn), so it runs unchanged on Windows a
 ## Security
 
 - **Bind:** loopback (`127.0.0.1`) by default. Set `agent.serveHost = '0.0.0.0'` in `config/bob.psd1`
-  to expose on the LAN — and **only** with `agent.allowPrivateFetch = $false` (the default), so a
+  to expose on the LAN, and **only** with `agent.allowPrivateFetch = $false` (the default), so a
   remote caller can't use `web_fetch` for SSRF against your private network.
 - **Auth:** every endpoint except `/health` requires `Authorization: Bearer <token>`, where `<token>`
   is the litellm key (`litellmKey`, default `sk-local`) or an `agent.apiTokens` entry.
-- **Identity + ownership (N1):** each token maps to an owner id — `agent.apiTokens` entries are
+- **Identity + ownership (N1):** each token maps to an owner id: `agent.apiTokens` entries are
   `@{ token = 'sk-alice-…'; owner = 'alice' }` records (bare strings still work, mapping the token
   to itself), and the litellm key maps to `agent.defaultOwner` (default `local`). Sessions are
   owner-scoped: a token can only read/delete/continue sessions its owner created; any other
@@ -27,13 +27,13 @@ The server is pure Python (FastAPI + uvicorn), so it runs unchanged on Windows a
 
 ## Config
 
-All under the `agent` block of `config/bob.psd1` — see [TUNING.md](TUNING.md#agent-behavior-configbobpsd1):
+All under the `agent` block of `config/bob.psd1` (see [TUNING.md](TUNING.md#agent-behavior-configbobpsd1)):
 `serveHost`, `agentPort`, `apiTokens`, `defaultOwner`, `sessionDbPath`, `maxSessionTokens`,
 `gitAllowedRoots`, `logMaxBytes`/`logBackupCount`, `mcpEnabled`.
 
 ## Endpoints
 
-### `GET /health` — no auth
+### `GET /health` (no auth)
 ```json
 { "status": "ok", "tools_loaded": 10, "tools_failed": 0 }
 ```
@@ -45,19 +45,19 @@ Request:
 ```json
 { "goal": "summarise README.md", "agency": "silent", "role": null, "session_id": null }
 ```
-- `agency`: `silent` | `show` | `confirm` (default `silent`; `confirm` is unusable server-side — no stdin).
+- `agency`: `silent` | `show` | `confirm` (default `silent`; `confirm` is unusable server-side, no stdin).
 - `role`: model role override (default `routing.agentRole`).
-- `session_id`: optional — continue a session created via `POST /v1/sessions`. Prior turns are seeded
+- `session_id`: optional; continue a session created via `POST /v1/sessions`. Prior turns are seeded
   into the loop; the new turn (goal + result) is appended and its token estimate charged to the budget.
 
 Response `200`:
 ```json
 { "result": "…", "session_id": "…", "error": null }
 ```
-Errors: `401` bad/missing bearer · `402` session over budget · `404` unknown `session_id` ·
-`422` agent hit `maxSteps` with no final answer · `503` not initialized / config missing · `500` other.
+Errors: `401` bad/missing bearer; `402` session over budget; `404` unknown `session_id`;
+`422` agent hit `maxSteps` with no final answer; `503` not initialized / config missing; `500` other.
 
-### `POST /v1/agent/completions/stream` — Server-Sent Events (M15)
+### `POST /v1/agent/completions/stream`: Server-Sent Events (M15)
 Same request body. Response is `text/event-stream`; each line is `data: {json}`. Event types:
 
 | type | fields | when |
@@ -65,8 +65,8 @@ Same request body. Response is `text/event-stream`; each line is `data: {json}`.
 | `token` | `text` | final-answer deltas as they generate (tool-call markup is suppressed) |
 | `tool_call` | `name`, `arguments` | the model requested a tool |
 | `tool_result` | `name`, `result` | a tool returned |
-| `final` | `result`, `exit_requested`, `reason`, `session_id?` | terminal — `reason` ∈ `answer`/`max_steps`/`interrupted`/`aborted` |
-| `error` | `message` | terminal — pre-flight or LLM failure |
+| `final` | `result`, `exit_requested`, `reason`, `session_id?` | terminal: `reason` ∈ `answer`/`max_steps`/`interrupted`/`aborted` |
+| `error` | `message` | terminal: pre-flight or LLM failure |
 
 A `final` or `error` is always the last event. The session turn is recorded when the stream ends.
 

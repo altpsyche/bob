@@ -1,14 +1,14 @@
 # Road to Bob
 
-A strategic roadmap for evolving `bob` into **Bob** — a personal, always-local AI assistant product.
+A roadmap for evolving `bob` into **Bob**: a personal, always-local AI assistant product.
 
 ---
 
 ## What Bob Is
 
-**Bob is your private AI brain on your own hardware — Windows or Linux.**
+**Bob is your private AI brain on your own hardware, Windows or Linux.**
 
-Most AI assistants live in the cloud and know nothing about you. Bob runs entirely on your GPU, costs nothing per query, and builds a growing understanding of how you work — your projects, preferences, and context that persists across sessions.
+Most AI assistants live in the cloud and know nothing about you. Bob runs entirely on your GPU, costs nothing per query, and builds a growing understanding of how you work: your projects, preferences, and context that persists across sessions.
 
 Bob is not a chatbot you visit. Bob is infrastructure you run. When you open a terminal, Bob is already on. When you ask a question, it answers in under a second. When you forget what you decided last Tuesday, Bob remembers. When you need the strongest answer, Bob routes to cloud and tells you. When you want to hear it instead of read it, Bob speaks.
 
@@ -43,7 +43,7 @@ All clients → LiteLLM :8081 (retry, budget cap, Langfuse tracing)
 | `coder` | Qwen2.5-Coder-14B Q4 (local) | Function calling, speculative decode |
 | `chat` | Qwen3-14B Q4 (local) | General conversation |
 | `fim` | Qwen2.5-Coder-3B (local, pinned) | Autocomplete, never unloads |
-| `embed` | BGE-M3 (local, pinned, 600 MB VRAM) | Embeddings — always live |
+| `embed` | BGE-M3 (local, pinned, 600 MB VRAM) | Embeddings, always live |
 | `vision` | Qwen2-VL-7B Q4 + mmproj (local, on-demand) | Image description and visual Q&A |
 | `chat-pro` | DeepSeek API | Cloud, $0 platform fee |
 | `coder-pro` | DeepSeek API | Cloud |
@@ -58,21 +58,21 @@ All clients → LiteLLM :8081 (retry, budget cap, Langfuse tracing)
 → `gen-llama-swap.ps1` → `config/llama-swap.yaml`
 → `gen-litellm.ps1` → `config/litellm.yaml`
 
-**All API calls must go through LiteLLM :8081** (not directly to :8080) — ensures retry logic, budget tracking, and Langfuse tracing apply to everything including Bob's own requests.
+**All API calls must go through LiteLLM :8081** (not directly to :8080): ensures retry logic, budget tracking, and Langfuse tracing apply to everything including Bob's own requests.
 
 ---
 
-## Phase 0: Pure Rebrand ✓ DONE
+## Phase 0: Pure Rebrand (Done)
 
 **Effort:** ~0.5 days  
-**Risk:** Low — pure text changes, zero functionality change  
+**Risk:** Low: pure text changes, zero functionality change  
 **Goal:** The product is named Bob. Every user-facing string reflects it.
 
 ### Files to create
 
 | File | Action |
 |------|--------|
-| `scripts/bob.ps1` | Copy of `llm.ps1` with all `llm <cmd>` → `bob <cmd>` in user-facing strings *(historical: `llm.ps1` was later retired in Module M10 — `bob` is now the single CLI)* |
+| `scripts/bob.ps1` | Copy of `llm.ps1` with all `llm <cmd>` → `bob <cmd>` in user-facing strings *(historical: `llm.ps1` was later retired in Module M10; `bob` is now the single CLI)* |
 | `config/bob.psd1` | Stub file reserving schema (committed, not gitignored) |
 
 ### Files to edit
@@ -91,7 +91,7 @@ All clients → LiteLLM :8081 (retry, budget cap, Langfuse tracing)
 | All `docs/*.md` | `llm ` → `bob ` (space-suffixed to avoid hitting `llama`, `litellm`) |
 | `README.md` | Title + all command examples |
 
-> **⚠️ Docker volume migration:** Changing `N8N_ENCRYPTION_KEY` and Langfuse secrets breaks existing container data. Before running `bob services start` after the rename: stop all services, delete `tools/n8n-data/` and `tools/langfuse-data/`, then restart.
+> **Note, Docker volume migration:** Changing `N8N_ENCRYPTION_KEY` and Langfuse secrets breaks existing container data. Before running `bob services start` after the rename: stop all services, delete `tools/n8n-data/` and `tools/langfuse-data/`, then restart.
 
 ### Verification checklist
 
@@ -99,33 +99,33 @@ All clients → LiteLLM :8081 (retry, budget cap, Langfuse tracing)
 bob help                     # bob-branded help text
 bob status                   # running models shown
 bob chat chat "hello"        # works (old syntax)
-llm help                     # fails — shim removed, command not found
+llm help                     # fails: shim removed, command not found
 ```
 
 ---
 
-## Phase 1: Bob Gets Identity ✓ DONE
+## Phase 1: Bob Gets Identity (Done)
 
-**Effort:** 3–5 days  
-**Risk:** Low–Medium  
+**Effort:** 3 to 5 days  
+**Risk:** Low to Medium  
 **Goal:** `bob chat` feels like talking to an assistant, not a server. Persona is configured. Memory is available.
 
-> **⚠️ Superseded by Modules MEM / MEM2 — this Phase 1 memory spec is historical.** The shipped
+> **Note: Superseded by Modules MEM / MEM2. This Phase 1 memory spec is historical.** The shipped
 > memory engine is far beyond this: a typed/owner/project-scoped SQLite store (schema v3), blended
 > recall ranking, importance/salience, pinning, conflict-aware consolidation (supersede, not
 > accumulate), provenance + forget-by-session, `BOB.md` project files, persisted `bob` shell
 > sessions, and auto-injection at session start (the "explicit-only" note below is no longer true).
-> The schema, CLI list, and config block below are **out of date** — see **[MEMORY.md](MEMORY.md)**
+> The schema, CLI list, and config block below are **out of date**: see **[MEMORY.md](MEMORY.md)**
 > for what actually ships.
 
 **Implementation notes (deviations from spec):**
-- Memory injection is **explicit-only** (`!recall <query>` in REPL) — no auto-injection per turn. Prevents context window bloat.
+- Memory injection is **explicit-only** (`!recall <query>` in REPL): no auto-injection per turn. Prevents context window bloat.
 - `autoSummarize` implemented: REPL `finally` block calls `bob_memory.py summarize-session` when `memory.enabled` and `memory.autoSummarize = $true`.
-- `autoFallback` config exists (`$false` default) but fallback logic not implemented — deferred to Phase 1.x.
+- `autoFallback` config exists (`$false` default) but fallback logic not implemented; deferred to Phase 1.x.
 
-### 1.1 — Persona config (`config/bob.psd1`)
+### 1.1 Persona config (`config/bob.psd1`)
 
-New file, **committed** (persona is part of the product). Users who want to override it use `config/user.psd1` — consistent with the existing `models.psd1` + `user.psd1` pattern.
+New file, **committed** (persona is part of the product). Users who want to override it use `config/user.psd1`, consistent with the existing `models.psd1` + `user.psd1` pattern.
 
 Load via a new `Get-BobConfig` function added to `scripts/_models.ps1`.
 
@@ -150,7 +150,7 @@ You are Bob, a personal AI assistant running privately on this machine. You are 
   memory = @{
     enabled          = $false      # flip to $true to activate
     dbPath           = 'data\bob.db'
-    embedModel       = 'embed'     # BGE-M3 — already pinned at :8081
+    embedModel       = 'embed'     # BGE-M3, already pinned at :8081
     recallK          = 5
     maxSummaryTokens = 256
     autoSummarize    = $true       # summarize session when REPL exits
@@ -161,7 +161,7 @@ You are Bob, a personal AI assistant running privately on this machine. You are 
 }
 ```
 
-### 1.2 — `bob chat` interactive REPL + smart routing
+### 1.2 `bob chat` interactive REPL + smart routing
 
 **Model selection logic:**
 
@@ -186,7 +186,7 @@ bob think --pro "..."         → 'planner-pro'
 
 **REPL mechanics** (in the `'chat'` case of `bob.ps1`):
 1. Parse flags to determine target role name
-2. Load `Get-BobConfig` — build initial `$messages` with system prompt
+2. Load `Get-BobConfig`, build initial `$messages` with system prompt
 3. If `memory.enabled`: call `bob-memory recall <query>` → prepend `[Memory: ...]` system chunk
 4. Enter `while` loop: read line → POST to `http://localhost:8081/v1/chat/completions` (streaming) → append to `$messages`
 5. Ctrl+C / `exit` → if `autoSummarize`, call `bob-memory summarize-session`
@@ -196,18 +196,18 @@ bob think --pro "..."         → 'planner-pro'
 [Bob] Cloud unreachable, falling back to local model
 ```
 
-### 1.3 — Memory: SQLite + BGE-M3
+### 1.3 Memory: SQLite + BGE-M3
 
 BGE-M3 is already pinned (0 extra VRAM). It's at `:8081/v1/embeddings`. Memory costs 0 VRAM + 1 HTTP call per recall.
 
 **New: `scripts/bob_memory.py`** (~100 lines, thin):
-- `store "text" [--source user|session]` — embed → cosine insert into SQLite
-- `recall "query" [--top 5]` — embed → top-K by cosine similarity → JSON output
-- `summarize-session --id N` — POST to `:8081/v1/chat/completions` (chat role) → store summary
+- `store "text" [--source user|session]`: embed → cosine insert into SQLite
+- `recall "query" [--top 5]`: embed → top-K by cosine similarity → JSON output
+- `summarize-session --id N`: POST to `:8081/v1/chat/completions` (chat role) → store summary
 
 **Python env:** Run in `tools/venv-litellm` (already has `requests`/`httpx`). No new venv.
 
-**Wrapper: `scripts/bob-memory.ps1`** — activates `venv-litellm`, calls `bob_memory.py`.
+**Wrapper: `scripts/bob-memory.ps1`**: activates `venv-litellm`, calls `bob_memory.py`.
 
 **SQLite schema** (`data/bob.db`, add `data/` to `.gitignore`):
 ```sql
@@ -216,9 +216,9 @@ sessions(id, started_at TEXT, ended_at TEXT, summary TEXT, topics TEXT)
 profile(key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)
 ```
 
-> **Memory is always local** — even when `bob chat --pro` routes responses to DeepSeek, memory recall still uses BGE-M3 at `:8081`. Private by design.
+> **Memory is always local**: even when `bob chat --pro` routes responses to DeepSeek, memory recall still uses BGE-M3 at `:8081`. Private by design.
 
-### 1.4 — Onboarding (extend `scripts/setup.ps1`)
+### 1.4 Onboarding (extend `scripts/setup.ps1`)
 
 Run once if `data/bob.db` doesn't exist yet:
 
@@ -237,7 +237,7 @@ Bob: Ready.
 
 Stores profile in SQLite. Writes key to `config/user.psd1` (gitignored). Runs `bob gen` to activate pro peers.
 
-### 1.5 — New CLI subcommands
+### 1.5 New CLI subcommands
 
 ```
 bob remember "fact"       # manually store to memory
@@ -251,13 +251,13 @@ bob budget                # show cloud spend vs cap (reads litellm.yaml + Langfu
 
 ---
 
-## Phase 2: Bob Gets Senses ✓ DONE
+## Phase 2: Bob Gets Senses (Done)
 
-**Effort:** 4–6 days  
+**Effort:** 4 to 6 days  
 **Risk:** Medium (audio capture is fiddly on Windows)  
 **Goal:** Voice in + voice out + vision. All local. Also wired voice/vision into every client in the stack (Phase 2.5).
 
-### 2.1 — Voice input: whisper.cpp STT ✓
+### 2.1 Voice input: whisper.cpp STT (done)
 
 `whisper-server.exe` on `:8082`. Model: `ggml-small.en.bin` (~74 MB; `sttModel = 'small'` in `bob.psd1`).
 
@@ -267,18 +267,18 @@ bob transcribe <file>         # transcribe audio file to stdout
 bob whisper start|stop|status # server management
 ```
 
-### 2.2 — TTS: piper-tts + HTTP server ✓
+### 2.2 TTS: piper-tts + HTTP server (done)
 
 `bin/piper.exe` + `bin/voices/en_GB-alan-medium.onnx`. ~200 ms latency. Piper reads text from stdin.
 
-New: `scripts/piper_server.py` — FastAPI server wrapping piper, exposes OpenAI-compatible `POST /v1/audio/speech` on `:8083`. Open WebUI wires to this for browser TTS.
+New: `scripts/piper_server.py`, a FastAPI server wrapping piper, exposes OpenAI-compatible `POST /v1/audio/speech` on `:8083`. Open WebUI wires to this for browser TTS.
 
 ```
 bob speak "text"              # synthesize + play (piper TTS direct)
 bob piper start|stop|status  # HTTP server management (:8083, for WebUI)
 ```
 
-### 2.3 — Continuous voice loop ✓
+### 2.3 Continuous voice loop (done)
 
 Voice loop calls `Invoke-BobStream` directly (not a subprocess) with the voice-specific system prompt, then strips markdown via `Format-ForSpeech` before sending to piper. Keeps replies short (`voice.maxTokens = 512`).
 
@@ -289,7 +289,7 @@ bob voice --pro               # same, routes to cloud (DeepSeek API)
 
 **Voice loop latency (16 GB RTX):** ~300 ms STT + ~1 s TTFT + ~200 ms TTS = conversational.
 
-### 2.4 — Vision: Qwen2-VL-7B ✓
+### 2.4 Vision: Qwen2-VL-7B (done)
 
 `llama-server.exe --mmproj qwen2-vl-mmproj.gguf` exposes OpenAI-compatible image input. Model loads on demand, TTL 30 s.
 
@@ -300,16 +300,16 @@ bob screenshot [prompt]       # capture active display → describe
 bob screenshot --pro          # cloud vision for complex screenshots
 ```
 
-`vision-pro` routes to DeepSeek V4 (deepseek-chat supports vision input natively). Uses existing `DEEPSEEK_API_KEY` — no new credentials.
+`vision-pro` routes to DeepSeek V4 (deepseek-chat supports vision input natively). Uses existing `DEEPSEEK_API_KEY`, no new credentials.
 
-### 2.5 — Client stack wiring ✓
+### 2.5 Client stack wiring (done)
 
-- **Continue.dev** — `vision` model entry added to `config/continue/config.yaml`
-- **LiteLLM** — `vision` entry has `supports_vision: true`; `vision-pro` entry routes to DeepSeek
-- **n8n** — `vision-describe.json` and `voice-transcribe.json` workflows added to `tools/n8n-workflows/`
-- **Open WebUI** — wire STT to whisper `:8082` and TTS to piper `:8083` in Admin Panel → Audio
+- **Continue.dev**: `vision` model entry added to `config/continue/config.yaml`
+- **LiteLLM**: `vision` entry has `supports_vision: true`; `vision-pro` entry routes to DeepSeek
+- **n8n**: `vision-describe.json` and `voice-transcribe.json` workflows added to `tools/n8n-workflows/`
+- **Open WebUI**: wire STT to whisper `:8082` and TTS to piper `:8083` in Admin Panel → Audio
 
-### 2.6 — `config/bob.psd1` Phase 2 additions ✓
+### 2.6 `config/bob.psd1` Phase 2 additions (done)
 
 ```powershell
 voice = @{
@@ -337,15 +337,15 @@ vision = @{
 
 ---
 
-## Phase 3: Bob Gets Agency ✓ DONE
+## Phase 3: Bob Gets Agency (Done)
 
-**Effort:** 1–2 weeks (delivered incrementally)  
+**Effort:** 1 to 2 weeks (delivered incrementally)  
 **Risk:** Medium  
 **Goal:** Bob does things without being asked.
 
-### 3.1 — Scheduled tasks ✓
+### 3.1 Scheduled tasks (done)
 
-Background process: `scripts/bob-agent.ps1` registered as a recurring task `BobAgent` — a Windows Scheduled Task, or a cron entry on Linux (NC4, via `Register-AgentTask`).  
+Background process: `scripts/bob-agent.ps1` registered as a recurring task `BobAgent`, a Windows Scheduled Task, or a cron entry on Linux (NC4, via `Register-AgentTask`).  
 Config: `data/schedules.json`. Fires every minute; checks which cron entries are due (5-field cron, 60 s double-fire guard).
 
 ```powershell
@@ -357,14 +357,14 @@ bob agent install                  # register the recurring BobAgent task (Windo
 bob agent status                   # show task state
 ```
 
-Results stored in `data/schedules.json` under `lastRunResult`. `notify = true` on an entry fires a desktop notification (a Windows toast, or `notify-send` on Linux — `Send-Notification` in the NC1 seam). Scheduler always runs with `agency = 'silent'`.
+Results stored in `data/schedules.json` under `lastRunResult`. `notify = true` on an entry fires a desktop notification (a Windows toast, or `notify-send` on Linux; `Send-Notification` in the NC1 seam). Scheduler always runs with `agency = 'silent'`.
 
-### 3.2 — Toast notifications ✓
+### 3.2 Toast notifications (done)
 
-`scripts/bob-toast.ps1` — PowerShell `Windows.UI.Notifications` API.  
+`scripts/bob-toast.ps1`: PowerShell `Windows.UI.Notifications` API.  
 Used by: scheduled task results (`notify = true`), long-running agent goals. `toastAppId` in `config/bob.psd1` controls the sender identity.
 
-### 3.3 — Plugin system ✓
+### 3.3 Plugin system (done)
 
 Plugin = `plugins/<name>/` with `invoke.ps1` or `invoke.py` (plus optional `description.txt`).
 
@@ -375,33 +375,33 @@ if (Test-Path "$pluginDir\invoke.ps1") { & "$pluginDir\invoke.ps1" @rest }
 elseif (Test-Path "$pluginDir\invoke.py") { & $venvPy "$pluginDir\invoke.py" @rest }
 ```
 
-Any language participates — a plugin just needs to accept args and write to stdout. Python plugins run in `venv-litellm` (has `openai`, `requests`). PowerShell plugins run directly.
+Any language participates: a plugin just needs to accept args and write to stdout. Python plugins run in `venv-litellm` (has `openai`, `requests`). PowerShell plugins run directly.
 
 ```powershell
 bob plugins list    # show all installed plugins with type and description
 ```
 
 **Built-in Phase 3 plugins:**
-- `summarise` — `bob summarise <file>` or `cat file | bob summarise`: feeds text to local LLM, streams a summary. `--length short|medium|long`
-- `draft` — `bob draft "<prompt>" --type email|pr|slack|doc`: drafts text from a one-liner using the planner/chat role; output is clean, ready to paste
-- `search` — `bob search "<query>" [--path dir]`: ripgrep files then LLM synthesises the results; `--raw` skips LLM
-- `play` — `bob play <search query>`: opens Spotify URI if installed, falls back to YouTube Music in browser
+- `summarise` (`bob summarise <file>` or `cat file | bob summarise`): feeds text to local LLM, streams a summary. `--length short|medium|long`
+- `draft` (`bob draft "<prompt>" --type email|pr|slack|doc`): drafts text from a one-liner using the planner/chat role; output is clean, ready to paste
+- `search` (`bob search "<query>" [--path dir]`): ripgrep files then LLM synthesises the results; `--raw` skips LLM
+- `play` (`bob play <search query>`): opens Spotify URI if installed, falls back to YouTube Music in browser
 
 ---
 
-## Phase 4: Cohesive Plugin–Tool Architecture ✓ DONE
+## Phase 4: Cohesive Plugin and Tool Architecture (Done)
 
 **Effort:** ~0.5 days
-**Risk:** Low — additive only, no existing behaviour changed
+**Risk:** Low: additive only, no existing behaviour changed
 **Goal:** Every plugin callable by both humans (`bob <name>`) and the agent (`bob agent "..."`). No capability duplication between layers.
 
 ### The problem
 
-Phases 0–3 created two parallel capability systems that didn't talk to each other:
-- **Agent tools** (`scripts/tools/*.py`) — the LLM calls these autonomously
-- **Plugins** (`plugins/<name>/invoke.py`) — humans call from the terminal
+Phases 0 to 3 created two parallel capability systems that didn't talk to each other:
+- **Agent tools** (`scripts/tools/*.py`): the LLM calls these autonomously
+- **Plugins** (`plugins/<name>/invoke.py`): humans call from the terminal
 
-`tool_loader.py` already scanned `plugins/<name>/tool.py` for agent tools — but nothing used it. Result: `summarise`, `draft`, `search`, and `play` were invisible to the agent. `music.py` was placed in `scripts/tools/` (wrong layer) because no rule existed to guide placement.
+`tool_loader.py` already scanned `plugins/<name>/tool.py` for agent tools, but nothing used it. Result: `summarise`, `draft`, `search`, and `play` were invisible to the agent. `music.py` was placed in `scripts/tools/` (wrong layer) because no rule existed to guide placement.
 
 ### Three-layer model
 
@@ -413,23 +413,23 @@ Layer 3  plugins/<name>/invoke.py       human-facing CLI wrapper
 
 **Core logic rule:** Logic lives in `invoke.py` as an importable function. `tool.py` imports and calls it. The CLI calls it too. One function, two callers, no duplication.
 
-**Registration rule:** *(superseded by Module M1 — see [plugins/AUTHORING.md](../plugins/AUTHORING.md))* Tools now **auto-discover**; there is no `agent.tools` allowlist. Creating the file is the only step; exclude one via the `agent.disabledTools` denylist. The historical text below described the original allowlist design.
+**Registration rule:** *(superseded by Module M1, see [plugins/AUTHORING.md](../plugins/AUTHORING.md))* Tools now **auto-discover**; there is no `agent.tools` allowlist. Creating the file is the only step; exclude one via the `agent.disabledTools` denylist. The historical text below described the original allowlist design.
 
 ### What changed
 
 | File | Action |
 |------|--------|
-| `scripts/tools/music.py` | Deleted — wrong layer |
-| `plugins/play/tool.py` | Created — music moved to correct layer |
+| `scripts/tools/music.py` | Deleted: wrong layer |
+| `plugins/play/tool.py` | Created: music moved to correct layer |
 | `plugins/summarise/invoke.py` | `summarise()` core function extracted |
-| `plugins/summarise/tool.py` | Created — exposes `summarise_text` to agent |
+| `plugins/summarise/tool.py` | Created: exposes `summarise_text` to agent |
 | `plugins/draft/invoke.py` | `draft()` core function extracted |
-| `plugins/draft/tool.py` | Created — exposes `draft_text` to agent |
+| `plugins/draft/tool.py` | Created: exposes `draft_text` to agent |
 | `plugins/search/invoke.py` | `synthesise()` core function extracted |
-| `plugins/search/tool.py` | Created — exposes `search_code` to agent |
+| `plugins/search/tool.py` | Created: exposes `search_code` to agent |
 | `config/bob.psd1` | `agent.tools`: `'music'` → `'play', 'summarise', 'draft', 'search'` |
-| `plugins/AUTHORING.md` | Created — authoritative human guide for adding plugins and tools |
-| `.claude/CLAUDE.md` | Created — Claude Code rules for placement and authoring |
+| `plugins/AUTHORING.md` | Created: authoritative human guide for adding plugins and tools |
+| `.claude/CLAUDE.md` | Created: Claude Code rules for placement and authoring |
 
 ### Agent tools after Phase 4
 
@@ -438,13 +438,13 @@ memory  web  git  file  shell  fabric   ← Layer 1 (infrastructure)
 play    summarise  draft  search        ← Layer 2 (plugin tools)
 ```
 
-The agent can now: summarise a file it just read, draft a message as part of a task, search the codebase while reasoning, and play music — all without leaving the agent loop.
+The agent can now: summarise a file it just read, draft a message as part of a task, search the codebase while reasoning, and play music, all without leaving the agent loop.
 
 ---
 
 ## Known Gaps and Future Work
 
-These are real integration limits discovered after Phase 4. Not bugs in the current features — things that don't yet exist.
+These are real integration limits discovered after Phase 4. Not bugs in the current features: things that don't yet exist.
 
 ### Voice + Agent are separate loops
 
@@ -460,7 +460,7 @@ Whisper (:8082) and piper (:8083) are running after `bob up`, but connecting the
 
 ### n8n → agent path is stubbed
 
-`bob_agent_server.py` exposes the agent as a REST API on :8084. The README documents it. No n8n workflow actually calls it — the three existing workflows call LiteLLM and whisper directly. The bidirectional n8n → agent integration is available but unused.
+`bob_agent_server.py` exposes the agent as a REST API on :8084. The README documents it. No n8n workflow actually calls it: the three existing workflows call LiteLLM and whisper directly. The bidirectional n8n → agent integration is available but unused.
 
 **Future:** An n8n workflow that accepts a goal via webhook and calls `POST http://host.docker.internal:8084/v1/agent/completions`. Enables full agentic automation from n8n triggers (schedule, webhook, Discord message, etc).
 
@@ -483,13 +483,13 @@ Whisper (:8082) and piper (:8083) are running after `bob up`, but connecting the
 
 | Phase | What | Effort | Risk | Status |
 |-------|------|--------|------|--------|
-| 0 | Rebrand: `llm`→`bob` everywhere | 0.5 days | Low | ✓ Done |
-| 1 | Identity: persona, REPL, smart routing, memory | 3–5 days | Low–Medium | ✓ Done |
-| 2 | Senses: whisper STT, piper TTS, vision + full stack wiring | 4–6 days | Medium | ✓ Done |
-| 3 | Agency: agent loop, Hermes 3 tool use, schedules, notifications, plugins | 1–2 weeks | Medium | ✓ Done |
-| 4 | Cohesion: plugin–tool bridge, all plugins available to agent | 0.5 days | Low | ✓ Done |
+| 0 | Rebrand: `llm`→`bob` everywhere | 0.5 days | Low | Done |
+| 1 | Identity: persona, REPL, smart routing, memory | 3 to 5 days | Low to Medium | Done |
+| 2 | Senses: whisper STT, piper TTS, vision + full stack wiring | 4 to 6 days | Medium | Done |
+| 3 | Agency: agent loop, Hermes 3 tool use, schedules, notifications, plugins | 1 to 2 weeks | Medium | Done |
+| 4 | Cohesion: plugin and tool bridge, all plugins available to agent | 0.5 days | Low | Done |
 
-Each phase is fully backward-compatible with the previous. The inference stack (llama-swap, LiteLLM, Open WebUI, Continue.dev, aider) is never modified — all integrations remain on their existing API endpoints.
+Each phase is fully backward-compatible with the previous. The inference stack (llama-swap, LiteLLM, Open WebUI, Continue.dev, aider) is never modified; all integrations remain on their existing API endpoints.
 
 ---
 
@@ -497,31 +497,31 @@ Each phase is fully backward-compatible with the previous. The inference stack (
 
 | File | Phase | Action |
 |------|-------|--------|
-| `scripts/bob.ps1` | 0 | New — copy of `llm.ps1` with renamed strings *(`llm.ps1` retired in M10)* |
-| `scripts/install-cli.ps1` | 0 | Edit — emit `bob.cmd` (later: removes the retired `llm.cmd` shim) |
-| `scripts/_models.ps1` | 0+1 | Edit — rename env var; add `Get-BobConfig` |
-| `config/bob.psd1` | 0 stub → 1 full | New — persona, routing, memory, voice config |
-| `tools/compose/docker-compose.yml` | 0 | Edit — rename `bob` literals |
-| `scripts/bob.ps1` (chat case) | 1 | Edit — REPL + flag routing + memory injection |
-| `scripts/bob_memory.py` | 1 | New — embed/store/recall/summarize |
-| `scripts/bob-memory.ps1` | 1 | New — PowerShell wrapper (runs in `venv-litellm`) |
-| `scripts/setup.ps1` | 1 | Edit — add onboarding flow |
-| `scripts/build-whisper.ps1` | 2 | New — build whisper.cpp |
-| `scripts/start-whisper.ps1` | 2 | New — start whisper-server on :8082 |
-| `scripts/setup-voice.ps1` | 2 | New — download piper + voice model |
-| `scripts/bob_core.py` | 3 | New — shared Python core: config, LLM client, memory access |
-| `scripts/bob_loop.py` | 3 | New — agent loop (Hermes 3 XML tool-call format + OpenAI fallback) |
-| `scripts/bob_clip.py` | 3 | New — fast web clip: fetch → summarise → store |
-| `scripts/bob-agent.ps1` | 3 | New — background scheduler (BobAgent Windows Task) |
-| `scripts/bob-toast.ps1` | 3 | New — Windows toast notification sender |
-| `scripts/tools/tool_loader.py` | 3 | New — auto-discover tools from scripts/tools/ and plugins/ |
-| `scripts/tools/memory.py` | 3 | New — memory_recall / memory_store tool |
-| `scripts/tools/web.py` | 3 | New — web_search (SearXNG) / web_fetch tool |
-| `scripts/tools/git.py` | 3 | New — git_status / git_log / git_diff tool |
-| `scripts/tools/file.py` | 3 | New — file_read / file_write tool (path allowlist) |
-| `scripts/tools/shell.py` | 3 | New — shell_run tool (always prompts) |
-| `scripts/tools/fabric.py` | 3 | New — fabric_run tool (which-check) |
-| `plugins/summarise/invoke.py` | 3 | New — `bob summarise` plugin |
-| `plugins/draft/invoke.py` | 3 | New — `bob draft` plugin |
-| `plugins/search/invoke.py` | 3 | New — `bob search` plugin |
-| `plugins/play/invoke.ps1` | 3 | New — `bob play` plugin |
+| `scripts/bob.ps1` | 0 | New: copy of `llm.ps1` with renamed strings *(`llm.ps1` retired in M10)* |
+| `scripts/install-cli.ps1` | 0 | Edit: emit `bob.cmd` (later: removes the retired `llm.cmd` shim) |
+| `scripts/_models.ps1` | 0+1 | Edit: rename env var; add `Get-BobConfig` |
+| `config/bob.psd1` | 0 stub → 1 full | New: persona, routing, memory, voice config |
+| `tools/compose/docker-compose.yml` | 0 | Edit: rename `bob` literals |
+| `scripts/bob.ps1` (chat case) | 1 | Edit: REPL + flag routing + memory injection |
+| `scripts/bob_memory.py` | 1 | New: embed/store/recall/summarize |
+| `scripts/bob-memory.ps1` | 1 | New: PowerShell wrapper (runs in `venv-litellm`) |
+| `scripts/setup.ps1` | 1 | Edit: add onboarding flow |
+| `scripts/build-whisper.ps1` | 2 | New: build whisper.cpp |
+| `scripts/start-whisper.ps1` | 2 | New: start whisper-server on :8082 |
+| `scripts/setup-voice.ps1` | 2 | New: download piper + voice model |
+| `scripts/bob_core.py` | 3 | New: shared Python core: config, LLM client, memory access |
+| `scripts/bob_loop.py` | 3 | New: agent loop (Hermes 3 XML tool-call format + OpenAI fallback) |
+| `scripts/bob_clip.py` | 3 | New: fast web clip: fetch → summarise → store |
+| `scripts/bob-agent.ps1` | 3 | New: background scheduler (BobAgent Windows Task) |
+| `scripts/bob-toast.ps1` | 3 | New: Windows toast notification sender |
+| `scripts/tools/tool_loader.py` | 3 | New: auto-discover tools from scripts/tools/ and plugins/ |
+| `scripts/tools/memory.py` | 3 | New: memory_recall / memory_store tool |
+| `scripts/tools/web.py` | 3 | New: web_search (SearXNG) / web_fetch tool |
+| `scripts/tools/git.py` | 3 | New: git_status / git_log / git_diff tool |
+| `scripts/tools/file.py` | 3 | New: file_read / file_write tool (path allowlist) |
+| `scripts/tools/shell.py` | 3 | New: shell_run tool (always prompts) |
+| `scripts/tools/fabric.py` | 3 | New: fabric_run tool (which-check) |
+| `plugins/summarise/invoke.py` | 3 | New: `bob summarise` plugin |
+| `plugins/draft/invoke.py` | 3 | New: `bob draft` plugin |
+| `plugins/search/invoke.py` | 3 | New: `bob search` plugin |
+| `plugins/play/invoke.ps1` | 3 | New: `bob play` plugin |

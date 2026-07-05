@@ -1,25 +1,25 @@
 # Contributing to Bob
 
 Bob is a personal, local-first AI assistant (PowerShell CLI + Python agent harness) that runs
-cross-platform on Windows and Linux under PowerShell 7 — see [docs/PORTABILITY.md](docs/PORTABILITY.md).
-This note captures the **conventions** the codebase already follows so new code stays consistent —
-most of it is enforced by the architecture, not by tooling.
+cross-platform on Windows and Linux under PowerShell 7 (see [docs/PORTABILITY.md](docs/PORTABILITY.md)).
+This note captures the **conventions** the codebase already follows so new code stays consistent.
+Most of it is enforced by the architecture, not by tooling.
 
 ## Plugin & tool placement
 
-See [plugins/AUTHORING.md](plugins/AUTHORING.md) for the three-layer capability model. In short: logic lives in one importable place; tools auto-discover (no manual registration); exclude a tool via `agent.disabledTools`, never an allowlist.
+See [plugins/AUTHORING.md](plugins/AUTHORING.md) for the three-layer capability model. Logic lives in one importable place; tools auto-discover (no manual registration); exclude a tool via `agent.disabledTools`, never an allowlist.
 
 ## Error-handling convention
 
 1. **Fail loudly at the edges, degrade gracefully only where there's a real fallback.**
-   - A malformed tool call is surfaced to the model as a `__parse_error__` so it can self-correct —
+   - A malformed tool call is surfaced to the model as a `__parse_error__` so it can self-correct;
      it is *not* silently dropped ([scripts/bob_loop.py](scripts/bob_loop.py) `_parse_hermes_tool_calls`).
    - A `TOOL_DEFS` name with no `DISPATCH` entry is a **hard contract error**: the tool is skipped and
      recorded, never half-loaded ([scripts/tools/tool_registry.py](scripts/tools/tool_registry.py)).
-   - `bob search`/`summarise` fall back to raw output when the LLM is down — a genuine fallback, so it
+   - `bob search`/`summarise` fall back to raw output when the LLM is down, a genuine fallback, so it
      degrades quietly. Prefer this only when the degraded result is still useful.
 
-2. **CLI entry points catch and print one coherent line — never a raw traceback.**
+2. **CLI entry points catch and print one coherent line, never a raw traceback.**
    Boundary functions (`embed`, `store`, `recall`, HTTP calls) raise a `RuntimeError` with context;
    the `cmd_*` / `main()` layer catches it and prints a human message + returns/exits
    (see [scripts/bob_memory.py](scripts/bob_memory.py)). Internal helpers let exceptions propagate to
@@ -44,11 +44,11 @@ See [plugins/AUTHORING.md](plugins/AUTHORING.md) for the three-layer capability 
    a per-run id; keep the coloured `stderr` previews for interactive use
    ([scripts/bob_loop.py](scripts/bob_loop.py) `_agent_logger`).
 
-8. **Single source of truth for defaults (NB1).** Shared constants — service ports and the role
-   table — live only in [config/defaults.json](config/defaults.json), read by both Python
+8. **Single source of truth for defaults (NB1).** Shared constants (service ports and the role
+   table) live only in [config/defaults.json](config/defaults.json), read by both Python
    (`bob_core.load_defaults()` → `_PORT_DEFAULTS` / `get_role`) and PowerShell
    (`_models.ps1 Get-BobDefaults` → `$BobPortDefaults` / `Get-RoleForTask`). Never re-inline a port
-   number or role literal — add it to `defaults.json`. A `bob gen` / config change flows through
+   number or role literal; add it to `defaults.json`. A `bob gen` / config change flows through
    `Get-BobConfig`; a *neutral* (no-PowerShell) runtime config comes from
    [scripts/bob_config.py](scripts/bob_config.py) `resolve_runtime_config()`.
 
@@ -56,7 +56,7 @@ See [plugins/AUTHORING.md](plugins/AUTHORING.md) for the three-layer capability 
    branches: [scripts/osenv.py](scripts/osenv.py) for shell / data-dir (C4) / secrets (C3) / notify;
    secrets resolve via `osenv.secret()` (env → keychain → `data/secrets.json`), never a git-tracked
    file. New `bob` commands are added to the command registry
-   ([scripts/bob/registry.py](scripts/bob/registry.py)) — `config/verbs.json` is *generated* from it
+   ([scripts/bob/registry.py](scripts/bob/registry.py)); `config/verbs.json` is *generated* from it
    (`python -m bob.registry`) and its sync is enforced by `check.ps1`; do not hand-edit `verbs.json`.
 
 ## Tests
@@ -72,9 +72,9 @@ tools\venv-litellm\Scripts\python.exe -m pytest tests -q
 It also runs as section **[11]** of `.\scripts\test-dry-run.ps1` (the PowerShell regression suite),
 and `scripts\check.ps1` runs it alongside `py_compile` + a PowerShell AST parse as one gate.
 Add a test when you add a tool, a routing task, a config default, or a new failure mode. The registry's
-validated-contract + injected-config design makes tools easy to test against a fake config — see
-[tests/_common.py](tests/_common.py). Cover new public surfaces (routes, auth/ownership, streaming,
-cancellation, concurrency) — see the Module N tests for the pattern.
+validated-contract + injected-config design makes tools easy to test against a fake config (see
+[tests/_common.py](tests/_common.py)). Cover new public surfaces (routes, auth/ownership, streaming,
+cancellation, concurrency); see the Module N tests for the pattern.
 
 ## Verifying a change
 
@@ -82,6 +82,6 @@ cancellation, concurrency) — see the Module N tests for the pattern.
   `config/verbs.json`↔registry sync + the unittest suite; exits non-zero on any failure). Install it
   as a pre-commit hook once per clone with `pwsh -File scripts\install-hooks.ps1`. In CI it runs on
   Linux + Windows ([.github/workflows/ci.yml](.github/workflows/ci.yml)) via a `BOB_PYTHON` override.
-- Individually — Python: `tools\venv-litellm\Scripts\python.exe -m py_compile <files>` then the suite
+- Individually, Python: `tools\venv-litellm\Scripts\python.exe -m py_compile <files>` then the suite
   above. PowerShell: `[System.Management.Automation.Language.Parser]::ParseFile(...)` (AST parse).
 - End-to-end: `bob doctor` (full pre-flight) and `.\scripts\test-dry-run.ps1`.

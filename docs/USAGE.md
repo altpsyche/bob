@@ -15,12 +15,12 @@ Run this once per machine. It links the VS Code Continue config and the aider co
 ## The `bob` command
 
 `setup.bat` (Windows) or `./setup.sh` (Linux) puts `bob` on your PATH. Bob runs cross-platform under
-PowerShell 7 — the same commands work on both OSes (see [PORTABILITY.md](PORTABILITY.md)). Open a
+PowerShell 7: the same commands work on both OSes (see [PORTABILITY.md](PORTABILITY.md)). Open a
 terminal and these commands are available:
 
 ```
 Chat (Bob identity):
-  bob chat                             Interactive REPL — multi-turn conversation (empty line to exit)
+  bob chat                             Interactive REPL, multi-turn conversation (empty line to exit)
   bob chat [--pro] [--think] [--code]  REPL with routed role (local or cloud)
   bob chat "question"                  One-shot with default role
   bob chat <role> "prompt"             One-shot legacy syntax (still works)
@@ -34,7 +34,7 @@ Chat (Bob identity):
   bob budget                           Token and cost usage summary (LiteLLM + configured caps)
   # Full memory + sessions reference: docs/MEMORY.md
 
-Voice (Phase 2 — run `bob setup-voice` once to download whisper + piper; flip voice.enabled in bob.psd1):
+Voice (Phase 2, run `bob setup-voice` once to download whisper + piper; flip voice.enabled in bob.psd1):
   bob setup-voice                      Download and wire whisper STT, piper TTS, and vision model
   bob listen                           Record mic until silence → print transcript (whisper STT)
   bob transcribe <file>                Transcribe an audio file via whisper
@@ -43,15 +43,15 @@ Voice (Phase 2 — run `bob setup-voice` once to download whisper + piper; flip 
   bob whisper start|stop|status|logs  Manage the whisper STT server (port 8082)
   bob piper [stop|status]              Start/control piper TTS HTTP server (:8083, OpenAI-compatible)
 
-Vision (Phase 2 — requires vision model download; model loads on demand, TTL 30 s):
+Vision (Phase 2, requires vision model download; model loads on demand, TTL 30 s):
   bob describe <image> [--pro] ["prompt"]  Describe an image file (local Qwen2-VL or --pro cloud vision)
   bob screenshot [--pro] ["prompt"]        Take a screenshot and describe it (--pro for cloud vision)
 
-Agent (Phase 3 — Hermes 3 8B, local tool use, optional scheduled tasks):
+Agent (Phase 3, Hermes 3 8B, local tool use, optional scheduled tasks):
   bob agent "goal"                     One-shot: reason + call tools until done, print answer
   bob agent --role chat "goal"         Use a different role (e.g. chat = Qwen3) instead of agent
   bob agent --agency confirm "goal"    Prompt before each tool execution
-  bob agent serve                      Start HTTP server (:8084, Bearer auth) — REST + SSE stream + sessions (n8n/WebUI)
+  bob agent serve                      Start HTTP server (:8084, Bearer auth), REST + SSE stream + sessions (n8n/WebUI)
   bob agent "goal" --stream            Stream the final answer token-by-token to the terminal
   bob clip <url>                       Fetch URL → summarise → store to memory (one LLM call)
   bob tools list                       List all discovered tool modules (auto-discovered; disable via agent.disabledTools)
@@ -163,7 +163,7 @@ bob chat coder "write a PowerShell one-liner that lists the 5 largest files in t
 ```
 bob serve
 # Open VS Code, open any source file
-# Start typing a function (ghost text should appear within 1–2 seconds)
+# Start typing a function (ghost text should appear within 1 to 2 seconds)
 # Select a block of code, press Ctrl+I, type "add error handling"
 # Accept or reject the diff that appears
 ```
@@ -222,7 +222,7 @@ bob services status          # verify all three containers are Up
 bob up        # endpoint on configured port (default 8080) + Open WebUI (default 3000)
 ```
 
-`bob up` starts both services silently in the background (no terminal windows pop up), then waits inline for each to be ready: a spinner resolves to a green "ready (Ns)" line for the endpoint, then again for Open WebUI, then the browser opens. Typical wait: 5–15 s for the endpoint, 10–25 s for Open WebUI. If either doesn't respond within its timeout (60 s / 120 s) a warning is printed with a fallback URL.
+`bob up` starts both services silently in the background (no terminal windows pop up), then waits inline for each to be ready: a spinner resolves to a green "ready (Ns)" line for the endpoint, then again for Open WebUI, then the browser opens. Typical wait: 5 to 15 s for the endpoint, 10 to 25 s for Open WebUI. If either doesn't respond within its timeout (60 s / 120 s) a warning is printed with a fallback URL.
 
 The endpoint logs go to `logs/llama-swap.log`; tail them live with `bob logs`. Pass `-NoOpen` to skip the WebUI wait and browser open entirely:
 
@@ -247,7 +247,7 @@ The server loads a model into VRAM when it first receives a request, and unloads
 
 **mlock:** `fim` and `embed` are pinned in physical RAM with `--mlock`, preventing the OS from paging their weights to disk under memory pressure (e.g. simultaneous VS Code autocomplete, chat, and Open WebUI load). This locks approximately 4 GB of physical RAM permanently. On systems with less than 32 GB of RAM, disable it by setting `mlock = $false` on the `fim` and `embed` entries in `config/user.psd1` (gitignored per-machine override; re-run `bob gen` after editing).
 
-Setting `mlockBig = $true` in `config/user.psd1` extends mlock to the swap-group models (planner, coder, chat), pinning CPU-offloaded weight pages against pagefile eviction. On Windows this requires `SeLockMemoryPrivilege` — run `bob mlock` to check status and grant the privilege automatically (UAC prompt; restart terminal after). On Linux, raise the memlock limit instead (`ulimit -l unlimited` or `/etc/security/limits.conf`).
+Setting `mlockBig = $true` in `config/user.psd1` extends mlock to the swap-group models (planner, coder, chat), pinning CPU-offloaded weight pages against pagefile eviction. On Windows this requires `SeLockMemoryPrivilege`; run `bob mlock` to check status and grant the privilege automatically (UAC prompt; restart terminal after). On Linux, raise the memlock limit instead (`ulimit -l unlimited` or `/etc/security/limits.conf`).
 
 To start automatically at login: on Windows put a shortcut to `up.ps1` in `shell:startup`, or create a Task Scheduler task set to "At log on" running `pwsh -File C:\bob\scripts\up.ps1 -NoOpen`. On Linux, add a user systemd unit or a `@reboot` cron entry running `pwsh -File <repo>/scripts/up.ps1 -NoOpen`.
 
@@ -267,11 +267,11 @@ Every model's GGUF file, HuggingFace source, context size, and launch flags are 
 
 The `12gb` profile uses smaller variants (about 21 GB on disk instead of 38 GB). The `8gb` profile targets cards like the RTX 3070 and 4060 and is marked unvalidated; it ships with the repo but has not been tested on physical hardware yet. Switch with `bob profile 12gb` or `bob profile 8gb`, or pass `-Profile` to `setup.bat` before the first model download.
 
-There is also a `cpu` profile (a single tiny ~0.5 GB model) for **no-GPU** boxes — CI runners and dev laptops. It proves the serve/agent path works without a GPU (correctness and wiring, not performance); `bob profile auto` selects it automatically when no GPU is detected, and `bob build --cpu` produces a CUDA-off engine to run it. See [PORTABILITY.md](PORTABILITY.md).
+There is also a `cpu` profile (a single tiny ~0.5 GB model) for **no-GPU** boxes such as CI runners and dev laptops. It proves the serve/agent path works without a GPU (correctness and wiring, not performance); `bob profile auto` selects it automatically when no GPU is detected, and `bob build --cpu` produces a CUDA-off engine to run it. See [PORTABILITY.md](PORTABILITY.md).
 
 ### Pro models (API-backed, no platform fee)
 
-Three additional model names are available via the LiteLLM proxy (`:8081`) when the corresponding API keys are set. They route **litellm → API provider directly** — no llama-swap hop, no OpenRouter markup.
+Three additional model names are available via the LiteLLM proxy (`:8081`) when the corresponding API keys are set. They route **litellm → API provider directly**: no llama-swap hop, no OpenRouter markup.
 
 | Name | Role | Provider | Backing model | Approx. cost |
 |---|---|---|---|---|
@@ -280,7 +280,7 @@ Three additional model names are available via the LiteLLM proxy (`:8081`) when 
 | `coder-pro` | coding | DeepSeek | deepseek-chat (V4) | ~$0.27/M in |
 | `vision-pro` | cloud vision | DeepSeek | deepseek-chat (V4, vision-capable) | ~$0.27/M in |
 
-**API keys** — all four pro roles currently route through DeepSeek, so only one key is needed. The system supports multiple providers; set additional keys to enable other peers:
+**API keys**: all four pro roles currently route through DeepSeek, so only one key is needed. The system supports multiple providers; set additional keys to enable other peers:
 
 ```powershell
 $env:DEEPSEEK_API_KEY = 'sk-...'   # platform.deepseek.com → API keys  (active: chat, coder, planner)
@@ -347,7 +347,7 @@ Phase 1 of the Bob roadmap wires a persona, interactive chat, and memory on top 
 
 ### The `bob` shell (default front door)
 
-Run `bob` with no arguments on a terminal to open the interactive shell — a splash (big header, model/agency/session, live tool/command/skill counts, endpoint health) and a prompt:
+Run `bob` with no arguments on a terminal to open the interactive shell: a splash (big header, model/agency/session, live tool/command/skill counts, endpoint health) and a prompt:
 
 ```powershell
 bob                 # opens the shell (piped/redirected `bob` prints help instead)
@@ -357,7 +357,7 @@ In the shell:
 
 | Input | Does |
 |-------|------|
-| *(type anything)* | an agent turn — Bob answers and can use tools (streamed, Markdown-rendered) |
+| *(type anything)* | an agent turn; Bob answers and can use tools (streamed, Markdown-rendered) |
 | `/agent <goal>` | run the agent loop explicitly on a goal |
 | `/model [role]` · `/agency [show\|confirm\|silent]` | switch model / tool-approval mode |
 | `/tools` · `/skills` · `/help` | the catalog (grouped commands + tools + skills) |
@@ -365,16 +365,16 @@ In the shell:
 | `/theme [reload]` | show/reload the theme ([config/ui.json](../config/ui.json)) |
 | `/exit` | leave |
 
-Type `/` to filter the command list. Gated tools (e.g. `shell_run`, or any tool under `/agency confirm`) show an inline **y/N/a** approval; **Ctrl-C** cancels the in-flight turn and returns to the prompt. The look is themeable — see [TUNING.md → System prompts](TUNING.md) and `config/ui.json`.
+Type `/` to filter the command list. Gated tools (e.g. `shell_run`, or any tool under `/agency confirm`) show an inline **y/N/a** approval; **Ctrl-C** cancels the in-flight turn and returns to the prompt. The look is themeable; see [TUNING.md → System prompts](TUNING.md) and `config/ui.json`.
 
 `bob help` (from the terminal) prints the same generated command catalog.
 
 ### `bob chat` (routed REPL)
 
 ```powershell
-bob chat          # opens the REPL — multi-turn, history in session, empty line to exit
-bob think         # same but uses the planner (Qwen3-30B) — deeper reasoning
-bob code          # same but uses the coder (Qwen2.5-Coder-14B) — code focus
+bob chat          # opens the REPL, multi-turn, history in session, empty line to exit
+bob think         # same but uses the planner (Qwen3-30B), deeper reasoning
+bob code          # same but uses the coder (Qwen2.5-Coder-14B), code focus
 ```
 
 Banner on entry:
@@ -382,7 +382,7 @@ Banner on entry:
 Bob [chat | Qwen3-14B-Instruct-Q4_K_M]  (empty line to exit, !recall <query> to inject memory)
 ```
 
-**Routing flags** — combine freely:
+**Routing flags** (combine freely):
 
 | Command | Routes to |
 |---------|----------|
@@ -395,7 +395,7 @@ Bob [chat | Qwen3-14B-Instruct-Q4_K_M]  (empty line to exit, !recall <query> to 
 | `bob think --pro` | planner-pro |
 | `bob code --pro` | coder-pro |
 
-**One-shot mode** — prompt as argument, no interactive loop:
+**One-shot mode** (prompt as argument, no interactive loop):
 ```powershell
 bob chat "explain what a semaphore is"
 bob chat --pro "what is the fastest sorting algorithm for nearly-sorted data?"
@@ -411,7 +411,7 @@ bob chat planner "design a caching layer" --sys "Be concise." --max 1024
 
 ### Persona config
 
-Bob's persona `name`/`style` and routing defaults live in `config/bob.psd1`; the base **`systemPrompt`** lives in the neutral `config/defaults.json` → `runtime.persona.systemPrompt` (shared by both OSes — see [TUNING.md → System prompts](TUNING.md)). Both are committed to the repo. Override any key in `config/user.psd1` under a `bob` section:
+Bob's persona `name`/`style` and routing defaults live in `config/bob.psd1`; the base **`systemPrompt`** lives in the neutral `config/defaults.json` → `runtime.persona.systemPrompt` (shared by both OSes; see [TUNING.md → System prompts](TUNING.md)). Both are committed to the repo. Override any key in `config/user.psd1` under a `bob` section:
 
 ```powershell
 # config/user.psd1
@@ -435,7 +435,7 @@ Bob stores and retrieves facts using SQLite + BGE-M3 embeddings. The `embed` mod
 in VRAM, so memory costs 0 extra VRAM and one embed call per store/recall. **Memory is on by default**
 (`memory.enabled = true`); disable it in `config/bob.psd1` with `memory = @{ enabled = $false }`.
 
-This is a summary — the full reference (typed store, ranking, scoping, sessions, every config key) is
+This is a summary; the full reference (typed store, ranking, scoping, sessions, every config key) is
 in **[MEMORY.md](MEMORY.md)**.
 
 **From the terminal:**
@@ -454,14 +454,14 @@ bob memory clear --yes              # wipe all memories
 
 - At **session start** your stable profile (and any project [`BOB.md`](MEMORY.md#project-instruction-files))
   is injected once.
-- At **session end** (`/exit`, `/session new`, …) durable facts are **consolidated** — the model
+- At **session end** (`/exit`, `/session new`, …) durable facts are **consolidated**: the model
   extracts typed facts and *supersedes* contradictions instead of accumulating them ("I use vim" →
   later "I switched to vscode" leaves only vscode).
 - Set `memory.autoRecall = true` to also inject relevant memories on **every turn** (off by default;
   otherwise the agent recalls on demand via the `memory_recall` tool).
 
 Injected memory is capped at `memory.maxInjectedTokens` so it can't overflow the context window.
-Memory is always local — even with `--pro`, recall and embedding stay on BGE-M3 at `:8081`.
+Memory is always local: even with `--pro`, recall and embedding stay on BGE-M3 at `:8081`.
 
 > The legacy `bob chat` REPL still supports the manual `!recall <query>` / `!memory` meta-commands
 > (single replaceable slot, no auto-injection). The modern front door is the `bob` shell, where
@@ -495,7 +495,7 @@ Shows the `max_budget` and `budget_duration` from `config/litellm.yaml`, queries
 
 ## Voice (Phase 2)
 
-Voice adds two-way audio to the terminal using whisper.cpp (STT) and piper (TTS). All processing is local — no cloud, no microphone data leaving the machine.
+Voice adds two-way audio to the terminal using whisper.cpp (STT) and piper (TTS). All processing is local: no cloud, no microphone data leaving the machine.
 
 **One-time setup:**
 ```powershell
@@ -521,7 +521,7 @@ bob voice --pro                     # same loop but routes chat to cloud (DeepSe
 ```powershell
 bob listen | bob chat | bob speak   # one-shot voice turn
 ```
-`bob chat` streams ANSI to the terminal and returns clean text when piped — the spinner and colour codes are suppressed, so `bob speak` receives plain text.
+`bob chat` streams ANSI to the terminal and returns clean text when piped; the spinner and colour codes are suppressed, so `bob speak` receives plain text.
 
 **Whisper server management:**
 ```powershell
@@ -541,7 +541,7 @@ bob piper status                    # show PID and uptime
 Wire into Open WebUI: Admin Panel → Audio → Text-to-Speech Engine → `http://localhost:8083`
 
 Wire whisper into Open WebUI STT: Admin Panel → Audio → Speech-to-Text Engine → `http://localhost:8082`
-(Requires whisper-server to expose `/v1/audio/transcriptions` — verify with:
+(Requires whisper-server to expose `/v1/audio/transcriptions`; verify with:
 `curl -X POST http://localhost:8082/v1/audio/transcriptions -F "file=@test.wav" -F "model=whisper-1"`)
 
 **Pipeline examples:**
@@ -562,7 +562,7 @@ cat article.txt | fabric --pattern extract_wisdom | bob speak   # read fabric ou
 |-----|---------|--------|
 | `maxTokens` | `512` | Caps the voice reply length. Lower (e.g. `256`) for faster one-liners; raise if Bob cuts off mid-sentence on long answers. |
 | `silenceSec` | `1.5` | Seconds of mic silence before recording stops. Raise if Bob cuts off while you're still speaking. |
-| `systemPrompt` | *(voice-specific)* | The system prompt used only in `bob voice` — instructs the model to reply in plain spoken sentences with no markdown. Override in `config/user.psd1` under `bob.voice.systemPrompt`. |
+| `systemPrompt` | *(voice-specific)* | The system prompt used only in `bob voice`; instructs the model to reply in plain spoken sentences with no markdown. Override in `config/user.psd1` under `bob.voice.systemPrompt`. |
 | `sttModel` | `'small'` | Whisper model size: `tiny`, `base`, `small`, `medium`. Larger = more accurate, slower. Re-run `bob setup-voice` after changing. |
 
 The voice loop also runs a `Format-ForSpeech` text sanitizer before sending to piper: it strips markdown symbols (`*`, `#`, `` ` ``, `_`, bullet dashes, numbered list markers, links) so stray markdown from the model never reaches the TTS engine. Combined with the voice system prompt, Bob should reply in natural spoken language without reading punctuation symbols aloud.
@@ -599,11 +599,11 @@ bob describe img.png | fabric --pattern summarize   # describe image, pipe to fa
 bob screenshot --pro "Explain the code on screen"   # cloud vision for complex screenshots
 ```
 
-**Known limitation:** `--flash-attn on` is incompatible with multimodal projection — `gen-llama-swap.ps1` automatically omits it when `mmproj` is set, so no manual config is needed.
+**Known limitation:** `--flash-attn on` is incompatible with multimodal projection; `gen-llama-swap.ps1` automatically omits it when `mmproj` is set, so no manual config is needed.
 
 ## Agent (Phase 3)
 
-The agent system runs Hermes 3 (8B) in a loop: the model reasons about what tools to call, executes them, and iterates until it has a final answer. All processing is local — tools include web search (SearXNG), git, file access, shell commands, and memory.
+The agent system runs Hermes 3 (8B) in a loop: the model reasons about what tools to call, executes them, and iterates until it has a final answer. All processing is local; tools include web search (SearXNG), git, file access, shell commands, and memory.
 
 ### Running a goal
 
@@ -619,7 +619,7 @@ The agent prints tool calls to stderr (cyan) and results (dark gray), then the f
 bob agent "summarise the last 10 commits" 2>$null
 ```
 
-**Agency modes** — how much the agent asks before acting:
+**Agency modes** (how much the agent asks before acting):
 
 | Mode | Behaviour | Use when |
 |------|-----------|----------|
@@ -638,10 +638,10 @@ Set permanently in `config/bob.psd1` → `agent.agency`.
 | `web` | Search via SearXNG, fetch URLs | SearXNG running (:8888) |
 | `git` | `git_status`, `git_log`, `git_diff` on any repo | git on PATH |
 | `file` | `file_read` (within allowed paths), `file_write` (disabled by default) | `allowedReadPaths` set |
-| `shell` | Run PowerShell commands (always prompts user — ignores agency mode) | Interactive terminal |
+| `shell` | Run PowerShell commands (always prompts user, ignores agency mode) | Interactive terminal |
 | `fabric` | Run any fabric pattern on text input | fabric on PATH |
 
-Tools are **auto-discovered** from `scripts/tools/*.py` and `plugins/*/tool.py` — dropping in a file is the only registration step, there is no allowlist. To exclude one without deleting it, add its name to `config/bob.psd1` → `agent.disabledTools` (a denylist). `bob tools list` shows every discovered tool and its enabled/disabled status.
+Tools are **auto-discovered** from `scripts/tools/*.py` and `plugins/*/tool.py`; dropping in a file is the only registration step, there is no allowlist. To exclude one without deleting it, add its name to `config/bob.psd1` → `agent.disabledTools` (a denylist). `bob tools list` shows every discovered tool and its enabled/disabled status.
 
 ### Scheduling background goals
 
@@ -663,7 +663,7 @@ bob agent schedule enable morning-summary
 bob agent schedule remove morning-summary
 ```
 
-Schedules are stored in `data/schedules.json`. A recurring task — a Windows Scheduled Task or a Linux cron entry, registered by `bob agent install` — fires `bob-agent.ps1` every minute, which checks which entries are due (5-field cron, 60 s double-fire guard). `bob agent status` shows its state.
+Schedules are stored in `data/schedules.json`. A recurring task (a Windows Scheduled Task or a Linux cron entry, registered by `bob agent install`) fires `bob-agent.ps1` every minute, which checks which entries are due (5-field cron, 60 s double-fire guard). `bob agent status` shows its state.
 
 The scheduler runs with `agency = 'silent'`. Results are stored in `data/schedules.json` under `lastRunResult`. If `notify = true` is set on an entry, a desktop notification fires with the result (a Windows toast, or `notify-send` on Linux).
 
@@ -673,11 +673,11 @@ The scheduler runs with `agency = 'silent'`. Results are stored in `data/schedul
 bob clip https://example.com/article
 ```
 
-One-shot web clip: fetches the URL, strips HTML, sends to the chat model for a 3–5 sentence summary, prints it, then stores `url: summary` to Bob's memory DB. No agent loop — one LLM call, fast.
+One-shot web clip: fetches the URL, strips HTML, sends to the chat model for a 3 to 5 sentence summary, prints it, then stores `url: summary` to Bob's memory DB. No agent loop, just one LLM call, fast.
 
 ### Tool calling format
 
-Hermes 3 uses its own tool-calling format: tool schemas are injected into the system prompt and the model responds with `<tool_call>{"name": "...", "arguments": {...}}</tool_call>` XML. Bob's agent loop handles this transparently — Qwen3 or other OpenAI-format models also work by setting `agent.toolFormat = 'openai'` in `config/bob.psd1`.
+Hermes 3 uses its own tool-calling format: tool schemas are injected into the system prompt and the model responds with `<tool_call>{"name": "...", "arguments": {...}}</tool_call>` XML. Bob's agent loop handles this transparently; Qwen3 or other OpenAI-format models also work by setting `agent.toolFormat = 'openai'` in `config/bob.psd1`.
 
 ### HTTP server (REST + SSE)
 
@@ -687,7 +687,7 @@ bob agent serve            # binds agent.serveHost:agent.agentPort (default 127.
 
 Exposes the agent loop over HTTP for n8n/WebUI/other clients. Every endpoint except `/health`
 requires `Authorization: Bearer <token>` (the litellm key or an `agent.apiTokens` entry). Each token
-maps to an owner, and sessions are owner-scoped — a token only sees sessions its owner created (N1).
+maps to an owner, and sessions are owner-scoped: a token only sees sessions its owner created (N1).
 Supports one-shot `POST /v1/agent/completions`, token-streaming `POST /v1/agent/completions/stream`
 (SSE; cancels on client disconnect), and multi-turn `POST/GET/DELETE /v1/sessions`. Full endpoint
 contract, event schema, and n8n wiring: [AGENT-SERVER.md](AGENT-SERVER.md).
@@ -701,13 +701,13 @@ bob doctor          # the above, plus runtime: endpoint reachable, GPU/VRAM, wri
 
 `bob setup check` verifies agent dependencies in order: venv, Python packages, config.json, tools
 directory, schedules file, fabric, SearXNG, n8n, LiteLLM proxy, BobAgent task, Hermes 3 model file,
-tool loading (delegated to the Python loader, honoring `agent.disabledTools`), litellm.yaml. Prints ✓
-or ✗ with a fix command for each failure. `bob doctor` runs all of those plus a runtime pre-flight —
+tool loading (delegated to the Python loader, honoring `agent.disabledTools`), litellm.yaml. Prints pass
+or fail with a fix command for each failure. `bob doctor` runs all of those plus a runtime pre-flight;
 use it as the first thing to run when something's off.
 
 ## Plugins (Phase 3)
 
-Plugins are direct CLI commands that live in `plugins/<name>/invoke.ps1` or `invoke.py`. Unlike agent tools (which the LLM decides to call autonomously), plugins are invoked explicitly by you — `bob search "..."` runs immediately.
+Plugins are direct CLI commands that live in `plugins/<name>/invoke.ps1` or `invoke.py`. Unlike agent tools (which the LLM decides to call autonomously), plugins are invoked explicitly by you: `bob search "..."` runs immediately.
 
 Python plugins run in `venv-litellm`; PowerShell plugins run directly. Each plugin is self-contained: a directory with one invoke file and an optional `description.txt`.
 
@@ -755,7 +755,7 @@ bob draft "explain how the plugin fallback works in bob.ps1" --type doc
 bob draft "write a LinkedIn post about building a local AI assistant"
 ```
 
-Output is clean and ready to paste — no preamble, no "Here is your draft:" wrapper.
+Output is clean and ready to paste: no preamble, no "Here is your draft:" wrapper.
 
 ### bob search
 
@@ -795,7 +795,7 @@ Spotify detection checks `%APPDATA%\Spotify\Spotify.exe` and the Windows Store l
 
 ### Adding your own plugins
 
-Create `plugins/<name>/invoke.ps1` or `invoke.py` — any language, just read `$args` (PowerShell) or `sys.argv` (Python) and write to stdout.
+Create `plugins/<name>/invoke.ps1` or `invoke.py` in any language, just read `$args` (PowerShell) or `sys.argv` (Python) and write to stdout.
 
 ```
 plugins/
@@ -804,7 +804,7 @@ plugins/
     description.txt    # one-line description shown by bob plugins list
 ```
 
-Python plugins have `venv-litellm` available — `from bob_core import load_config, get_llm_client` gives you config and an LLM client pointed at the local proxy. See `plugins/summarise/invoke.py` for a complete example.
+Python plugins have `venv-litellm` available: `from bob_core import load_config, get_llm_client` gives you config and an LLM client pointed at the local proxy. See `plugins/summarise/invoke.py` for a complete example.
 
 There is no registration step. `bob my-plugin` dispatches to the plugin automatically via the default-case fallback in `bob.ps1`.
 
@@ -812,7 +812,7 @@ There is no registration step. `bob my-plugin` dispatches to the plugin automati
 
 ## Qwen3 Thinking Mode
 
-Qwen3 models (`planner`, `chat`) support a reasoning scratchpad. `planner` has it on by default — appropriate for deep analysis. `chat` has it off by default via its system prompt (`/no_think`) because conversational responses don't benefit from the added latency. When enabled, the model internally reasons through the problem before responding. This produces better answers but:
+Qwen3 models (`planner`, `chat`) support a reasoning scratchpad. `planner` has it on by default, appropriate for deep analysis. `chat` has it off by default via its system prompt (`/no_think`) because conversational responses don't benefit from the added latency. When enabled, the model internally reasons through the problem before responding. This produces better answers but:
 
 - **Consumes `max_tokens` silently.** The scratchpad counts toward your token limit.
   For complex tasks, set `max_tokens` to at least 2000 (or 8192 for deep planning).
@@ -843,8 +843,8 @@ bob chat chat "What is 2+2? /no_think" --max 128
 
 | Mode | When to use | `max_tokens` |
 |------|------------|-------------|
-| Default (thinking on) | Complex reasoning, code architecture, planning | 2000–8192 |
-| `/no_think` | Quick Q&A, simple edits, autocomplete-like tasks | 128–512 |
+| Default (thinking on) | Complex reasoning, code architecture, planning | 2000 to 8192 |
+| `/no_think` | Quick Q&A, simple edits, autocomplete-like tasks | 128 to 512 |
 
 **In Continue.dev:** The `chat` model has `/no_think` set in its system prompt by default. For `planner`, add `/no_think` to your message to skip the scratchpad on simpler tasks. Continue always uses the configured `maxTokens`; make sure it's large enough for planning tasks.
 
@@ -1045,7 +1045,7 @@ bob litellm -NoWindow
 
 All clients (Continue, aider, Cline, fabric, Open WebUI, `bob chat`) are configured to use `:8081` by default. The proxy exposes all local model names (`coder`, `planner`, `chat`, `fim`, `embed`) plus pro model names (`chat-pro`, `planner-pro`, `coder-pro`) when API keys are set. Direct `:8080` access to llama-swap still works for local models but bypasses retry logic and Langfuse tracing.
 
-`config/litellm.yaml` is generated automatically by `bob gen` and `bob serve` — do not edit it by hand.
+`config/litellm.yaml` is generated automatically by `bob gen` and `bob serve`; do not edit it by hand.
 
 ### Docker services (Langfuse + SearXNG + n8n)
 
@@ -1113,7 +1113,7 @@ Tracing only works through LiteLLM. Direct `:8080` requests are invisible to Lan
 6. Point your client at `:8081` instead of `:8080` (or use `bob chat` which goes through LiteLLM automatically)
 7. Requests appear in the Langfuse dashboard under **Traces** within a few seconds
 
-> **Note:** `config/litellm.yaml` is generated on every `bob gen` and `bob serve`. Do not edit it directly — changes are overwritten. Use `user.psd1` for all persistent customization.
+> **Note:** `config/litellm.yaml` is generated on every `bob gen` and `bob serve`. Do not edit it directly; changes are overwritten. Use `user.psd1` for all persistent customization.
 
 ---
 
@@ -1178,7 +1178,7 @@ The response is `choices[0].message.content`; wire that to whatever you want (Sl
 
 n8n schedules run in UTC by default. To use local time, set `n8nTimezone` in `config/user.psd1` (e.g. `'America/New_York'`) and re-run `.\scripts\setup-docker.ps1`.
 
-**Tip:** prefer the LiteLLM proxy at `:8081` over the direct endpoint `:8080` — it adds automatic retry when the model is mid-swap.
+**Tip:** prefer the LiteLLM proxy at `:8081` over the direct endpoint `:8080`; it adds automatic retry when the model is mid-swap.
 
 **Starter workflows:**
 
@@ -1186,13 +1186,13 @@ A ready-to-import workflow lives at `tools/n8n-workflows/daily-research-digest.j
 
 1. Open `http://localhost:5678` → top-right menu (≡) → **Import from file** → select the `.json`
 2. Open the imported workflow → edit the **Config** node:
-   - `discord_url` — paste your Discord webhook URL (Server Settings → Integrations → Webhooks → New Webhook)
-   - `rss_feed_url` — RSS feed to follow (default: Hacker News)
-   - `keywords_csv` — optional comma-separated filter (empty = all articles)
+   - `discord_url`: paste your Discord webhook URL (Server Settings → Integrations → Webhooks → New Webhook)
+   - `rss_feed_url`: RSS feed to follow (default: Hacker News)
+   - `keywords_csv`: optional comma-separated filter (empty = all articles)
 3. Click **Save** → toggle **Active** to enable the daily 8am schedule
 
 The workflow has two modes:
-- **Scheduled digest**: fetches RSS, verifies each article via SearXNG, summarizes one-by-one with the local LLM, posts Discord embeds with clickable links and a ✅/⚠️ corroboration badge
+- **Scheduled digest**: fetches RSS, verifies each article via SearXNG, summarizes one-by-one with the local LLM, posts Discord embeds with clickable links and a verified-or-caution corroboration badge
 - **On-demand research**: POST `{"topic": "your topic"}` to `http://localhost:5678/webhook/research-digest` → SearXNG searches the topic → bob synthesizes → Discord
 
 ---
@@ -1203,7 +1203,7 @@ The workflow has two modes:
 |---------|-------|-----|
 | `exec /bin/sh: exec format error` on any container | Image layers corrupted by interrupted download (e.g. daemon crashed mid-pull) | `docker system prune -af` then re-run `.\scripts\setup-docker.ps1`; this deletes all cached images and re-downloads clean copies (~3 GB) |
 | `langfuse-postgres unhealthy`, `dependency failed to start` | Postgres container failed to start; almost always the corrupted-layer issue above | Same: `docker system prune -af` + re-run setup |
-| `500 Internal Server Error` on all `docker` commands | WSL2 backend not started or crashed | Restart Docker Desktop from system tray → wait for whale icon to go solid (60–90 s) |
+| `500 Internal Server Error` on all `docker` commands | WSL2 backend not started or crashed | Restart Docker Desktop from system tray → wait for whale icon to go solid (60 to 90 s) |
 | `@web` in Continue returns nothing | Docker services not running, or SearXNG container stopped | `bob services status`; if any container is not `Up`, run `bob services start` |
 | Langfuse dashboard shows no traces | Tracing not enabled; LiteLLM not configured or not running | Follow the "Enabling tracing" steps above; confirm `bob litellm status` shows running |
 | Port already in use | Another process on 3001, 8888, or 5678 | Set override ports in `config/user.psd1`, re-run `.\scripts\setup-docker.ps1` |
@@ -1244,13 +1244,13 @@ bob eval planner mmlu           # general knowledge (~90 min)
 bob eval coder gsm8k --shots 5  # 5-shot variant (slightly higher scores, longer)
 ```
 
-Results are saved as JSON under `results/eval-<role>-<task>-<timestamp>/<role>/results_<timestamp>.json`. The primary metric is `exact_match,flexible-extract` (accuracy 0.0–1.0; the flexible extractor finds the final number in the response). Reference points for 14B Q4 quant models at **5-shot**:
+Results are saved as JSON under `results/eval-<role>-<task>-<timestamp>/<role>/results_<timestamp>.json`. The primary metric is `exact_match,flexible-extract` (accuracy 0.0 to 1.0; the flexible extractor finds the final number in the response). Reference points for 14B Q4 quant models at **5-shot**:
 
 | Task | Measures | Expected (5-shot) | Expected (0-shot) |
 |------|---------|-------------------|-------------------|
-| `gsm8k` | math word problems | 0.72–0.82 | 0.60–0.72 |
-| `humaneval` | code generation pass@1 | 0.60–0.72 | 0.50–0.65 |
-| `mmlu` | general knowledge | 0.62–0.70 | 0.55–0.65 |
+| `gsm8k` | math word problems | 0.72 to 0.82 | 0.60 to 0.72 |
+| `humaneval` | code generation pass@1 | 0.60 to 0.72 | 0.50 to 0.65 |
+| `mmlu` | general knowledge | 0.62 to 0.70 | 0.55 to 0.65 |
 
 Scores well below these ranges usually mean the chat template wasn't applied correctly. Run the same task before and after a quant change or profile switch to measure quality delta.
 
@@ -1260,7 +1260,7 @@ Scores well below these ranges usually mean the chat template wasn't applied cor
 
 Open WebUI uses the `embed` model for document search automatically. Add documents through the workspace panel; they're indexed locally and available in any chat via the RAG interface. You can create model presets in Workspace → Models, for example a "Planner" preset with low temperature for precise answers, or a "Chat" preset for general conversation.
 
-> **Agent model in WebUI:** Selecting the `agent` model in Open WebUI runs raw Hermes 3 inference — tool schemas are not injected and `<tool_call>` blocks appear as plain text. For full tool use, run `bob agent "goal"` in the terminal, or start `bob agent serve` and call `http://localhost:8084/v1/agent/completions` from n8n or any HTTP client.
+> **Agent model in WebUI:** Selecting the `agent` model in Open WebUI runs raw Hermes 3 inference: tool schemas are not injected and `<tool_call>` blocks appear as plain text. For full tool use, run `bob agent "goal"` in the terminal, or start `bob agent serve` and call `http://localhost:8084/v1/agent/completions` from n8n or any HTTP client.
 
 ## Customizing your setup: config/user.psd1
 
