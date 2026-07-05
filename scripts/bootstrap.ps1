@@ -102,8 +102,15 @@ if ($py) {
     @{n='venv-eval';    base='eval-requirements'}
   )) {
     $venv = Join-Path $repo "tools\$($t.n)"
-    if (-not (Test-Path $venv)) { & $py -m venv $venv }
     $venvPy = Get-VenvExe -Venv $t.n -Exe 'python'   # NC4: OS-aware (Scripts\python.exe | bin/python)
+    # Self-heal: recreate a venv built with an out-of-range Python (e.g. a pre-fix 3.14 venv left by a
+    # failed run) so it doesn't just re-fail the pip install. In range = 3.11/3.12.
+    if ((Test-Path $venv) -and (Test-Path $venvPy)) {
+        $vv = (& $venvPy --version 2>&1) -replace 'Python\s+', ''
+        $inRange = ($vv -match '(\d+)\.(\d+)') -and ([version]"$($Matches[1]).$($Matches[2])" -ge [version]'3.11') -and ([version]"$($Matches[1]).$($Matches[2])" -lt [version]'3.13')
+        if (-not $inRange) { Write-Host "  recreating $($t.n) (was Python $vv — need 3.11/3.12)" -ForegroundColor Yellow; Remove-Item -Recurse -Force $venv }
+    }
+    if (-not (Test-Path $venv)) { & $py -m venv $venv }
     if (-not (Test-Path $venvPy)) { throw "venv creation failed for $($t.n) — $venvPy not found" }
     & $venvPy -m pip install --upgrade pip
     # prefer the pinned .lock (reproducible); fall back to the loose .txt on a first-ever run
