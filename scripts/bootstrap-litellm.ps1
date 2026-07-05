@@ -3,10 +3,16 @@
 # Run once. After this, 'bob litellm' starts the proxy on port 8081.
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot '_platform.ps1')   # NC1 seam: Get-VenvExe (Scripts\ on Windows, bin/ on Linux)
-if (-not (Test-PythonVersionAtLeast -Exe python -MinVer '3.12')) {
-    $pyVer = & python --version 2>&1
-    $hint = if ((Get-BobOS) -eq 'windows') { 'scoop install python312' } else { 'your package manager (e.g. apt install python3, pacman -S python)' }
-    throw "Python 3.12+ required (found: $pyVer). Install: $hint"
+# Windows: require a 3.12 on PATH. Linux/macOS: Get-BobPython returns an in-range (3.11/3.12) interpreter,
+# provisioning CPython 3.12 via uv when the system Python is too new (Arch 3.14, which the deps reject).
+if ((Get-BobOS) -eq 'windows') {
+    if (-not (Test-PythonVersionAtLeast -Exe python -MinVer '3.12')) {
+        throw "Python 3.12+ required (found: $(& python --version 2>&1)). Install: scoop install python312"
+    }
+    $py = 'python'
+} else {
+    $py = Get-BobPython
+    if (-not $py) { throw "No venv-compatible Python (3.11/3.12) found and couldn't provision one via uv. Install Python 3.12 and re-run." }
 }
 $repo = Split-Path $PSScriptRoot -Parent
 $venv = Join-Path (Join-Path $repo 'tools') 'venv-litellm'   # not 'tools\venv-litellm' — backslash is a literal filename char on Linux
@@ -16,9 +22,9 @@ if (Test-Path $venv) {
     return
 }
 
-Write-Host "Creating LiteLLM venv..." -ForegroundColor Cyan
-python -m venv $venv
-if ($LASTEXITCODE -ne 0) { throw "python -m venv failed. Is Python 3.12 installed?" }
+Write-Host "Creating LiteLLM venv ($py)..." -ForegroundColor Cyan
+& $py -m venv $venv
+if ($LASTEXITCODE -ne 0) { throw "python -m venv failed." }
 
 # Use the venv's own python + `-m pip` (portable) rather than the pip console script, whose name and
 # location differ by OS (Scripts\pip.exe vs bin/pip). Get-VenvExe resolves the right python per OS.

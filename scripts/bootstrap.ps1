@@ -40,25 +40,27 @@ if ($gpuArch) { "GPU    : $($gpuArch.Gen) (sm_$($gpuArch.CudaArch))" }
 "CUDA   : $(if ($cudaRoot) { "ok — $cudaRoot" } else { 'MISSING — install CUDA 12.x before building' })"
 "go     : $(if (Have go) { 'ok' } else { 'missing — will need llama-swap release binary instead' })"
 
-# locate Python 3.12 — scoop (preferred), then Windows py launcher, then PATH python
+# locate a venv-compatible Python (3.11/3.12; pinned deps like open-webui cap at <3.13).
 $py = $null
-# 1. scoop python312 — isolated from system Python, preferred
-try { $p = (scoop prefix python312) 2>$null; if ($p) { $py = Join-Path $p "python.exe" } } catch {}
-if ($py -and -not (Test-Path $py)) { $py = $null }
-# 2. Windows py launcher (python.org installer) — resolves actual exe so & $py works
-if (-not $py -and (Have py)) {
-    try {
-        $resolved = & py -3.12 -c "import sys; print(sys.executable)" 2>&1
-        if ($resolved -and (Test-Path $resolved)) { $py = $resolved }
-    } catch {}
-}
-# 3. python / python3 on PATH — accept 3.12+ (prefer an explicit 3.12, else the newest >= 3.12).
-if (-not $py) {
-    foreach ($cand in 'python3.12', 'python3', 'python') {
-        if ((Have $cand) -and (Test-PythonVersionAtLeast -Exe $cand -MinVer '3.12')) { $py = $cand; break }
+if ((Get-BobOS) -eq 'windows') {
+    # Windows: scoop python312 (preferred, isolated) -> py launcher -> PATH, pinned to 3.12.
+    try { $p = (scoop prefix python312) 2>$null; if ($p) { $py = Join-Path $p "python.exe" } } catch {}
+    if ($py -and -not (Test-Path $py)) { $py = $null }
+    if (-not $py -and (Have py)) {
+        try { $resolved = & py -3.12 -c "import sys; print(sys.executable)" 2>&1; if ($resolved -and (Test-Path $resolved)) { $py = $resolved } } catch {}
     }
+    if (-not $py) {
+        foreach ($cand in 'python3.12', 'python', 'python3') {
+            if ((Have $cand) -and (Test-PythonVersionAtLeast -Exe $cand -MinVer '3.12')) { $py = $cand; break }
+        }
+    }
+    $pyHint = 'scoop install python312'
+} else {
+    # Linux/macOS: an in-range interpreter, provisioning CPython 3.12 via uv when the system Python is
+    # too new (Arch/CachyOS ship 3.14, which open-webui & other pinned deps reject with Requires-Python).
+    $py = Get-BobPython
+    $pyHint = 'install Python 3.12, or ensure uv is available so bob can provision it'
 }
-$pyHint = if ((Get-BobOS) -eq 'windows') { 'scoop install python312' } else { 'your package manager (e.g. apt install python3, pacman -S python)' }
 "python : $(if ($py) { $py } else { "MISSING — $pyHint" })"
 
 # --- submodules ---

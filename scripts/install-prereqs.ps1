@@ -109,11 +109,14 @@ function Install-LinuxPrereqs {
         try { Install-Package -Package $p } catch { Write-Warning "  $p failed: $_ (install it manually and re-run)"; $failed += $p }
     }
 
-    # Python 3.12+ is required by bootstrap.ps1. Distros vary; warn (don't fail) if the default is older.
-    $pyv = try { (& python3 --version 2>&1) -replace 'Python\s+', '' } catch { $null }
-    if ($pyv -and [version]($pyv -replace '(\d+\.\d+).*', '$1') -lt [version]'3.12') {
-        Write-Warning "python3 is $pyv — Bob needs 3.12+. Install it (e.g. deadsnakes PPA on Ubuntu) and ensure it's on PATH."
-    }
+    # Bob's venvs need Python 3.11/3.12 — pinned deps (open-webui et al.) cap at <3.13, so the distro
+    # python is unusable when it's too NEW (Arch/CachyOS ship 3.14), not just too old. Guarantee an
+    # in-range interpreter now (uv-provisioned CPython 3.12 if needed), cached for bootstrap. Best-effort.
+    try {
+        $py = Get-BobPython
+        if ($py) { Write-Host "  python (venv) ready: $py" -ForegroundColor DarkGray }
+        else { Write-Warning "  no venv-compatible Python (3.11/3.12) found and couldn't provision one via uv — install Python 3.12 and re-run." }
+    } catch { Write-Warning "  python provisioning failed: $_ (bootstrap will retry)" }
 
     # cmake version: llama.cpp / whisper.cpp reject cmake >= 4.0, but the toolchain step above installs
     # the DISTRO cmake — which is 4.x on rolling distros (Arch/CachyOS). Guarantee a build-usable 3.x
