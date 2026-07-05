@@ -378,6 +378,49 @@ function Test-PythonVersionAtLeast {
   return $false
 }
 
+function Install-Uv {
+  # Ensure astral `uv` is available; return its path or $null. Used to provision a pinned Python when
+  # the system one is out of range. pacman ships uv; apt/dnf don't, so fall back to astral's official
+  # installer (no sudo — installs into ~/.local/bin). Linux/macOS only.
+  $uv = Get-Command uv -ErrorAction SilentlyContinue
+  if ($uv) { return $uv.Source }
+  if ((Get-LinuxPackageManager) -eq 'pacman') { try { Install-Package -Package 'uv' } catch {} }
+  $uv = Get-Command uv -ErrorAction SilentlyContinue
+  if ($uv) { return $uv.Source }
+  Write-Host "  installing uv (astral) via the official installer..." -ForegroundColor DarkGray
+  try { & sh -c 'curl -LsSf https://astral.sh/uv/install.sh | sh' 2>&1 | Out-Host } catch {}
+  foreach ($p in @((Join-Path $HOME '.local/bin/uv'), (Join-Path $HOME '.cargo/bin/uv'))) {
+    if (Test-Path $p) { $env:PATH = "$(Split-Path $p)$([IO.Path]::PathSeparator)$($env:PATH)"; return $p }
+  }
+  return (Get-Command uv -ErrorAction SilentlyContinue)?.Source
+}
+
+function Get-BobPython {
+  # Return a Python interpreter Bob's venvs can use: >= 3.11 and < 3.13. Bob targets 3.12, and pinned
+  # deps (open-webui et al.) cap at <3.13 — so a too-NEW system Python (Arch/CachyOS ship 3.14) is
+  # rejected, not just wheel-poor. Prefer one already on PATH in range; else provision CPython 3.12 via
+  # uv (works on any distro, no root). Returns a path, or $null (Windows resolves Python upstream).
+  param([string]$Prefer = '3.12')
+  foreach ($cand in 'python3.12', 'python3.11', 'python3', 'python') {
+    $c = Get-Command $cand -ErrorAction SilentlyContinue
+    if ($c) {
+      $v = (& $cand --version 2>&1) -replace 'Python\s+', ''
+      if ($v -match '(\d+)\.(\d+)') {
+        $mm = [version]"$($Matches[1]).$($Matches[2])"
+        if ($mm -ge [version]'3.11' -and $mm -lt [version]'3.13') { return $c.Source }
+      }
+    }
+  }
+  if ((Get-BobOS) -eq 'windows') { return $null }
+  $uv = Install-Uv
+  if (-not $uv) { return $null }
+  Write-Host "  system Python is out of range (venvs need 3.11/3.12) — provisioning CPython $Prefer via uv..." -ForegroundColor Cyan
+  & $uv python install $Prefer 2>&1 | Out-Host
+  $found = (& $uv python find $Prefer 2>$null | Select-Object -First 1)
+  if ($found -and (Test-Path $found)) { return $found }
+  return $null
+}
+
 function Resolve-PackageCmd {
   # PURE. The install command spec for the OS (and, on Linux, the detected package manager). Callers
   # in setup/install-prereqs pass -Manager in tests; the executor auto-detects.
