@@ -19,9 +19,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 
+from bob_core import _port   # ONE-A Finding 4 — the TTS port default lives in config/defaults.json (NB1)
+
 PIPER_EXE   = os.environ.get("PIPER_EXE", "")
 PIPER_VOICE = os.environ.get("PIPER_VOICE", "")
-PIPER_PORT  = int(os.environ.get("PIPER_PORT", "8083"))
+PIPER_PORT  = int(os.environ.get("PIPER_PORT") or _port({}, "ttsPort"))
 
 app = FastAPI(title="piper-tts-server")
 

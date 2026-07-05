@@ -12,13 +12,13 @@ import tempfile
 from pathlib import Path
 
 import osenv
+from bob_core import load_defaults
 
 REPO = Path(__file__).resolve().parent.parent
 
-# voice settings Windows authors in bob.psd1; the neutral Python path has no `voice` section, so these are
-# the fallbacks. Ports resolve through bob_core._port (config/defaults.json ports, NB1) — never re-inlined.
-_DEFAULT_SILENCE_SEC = 1.5
-_DEFAULT_TTS_VOICE = "en_GB-alan-medium"
+# ONE-A — voice settings live once in config/defaults.json.runtime.voice (NB1), read by both languages.
+# These per-key fallbacks read from there rather than re-inlining a literal (ports go through _port).
+_VOICE_DEFAULTS = load_defaults().get("runtime", {}).get("voice", {})
 
 
 # --- speech-safe text (port of Format-ForSpeech, bob.ps1:129) ------------------------------------
@@ -106,7 +106,8 @@ def listen(config: dict, silence_sec: float = None) -> str:
     """Record the mic until silence (osenv seam), transcribe via whisper-server, return the transcript
     ('' when nothing was captured). Raises RuntimeError if the audio stack or the server is missing."""
     voice = config.get("voice", {}) if isinstance(config, dict) else {}
-    secs = silence_sec if silence_sec is not None else float(voice.get("silenceSec", _DEFAULT_SILENCE_SEC))
+    secs = (silence_sec if silence_sec is not None
+            else float(voice.get("silenceSec", _VOICE_DEFAULTS.get("silenceSec", 1.5))))
     wav_bytes = osenv.record_audio(secs)
     if not wav_bytes:
         return ""
@@ -127,7 +128,7 @@ def _piper_exe() -> Path:
 
 def _voice_model(config: dict) -> Path:
     voice = config.get("voice", {}) if isinstance(config, dict) else {}
-    name = voice.get("ttsVoice", _DEFAULT_TTS_VOICE)
+    name = voice.get("ttsVoice", _VOICE_DEFAULTS.get("ttsVoice", "en_GB-alan-medium"))
     return REPO / "bin" / "voices" / f"{name}.onnx"
 
 

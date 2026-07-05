@@ -53,6 +53,20 @@ function Get-BobPortDefault {
   return $script:BobPortDefaults[$Name]
 }
 
+function Get-DefaultRouting {
+  # ONE-A Finding 2 — derive the default routing map (defaultRole->chat, proRole->chat-pro, …) from
+  # config/defaults.json roleTable, the SAME derivation as Python bob_config._routing_from_role_table.
+  # Routing default VALUES thus live once in the roleTable and are never re-authored in bob.psd1.
+  $routing = @{}
+  foreach ($entry in $script:BobDefaults.roleTable.Values) {
+    $section = if ($entry.Contains('section')) { $entry.section } else { 'routing' }
+    if ($section -ne 'routing') { continue }   # vision lives in its own section, not routing
+    if (-not $routing.Contains($entry.base)) { $routing[$entry.base] = $entry.fallback }
+    if (-not $routing.Contains($entry.pro))  { $routing[$entry.pro]  = $entry.proFallback }
+  }
+  return $routing
+}
+
 function Get-ModelsConfig {
   if (-not (Test-Path $script:ModelsFile)) { throw "models config not found: $script:ModelsFile" }
   $base = Import-PowerShellDataFile -LiteralPath $script:ModelsFile
@@ -131,6 +145,9 @@ function Get-BobConfig {
   # OSes resolve the same runtime config (path separators come from defaults.json = forward slashes).
   $base = (Get-BobDefaults).runtime
   if (-not $base) { $base = @{} }
+  # ONE-A Finding 2 — routing values are derived from the roleTable (one source), not authored in
+  # bob.psd1. Seed the default routing map here; a user.psd1 'bob.routing' override still merges on top.
+  if (-not $base.routing) { $base['routing'] = Get-DefaultRouting }
   $overlay = Import-PowerShellDataFile -LiteralPath $script:BobFile
   $base = Merge-BobHashtable -Base $base -Over $overlay
   $userFile = Join-Path (Split-Path $script:BobFile) 'user.psd1'
@@ -152,7 +169,9 @@ function Get-BobConfig {
     $base['searxngPort'] = [int]($md.searxngPort ?? (Get-BobPortDefault 'searxngPort'))
     $base['n8nPort']     = [int]($md.n8nPort     ?? (Get-BobPortDefault 'n8nPort'))
     $base['webuiPort']   = [int]($md.webuiPort   ?? (Get-BobPortDefault 'webuiPort'))
-    $base['litellmKey']  = $md.litellmKey ?? 'sk-local'
+    # ONE-A Finding 1 — litellmKey is NOT re-sourced from models.psd1 here. It resolves from
+    # config/defaults.json.runtime.litellmKey (already in $base), matching the Python side; the sole
+    # runtime override is osenv.secret('litellmKey'). Re-adding it here would silently shadow that.
   } catch {}
   # Default allowedReadPaths to repo root if empty — avoids hardcoded paths in bob.psd1
   if ($base.agent -and -not $base.agent.allowedReadPaths) {

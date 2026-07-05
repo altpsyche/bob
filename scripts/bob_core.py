@@ -46,6 +46,18 @@ def load_defaults() -> dict:
 # normally carries these; this dict is the only literal fallback, read via _port().
 _PORT_DEFAULTS = load_defaults()["ports"]
 
+# ONE-A Finding 5 — the memory-config defaults live once in config/defaults.json.runtime.memory (NB1);
+# the per-key `.get(key, LITERAL)` fallbacks below read from here instead of re-inlining the literal, so
+# a default is defined in exactly one place. (`memory.enabled` keeps an explicit fail-CLOSED False at its
+# call site — that is a deliberate safety default when no memory config exists at all, not a mirror.)
+_MEM_DEFAULTS = load_defaults().get("runtime", {}).get("memory", {})
+
+
+def _mem(mem: dict, key: str):
+    """A memory-config value from the caller's config, defaulting to the single-sourced neutral default
+    (config/defaults.json.runtime.memory) rather than a re-inlined literal."""
+    return mem.get(key, _MEM_DEFAULTS.get(key))
+
 
 def _port(config: dict, name: str) -> int:
     """Resolve a service port from config, falling back to the one central default dict."""
@@ -138,7 +150,7 @@ def capability_probe(config: Optional[dict] = None) -> tuple:
 
 def _get_db_path(config: Optional[dict] = None) -> str:
     cfg = config or load_config()
-    rel = cfg.get("memory", {}).get("dbPath", "data/bob.db")
+    rel = _mem(cfg.get("memory", {}), "dbPath")
     return str(REPO / rel.replace("\\", "/"))
 
 
@@ -147,7 +159,7 @@ def project_key(cwd: Optional[str] = None, config: Optional[dict] = None) -> Opt
     directory itself. Returns None when memory.scopeByProject is off (→ everything global). Pure
     Python (no git subprocess, per CONTRIBUTING): walk up looking for a `.git` entry."""
     cfg = config or load_config()
-    if not cfg.get("memory", {}).get("scopeByProject", True):
+    if not _mem(cfg.get("memory", {}), "scopeByProject"):
         return None
     start = (Path(cwd).resolve() if cwd else Path.cwd())
     for d in (start, *start.parents):
@@ -182,7 +194,7 @@ def memory_store(content: str, tags: str = "", mem_type: str = "fact",
     row_scope = scope if mem_type == "project" else None
     mid, is_new = bob_memory.store(
         content, db_path=db_path, mem_type=mem_type, owner=owner, scope=row_scope,
-        tags=(tags or None), salience=salience, dedup_threshold=float(mem.get("dedupThreshold", 0.92)),
+        tags=(tags or None), salience=salience, dedup_threshold=float(_mem(mem, "dedupThreshold")),
     )
     return f"Stored (id={mid}): {content[:80]}" if is_new else f"Already stored (similar id={mid})"
 
@@ -202,12 +214,12 @@ def memory_recall(query: str, k: int = 5, config: Optional[dict] = None,
     ranking = mem.get("ranking") or {}
     results = bob_memory.recall(
         query, k=k, db_path=db_path,
-        threshold=float(mem.get("recallThreshold", 0.35)),
+        threshold=float(_mem(mem, "recallThreshold")),
         owner=owner, scope=scope,
         weights=ranking, type_weights=mem.get("typeWeights"),
         half_lives=ranking.get("halfLifeDays"),
         # O14 — hybrid recall (dense + BM25/FTS5 + RRF). Default 'dense' == pre-O14.
-        retrieval=mem.get("retrieval", "dense"), rrf_k=int(mem.get("rrfK", 60)),
+        retrieval=_mem(mem, "retrieval"), rrf_k=int(_mem(mem, "rrfK")),
     )
     if not results:
         return "(no results)"
@@ -221,12 +233,12 @@ def memory_profile_block(owner: Optional[str] = None, config: Optional[dict] = N
     None so a session never fails to start over memory."""
     cfg = config or load_config()
     mem = cfg.get("memory", {})
-    if not mem.get("enabled", False) or not mem.get("injectProfileAtStart", True):
+    if not mem.get("enabled", False) or not _mem(mem, "injectProfileAtStart"):  # enabled: fail-closed
         return None
     db_path = _get_db_path(cfg)
     _ensure_memory_importable()
     owner = owner or cfg.get("agent", {}).get("defaultOwner", "local")
-    max_tokens = int(mem.get("profileMaxTokens", 200))
+    max_tokens = int(_mem(mem, "profileMaxTokens"))
     try:
         import bob_memory  # type: ignore
         body = bob_memory.profile_block(owner, db_path, max_chars=max_tokens * 4)
@@ -255,7 +267,7 @@ def project_memory_block(project_dir: Optional[str], config: Optional[dict] = No
     memory.projectFiles; capped at memory.bobMdMaxTokens. Best-effort: unreadable files are skipped."""
     cfg = config or load_config()
     mem = cfg.get("memory", {})
-    if not mem.get("projectFiles", True) or not project_dir:
+    if not _mem(mem, "projectFiles") or not project_dir:
         return None
     parts = []
     for p in _project_memory_files(project_dir):
@@ -267,7 +279,7 @@ def project_memory_block(project_dir: Optional[str], config: Optional[dict] = No
             parts.append(txt)
     if not parts:
         return None
-    body = "\n\n".join(parts)[: int(mem.get("bobMdMaxTokens", 4000)) * 4]
+    body = "\n\n".join(parts)[: int(_mem(mem, "bobMdMaxTokens")) * 4]
     return "Project instructions (from BOB.md — follow these for this project):\n" + body
 
 
@@ -310,16 +322,16 @@ def consolidate_session(turns: list, config: Optional[dict] = None,
         import bob_memory  # type: ignore
         result = bob_memory.consolidate_session(
             turns, db_path=db_path, model=model, owner=owner, scope=scope,
-            dedup_threshold=float(mem.get("dedupThreshold", 0.92)),
-            timeout=int(mem.get("consolidateTimeout", 30)),   # bound end-of-session stall
-            reconcile_top_k=int(mem.get("reconcileTopK", 20)),  # MEM-8 existing-facts window
-            max_tokens=int(mem.get("maxSummaryTokens", 512)),   # clears the reasoning-token budget
+            dedup_threshold=float(_mem(mem, "dedupThreshold")),
+            timeout=int(_mem(mem, "consolidateTimeout")),   # bound end-of-session stall
+            reconcile_top_k=int(_mem(mem, "reconcileTopK")),  # MEM-8 existing-facts window
+            max_tokens=int(_mem(mem, "maxSummaryTokens")),   # clears the reasoning-token budget
             source_session=session_id,                          # MEM-10 provenance stamp
         )
         # MEM-5 — opportunistic hygiene at end of consolidation: TTL prune + per-owner size cap.
         try:
             bob_memory.prune(db_path, owner=owner, forget_after_days=mem.get("forgetAfterDays"),
-                             max_rows=int(mem.get("maxRows", 2000)))
+                             max_rows=int(_mem(mem, "maxRows")))
         except Exception:
             pass
         return result

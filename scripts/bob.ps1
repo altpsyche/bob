@@ -845,7 +845,9 @@ N8N_PORT=$($dp.n8nPort ?? (Get-BobPortDefault 'n8nPort'))
             $entry = Read-BobSchedules | Where-Object { $_.name -eq $name } | Select-Object -First 1
             if (-not $entry) { Write-Host "Schedule not found: $name" -ForegroundColor Red; break }
             Write-Host "Running '$name' ..." -ForegroundColor Cyan
-            $role = if ($entry.action.role) { $entry.action.role } else { $bobCfg.routing.agentRole ?? 'planner' }
+            # ONE-A Finding 2 — fallback unified to 'chat' (matches bob_loop.py / shell.py); routing.agentRole
+            # is always present now (derived from roleTable), so this only fires if routing is wholly absent.
+            $role = if ($entry.action.role) { $entry.action.role } else { $bobCfg.routing.agentRole ?? 'chat' }
             $env:PYTHONIOENCODING = 'utf-8'
             $result = & $venvPy $loopScript $entry.action.goal --role $role | Out-String
             $env:PYTHONIOENCODING = $null

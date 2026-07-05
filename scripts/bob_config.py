@@ -4,7 +4,7 @@ override) WITHOUT PowerShell, so the agent runtime can boot on any OS.
 
 This is deliberately NOT a re-implementation of the PowerShell `Get-BobConfig` merge — it produces
 only the ~15 keys the Python core actually reads (C2): port, litellmPort, agentPort, searxngPort,
-litellmKey, routing.*, persona.systemPrompt, agent.*, memory.*, vision.*. It never reproduces
+litellmKey, routing.*, persona.systemPrompt, agent.*, memory.*, vision.*, voice.*. It never reproduces
 provisioner keys (profiles, peers, model file paths, build flags, toastAppId). Parity is "the
 runtime receives every runtime key it needs, correctly" — not byte-identity with the PS merge.
 
@@ -86,6 +86,7 @@ def resolve_runtime_config(user_path: Optional[Path] = None) -> dict:
         "persona": copy.deepcopy(runtime.get("persona", {})),
         "memory": copy.deepcopy(runtime.get("memory", {})),
         "vision": copy.deepcopy(runtime.get("vision", {})),
+        "voice": copy.deepcopy(runtime.get("voice", {})),
         "agent": copy.deepcopy(runtime.get("agent", {})),
     }
     # agentPort default lives under agent (that's where the server reads it, via _port).

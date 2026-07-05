@@ -38,13 +38,12 @@ if (Test-Path $memPs) {
 
 # --- Update config/user.psd1 with bob section + optional API key ---
 $userCfg = Join-Path $repo 'config\user.psd1'
+# ONE-A: no persona.name written here — it was a dead key (read nowhere at runtime). The user's name
+# lives in the SQLite profile (init-profile --name above); this just marks the [bob] section present.
 $bobSection = @"
 
-# Bob persona overrides (written by onboard.ps1)
+# Per-machine bob overrides (empty by default; see config/bob.psd1 for the shape)
 bob = @{
-  persona = @{
-    name = '$userName'
-  }
 }
 "@
 

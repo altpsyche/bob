@@ -65,6 +65,14 @@
       "visionRole": "vision",
       "visionProRole": "vision-pro"
     },
+    "voice": {
+      "enabled": true,
+      "sttModel": "small",
+      "ttsEngine": "piper",
+      "ttsVoice": "en_GB-alan-medium",
+      "silenceSec": 1.5,
+      "maxTokens": 512
+    },
     "agent": {
       "enabled": false,
       "agency": "show",

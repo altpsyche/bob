@@ -141,15 +141,37 @@ $bad -join ','
 
         assert_subset(py, ps, "cfg")
 
-    def test_persona_deep_merges_not_shallow(self):
-        """WI-6 regression guard: persona.systemPrompt comes from defaults.json.runtime while
-        persona.name/style come from the bob.psd1 overlay. A SHALLOW merge would drop systemPrompt;
-        the merged persona must carry all three keys."""
+    def test_persona_from_neutral_layer(self):
+        """ONE-A: persona.name/style were deleted (dead keys). persona now resolves entirely from
+        config/defaults.json.runtime.persona — Get-BobConfig must still carry systemPrompt from there."""
         out = self._pwsh(". ./scripts/_models.ps1; (Get-BobConfig).persona | ConvertTo-Json -Compress")
         persona = json.loads(out)
-        self.assertTrue(persona.get("systemPrompt"), "systemPrompt dropped — merge is shallow, not deep")
-        self.assertEqual(persona.get("name"), "Bob")
-        self.assertEqual(persona.get("style"), "direct")
+        self.assertTrue(persona.get("systemPrompt"), "systemPrompt missing — neutral persona not seeded")
+
+    def test_agent_section_deep_merges_not_shallow(self):
+        """WI-6 regression guard (retargeted after ONE-A removed the persona overlay): the agent.* runtime
+        keys come from defaults.json.runtime.agent while agent.toastAppId comes from the bob.psd1 overlay.
+        A SHALLOW merge would drop one side — the merged agent must carry BOTH the overlay's toastAppId
+        AND a neutral key (maxSteps)."""
+        out = self._pwsh(". ./scripts/_models.ps1; (Get-BobConfig).agent | ConvertTo-Json -Compress")
+        agent = json.loads(out)
+        self.assertTrue(agent.get("toastAppId"), "toastAppId dropped — overlay lost in a shallow merge")
+        self.assertIn("maxSteps", agent, "maxSteps dropped — neutral runtime lost in a shallow merge")
+
+    def test_routing_derived_not_authored(self):
+        """ONE-A Finding 2: routing is derived from the roleTable (Get-DefaultRouting), not authored in
+        bob.psd1. Get-BobConfig.routing must match the Python resolver's derived routing exactly."""
+        out = self._pwsh(". ./scripts/_models.ps1; (Get-BobConfig).routing | ConvertTo-Json -Compress")
+        ps_routing = json.loads(out)
+        py_routing = bob_config.resolve_runtime_config()["routing"]
+        self.assertEqual(ps_routing, py_routing, "routing drift between PS Get-DefaultRouting and Python")
+
+    def test_litellm_key_from_neutral_not_models_psd1(self):
+        """ONE-A Finding 1: litellmKey resolves from defaults.json.runtime.litellmKey on both sides —
+        not re-sourced from models.psd1. Setting runtime.litellmKey must be honored by Get-BobConfig."""
+        out = self._pwsh(". ./scripts/_models.ps1; (Get-BobConfig).litellmKey")
+        self.assertEqual(out, bob_core.load_defaults()["runtime"]["litellmKey"],
+                         "litellmKey not sourced from defaults.json.runtime")
 
 
 if __name__ == "__main__":

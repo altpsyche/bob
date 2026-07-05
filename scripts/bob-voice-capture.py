@@ -17,6 +17,7 @@ if hasattr(sys.stdout, 'reconfigure'):
 
 import osenv       # ONE-B3 — mic capture lives in the OS seam (single-sourced)
 import bob_voice   # ONE-B4 — the STT client (transcribe) is single-sourced in the voice capability core
+from bob_core import _port   # ONE-A Finding 4 — the STT port default lives in config/defaults.json (NB1)
 
 
 def transcribe(wav_path: str, port: int) -> str:
@@ -31,7 +32,8 @@ def transcribe(wav_path: str, port: int) -> str:
 def main():
     parser = argparse.ArgumentParser(description='Mic capture + whisper transcription')
     parser.add_argument('--file',        help='Transcribe this audio file instead of mic')
-    parser.add_argument('--port',        type=int, default=int(os.environ.get('BOB_STT_PORT', 8082)))
+    parser.add_argument('--port',        type=int,
+                        default=int(os.environ.get('BOB_STT_PORT') or _port({}, 'sttPort')))
     parser.add_argument('--silence-sec', type=float, default=1.5, dest='silence_sec')
     args = parser.parse_args()
 
