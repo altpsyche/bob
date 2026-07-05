@@ -45,7 +45,7 @@
     "diagnose": "python",
     "bench": "python",
     "setup": "python",
-    "setup-voice": "pwsh",
+    "setup-voice": "python",
     "fabric-setup": "python",
     "gen": "python",
     "fetch": "python",

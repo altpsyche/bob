@@ -188,6 +188,80 @@ def build_llama(cpu: bool = False, arch: int = 0, force: bool = False, cuda_root
     return f"Built. llama-server at: {BIN / exe}"
 
 
+SRC_WHISPER = REPO / "external" / "whisper.cpp"
+
+
+def build_whisper(force: bool = False, cpu_only: bool = False) -> str:
+    """(Re)build whisper.cpp -> bin/whisper-server + whisper-cli (CUDA by default, CPU fallback). Shares the
+    cmake resolution + CUDA seams with build_llama; skips shared libs already in bin/ (whisper + llama share
+    GGML). Port of build-whisper.ps1."""
+    import osenv
+
+    win = osenv.os_name() == "windows"
+    server = osenv.bin_exe("whisper-server")
+    cli = osenv.bin_exe("whisper-cli")
+    if not force and server.exists() and cli.exists():
+        return f"{server.name} + {cli.name} already built — skipping (use --force to rebuild)."
+    if not (SRC_WHISPER / "CMakeLists.txt").exists():
+        raise RuntimeError(f"whisper.cpp submodule not found at {SRC_WHISPER}. Run: git submodule update --init --recursive")
+
+    gen = "Visual Studio 17 2022" if win else "Ninja"
+    gen_args = ["-G", gen] if win else ["-G", gen, "-DCMAKE_BUILD_TYPE=Release"]
+    cmake = _resolve_cmake(gen)
+
+    cuda_args = []
+    if not cpu_only:
+        gpu = osenv.gpu_arch()
+        arch = gpu["CudaArch"] if gpu else 120
+        root = osenv.best_cuda_root(arch)
+        if root:
+            cuda_args = ["-DWHISPER_CUDA=ON", f"-DCMAKE_CUDA_ARCHITECTURES={arch}", f"-DCUDAToolkit_ROOT={root}"]
+            nvcc = Path(root) / "bin" / osenv.exe_name("nvcc")
+            if not win:
+                cuda_args.append(f"-DCMAKE_CUDA_COMPILER={nvcc}")
+                host_cxx = osenv.cuda_host_compiler()
+                if host_cxx:
+                    cuda_args.append(f"-DCMAKE_CUDA_HOST_COMPILER={host_cxx}")
+                osenv.assert_cuda_host_compiler_ok(nvcc, host_cxx)
+            else:  # pragma: no cover
+                import os
+                os.environ["CUDA_PATH"] = root
+            print(f"Building whisper.cpp (CUDA sm_{arch})...", file=sys.stderr)
+        else:
+            print("CUDA toolkit not found — falling back to CPU-only whisper build.", file=sys.stderr)
+    if not cuda_args:
+        cuda_args = ["-DWHISPER_CUDA=OFF"]
+
+    build_dir = SRC_WHISPER / "build"
+    if build_dir.exists():
+        shutil.rmtree(build_dir)
+    _run([cmake, "-B", "build", *gen_args, *cuda_args, "-DWHISPER_BUILD_TESTS=OFF", "-DWHISPER_BUILD_EXAMPLES=ON"],
+         cwd=SRC_WHISPER)
+    _run([cmake, "--build", "build", "--config", "Release", "-j"], cwd=SRC_WHISPER)
+
+    release_bin = build_dir / ("bin/Release" if win else "bin")
+    if not release_bin.exists():
+        found = next(SRC_WHISPER.glob(f"build/**/{server.name}"), None)
+        if not found:
+            raise RuntimeError(f"{server.name} not found in build output — build may have failed silently")
+        release_bin = found.parent
+    BIN.mkdir(parents=True, exist_ok=True)
+    if not (release_bin / server.name).exists():
+        raise RuntimeError(f"{server.name} missing from staged output — aborting")
+    import re
+    for f in release_bin.iterdir():
+        dest = BIN / f.name
+        is_shared = re.search(r"\.(dll|so)(\.\d+)*$", f.name)
+        if is_shared and dest.exists():
+            continue  # a compatible GGML lib from the llama build is already there (maybe loaded)
+        try:
+            shutil.copy2(f, dest)
+        except OSError:
+            if not is_shared:
+                raise
+    return f"Built. whisper-server at: {server}"
+
+
 # --- build llama-swap (Go) ------------------------------------------------------------------------
 
 def build_llama_swap(force: bool = False) -> str:

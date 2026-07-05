@@ -127,7 +127,7 @@ COMMANDS = [
     {"name": "setup", "group": "Config", "summary": "Pre-flight health check / first-run setup",
      "args": "[check]", "runtime": "python", "handler": "setup"},
     {"name": "setup-voice", "group": "Config", "summary": "Download piper + whisper, build whisper-server",
-     "args": "", "runtime": "pwsh", "handler": None},
+     "args": "[--force]", "runtime": "python", "handler": "setup-voice"},
     {"name": "fabric-setup", "group": "Config", "summary": "Install Fabric and point it at the local endpoint",
      "args": "[--force]", "runtime": "python", "handler": "fabric-setup"},
     {"name": "gen", "group": "Config", "summary": "Regenerate runtime configs from models.json",

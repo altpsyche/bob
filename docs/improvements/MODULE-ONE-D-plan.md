@@ -11,7 +11,7 @@ native-first**, C5 CI ownership), [MODULE-ONE-C-plan.md](MODULE-ONE-C-plan.md) (
 per-verb 3-adapter template; the osenv-seam precedent). ONE-C decisions D1–D6 are **settled — do not
 re-litigate.** The new decisions **DD1–DD6 are RESOLVED (2026-07-05, see Part 5):** full Python `build` port ·
 curl-subprocess `fetch` · keep `venv-eval` · `mlock` grant ported CLI-only · minimal-shell-stub → Python
-kernel · ONE-D owns the kernel (D8) as capstone. **Slices D0–D6 ✅ DONE (suite 786 green; 60 python / 1 pwsh verb); next = D7 (setup-voice + onboarding caps).**
+kernel · ONE-D owns the kernel (D8) as capstone. **Slices D0–D7 ✅ DONE (suite 797 green; ALL 61 verbs on Python, zero pwsh verbs); next = D8 (the cold-start kernel + delete scripts/*.ps1).**
 
 ## Goal — and the one distinction that shapes the whole module
 
@@ -301,10 +301,17 @@ capstone once its called-capabilities exist.
   regen verbs.json, deleted the 70-line bob.ps1 update case. **Only 1 pwsh verb remains: `setup-voice`**
   (60 python / 1 pwsh). tests/test_slice_d6_update.py (6, incl. unchanged-skips-rebuild / rebuild+discard /
   verify-fail-rollback / --tag-checkout).
-- **Slice D7 — post-venv onboarding capabilities:** `setup-voice` (whisper/piper provision, reuses D1 DL +
-  `build-whisper` + stack.py), `setup-clients` (Continue/aider wiring, calls `generate.gen_continue`),
-  `install-cli` (PATH shim/completions), `onboard` (interactive profile + `generate.gen_all`). Each a
-  capability the kernel will call. Verbs → python. `bob-memory.ps1` retires here (onboard was its last caller).
+- **Slice D7 — `setup-voice`** ✅ **DONE** (on main; suite 797 green): `provision.py:setup_voice(force,
+  smoke)` ports setup-voice.ps1 — build whisper-server (new `build.py:build_whisper`, a build_llama-shaped
+  port with the WHISPER_CUDA flags + shared-lib-skip staging), download the whisper model + piper
+  binary/voice + espeak-ng-data (urllib/zipfile/tarfile — stdlib), `_install_piper` extract, pip
+  sounddevice+numpy into venv-litellm, best-effort STT smoke (start whisper via stack → POST silence →
+  stop). `bob setup-voice [--force]` (cli._handle_setup_voice). Flipped →python, regen verbs.json, deleted
+  the bob.ps1 case. **MILESTONE: every verb (61) is on Python — zero pwsh verbs remain.** setup-voice.ps1 +
+  build-whisper.ps1 KEPT (pre-venv setup.ps1 calls them; retire at D8). tests/test_slice_d7_setup_voice.py
+  (11, incl. a real tar-extraction test for _install_piper + build_whisper CPU/short-circuit).
+  **`setup-clients` / `install-cli` / `onboard` are NOT verbs** (setup.ps1 calls them pre-venv) — they port
+  as kernel-called capability fns in **D8** (retiring bob-memory.ps1 there).
 - **Slice D8 — the cold-start kernel (capstone, Part 3):** `install_prereqs.py` (Tier 0) + `kernel.py`
   (Tier 1); shrink `setup.sh`/`.bat` + `install_prereqs.sh`/`.bat` to the minimal python3-ensuring stub
   (DD5); the kernel *imports* D1/D5/D7 + generate + stack. **Now delete** every remaining `*.ps1` under

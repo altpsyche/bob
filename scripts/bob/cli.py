@@ -815,6 +815,19 @@ def _handle_fetch(rest: list) -> int:
     return 0
 
 
+def _handle_setup_voice(rest: list) -> int:
+    """bob setup-voice [--force] — provision whisper + piper (build, download, deps, smoke)."""
+    force = any(f in rest for f in ("--force", "-Force"))
+    mod = _provision_mod()
+    mod.configure(_cfg())
+    try:
+        print(mod.setup_voice(force=force))
+    except RuntimeError as e:
+        print(f"setup-voice failed: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def _handle_lock(rest: list) -> int:
     """bob lock [--check] — regenerate versions.lock from its sources, or (--check) fail if it drifted."""
     from bob import versions
@@ -1020,6 +1033,7 @@ _HANDLERS = {
     "build": _handle_build,           # ONE-D Slice D5 — native llama.cpp build (scripts/tools/build.py)
     "fabric-setup": _handle_fabric_setup,
     "update": _handle_update,         # ONE-D Slice D6 — release-aware update + rollback (build.py)
+    "setup-voice": _handle_setup_voice,  # ONE-D Slice D7 — voice provisioning (provision.py)
     "fetch": _handle_fetch,           # ONE-D Slice D1 — model downloads (scripts/tools/provision.py)
     "lock": _handle_lock,             # ONE-D Slice D2 — versions.lock writer + gate (scripts/bob/versions.py)
     "mlock": _handle_mlock,           # ONE-D Slice D3 — mlock privilege status/grant (osenv)

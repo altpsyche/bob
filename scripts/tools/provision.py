@@ -222,6 +222,156 @@ def _files_for(m: dict):
         yield m["mmproj"], m["mmproj"], 0.6
 
 
+# --- setup-voice (D7): provision whisper + piper (post-venv) --------------------------------------
+
+def _dl_file(url: str, dest: Path, label: str, force: bool, out: list) -> None:
+    import urllib.request
+    if dest.exists() and not force:
+        out.append(f"  {label} already present — skipping.")
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    urllib.request.urlretrieve(url, dest)  # noqa: S310 — fixed HF/GitHub https URLs
+    out.append(f"  saved {label}")
+
+
+def _install_piper(url: str, win: bool, bindir: Path, out: list) -> None:
+    """Download + extract the piper release: binary -> bin/piper(.exe), shared libs + espeak-ng-data ->
+    bin/. Port of setup-voice.ps1 step 3's extract."""
+    import tarfile
+    import tempfile
+    import urllib.request
+    import zipfile
+
+    tmp = Path(tempfile.mkdtemp())
+    arc = tmp / ("piper.zip" if win else "piper.tar.gz")
+    urllib.request.urlretrieve(url, arc)  # noqa: S310
+    if win:  # pragma: no cover — Windows piper .zip
+        with zipfile.ZipFile(arc) as z:
+            z.extractall(tmp)
+        binname = "piper.exe"
+    else:
+        with tarfile.open(arc) as t:
+            t.extractall(tmp, filter="data")  # 3.12+ safe-extraction filter
+        binname = "piper"
+    found = next((p for p in tmp.rglob(binname) if p.is_file()), None)
+    if not found:
+        raise RuntimeError(f"{binname} not found in the extracted piper archive")
+    bindir.mkdir(parents=True, exist_ok=True)
+    dst = bindir / binname
+    shutil.copy2(found, dst)
+    if not win:
+        dst.chmod(0o755)
+    for lib in found.parent.glob("*.so*" if not win else "*.dll"):
+        shutil.copy2(lib, bindir / lib.name)
+    espeak = found.parent / "espeak-ng-data"
+    if espeak.exists():
+        dest = bindir / "espeak-ng-data"
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.copytree(espeak, dest)
+        out.append("  espeak-ng-data/ copied to bin/")
+    else:
+        out.append("  WARNING: espeak-ng-data not found beside piper — TTS phonemization may fail")
+    shutil.rmtree(tmp, ignore_errors=True)
+    out.append("  piper extracted to bin/")
+
+
+def _silent_wav(path: Path, seconds: int = 2, rate: int = 44100) -> None:
+    import wave
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(b"\x00\x00" * (rate * seconds))
+
+
+def _voice_smoke(stt_port: int) -> str:
+    """Best-effort STT smoke: start whisper, POST a silent WAV, stop. Never fatal (port of step 5)."""
+    import os
+    import tempfile
+    import time
+
+    import requests
+    sys.path.insert(0, str(SCRIPTS / "tools"))
+    import stack
+    wav = Path(tempfile.gettempdir()) / f"bob-stt-probe-{os.getpid()}.wav"
+    _silent_wav(wav)
+    try:
+        stack.configure(_cfg)
+        stack.whisper_control("start")
+        time.sleep(2)
+        with open(wav, "rb") as f:
+            r = requests.post(f"http://localhost:{stt_port}/inference", files={"file": f},
+                              data={"temperature": "0.0", "response_format": "json"}, timeout=30)
+        return f"  smoke test passed. Transcript of silence: '{r.json().get('text', '')}'"
+    except Exception as e:  # noqa: BLE001 — smoke is advisory
+        return f"  smoke test skipped/failed ({e}) — verify later: bob transcribe <file>"
+    finally:
+        wav.unlink(missing_ok=True)
+        try:
+            stack.whisper_control("stop")
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def setup_voice(force: bool = False, smoke: bool = True) -> str:
+    """Provision Phase-2 voice: build whisper-server, download the whisper model + piper binary/voice +
+    espeak-ng-data, install sounddevice+numpy into venv-litellm, and (best-effort) smoke-test STT. Port of
+    setup-voice.ps1. Post-venv (needs venv-litellm pip)."""
+    import subprocess
+
+    import osenv
+    from bob_core import _port
+
+    voice = (_cfg or {}).get("voice", {})
+    stt_model = voice.get("sttModel", "small")
+    tts_voice = voice.get("ttsVoice", "en_GB-alan-medium")
+    win = osenv.os_name() == "windows"
+    out = ["Voice setup:"]
+
+    parts = tts_voice.split("-")  # en_GB-alan-medium
+    lang = parts[0].split("_")[0]
+    vbase = (f"https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/{lang}/{parts[0]}/"
+             f"{parts[1]}/{parts[2]}/{tts_voice}")
+    piper_url = ("https://github.com/rhasspy/piper/releases/download/2023.11.14-2/"
+                 + ("piper_windows_amd64.zip" if win else "piper_linux_x86_64.tar.gz"))
+
+    # [1/5] whisper-server
+    server = osenv.bin_exe("whisper-server")
+    if force or not server.exists():
+        sys.path.insert(0, str(SCRIPTS / "tools"))
+        import build
+        build.configure(_cfg)
+        out.append(build.build_whisper(force=force))
+    else:
+        out.append("  whisper-server already built — skipping.")
+
+    # [2/5] whisper model
+    _dl_file(f"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{stt_model}.bin",
+             REPO / "models" / "whisper" / f"ggml-{stt_model}.bin", f"ggml-{stt_model}.bin", force, out)
+
+    # [3/5] piper binary + voice model
+    bindir = REPO / "bin"
+    voices = bindir / "voices"
+    if force or not osenv.bin_exe("piper").exists():
+        _install_piper(piper_url, win, bindir, out)
+    _dl_file(f"{vbase}.onnx", voices / f"{tts_voice}.onnx", f"{tts_voice}.onnx", force, out)
+    _dl_file(f"{vbase}.onnx.json", voices / f"{tts_voice}.onnx.json", f"{tts_voice}.onnx.json", force, out)
+
+    # [4/5] python audio deps
+    pip = osenv.venv_exe("venv-litellm", "pip")
+    if not pip.exists():
+        raise RuntimeError("venv-litellm not found — run bootstrap first")
+    subprocess.run([str(pip), "install", "--quiet", "sounddevice", "numpy"])
+    out.append("  sounddevice + numpy installed")
+
+    # [5/5] smoke test (best-effort)
+    if smoke:
+        out.append(_voice_smoke(_port(_cfg, "sttPort")))
+    out.append("\nVoice setup complete. Enable voice.enabled / vision.enabled in your config to use it.")
+    return "\n".join(out)
+
+
 # --- lock (D2): read-only status for the agent; the write path is CLI-only (bob lock) -------------
 
 def lock_status() -> str:

@@ -126,7 +126,11 @@ switch ($cmd) {
   # this switch. Full first-run setup stays in setup.bat/setup.sh (ONE-D). (ONE-C Slice 3)
 
   # ── Phase 2: Voice + Vision ─────────────────────────────────────────────────
-  'setup-voice' { & "$repo\scripts\setup-voice.ps1" $(if ($rest -contains '-Force') { '-Force' }) }
+  # 'setup-voice' -> runtime=python (cli.py _handle_setup_voice over scripts/tools/provision.py:setup_voice
+  # — build whisper-server (build.build_whisper), download whisper model + piper binary/voice + espeak-ng-data,
+  # pip sounddevice/numpy into venv-litellm, best-effort STT smoke). Routed by the dispatch prologue before
+  # this switch. setup-voice.ps1 + build-whisper.ps1 are KEPT (pre-venv setup.ps1 calls them; retire at D8).
+  # (ONE-D Slice D7)
 
   # 'whisper' and 'piper' -> runtime=python (cli.py handlers over scripts/tools/stack.py control fns);
   # routed by the dispatch prologue before this switch. Cases deleted. (ONE-C Slice 2)
