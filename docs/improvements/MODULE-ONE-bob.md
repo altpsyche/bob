@@ -87,7 +87,7 @@ thing that keeps this DRY instead of a second orchestration path.
 
 | Sub | Name | What | Impact | Effort |
 |-----|------|------|--------|--------|
-| ONE-A | Single-source config | Python becomes sole resolver; port all `.psd1` authoring to `defaults.json` + neutral `user.json`; close the 5 Class-2 drift findings | HIGH | 1–2 d |
+| ONE-A ✓ | Single-source config | **DONE** — closed all 5 Class-2 drift findings; every config value now has one authored source (`defaults.json`); parity tests green | HIGH | 1–2 d |
 | ONE-B ✓ | One engine (= P3) | **DONE** — multimodal-in-loop + `/voice` shell mode; voice/vision ported onto the loop; `Invoke-BobStream` deleted | HIGH | 1–2 wk |
 | ONE-C | Capabilities-as-tools + `--run` | Port the 40 orchestration/provisioning pwsh handlers to Python capability functions; expose each to agent + `bob --run` | HIGH | 2–3 wk |
 | ONE-D | Kill PowerShell | Port bootstrap kernel to Python; retire pwsh handler-by-handler; delete all `*.ps1` | HIGH | (with C) |
@@ -110,6 +110,35 @@ proceeds as safe cleanup.
 ---
 
 ## ONE-A — Single-source the config
+
+**Status: ✓ DONE.** All 5 findings closed; both languages resolve config from `defaults.json` (Windows
+`Get-BobConfig` deep-merges only the thin `bob.psd1` overlay = `agent.toastAppId`). Verified live: the
+Python resolver and pwsh `Get-BobConfig` produce identical `routing`/`voice`/`persona`/`litellmKey`. New
+parity tests: `test_routing_derived_not_authored`, `test_litellm_key_from_neutral_not_models_psd1`,
+`test_agent_section_deep_merges_not_shallow` (retargeted from the deleted persona overlay),
+`test_persona_from_neutral_layer`. What landed per finding:
+- **#1 litellmKey** — deleted the `$base['litellmKey'] = $md.litellmKey ?? 'sk-local'` override in
+  `_models.ps1`; it now resolves from `defaults.json.runtime.litellmKey` (osenv.secret is the sole override),
+  matching Python. pwsh no longer shadows a `runtime.litellmKey`.
+- **#2 routing** — deleted the whole `routing` block from `bob.psd1`; added `_models.ps1 Get-DefaultRouting`
+  that derives routing from the `roleTable` (line-for-line mirror of Python `_routing_from_role_table`);
+  unified the missing-`agentRole` fallback to `'chat'` (`bob.ps1` was `'planner'`). `autoFallback` (dead)
+  dropped with the block.
+- **#3 persona** — deleted the dead `persona.name/style` keys from `bob.psd1` + `user.psd1` + `onboard.ps1`
+  (read nowhere; the `'bob'`≠`'Bob'` casing was the failing test). persona now resolves entirely from
+  `defaults.json.runtime.persona`. The WI-6 deep-merge regression guard retargeted onto the `agent` section
+  (still overlaid via `toastAppId`).
+- **#4 ports** — `bob-voice-capture.py` + `piper_server.py` now resolve `sttPort`/`ttsPort` via
+  `bob_core._port` (no literal). The `8080` in `setup-docker.ps1` is a **false positive** — it is SearXNG's
+  *container-internal* bind (compose maps `${SEARXNG_PORT}:8080`), a searxng-image constant, not `ports.port`;
+  left as-is.
+- **#5 memory literals** — added `bob_core._MEM_DEFAULTS` + `_mem(mem, key)`; the ~12 mirror `.get(key,
+  LITERAL)` defaults now read from `defaults.json.runtime.memory`. `memory.enabled` keeps an explicit
+  fail-CLOSED `False` at its call site (a deliberate safety default, not a mirror).
+- **bonus** — B4/B5 had introduced a fresh voice-settings duplication (`ttsVoice`/`silenceSec` in `bob.psd1`
+  ↔ literals in `bob_voice.py`); single-sourced into `defaults.json.runtime.voice`, emitted by the resolver,
+  read by both sides. The dead voice-only `systemPrompt` dropped (/voice uses the shared persona +
+  `format_for_speech`).
 
 ### Problem (from the dual-harness audit, Class 2 = DRIFT-RISK)
 PowerShell `Get-BobConfig` reads `defaults.json` + `bob.psd1` + `user.psd1` + `models.psd1`
