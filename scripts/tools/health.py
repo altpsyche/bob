@@ -1,0 +1,444 @@
+"""Bob health / diagnostics capabilities (ONE-C Slice 3) — the read-only pre-flight verbs.
+
+Functional grouping (D6): one module, several related tool fns, each reached three ways (agent tool /
+`bob <verb>` / `bob --run`) with no duplicated logic. Ports the bob.ps1 setup(check)/doctor/version/
+diagnose cases + Invoke-BobHealthCheck.
+
+  health_check(config, doctor=False)  <- `bob setup check` (deps/registration) and `bob doctor` (+runtime)
+  version_info(config)                <- `bob version`  (Bob release + binary/submodule versions)
+  diagnose(config)                    <- `bob diagnose` (GPU/VRAM/profile/endpoint/models/manifest)
+
+SPLIT (per the Slice 3 scope decision): `diagnose` ports the registry + light-discovery rows only —
+GPU arch/VRAM (nvidia-smi), profile fit, endpoint, model files, manifest. The DEEP build-time OS
+discovery (CUDA-toolkit resolution, system RAM, NUMA topology, mlock privilege, Linux package manager)
+that scripts/diagnose.ps1 also does stays in PowerShell and ports to Python in ONE-D alongside
+build/update, where the build-time seams (CUDA/cmake/package/NUMA) naturally land. scripts/diagnose.ps1
+is kept on disk (setup.bat/setup.sh still call it during first-run).
+
+DEGRADE GRACEFULLY (per the Slice 3 scope decision): two health_check rows depend on not-yet-ported
+slices — the BobAgent scheduled-task check (the scheduler quartet = Slice 5) and doctor's versions.lock
+reproducibility section (ONE-D). Both report a neutral 'pending' row (not a failure) and wire to the real
+readers when those slices land."""
+import sys
+from pathlib import Path
+
+_cfg: dict = {}
+
+REPO = Path(__file__).resolve().parent.parent.parent
+SCRIPTS = REPO / "scripts"
+
+_OK, _BAD, _PENDING = "✓", "✗", "○"  # check, cross, hollow circle (pending/deferred)
+_SIZE_TOL_PCT = 0.10  # ±10% GGUF size tolerance (mirrors _models.ps1 $script:SizeTolPct)
+_DIAG_ROLES = ["planner", "coder", "chat", "fim", "embed"]
+
+
+def configure(config: dict) -> None:
+    global _cfg
+    _cfg = config
+    if str(SCRIPTS) not in sys.path:
+        sys.path.insert(0, str(SCRIPTS))
+
+
+# --- discovery helpers ----------------------------------------------------------------------------
+
+def gpu_arch():
+    """{'CudaArch': int, 'Gen': str, 'MinCudaMajor': int} for GPU 0, or None. Port of Get-GpuArch —
+    nvidia-smi compute_cap ('8.9' -> 89, '12.0' -> 120) mapped to a generation name."""
+    import shutil
+    import subprocess
+
+    if not shutil.which("nvidia-smi"):
+        return None
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
+                             capture_output=True, text=True, timeout=10)
+        cap = (out.stdout.strip().splitlines()[0].strip() if out.stdout.strip() else "")
+        parts = cap.split(".")
+        if len(parts) != 2 or not all(p.isdigit() for p in parts):
+            return None
+        arch = int(parts[0]) * 10 + int(parts[1])  # "8.9" -> 89, "12.0" -> 120
+        if arch >= 120:
+            gen = "Blackwell"
+        elif arch >= 89:
+            gen = "Ada Lovelace"
+        elif arch >= 80:
+            gen = "Ampere"
+        elif arch >= 75:
+            gen = "Turing"
+        else:
+            gen = f"sm_{arch}"
+        return {"CudaArch": arch, "Gen": gen, "MinCudaMajor": 12 if arch >= 120 else 11}
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        return None
+
+
+def _venv_python() -> Path:
+    import osenv
+    return osenv.venv_exe("venv-litellm", "python")
+
+
+def _has_module(venv_py: Path, module: str) -> bool:
+    import subprocess
+    try:
+        r = subprocess.run([str(venv_py), "-c", f"import {module}; print('ok')"],
+                           capture_output=True, text=True, timeout=15)
+        return r.stdout.strip() == "ok"
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _tool_load_errors() -> list:
+    """Build the same ToolRegistry the loop builds and return its load errors [(name, kind, msg)].
+    Honors agent.disabledTools. Mirrors the pwsh 'Agent tools load without error' check (which shelled
+    the loader) but stays in-process."""
+    from tool_registry import ToolRegistry
+
+    disabled_raw = _cfg.get("agent", {}).get("disabledTools", [])
+    disabled = ({t.strip() for t in disabled_raw.split(",") if t.strip()}
+                if isinstance(disabled_raw, str) else set(disabled_raw))
+    return ToolRegistry.build(_cfg, disabled, quiet=True).errors
+
+
+# --- setup(check) / doctor ------------------------------------------------------------------------
+
+def health_check(config: dict, doctor: bool = False) -> str:
+    """Shared pre-flight for `bob setup check` and `bob doctor`. doctor=True adds the runtime checks
+    (endpoint reachable, GPU/VRAM, writable dirs, config parses). Port of Invoke-BobHealthCheck."""
+    import osenv
+    import requests
+    from bob_core import _port
+
+    lines: list = []
+
+    def check(label: str, ok: bool, fix: str = "") -> None:
+        sym = _OK if ok else _BAD
+        line = f"  {sym}  {label}"
+        if not ok and fix:
+            line += f"  →  {fix}"
+        lines.append(line)
+
+    def pending(label: str, note: str) -> None:
+        lines.append(f"  {_PENDING}  {label}  ({note})")
+
+    title = "Bob doctor — full pre-flight" if doctor else "Bob agent setup check"
+    lines += ["", title, "─" * 41]
+
+    venv_py = _venv_python()
+    venv_ok = venv_py.exists()
+    check("venv-litellm exists", venv_ok, "scripts/bootstrap-litellm.ps1")
+
+    # Python packages
+    if venv_ok:
+        has_openai = _has_module(venv_py, "openai")
+        has_requests = _has_module(venv_py, "requests")
+        fix = "pip install openai" if not has_openai else ("pip install requests" if not has_requests else "")
+        check("Python packages (openai, requests)", has_openai and has_requests, fix)
+    else:
+        check("Python packages (openai, requests)", False, "run bootstrap-litellm.ps1 first")
+
+    cfg_json = REPO / "data" / "config.json"
+    check("data/config.json exists", cfg_json.exists(), "run any bob command to generate")
+
+    check("scripts/tools/ exists", (SCRIPTS / "tools").is_dir())
+
+    # data/schedules.json — created empty if absent (matches the pwsh side-effect)
+    sched = REPO / "data" / "schedules.json"
+    if not sched.exists():
+        sched.parent.mkdir(parents=True, exist_ok=True)
+        sched.write_text("[]\n", encoding="utf-8")
+        lines.append("  →  data/schedules.json created (empty)")
+    check("data/schedules.json exists", sched.exists())
+
+    import shutil as _sh
+    check("fabric on PATH", bool(_sh.which("fabric")), "bob fabric-setup")
+
+    searx_port = _port(config, "searxngPort")
+    check(f"SearXNG reachable (:{searx_port})", osenv.is_port_in_use(searx_port), "bob services start")
+
+    n8n_port = _port(config, "n8nPort")
+    n8n_ok = False
+    try:
+        n8n_ok = requests.get(f"http://localhost:{n8n_port}", timeout=8).status_code < 500
+    except requests.RequestException:
+        pass
+    check(f"n8n reachable (:{n8n_port})", n8n_ok, "bob services start")
+
+    litellm_port = _port(config, "litellmPort")
+    check(f"LiteLLM proxy (:{litellm_port})", osenv.is_port_in_use(litellm_port), "bob litellm")
+
+    # BobAgent scheduled task — the scheduler quartet ports in Slice 5; degrade gracefully.
+    pending("BobAgent task registered", "pending Slice 5 — scheduling")
+
+    # Agent model downloaded
+    try:
+        import bob_models
+        roles = bob_models.profile_roles()
+        agent = roles.get("agent")
+        if agent:
+            model_file = REPO / "models" / agent.get("gguf", "")
+            check(f"Agent model ({agent.get('gguf', '')})", model_file.exists(), "bob fetch")
+        else:
+            check("Agent model in active profile", False, "add agent role to config/models.json")
+    except Exception:
+        check("Agent model (check failed)", False)
+
+    # Tools load cleanly — reuse the loop's registry build (single source of discovery).
+    if venv_ok:
+        try:
+            errs = _tool_load_errors()
+            check("Agent tools load without error", not errs, "run: bob agent tools")
+            for name, kind, msg in errs:
+                lines.append(f"     load error [{name}/{kind}]: {msg}")
+        except Exception as e:
+            check("Agent tools load without error", False, f"loader failed: {e}")
+    else:
+        check("Agent tools load without error", False, "venv-litellm missing")
+
+    check("config/litellm.yaml exists", (REPO / "config" / "litellm.yaml").exists(),
+          "scripts/gen-litellm.ps1")
+
+    if doctor:
+        lines.append("  ── runtime ──")
+
+        port = _port(config, "port")
+        api_ok = False
+        try:
+            api_ok = bool(requests.get(f"http://localhost:{port}/v1/models", timeout=3).json().get("data"))
+        except (requests.RequestException, ValueError):
+            pass
+        check(f"Inference endpoint reachable (http://localhost:{port}/v1)", api_ok, "bob serve")
+
+        from models import gpu_vram_gb
+        vram = gpu_vram_gb()
+        if vram:
+            check(f"GPU VRAM detected (~{vram} GB)", True)
+        else:
+            check("No GPU -> CPU backend (NC8 tier)", True, "nvidia-smi absent or no NVIDIA GPU")
+
+        for name, path in (("data", osenv.data_dir()), ("logs", osenv.cache_dir())):
+            writable = False
+            try:
+                path.mkdir(parents=True, exist_ok=True)
+                probe = path / f".write-test.{_pid()}"
+                probe.write_text("x", encoding="utf-8")
+                probe.unlink(missing_ok=True)
+                writable = True
+            except OSError:
+                pass
+            check(f"{name}/ writable", writable, f"check permissions on {path}")
+
+        parse_ok = False
+        try:
+            import json
+            parse_ok = json.loads(cfg_json.read_text(encoding="utf-8")) is not None
+        except (OSError, ValueError):
+            pass
+        check("data/config.json parses", parse_ok, "run any bob command to regenerate")
+
+        # Reproducibility (versions.lock, ND1) — the Test-BobReproducibility reader ports in ONE-D.
+        lines.append("  ── reproducibility ──")
+        pending("versions.lock reproducibility", "pending ONE-D — lock verify")
+
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _pid() -> int:
+    import os
+    return os.getpid()
+
+
+# --- version --------------------------------------------------------------------------------------
+
+def version_info(config: dict) -> str:
+    """Bob release (VERSION + versions.lock release) + binary versions + submodule commits. Port of the
+    `version` case (ND3). Binary paths via the osenv seam (.exe only on Windows)."""
+    import subprocess
+
+    import osenv
+
+    lines = []
+    version_file = REPO / "VERSION"
+    bob_ver = version_file.read_text(encoding="utf-8").strip() if version_file.exists() else "0.0.0"
+    lines.append(f"Bob {bob_ver}")
+
+    lock = REPO / "versions.lock"
+    if lock.exists():
+        try:
+            import json
+            rel = json.loads(lock.read_text(encoding="utf-8")).get("release")
+            if rel:
+                lines.append(f"  versions.lock release: {rel}")
+        except (OSError, ValueError):
+            pass
+
+    def _bin_version(base: str) -> str:
+        exe = osenv.bin_exe(base)
+        if not exe.exists():
+            return "(not built)"
+        try:
+            r = subprocess.run([str(exe), "--version"], capture_output=True, text=True, timeout=15)
+            out = (r.stdout or r.stderr).strip().splitlines()
+            return out[0].strip() if out else "(unknown)"
+        except (OSError, subprocess.SubprocessError):
+            return "(unknown)"
+
+    def _commit(subdir: str) -> str:
+        try:
+            r = subprocess.run(["git", "-C", str(REPO / "external" / subdir), "rev-parse", "--short", "HEAD"],
+                               capture_output=True, text=True, timeout=10)
+            return r.stdout.strip() if r.returncode == 0 else "?"
+        except (OSError, subprocess.SubprocessError):
+            return "?"
+
+    lines.append(f"llama-swap:   {_bin_version('llama-swap')}  ({_commit('llama-swap')})")
+    lines.append(f"llama-server: {_bin_version('llama-server')}  ({_commit('llama.cpp')})")
+    return "\n".join(lines)
+
+
+# --- diagnose (split: registry + light discovery; deep OS discovery -> ONE-D) ---------------------
+
+def diagnose(config: dict) -> str:
+    """System + model readiness — the registry-reading + light-discovery half. GPU arch/VRAM (nvidia-smi),
+    profile fit, endpoint, model files on disk, manifest coverage. The deep build-time discovery (CUDA
+    toolkit, system RAM, NUMA, mlock, Linux package manager) that scripts/diagnose.ps1 also reports stays
+    pwsh and ports in ONE-D. Port of scripts/diagnose.ps1 (light half)."""
+    import bob_models
+    import osenv
+    from bob_core import _port
+
+    sys.path.insert(0, str(REPO / "scripts" / "tools"))
+    from models import gpu_vram_gb, suggested_profile
+
+    lines = ["", "System check", "-" * 52]
+
+    def row(label: str, value: str) -> None:
+        lines.append(f"  {label:<10}  {value}")
+
+    # GPU + VRAM
+    gpu = gpu_arch()
+    vram = gpu_vram_gb()
+    if gpu:
+        fa = "  (WARNING: flash-attn needs sm_75+; disable flashAttn)" if gpu["CudaArch"] < 75 else ""
+        row("GPU", f"{gpu['Gen']}  (sm_{gpu['CudaArch']}){fa}")
+        row("VRAM", f"{vram} GB")
+    else:
+        row("GPU", "not detected  (nvidia-smi not found or no NVIDIA GPU)")
+        row("VRAM", "unknown")
+
+    mcfg = bob_models.load_models_config()
+    active = bob_models.resolve_profile_name(config=mcfg)
+    sug = suggested_profile(vram, mcfg)
+    if sug and sug == active:
+        row("Profile", f"{active}  (good fit for {vram} GB VRAM)")
+    elif sug and sug != active:
+        row("Profile", f"{active}  (suggested '{sug}' for this VRAM — switch: bob profile auto)")
+    else:
+        row("Profile", active)
+
+    port = _port(config, "port")
+    row("Endpoint", f"http://localhost:{port}/v1  ({'up' if osenv.is_port_in_use(port) else 'not running'})")
+
+    # Models present on disk (size-validated) + manifest coverage
+    roles = bob_models.profile_roles(active, mcfg)
+    mdir = REPO / "models"
+    present = total = 0
+    bad = []
+    for role in _DIAG_ROLES:
+        spec = roles.get(role)
+        if not spec:
+            continue
+        total += 1
+        f = mdir / spec.get("gguf", "")
+        if not f.exists():
+            continue
+        present += 1
+        if (mdir / f"{spec.get('gguf', '')}.part").exists():
+            bad.append(f"{spec['gguf']}  (partial download — delete and re-run: bob fetch)")
+            continue
+        exp = float(spec.get("sizeGB", 0) or 0)
+        act = f.stat().st_size / (1024 ** 3)
+        if exp and (act < exp * (1 - _SIZE_TOL_PCT) or act > exp * (1 + _SIZE_TOL_PCT)):
+            bad.append(f"{spec['gguf']}  (size {round(act, 1)} GB, expected ~{exp} GB — re-download: bob fetch)")
+
+    issues = 0
+    if bad:
+        row("Models", f"{present} / {total} present  — {len(bad)} corrupt")
+        for b in bad:
+            lines.append(f"             {b}")
+        issues += 1
+    elif present:
+        row("Models", f"{present} / {total} present  (profile: {active})")
+    else:
+        row("Models", f"none downloaded yet  (profile: {active})  — setup will fetch")
+
+    manifest_file = mdir / "manifest.json"
+    manifest = {}
+    if manifest_file.exists():
+        try:
+            import json
+            manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            manifest = {}
+    m_covered = m_total = 0
+    for role in _DIAG_ROLES:
+        spec = roles.get(role)
+        if not spec or not (mdir / spec.get("gguf", "")).exists():
+            continue
+        m_total += 1
+        if manifest.get(spec.get("gguf", "")):
+            m_covered += 1
+    if m_total:
+        row("Manifest", f"{m_covered} / {m_total} SHA256 recorded  (bob fetch to populate)")
+
+    lines.append("-" * 52)
+    if issues:
+        lines.append(f"  {issues} issue(s) noted above.")
+    else:
+        lines.append("  Light checks passed.")
+    # Honest split note: the deep machine-readiness half is not yet on Python.
+    lines += ["",
+              "  Deep machine-readiness (CUDA toolkit, system RAM, NUMA topology, mlock privilege,",
+              "  Linux package manager) runs during first-run setup (scripts/diagnose.ps1) and ports",
+              "  to Python in ONE-D.", ""]
+    return "\n".join(lines)
+
+
+# --- agent tool adapters --------------------------------------------------------------------------
+
+def _doctor() -> str:
+    return health_check(_cfg, doctor=True)
+
+
+def _diagnose() -> str:
+    return diagnose(_cfg)
+
+
+def _version_info() -> str:
+    return version_info(_cfg)
+
+
+def test() -> str:
+    return version_info(_cfg)
+
+
+TOOL_DEFS = [
+    {"type": "function", "function": {
+        "name": "doctor",
+        "description": ("Full pre-flight health check: dependency/registration checks (venv, packages, "
+                        "config, ports, agent model, tool loading) plus runtime checks (endpoint, GPU/VRAM, "
+                        "writable dirs). Read-only. Use to diagnose why Bob isn't working."),
+        "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "diagnose",
+        "description": ("System + model readiness: GPU generation/VRAM, active profile fit, endpoint state, "
+                        "which model files are on disk (size-validated), and manifest coverage. Read-only."),
+        "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "version_info",
+        "description": ("Report the Bob release plus llama-swap/llama-server binary versions and their "
+                        "submodule commits. Read-only."),
+        "parameters": {"type": "object", "properties": {}}}},
+]
+
+DISPATCH = {"doctor": _doctor, "diagnose": _diagnose, "version_info": _version_info}

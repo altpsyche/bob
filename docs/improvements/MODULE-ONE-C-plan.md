@@ -1,8 +1,8 @@
 # Module ONE-C — Capabilities-as-tools + the deterministic invoker (detailed plan)
 
-**Status:** executing. **C0 ✓ · Slice 1 ✓ · Slice 2 ✓ · C0c ✓ · Slice 4 ✓ DONE** (all on main; 632 tests
-green) — the models.psd1 gating risk is retired and the registry readers are live. Decisions D1–D6 resolved
-(see Part 5). **Next:** Slice 3 (health: setup-check/doctor/version/diagnose) → Slice 5 (scheduling: osenv
+**Status:** executing. **C0 ✓ · Slice 1 ✓ · Slice 2 ✓ · C0c ✓ · Slice 4 ✓ · Slice 3 ✓ DONE** (all on main;
+645 tests green) — the models.psd1 gating risk is retired, the registry readers are live, and health/
+diagnostics are on Python. Decisions D1–D6 resolved (see Part 5). **Next:** Slice 5 (scheduling: osenv
 scheduler quartet + exact Test-CronDue port + runner) → Slice 6 (generators; then drop the
 `bob_models.regenerate_configs` pwsh bridge). **Prereq:** ONE-A ✓ (config single-sourced), ONE-B ✓ (one
 engine; text/vision/voice on the loop). **Read first:**
@@ -238,7 +238,20 @@ Ordered by dependency and value; a slice is the template the rest follow.
   models.json → Slice 4). start-*.ps1/up.ps1 KEPT (still used by setup.ps1/setup-voice.ps1, ONE-D).
   Verified with a real litellm start→status→ps→stop round-trip. tests/test_slice2_stack.py (15) + osenv
   (+3).
-- **Slice 3 — Health:** `setup`(check), `doctor`, `version`, then `diagnose` (heaviest — GPU/CUDA/NUMA discovery).
+- **Slice 3 — Health** ✅ **DONE** (on main; 645 tests green): `scripts/tools/health.py` (D6) ports the
+  bob.ps1 `setup`(check)/`doctor`/`version`/`diagnose` cases + `Invoke-BobHealthCheck`. Three cores —
+  `health_check(config, doctor)` (setup-check + doctor share it), `version_info`, `diagnose` — reached three
+  ways (agent tools `doctor`/`diagnose`/`version_info`; `bob <verb>`; `bob --run`). **`diagnose` is the SPLIT
+  port** (scope decision): registry + light discovery only (GPU arch via `gpu_arch()`, VRAM, profile fit,
+  endpoint, model files size-validated, manifest coverage). The DEEP build-time OS discovery (CUDA-toolkit
+  resolution, system RAM, NUMA topology, mlock privilege, Linux package manager) that `scripts/diagnose.ps1`
+  also does **stays pwsh → ONE-D** (those are the build-time seams Part 1b/D2 deferred); `diagnose.ps1` is
+  kept (setup.ps1/fetch-models.ps1 still call it). **Two cross-slice `health_check` rows degrade gracefully**
+  (scope decision): the BobAgent scheduled-task row (scheduler quartet = Slice 5) and doctor's versions.lock
+  reproducibility row (ONE-D) print a neutral `○ pending` line, not a failure — wire to the real readers when
+  those slices land. Deleted the dead setup/doctor/version/diagnose bob.ps1 cases + the now-orphaned
+  `Invoke-BobHealthCheck`/`Show-Check` functions. tests/test_slice3_health.py (13). Verified live
+  (version/setup/doctor/diagnose all ran; pwsh front-door routes through the dispatch prologue).
 - **C0c — models.json neutralization** ✅ **DONE** (on main; 614 tests green): the gating risk is retired.
   `config/models.psd1` → `config/models.json` (pure data; a `_doc` field + git history keep the prose);
   `user.psd1` overlay → neutral `config/user.json` (both `Get-ModelsConfig` and `Get-BobConfig` read it;

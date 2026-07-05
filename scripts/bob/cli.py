@@ -681,6 +681,42 @@ def _handle_bench(rest: list) -> int:
     return 0
 
 
+# --- ONE-C Slice 3: health / diagnostics (scripts/tools/health.py) -------------------------------
+# setup(check) + doctor share health_check(); version + diagnose are separate cores. diagnose is the
+# SPLIT port (registry + light discovery); the deep OS discovery stays in scripts/diagnose.ps1 (ONE-D).
+
+def _health_mod():
+    tools_dir = str(SCRIPTS / "tools")
+    if tools_dir not in sys.path:
+        sys.path.insert(0, tools_dir)
+    import health as health_mod
+    return health_mod
+
+
+def _handle_setup(rest: list) -> int:
+    sub = rest[0] if rest else "check"
+    if sub != "check":
+        print("Usage: bob setup check  (or: bob doctor for the full pre-flight)")
+        return 1
+    print(_health_mod().health_check(_cfg(), doctor=False))
+    return 0
+
+
+def _handle_doctor(rest: list) -> int:
+    print(_health_mod().health_check(_cfg(), doctor=True))
+    return 0
+
+
+def _handle_version(rest: list) -> int:
+    print(_health_mod().version_info(_cfg()))
+    return 0
+
+
+def _handle_diagnose(rest: list) -> int:
+    print(_health_mod().diagnose(_cfg()))
+    return 0
+
+
 def _handle_shell(rest: list) -> int:
     """bob shell — the interactive REPL/TUI (NE2). Behind an isatty gate: a non-TTY invocation prints
     help instead, so scripts/CI never block on a prompt."""
@@ -750,6 +786,10 @@ _HANDLERS = {
     "profile": _handle_profile,
     "verify-urls": _handle_verify_urls,
     "bench": _handle_bench,
+    "setup": _handle_setup,           # ONE-C Slice 3 — health / diagnostics (scripts/tools/health.py)
+    "doctor": _handle_doctor,
+    "version": _handle_version,
+    "diagnose": _handle_diagnose,
     "help": _handle_help,
 }
 
