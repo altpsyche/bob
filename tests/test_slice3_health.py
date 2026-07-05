@@ -88,14 +88,30 @@ class TestVersionInfo(unittest.TestCase):
         self.assertIn("(not built)", out)
 
 
-class TestDiagnoseSplit(unittest.TestCase):
-    """diagnose ports the light half only; the deep OS-discovery rows must be ABSENT (they stay pwsh)."""
+class TestDiagnoseLightRows(unittest.TestCase):
+    """diagnose's light rows (GPU/VRAM/Profile/Endpoint). The deep rows (CUDA/RAM/NUMA/mlock/Package) are
+    covered hermetically in test_slice_d3_mlock_diag.TestDiagnoseDeep; here we mock the deep osenv seams so
+    these stay hermetic (no real nvidia-smi / secedit / /proc reads)."""
 
     def _run(self, gpu, vram):
+        import contextlib
         import models as models_mod
-        with mock.patch.object(health_mod, "gpu_arch", return_value=gpu), \
-             mock.patch.object(models_mod, "gpu_vram_gb", return_value=vram), \
-             mock.patch("osenv.is_port_in_use", return_value=False):
+        patchers = [
+            mock.patch.object(health_mod, "gpu_arch", return_value=gpu),
+            mock.patch.object(models_mod, "gpu_vram_gb", return_value=vram),
+            mock.patch.multiple("osenv",
+                                is_port_in_use=mock.Mock(return_value=False),
+                                os_name=mock.Mock(return_value="linux"),
+                                system_ram_gb=mock.Mock(return_value={"TotalGB": 62, "FreeGB": 52}),
+                                linux_package_manager=mock.Mock(return_value="apt"),
+                                linux_os_family=mock.Mock(return_value="debian"),
+                                best_cuda_root=mock.Mock(return_value="/usr/local/cuda-12.8"),
+                                mlock_status=mock.Mock(return_value={"granted": False, "detail": "d"}),
+                                numa_node_count=mock.Mock(return_value=1)),
+        ]
+        with contextlib.ExitStack() as es:
+            for p in patchers:
+                es.enter_context(p)
             return health_mod.diagnose(CFG)
 
     def test_gpu_and_profile_rows(self):
@@ -111,18 +127,13 @@ class TestDiagnoseSplit(unittest.TestCase):
         self.assertIn("not detected", out)
         self.assertIn("VRAM        unknown", out)
 
-    def test_deep_discovery_rows_deferred(self):
+    def test_deep_rows_now_present(self):
+        # ONE-D Slice D3 healed the split — the deep rows are produced by the Python port now, and the
+        # old "ports to Python in ONE-D" deferral note is gone.
         out = self._run({"CudaArch": 89, "Gen": "Ada Lovelace", "MinCudaMajor": 11}, 24)
-        # The deep build-time rows scripts/diagnose.ps1 shows must NOT be produced by the Python port.
-        # Rows are "  <label:<10>  value"; check the rows section only (the deferral note NAMES these
-        # subsystems by design, so scan above it).
-        rows = out.split("Deep machine-readiness")[0]
-        for label in ("CUDA", "NUMA", "mlock", "Package", "RAM"):
-            self.assertNotIn(f"  {label:<10}  ", rows,
-                             f"deep-discovery row '{label}' leaked into the split port")
-        # ...and the honest deferral note must be present.
-        self.assertIn("Deep machine-readiness", out)
-        self.assertIn("ONE-D", out)
+        for label in ("RAM", "CUDA", "NUMA", "mlock", "Package"):
+            self.assertIn(f"  {label:<10}", out, label)
+        self.assertNotIn("ports to Python in ONE-D", out)
 
 
 class TestHealthCheckWiredRows(unittest.TestCase):

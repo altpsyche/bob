@@ -11,7 +11,7 @@ native-first**, C5 CI ownership), [MODULE-ONE-C-plan.md](MODULE-ONE-C-plan.md) (
 per-verb 3-adapter template; the osenv-seam precedent). ONE-C decisions D1–D6 are **settled — do not
 re-litigate.** The new decisions **DD1–DD6 are RESOLVED (2026-07-05, see Part 5):** full Python `build` port ·
 curl-subprocess `fetch` · keep `venv-eval` · `mlock` grant ported CLI-only · minimal-shell-stub → Python
-kernel · ONE-D owns the kernel (D8) as capstone. **Slices D0 + D1 + D2 ✅ DONE (suite 735 green); next = D3 (mlock + diagnose-deep).**
+kernel · ONE-D owns the kernel (D8) as capstone. **Slices D0–D3 ✅ DONE (suite 756 green); next = D4 (eval).**
 
 ## Goal — and the one distinction that shapes the whole module
 
@@ -257,10 +257,19 @@ capstone once its called-capabilities exist.
   KEPT** (correction to the pre-plan note): `_models.ps1` dot-sources it and `fetch-models.ps1` uses
   `Get-VersionsLock` — both pre-venv, retire at D8. `ci.yml`'s pwsh `bob lock`/`check.ps1` stay
   non-regressing. Verified live (`bob lock --check`, `bob --run lock_status`). tests/test_slice_d2_lock.py (12).
-- **Slice D3 — `mlock` + `diagnose` deep** *(privilege + the CUDA/RAM/NUMA seams):* the hard 1b seams
-  (`resolve_cuda_root_candidates`/`cuda_toolkit_version`/`best_cuda_root`, `cuda_host_compiler`); `mlock_status`
-  (read-only, both OS) + grant (DD4); fold the deep rows into `health.diagnose` (retire `diagnose.ps1`).
-  `mlock_status` feeds diagnose/doctor. `mlock`/`diagnose` verbs → python.
+- **Slice D3 — `mlock` + `diagnose` deep** ✅ **DONE** (on main; suite 756 green): added the hard CUDA
+  cluster to osenv (`resolve_cuda_root_candidates` pure descriptor, `cuda_toolkit_version` [version.json→
+  version.txt→nvcc], `best_cuda_root` [newest ≥ MinVer floor — 12.9/13.x qualify for sm_120],
+  `cuda_host_compiler` + `assert_cuda_host_compiler_ok` for D5) + `mlock_status` (read-only: Linux ulimit /
+  Windows secedit-export) + `mlock_grant` (DD4: Windows secedit-INF rewrite + ctypes `ShellExecuteW runas`
+  self-elevation / Linux ulimit guidance; **CLI-only, never an agent tool**). **Healed the Slice-3 diagnose
+  split** — `health.diagnose` now renders the deep rows (RAM/Package/CUDA/mlock/NUMA) via the seams; dropped
+  the "ports in ONE-D" note. Agent read-only tool `mlock_status`; `bob mlock [--grant]` (cli._handle_mlock);
+  `mlock`/`diagnose` verbs → python. **Parity-verified live on real Blackwell/arch hardware** —
+  `best_cuda_root(120)`/`system_ram_gb`/`numa`/`pkgmgr`/`cuda_toolkit_version` all byte-match pwsh
+  (`/opt/cuda` = CUDA 13.3, correctly accepted for the sm_120 ≥12.8 floor). Deleted the bob.ps1 mlock case;
+  **`diagnose.ps1` + `grant-mlock.ps1` KEPT** (pre-venv setup.ps1 calls them; retire at D8).
+  tests/test_slice_d3_mlock_diag.py (21) + reworked test_slice3_health TestDiagnoseLightRows.
 - **Slice D4 — `eval`** *(CLI-only, isolated):* `eval.py` (or provision.py) shells `venv-eval` lm_eval;
   tokenizer from `bob_models`; endpoint check. DD3 keeps `venv-eval`. `bootstrap-eval.ps1` → an
   `osenv.new_bob_venv('venv-eval', …)` lazy ensure (kernel-family). `eval` verb → python.

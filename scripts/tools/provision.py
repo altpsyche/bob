@@ -259,6 +259,13 @@ def _lock_status() -> str:
     return lock_status()
 
 
+def _mlock_status() -> str:
+    import osenv
+    st = osenv.mlock_status()
+    return ("mlock: " + ("granted ✓  " if st["granted"] else "NOT granted  ") + st["detail"]
+            + ("" if st["granted"] else "\n  grant it with: bob mlock --grant"))
+
+
 def test() -> str:
     name, models = resolve_fetch_set()
     return f"fetch set for '{name}': {len(models)} models"
@@ -280,6 +287,12 @@ TOOL_DEFS = [
                         "installed state (submodule commits + model checksums) matches the lock. Read-only. "
                         "Use to answer 'is my install reproducible / pinned?'. Regenerating is `bob lock` (CLI)."),
         "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "mlock_status",
+        "description": ("Report whether the mlock privilege is granted (Windows SeLockMemoryPrivilege / Linux "
+                        "memlock rlimit) so llama-server's --mlock can pin weights in RAM. Read-only. Granting "
+                        "requires elevation and is `bob mlock --grant` (CLI-only, not an agent action)."),
+        "parameters": {"type": "object", "properties": {}}}},
 ]
 
-DISPATCH = {"fetch_models": _fetch_models, "lock_status": _lock_status}
+DISPATCH = {"fetch_models": _fetch_models, "lock_status": _lock_status, "mlock_status": _mlock_status}

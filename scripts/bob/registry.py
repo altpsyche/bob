@@ -151,7 +151,7 @@ COMMANDS = [
     {"name": "version", "group": "Config", "summary": "Show binary versions and submodule commits",
      "args": "", "runtime": "python", "handler": "version"},
     {"name": "mlock", "group": "Config", "summary": "Check/grant SeLockMemoryPrivilege (for --mlock)",
-     "args": "", "runtime": "pwsh", "handler": None},
+     "args": "[--grant]", "runtime": "python", "handler": "mlock"},
     {"name": "eval", "group": "Config", "summary": "Benchmark model quality (mmlu / humaneval / gsm8k)",
      "args": "<role> [task]", "runtime": "pwsh", "handler": None},
     {"name": "verify-urls", "group": "Config", "summary": "Check HuggingFace download URLs",

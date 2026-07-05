@@ -177,22 +177,11 @@ switch ($cmd) {
   # routed by the dispatch prologue before this switch. (ONE-C Slice 3)
   # 'verify-urls' -> runtime=python (cli.py _handle_verify_urls over scripts/tools/models.py:verify_urls);
   # routed by the dispatch prologue before this switch. (ONE-C Slice 4)
-  'mlock' {
-    # Check current status first (no admin needed)
-    $mlockStatus = & "$repo\scripts\grant-mlock.ps1" -Check 2>&1
-    Write-Host $mlockStatus
-    if ($LASTEXITCODE -ne 0) {
-      Write-Host ""
-      Write-Host "This grants the Windows SeLockMemoryPrivilege to your user account." -ForegroundColor DarkGray
-      Write-Host "Required for --mlock to actually pin model weights in RAM." -ForegroundColor DarkGray
-      Write-Host "A UAC prompt will appear. After granting, restart this terminal." -ForegroundColor DarkGray
-      Write-Host ""
-      $ans = Read-Host "Grant now? [y/N]"
-      if ($ans -match '^[Yy]') {
-        & "$repo\scripts\grant-mlock.ps1"
-      }
-    }
-  }
+  # 'mlock' -> runtime=python (cli.py _handle_mlock over osenv.mlock_status/mlock_grant — read-only status
+  # is also the agent tool `mlock_status`; grant self-elevates via UAC/secedit on Windows, prints
+  # ulimit/limits.conf guidance on Linux). Routed by the dispatch prologue before this switch.
+  # grant-mlock.ps1 is KEPT: the pre-venv diagnose.ps1/setup.ps1 still call `-Check`; retires at D8.
+  # (ONE-D Slice D3)
   'fabric-setup' { & "$repo\scripts\setup-fabric.ps1" }
   # 'fabric' -> runtime=python (cli.py _handle_fabric); routed by the dispatch prologue. (ONE-C Slice 1)
   # 'litellm' and 'services' -> runtime=python (cli.py handlers over scripts/tools/stack.py); routed

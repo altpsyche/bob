@@ -776,6 +776,20 @@ def _handle_lock(rest: list) -> int:
     return 0
 
 
+def _handle_mlock(rest: list) -> int:
+    """bob mlock [--grant] — report the mlock privilege status; --grant attempts to grant it (Windows:
+    secedit + UAC self-elevation; Linux: prints the ulimit/limits.conf guidance)."""
+    import osenv
+    st = osenv.mlock_status()
+    print("mlock: " + ("granted" if st["granted"] else "NOT granted") + f" — {st['detail']}")
+    if "--grant" in rest:
+        print(osenv.mlock_grant())
+        return 0
+    if not st["granted"]:
+        print("To grant: bob mlock --grant")
+    return 0 if st["granted"] else 1
+
+
 def _handle_models(rest: list) -> int:
     print(_models_mod().models_list(_cfg()))
     return 0
@@ -934,6 +948,7 @@ _HANDLERS = {
     "bench": _handle_bench,
     "fetch": _handle_fetch,           # ONE-D Slice D1 — model downloads (scripts/tools/provision.py)
     "lock": _handle_lock,             # ONE-D Slice D2 — versions.lock writer + gate (scripts/bob/versions.py)
+    "mlock": _handle_mlock,           # ONE-D Slice D3 — mlock privilege status/grant (osenv)
     "gen": _handle_gen,               # ONE-C Slice 6 — config generators (scripts/tools/generate.py)
     "setup": _handle_setup,           # ONE-C Slice 3 — health / diagnostics (scripts/tools/health.py)
     "doctor": _handle_doctor,

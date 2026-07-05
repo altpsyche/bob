@@ -8,12 +8,11 @@ diagnose cases + Invoke-BobHealthCheck.
   version_info(config)                <- `bob version`  (Bob release + binary/submodule versions)
   diagnose(config)                    <- `bob diagnose` (GPU/VRAM/profile/endpoint/models/manifest)
 
-SPLIT (per the Slice 3 scope decision): `diagnose` ports the registry + light-discovery rows only —
-GPU arch/VRAM (nvidia-smi), profile fit, endpoint, model files, manifest. The DEEP build-time OS
-discovery (CUDA-toolkit resolution, system RAM, NUMA topology, mlock privilege, Linux package manager)
-that scripts/diagnose.ps1 also does stays in PowerShell and ports to Python in ONE-D alongside
-build/update, where the build-time seams (CUDA/cmake/package/NUMA) naturally land. scripts/diagnose.ps1
-is kept on disk (setup.bat/setup.sh still call it during first-run).
+FULL diagnose (ONE-D Slice D3 healed the Slice-3 split): `diagnose` now reports the deep build-time OS
+discovery too — CUDA-toolkit resolution, system RAM, NUMA topology, mlock privilege, and the Linux package
+manager — via the ONE-D build-time osenv seams (osenv.best_cuda_root / system_ram_gb / numa_node_count /
+mlock_status / linux_package_manager). scripts/diagnose.ps1 is KEPT on disk until D8 (the pre-venv
+setup.ps1 calls it directly before the venv exists).
 
 ONE-D Slice D0 wired the two rows that used to degrade: the BobAgent scheduled-task check now reads
 osenv.agent_task_status() (Slice 5's scheduler quartet), and doctor's versions.lock reproducibility
@@ -300,11 +299,38 @@ def version_info(config: dict) -> str:
 
 # --- diagnose (split: registry + light discovery; deep OS discovery -> ONE-D) ---------------------
 
+def _cuda_installed() -> list:
+    """Installed CUDA toolkits for display (names, versioned where known). Mirrors diagnose.ps1's $installed
+    build: versioned <prefix><maj.min> dirs under Base + canonical/fixed roots with their on-disk version."""
+    import osenv
+    c = osenv.resolve_cuda_root_candidates(0)
+    import re
+    out = []
+    base = Path(c["Base"])
+    if base.exists():
+        pat = re.compile(rf"^{re.escape(c['DirPrefix'])}(\d+)\.(\d+)$")
+        try:
+            out += sorted(d.name for d in base.iterdir() if d.is_dir() and pat.match(d.name))
+        except OSError:
+            pass
+    for fx in c.get("Fixed", []):
+        if fx and Path(fx).exists():
+            v = osenv.cuda_toolkit_version(fx)
+            out.append(f"{Path(fx).name}" + (f" ({v[0]}.{v[1]})" if v else ""))
+    seen, uniq = set(), []
+    for x in out:
+        if x not in seen:
+            seen.add(x)
+            uniq.append(x)
+    return uniq
+
+
 def diagnose(config: dict) -> str:
-    """System + model readiness — the registry-reading + light-discovery half. GPU arch/VRAM (nvidia-smi),
-    profile fit, endpoint, model files on disk, manifest coverage. The deep build-time discovery (CUDA
-    toolkit, system RAM, NUMA, mlock, Linux package manager) that scripts/diagnose.ps1 also reports stays
-    pwsh and ports in ONE-D. Port of scripts/diagnose.ps1 (light half)."""
+    """System + model readiness — the FULL port (ONE-D Slice D3 healed the Slice-3 split): GPU arch/VRAM,
+    system RAM, active-profile fit, endpoint, Linux package manager, CUDA toolkit resolution, mlock
+    privilege, NUMA topology, model files on disk, manifest coverage. Port of scripts/diagnose.ps1
+    (diagnose.ps1 itself is KEPT until D8 — the pre-venv setup.ps1 calls it directly before the venv
+    exists). Deep discovery reads the ONE-D build-time osenv seams."""
     import bob_models
     import osenv
     from bob_core import _port
@@ -313,6 +339,7 @@ def diagnose(config: dict) -> str:
     from models import gpu_vram_gb, suggested_profile
 
     lines = ["", "System check", "-" * 52]
+    issues = 0
 
     def row(label: str, value: str) -> None:
         lines.append(f"  {label:<10}  {value}")
@@ -328,7 +355,16 @@ def diagnose(config: dict) -> str:
         row("GPU", "not detected  (nvidia-smi not found or no NVIDIA GPU)")
         row("VRAM", "unknown")
 
+    # System RAM (informational)
+    ram = osenv.system_ram_gb()
+    if ram:
+        free = f"  ({ram['FreeGB']} GB free)" if ram.get("FreeGB") is not None else ""
+        row("RAM", f"{ram['TotalGB']} GB total{free}")
+    else:
+        row("RAM", "unknown")
+
     mcfg = bob_models.load_models_config()
+    defaults = mcfg.get("defaults", {})
     active = bob_models.resolve_profile_name(config=mcfg)
     sug = suggested_profile(vram, mcfg)
     if sug and sug == active:
@@ -340,6 +376,57 @@ def diagnose(config: dict) -> str:
 
     port = _port(config, "port")
     row("Endpoint", f"http://localhost:{port}/v1  ({'up' if osenv.is_port_in_use(port) else 'not running'})")
+
+    # Linux package manager (Windows uses winget; only the Linux mapping can be "missing")
+    if osenv.os_name() != "windows":
+        mgr = osenv.linux_package_manager()
+        fam = osenv.linux_os_family() or "unknown"
+        if mgr:
+            row("Package", f"{mgr}  (family: {fam})  — supported")
+        else:
+            row("Package", "no supported manager (apt/dnf/pacman/zypper) — install the toolchain manually")
+            issues += 1
+
+    # CUDA toolkit resolution (deep — best_cuda_root ranks installed toolkits vs the arch floor)
+    installed = _cuda_installed()
+    if gpu:
+        best = osenv.best_cuda_root(gpu["CudaArch"])
+        if best:
+            row("CUDA", f"{Path(best).name}  ok")
+        else:
+            need = "12.8 (required for Blackwell)" if gpu["CudaArch"] >= 120 else "12.x"
+            found = f"found: {', '.join(installed)}" if installed else "none installed"
+            row("CUDA", f"needs {need}  ({found})  — setup will install")
+            issues += 1
+    else:
+        label = (sorted(installed)[-1] + "  (no GPU detected)" if installed
+                 else "not installed  (no GPU detected — skipping)")
+        row("CUDA", label)
+
+    # mlock privilege
+    st = osenv.mlock_status()
+    mlock_enabled = defaults.get("mlockBig") is True
+    if mlock_enabled and not st["granted"]:
+        row("mlock", f"mlockBig=true but NOT granted — run: bob mlock --grant  ({st['detail']})")
+        issues += 1
+    elif mlock_enabled and st["granted"]:
+        row("mlock", f"granted (--mlock active)  ({st['detail']})")
+    else:
+        row("mlock", f"not enabled  ({st['detail']})")
+
+    # NUMA topology vs config
+    nodes = osenv.numa_node_count()
+    numa_cfg = defaults.get("numa") or ""
+    if numa_cfg:
+        if nodes <= 1:
+            row("NUMA", f"config '--numa {numa_cfg}' but the OS reports {nodes} node — flag is a no-op; "
+                       "set numa='' in user config")
+            issues += 1
+        else:
+            row("NUMA", f"{nodes} nodes  — '--numa {numa_cfg}' active")
+    else:
+        row("NUMA", (f"{nodes} nodes detected — consider numa='isolate' for CPU-offload gains"
+                     if nodes > 1 else f"{nodes} NUMA node  (disabled, correct for this topology)"))
 
     # Models present on disk (size-validated) + manifest coverage
     roles = bob_models.profile_roles(active, mcfg)
@@ -363,7 +450,6 @@ def diagnose(config: dict) -> str:
         if exp and (act < exp * (1 - _SIZE_TOL_PCT) or act > exp * (1 + _SIZE_TOL_PCT)):
             bad.append(f"{spec['gguf']}  (size {round(act, 1)} GB, expected ~{exp} GB — re-download: bob fetch)")
 
-    issues = 0
     if bad:
         row("Models", f"{present} / {total} present  — {len(bad)} corrupt")
         for b in bad:
@@ -394,15 +480,9 @@ def diagnose(config: dict) -> str:
         row("Manifest", f"{m_covered} / {m_total} SHA256 recorded  (bob fetch to populate)")
 
     lines.append("-" * 52)
-    if issues:
-        lines.append(f"  {issues} issue(s) noted above.")
-    else:
-        lines.append("  Light checks passed.")
-    # Honest split note: the deep machine-readiness half is not yet on Python.
-    lines += ["",
-              "  Deep machine-readiness (CUDA toolkit, system RAM, NUMA topology, mlock privilege,",
-              "  Linux package manager) runs during first-run setup (scripts/diagnose.ps1) and ports",
-              "  to Python in ONE-D.", ""]
+    lines.append(f"  {issues} issue(s) noted above. Setup will attempt to resolve them."
+                 if issues else "  All checks passed.")
+    lines.append("")
     return "\n".join(lines)
 
 

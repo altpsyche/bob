@@ -820,3 +820,286 @@ def _rm_rf(p: Path) -> None:
             p.unlink()
         except OSError:
             pass
+
+
+# --- CUDA toolkit discovery (ONE-D §1b — the hardest seam; used by diagnose + build) --------------
+# The pin is a FLOOR, not an exact match: sm_120 (Blackwell) needs >= 12.8 but 12.9 / 13.x also qualify.
+# Versions are compared as (major, minor) tuples. Windows and Linux fork on search roots + dir prefix.
+
+def _parse_ver(s):
+    """'12.8' / '12' / None -> (major, minor) tuple for ordering, or None."""
+    import re
+    if not s:
+        return None
+    m = re.search(r"(\d+)\.(\d+)", str(s))
+    if m:
+        return (int(m.group(1)), int(m.group(2)))
+    m = re.search(r"(\d+)", str(s))
+    return (int(m.group(1)), 0) if m else None
+
+
+def resolve_cuda_root_candidates(cuda_arch: int = 0, os: str = None) -> dict:
+    """PURE ordered probe description for arch+OS (no disk I/O). Windows: one Base + 'v' prefix, pin v12.8
+    for sm_120. Linux: /usr/local base + 'cuda-' prefix + canonical /usr/local/cuda, /opt/cuda and
+    $CUDA_HOME/$CUDA_PATH symlinks. Port of Resolve-CudaRootCandidates."""
+    import os as _os
+    os = os or os_name()
+    if os == "windows":
+        base = r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA"
+        if cuda_arch >= 120:
+            return {"Base": base, "DirPrefix": "v", "Pin": "v12.8", "MinMajor": 12, "MinVer": "12.8", "Fixed": []}
+        return {"Base": base, "DirPrefix": "v", "Pin": None,
+                "MinMajor": 11 if cuda_arch >= 75 else 10,
+                "MinVer": "11.0" if cuda_arch >= 75 else "10.0", "Fixed": []}
+    fixed = ["/usr/local/cuda", "/opt/cuda"]
+    if _os.environ.get("CUDA_HOME"):
+        fixed.append(_os.environ["CUDA_HOME"])
+    if _os.environ.get("CUDA_PATH"):
+        fixed.append(_os.environ["CUDA_PATH"])
+    return {
+        "Base": "/usr/local", "DirPrefix": "cuda-", "Fixed": fixed,
+        "Pin": "/usr/local/cuda-12.8" if cuda_arch >= 120 else None,
+        "MinMajor": 12 if cuda_arch >= 120 else (11 if cuda_arch >= 75 else 10),
+        "MinVer": "12.8" if cuda_arch >= 120 else ("11.0" if cuda_arch >= 75 else "10.0"),
+    }
+
+
+def cuda_toolkit_version(root):
+    """(major, minor) tuple for the CUDA toolkit at `root`, or None. version.json -> version.txt ->
+    `bin/nvcc --version` (lets a caller rank unversioned canonical roots like /opt/cuda). Port of
+    Get-CudaToolkitVersion."""
+    import re
+    if not root:
+        return None
+    root = Path(root)
+    if not root.exists():
+        return None
+    vj = root / "version.json"
+    if vj.exists():
+        try:
+            v = (json.loads(vj.read_text(encoding="utf-8")).get("cuda") or {}).get("version", "")
+            p = _parse_ver(v)
+            if p:
+                return p
+        except (OSError, ValueError):
+            pass
+    vt = root / "version.txt"
+    if vt.exists():
+        try:
+            p = _parse_ver(vt.read_text(encoding="utf-8"))
+            if p:
+                return p
+        except OSError:
+            pass
+    nvcc = root / "bin" / exe_name("nvcc")
+    if nvcc.exists():
+        try:
+            out = subprocess.run([str(nvcc), "--version"], capture_output=True, text=True, timeout=10)
+            m = re.search(r"release (\d+)\.(\d+)", out.stdout)
+            if m:
+                return (int(m.group(1)), int(m.group(2)))
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return None
+
+
+def best_cuda_root(cuda_arch: int = 0):
+    """Path (str) of the NEWEST CUDA toolkit meeting the arch's minimum version, or None. Pools canonical/
+    pinned/env roots (version read from disk) and versioned <prefix><maj.min> dirs (version from the name),
+    filters >= MinVer, returns the newest. Port of Get-CudaRoot / Get-BestCudaRoot."""
+    import re
+    c = resolve_cuda_root_candidates(cuda_arch)
+    min_ver = _parse_ver(c.get("MinVer")) or (0, 0)
+    found = []  # (ver_tuple, path)
+
+    explicit = []
+    pin = c.get("Pin")
+    if pin:
+        explicit.append(pin if re.match(r"^[/~]|^[A-Za-z]:", pin) else str(Path(c["Base"]) / pin))
+    explicit += list(c.get("Fixed", []))
+    for p in explicit:
+        if p and Path(p).exists():
+            v = cuda_toolkit_version(p)
+            if v:
+                found.append((v, str(Path(p).resolve())))
+
+    base = Path(c["Base"])
+    if base.exists():
+        pat = re.compile(rf"^{re.escape(c['DirPrefix'])}(\d+)\.(\d+)$")
+        try:
+            for d in base.iterdir():
+                m = pat.match(d.name)
+                if m and d.is_dir():
+                    found.append(((int(m.group(1)), int(m.group(2))), str(d)))
+        except OSError:
+            pass
+
+    ok = sorted((f for f in found if f[0] >= min_ver), key=lambda x: x[0], reverse=True)
+    return ok[0][1] if ok else None
+
+
+def cuda_host_compiler():
+    """The g++ nvcc should use as -ccbin (Linux CUDA), or None to use the default. Honors $NVCC_CCBIN, else
+    the newest versioned g++-NN older than the default g++ (a too-new default fails nvcc). Port of
+    Get-CudaHostCompiler. None on Windows."""
+    import os as _os
+    import re
+    if os_name() == "windows":
+        return None
+    ccbin = _os.environ.get("NVCC_CCBIN")
+    if ccbin:
+        found = shutil.which(ccbin)
+        if found:
+            return found
+    def_major = 0
+    if shutil.which("g++"):
+        try:
+            out = subprocess.run(["g++", "-dumpversion"], capture_output=True, text=True, timeout=10)
+            m = re.match(r"^(\d+)", out.stdout.strip())
+            if m:
+                def_major = int(m.group(1))
+        except (OSError, subprocess.SubprocessError):
+            pass
+    cands = []
+    try:
+        for p in Path("/usr/bin").glob("g++-*"):
+            m = re.match(r"^g\+\+-(\d+)$", p.name)
+            if m:
+                major = int(m.group(1))
+                if def_major == 0 or major < def_major:
+                    cands.append((major, str(p)))
+    except OSError:
+        pass
+    cands.sort(reverse=True)
+    return cands[0][1] if cands else None
+
+
+def assert_cuda_host_compiler_ok(nvcc, host_cxx=None) -> None:
+    """Verify nvcc accepts the host C++ compiler by compiling a trivial kernel, BEFORE the long build; raise
+    RuntimeError with an actionable hint on failure. No-op on Windows / missing nvcc. Port of
+    Assert-CudaHostCompilerOk."""
+    import tempfile
+    if os_name() == "windows":
+        return
+    nvcc = Path(nvcc)
+    if not nvcc.exists():
+        return
+    tmp = Path(tempfile.gettempdir()) / f"bob-nvcc-probe-{os.getpid()}.cu"
+    obj = Path(f"{tmp}.o")
+    tmp.write_text("__global__ void k(){}", encoding="ascii")
+    ccbin = ["-ccbin", host_cxx] if host_cxx else []
+    try:
+        rc = subprocess.run([str(nvcc), *ccbin, "-c", str(tmp), "-o", str(obj)],
+                            capture_output=True, text=True).returncode
+    finally:
+        tmp.unlink(missing_ok=True)
+        obj.unlink(missing_ok=True)
+    if rc != 0:
+        hint = (f"nvcc rejected host compiler '{host_cxx}'. Set NVCC_CCBIN to a g++ this CUDA supports and re-run."
+                if host_cxx else
+                "nvcc rejected the default g++ (likely too new for this CUDA). Install an older g++ "
+                "(e.g. g++-14/g++-13) and 'export NVCC_CCBIN=<path>', then re-run.")
+        raise RuntimeError(f"CUDA host-compiler check failed: {hint}")
+
+
+# --- mlock privilege (ONE-D §1b, DD4 — read-only status is a tool; grant is CLI-only) -------------
+
+def mlock_status() -> dict:
+    """{'granted': bool, 'detail': str}. Read-only, no elevation. Windows: SeLockMemoryPrivilege (secedit
+    export); Linux: the memlock rlimit (ulimit -l). Port of grant-mlock.ps1 -Check."""
+    if os_name() == "windows":  # pragma: no cover — exercised only on Windows
+        return _mlock_status_windows()
+    try:
+        out = subprocess.run(["sh", "-c", "ulimit -l"], capture_output=True, text=True, timeout=5)
+        lim = out.stdout.strip().splitlines()[0].strip() if out.stdout.strip() else ""
+    except (OSError, subprocess.SubprocessError):
+        lim = ""
+    if lim == "unlimited":
+        return {"granted": True, "detail": "memlock limit: unlimited (--mlock active)"}
+    return {"granted": False,
+            "detail": f"memlock limit: {lim or 'unknown'} KB — insufficient for large models "
+                      "(raise it: ulimit -l unlimited, or a limits.conf entry — see: bob mlock --grant)"}
+
+
+def _current_user_sid() -> str:  # pragma: no cover — exercised only on Windows
+    try:
+        out = subprocess.run(["whoami", "/user", "/fo", "csv", "/nh"],
+                             capture_output=True, text=True, timeout=10).stdout.strip()
+        # CSV: "DOMAIN\user","S-1-5-..."
+        return out.strip().strip('"').split('","')[-1].strip('"')
+    except (OSError, subprocess.SubprocessError, IndexError):
+        return ""
+
+
+def _mlock_status_windows() -> dict:  # pragma: no cover — exercised only on Windows
+    import re
+    import tempfile
+    sid = _current_user_sid()
+    tmp = Path(tempfile.gettempdir()) / f"bob-mlock-{os.getpid()}.inf"
+    try:
+        rc = subprocess.run(["secedit", "/export", "/cfg", str(tmp), "/areas", "USER_RIGHTS", "/quiet"],
+                            capture_output=True, text=True).returncode
+        if rc != 0 or not tmp.exists():
+            return {"granted": False, "detail": "secedit /export failed — check Group Policy restrictions"}
+        text = tmp.read_text(encoding="utf-16", errors="ignore")
+        line = next((ln for ln in text.splitlines() if re.match(r"^\s*SeLockMemoryPrivilege\s*=", ln)), "")
+        granted = bool(sid and f"*{sid}" in line)
+        return {"granted": granted,
+                "detail": f"SeLockMemoryPrivilege {'granted' if granted else 'NOT granted'} ({sid})"}
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def mlock_grant() -> str:
+    """Grant the mlock privilege (CLI-only, never an agent tool — privilege escalation). Windows:
+    SeLockMemoryPrivilege via secedit, self-elevating via UAC if not admin. Linux: print the
+    ulimit/limits.conf guidance (never auto-edits a system file). Port of grant-mlock.ps1 grant mode."""
+    if os_name() != "windows":
+        return ("mlock on Linux is the memlock rlimit, not a grantable privilege. Raise it:\n"
+                "  session:    ulimit -l unlimited\n"
+                "  persistent: add '<user> - memlock unlimited' to /etc/security/limits.conf, then re-login")
+    return _mlock_grant_windows()  # pragma: no cover
+
+
+def _mlock_grant_windows() -> str:  # pragma: no cover — exercised only on Windows
+    import ctypes
+    import re
+    import sys as _sys
+    import tempfile
+
+    try:
+        is_admin = bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except (OSError, AttributeError):
+        is_admin = False
+    if not is_admin:
+        rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", _sys.executable, "-m bob mlock --grant", None, 1)
+        if rc <= 32:
+            return ("UAC cancelled or elevation failed — mlock not granted. Fallback: secpol.msc -> Local "
+                    "Policies -> User Rights Assignment -> Lock pages in memory.")
+        return "Requested admin rights (UAC) — the grant runs in the elevated window. Restart your terminal after."
+
+    sid = _current_user_sid()
+    inf = Path(tempfile.gettempdir()) / f"bob-mlock-grant-{os.getpid()}.inf"
+    db = Path(tempfile.gettempdir()) / f"bob-mlock-grant-{os.getpid()}.sdb"
+    try:
+        if subprocess.run(["secedit", "/export", "/cfg", str(inf), "/areas", "USER_RIGHTS", "/quiet"]).returncode != 0:
+            return "secedit /export failed."
+        lines = inf.read_text(encoding="utf-16").splitlines()
+        existing = next((ln for ln in lines if re.match(r"^\s*SeLockMemoryPrivilege\s*=", ln)), None)
+        if existing and f"*{sid}" in existing:
+            return "Already granted — no change needed."
+        out = []
+        if existing:
+            for ln in lines:
+                out.append(f"{ln},*{sid}" if re.match(r"^\s*SeLockMemoryPrivilege\s*=", ln) else ln)
+        else:
+            for ln in lines:
+                out.append(ln)
+                if re.match(r"^\[Privilege Rights\]", ln):
+                    out.append(f"SeLockMemoryPrivilege = *{sid}")
+        inf.write_text("\n".join(out), encoding="utf-16")
+        subprocess.run(["secedit", "/configure", "/db", str(db), "/cfg", str(inf), "/areas", "USER_RIGHTS", "/quiet"])
+        return f"SeLockMemoryPrivilege granted to {sid}. Close this terminal and open a new one, then: bob serve"
+    finally:
+        inf.unlink(missing_ok=True)
+        db.unlink(missing_ok=True)
