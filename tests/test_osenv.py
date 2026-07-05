@@ -289,6 +289,55 @@ class TestProcessLifecyclePosix(unittest.TestCase):
             except (ProcessLookupError, ChildProcessError):
                 pass
 
+    def test_start_detached_logs_output_and_passes_env(self):
+        import tempfile
+        import time
+        import warnings
+        warnings.simplefilter("ignore", ResourceWarning)
+        self.addCleanup(warnings.resetwarnings)
+        log = Path(tempfile.mkdtemp(prefix="bob-log-")) / "svc.log"
+        # A short-lived child that writes to stdout+stderr and reads an injected env var.
+        pid = osenv.start_detached(
+            ["sh", "-c", "echo out-$BOB_T; echo err >&2"], log_path=log, env={"BOB_T": "xyz"})
+        try:
+            for _ in range(40):
+                if log.exists() and "out-xyz" in log.read_text():
+                    break
+                time.sleep(0.05)
+            body = log.read_text()
+            self.assertIn("out-xyz", body)   # env injected + stdout captured
+            self.assertIn("err", body)       # stderr folded into the same log
+        finally:
+            try:
+                os.waitpid(pid, 0)
+            except (ChildProcessError, ProcessLookupError):
+                pass
+
+    def test_process_stats_live_then_dead(self):
+        import time
+        import warnings
+        warnings.simplefilter("ignore", ResourceWarning)
+        self.addCleanup(warnings.resetwarnings)
+        pid = osenv.start_detached(["sleep", "30"])
+        try:
+            time.sleep(0.2)
+            stats = osenv.process_stats(pid)
+            self.assertIsNotNone(stats)
+            self.assertIn("rss_mb", stats)
+            self.assertRegex(stats["uptime"], r"^\d+:\d\d:\d\d$")
+        finally:
+            osenv.stop_process_tree(pid)
+            try:
+                os.waitpid(pid, 0)
+            except (ChildProcessError, ProcessLookupError):
+                pass
+        self.assertIsNone(osenv.process_stats(pid))  # dead -> None
+
+    def test_fmt_uptime(self):
+        self.assertEqual(osenv._fmt_uptime(0), "0:00:00")
+        self.assertEqual(osenv._fmt_uptime(3725), "1:02:05")
+        self.assertEqual(osenv._fmt_uptime(-5), "0:00:00")
+
 
 class TestKillByName(_ForceOSMixin, unittest.TestCase):
     """Mocked subprocess so the suite never actually pkills anything (a real pkill -f can match the

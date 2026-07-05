@@ -29,8 +29,11 @@ class TestRegistry(unittest.TestCase):
         self.assertEqual(rt["agent serve"], "python")
         self.assertEqual(rt["agent mcp"], "python")
         self.assertEqual(rt["clip"], "python")
-        self.assertEqual(rt["serve"], "pwsh")       # inference stack stays pwsh (C1 fix)
-        self.assertEqual(rt["setup"], "pwsh")
+        self.assertEqual(rt["serve"], "python")     # ONE-C Slice 2 — lifecycle ported to Python (stack.py)
+        self.assertEqual(rt["stop"], "python")
+        self.assertEqual(rt["up"], "python")
+        self.assertEqual(rt["setup"], "pwsh")        # setup/build/etc stay pwsh through ONE-D (D2)
+        self.assertEqual(rt["status"], "pwsh")       # status needs models.json — ports in Slice 4
         self.assertEqual(rt["chat"], "python")      # S2 — chat/code/think ported onto the agent loop
         self.assertEqual(rt["code"], "python")
         self.assertEqual(rt["think"], "python")

@@ -322,6 +322,50 @@ def pid_alive(pid: int) -> bool:
     return True
 
 
+def process_stats(pid: int):
+    """{'rss_mb': int, 'uptime': 'H:MM:SS'} for a live PID, or None if dead/unknown. Powers `bob ps`.
+    psutil if present; else /proc on Linux; else (macOS/Windows w/o psutil) rss/uptime are None but a
+    live process still reports {'rss_mb': None, 'uptime': None}."""
+    if not pid or pid <= 0 or not pid_alive(pid):
+        return None
+    try:
+        import psutil  # type: ignore
+
+        p = psutil.Process(pid)
+        import time
+        return {"rss_mb": int(p.memory_info().rss / (1024 * 1024)),
+                "uptime": _fmt_uptime(time.time() - p.create_time())}
+    except ImportError:
+        pass
+    except Exception:
+        return None
+    if os_name() == "linux":
+        try:
+            rss_mb = None
+            with open(f"/proc/{pid}/status", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("VmRSS:"):
+                        rss_mb = int(int(line.split()[1]) / 1024)  # kB -> MB
+                        break
+            with open(f"/proc/{pid}/stat", encoding="utf-8") as f:
+                starttime_ticks = int(f.read().rsplit(")", 1)[1].split()[19])  # field 22 (0-based 19 after comm)
+            with open("/proc/uptime", encoding="utf-8") as f:
+                sys_uptime = float(f.read().split()[0])
+            hz = os.sysconf("SC_CLK_TCK")
+            proc_uptime = sys_uptime - (starttime_ticks / hz)
+            return {"rss_mb": rss_mb, "uptime": _fmt_uptime(proc_uptime)}
+        except (OSError, IndexError, ValueError):
+            return {"rss_mb": None, "uptime": None}
+    return {"rss_mb": None, "uptime": None}  # pragma: no cover — macOS/Windows without psutil
+
+
+def _fmt_uptime(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}"
+
+
 def stop_process_tree(pid: int) -> None:
     """Terminate a process and its children (uvicorn workers, piper's native child, …). Port of pwsh
     Stop-ProcessTree: Windows reaps children via psutil/taskkill; POSIX prefers a process-GROUP kill
@@ -376,19 +420,33 @@ def stop_processes_by_name(names) -> list:
     return killed
 
 
-def start_detached(argv: list, pidfile=None) -> int:
+def start_detached(argv: list, pidfile=None, log_path=None, env: dict = None) -> int:
     """Launch a fully-detached background process and return its PID. POSIX uses start_new_session=True
     (setsid) so the child is its own group leader — REQUIRED so stop_process_tree's killpg reaps the
     whole tree. Windows uses DETACHED_PROCESS|CREATE_NO_WINDOW (no console window, survives the parent).
-    Writes the PID to `pidfile` when given. Port of pwsh Start-BobBackgroundProcess."""
-    if os_name() == "windows":  # pragma: no cover — exercised only on Windows
-        DETACHED_PROCESS = 0x00000008
-        CREATE_NO_WINDOW = 0x08000000
-        proc = subprocess.Popen(argv, creationflags=DETACHED_PROCESS | CREATE_NO_WINDOW,
-                                 close_fds=True)
+    Writes the PID to `pidfile` when given. When `log_path` is set, the child's stdout+stderr are
+    redirected there (truncated per launch — one clean log per run, replacing the pwsh `Tee-Object`
+    wrapper), else discarded. `env` overrides/extends the process environment. Port of pwsh
+    Start-BobBackgroundProcess — but launches the target binary DIRECTLY, no pwsh shell in between."""
+    if log_path is not None:
+        Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+        out = open(log_path, "wb")  # truncate: one clean log per run
+        stdout, stderr = out, subprocess.STDOUT
     else:
-        proc = subprocess.Popen(argv, start_new_session=True, close_fds=True,
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        out, stdout, stderr = None, subprocess.DEVNULL, subprocess.DEVNULL
+    proc_env = {**os.environ, **env} if env else None
+    try:
+        if os_name() == "windows":  # pragma: no cover — exercised only on Windows
+            DETACHED_PROCESS = 0x00000008
+            CREATE_NO_WINDOW = 0x08000000
+            proc = subprocess.Popen(argv, creationflags=DETACHED_PROCESS | CREATE_NO_WINDOW,
+                                    close_fds=True, stdout=stdout, stderr=stderr, env=proc_env)
+        else:
+            proc = subprocess.Popen(argv, start_new_session=True, close_fds=True,
+                                    stdout=stdout, stderr=stderr, env=proc_env)
+    finally:
+        if out is not None:
+            out.close()  # the child holds its own dup'd fd; our copy isn't needed
     if pidfile is not None:
         Path(pidfile).write_text(str(proc.pid), encoding="utf-8")
     return proc.pid

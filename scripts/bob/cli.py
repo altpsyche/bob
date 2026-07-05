@@ -546,6 +546,94 @@ def _handle_aider(rest: list) -> int:
     return subprocess.run([str(exe)] + rest).returncode
 
 
+# --- ONE-C Slice 2: lifecycle ---------------------------------------------------------------------
+# Each verb routes to the scripts/tools/stack.py capability the agent also calls (no duplicated logic).
+# up/stop/restart/ps and the service controls are background/non-blocking; serve/webui are foreground.
+
+def _stack():
+    tools_dir = str(SCRIPTS / "tools")
+    if tools_dir not in sys.path:
+        sys.path.insert(0, tools_dir)
+    import stack
+    return stack
+
+
+def _cfg():
+    from bob_core import load_config
+    return load_config()
+
+
+def _handle_up(rest: list) -> int:
+    """bob up [-NoOpen] [-WithServices] — background bring-up (endpoint + proxy + WebUI)."""
+    rest = list(rest)
+    open_browser = not any(f in rest for f in ("-NoOpen", "--no-open"))
+    with_services = any(f in rest for f in ("-WithServices", "--with-services"))
+    print(_stack().stack_up(_cfg(), open_browser=open_browser, with_services=with_services))
+    return 0
+
+
+def _handle_serve(rest: list) -> int:
+    """bob serve — foreground inference stack (llama-swap + LiteLLM), Ctrl+C to stop."""
+    return _stack().serve_foreground(_cfg())
+
+
+def _handle_restart(rest: list) -> int:
+    print(_stack().stack_restart(_cfg()))
+    return 0
+
+
+def _handle_stop(rest: list) -> int:
+    print(_stack().stack_stop(_cfg()))
+    return 0
+
+
+def _handle_ps(rest: list) -> int:
+    print(_stack().stack_ps(_cfg()))
+    return 0
+
+
+def _handle_logs(rest: list) -> int:
+    """bob logs [-n N | N] — tail-follow the endpoint log."""
+    rest = list(rest)
+    n = 50
+    if "-n" in rest:
+        i = rest.index("-n")
+        if i + 1 < len(rest) and rest[i + 1].isdigit():
+            n = int(rest[i + 1])
+    elif rest and rest[0].isdigit():
+        n = int(rest[0])
+    return _stack().logs_follow(_cfg(), lines=n)
+
+
+def _handle_webui(rest: list) -> int:
+    return _stack().webui_foreground(_cfg())
+
+
+def _service_action(rest: list) -> str:
+    return rest[0] if rest and rest[0] in ("start", "stop", "status") else "start"
+
+
+def _handle_litellm(rest: list) -> int:
+    print(_stack().litellm_control(_cfg(), action=_service_action(rest)))
+    return 0
+
+
+def _handle_whisper(rest: list) -> int:
+    print(_stack().whisper_control(_cfg(), action=_service_action(rest)))
+    return 0
+
+
+def _handle_piper(rest: list) -> int:
+    print(_stack().piper_control(_cfg(), action=_service_action(rest)))
+    return 0
+
+
+def _handle_services(rest: list) -> int:
+    action = rest[0] if rest else "status"
+    print(_stack().services_control(_cfg(), action=action))
+    return 0
+
+
 def _handle_shell(rest: list) -> int:
     """bob shell — the interactive REPL/TUI (NE2). Behind an isatty gate: a non-TTY invocation prints
     help instead, so scripts/CI never block on a prompt."""
@@ -598,6 +686,17 @@ _HANDLERS = {
     "plugins": _handle_plugins,
     "fabric": _handle_fabric,
     "aider": _handle_aider,
+    "up": _handle_up,                 # ONE-C Slice 2 — lifecycle on Python (scripts/tools/stack.py)
+    "serve": _handle_serve,
+    "restart": _handle_restart,
+    "stop": _handle_stop,
+    "ps": _handle_ps,
+    "logs": _handle_logs,
+    "webui": _handle_webui,
+    "litellm": _handle_litellm,
+    "whisper": _handle_whisper,
+    "piper": _handle_piper,
+    "services": _handle_services,
     "help": _handle_help,
 }
 

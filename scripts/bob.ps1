@@ -245,69 +245,9 @@ switch ($cmd) {
     }
     Write-Host ""
   }
-  'ps' {
-    Write-Host "`nBob Processes`n"
-    Write-Host ("{0,-15} {1,-8} {2,-10} {3,-10} {4}" -f 'Service','PID','RAM','Uptime','Status')
-    Write-Host ('-' * 60)
-    foreach ($svc in @('llama-swap','litellm','open-webui','whisper','piper')) {
-      $pf = Join-Path $repo "logs\$svc.pid"
-      if (Test-Path $pf) {
-        $wPid = [int](Get-Content $pf -Raw)
-        $proc = Get-Process -Id $wPid -ErrorAction SilentlyContinue
-        if ($proc) {
-          $ram    = "$([math]::Round($proc.WorkingSet64/1MB)) MB"
-          $uptime = ([DateTime]::Now - $proc.StartTime).ToString('hh\:mm\:ss')
-          Write-Host ("{0,-15} {1,-8} {2,-10} {3,-10} " -f $svc,$wPid,$ram,$uptime) -NoNewline
-          Write-Host "running" -ForegroundColor Green
-        } else {
-          Write-Host ("{0,-15} {1,-8} {2,-10} {3,-10} " -f $svc,$wPid,'--','--') -NoNewline
-          Write-Host "dead (stale PID file)" -ForegroundColor Red
-        }
-      } else {
-        Write-Host ("{0,-15} {1,-8} {2,-10} {3,-10} " -f $svc,'--','--','--') -NoNewline
-        Write-Host "not running" -ForegroundColor DarkGray
-      }
-    }
-    Write-Host ""
-  }
+  # ONE-C Slice 2: ps/up/serve/restart/logs/webui are runtime=python (scripts/tools/stack.py via
+  # cli.py handlers); the dispatch prologue routes them to `python -m bob` before this switch. Deleted.
   'diagnose' { & "$repo\scripts\diagnose.ps1" }
-  'up'     { & "$repo\scripts\up.ps1" -NoOpen:($rest -contains '-NoOpen') -WithServices:($rest -contains '-WithServices') }
-  'serve'  { & "$repo\scripts\start.ps1" }                    # llama-swap (:8080) + LiteLLM (:8081), interactive
-  'restart' {
-    Write-Host "Stopping endpoint..."
-    Get-Process -Name 'llama-swap','llama-server','open-webui' -ErrorAction SilentlyContinue | Stop-Process -Force
-    foreach ($svc in 'llama-swap','open-webui') {
-      $pf = Join-Path $repo "logs\$svc.pid"
-      if (Test-Path $pf) {
-        $wPid = [int](Get-Content $pf -Raw)
-        Get-Process -Id $wPid -ErrorAction SilentlyContinue | Stop-Process -Force
-        Remove-Item $pf
-      }
-    }
-    $litellmPid = Join-Path $repo 'logs\litellm.pid'
-    if (Test-Path $litellmPid) {
-      $wPid = [int](Get-Content $litellmPid -Raw -ErrorAction SilentlyContinue)
-      if ($wPid) { Get-Process -Id $wPid -ErrorAction SilentlyContinue | Stop-Process -Force }
-      Remove-Item $litellmPid -ErrorAction SilentlyContinue
-    }
-    Start-Sleep -Milliseconds 500
-    Write-Host "Starting endpoint (interactive — Ctrl+C to stop)..."
-    & "$repo\scripts\start.ps1"
-  }
-  'logs' {
-    $n = if ($rest.Count -and $rest[0] -match '^\d+$') { [int]$rest[0] } else { 50 }
-    $logFile = Join-Path $repo 'logs\llama-swap.log'
-    if (-not (Test-Path $logFile)) {
-      Write-Host "No log file yet. Start endpoint first: bob serve"; break
-    }
-    Write-Host "Tailing $logFile (last $n lines, Ctrl+C to stop):`n"
-    Get-Content $logFile -Wait -Tail $n
-  }
-  'webui'  {
-    $webuiExe = Get-VenvExe -Venv 'venv-webui' -Exe 'open-webui'
-    if (-not (Test-Path $webuiExe)) { throw "Open WebUI not installed (opt-in). Run: scripts$([IO.Path]::DirectorySeparatorChar)bootstrap.ps1 -WithWebui" }
-    & $webuiExe serve --port ($d.webuiPort ?? (Get-BobPortDefault 'webuiPort'))
-  }
   # 'aider' -> runtime=python (cli.py _handle_aider); routed by the dispatch prologue. (ONE-C Slice 1)
   'models' {
     $loadedIds = @{}; $endpointUp = $false
@@ -436,54 +376,8 @@ switch ($cmd) {
   # for describe/screenshot, STT→loop→TTS for /voice) and they never reach this switch. The old pwsh
   # REPL, System.Drawing vision, the voice loop, and Invoke-BobStream/Format-ForSpeech are all deleted —
   # one loop, one memory path.
-  'stop' {
-    $killed = [System.Collections.Generic.List[string]]::new()
-
-    # 1) Kill C++ binaries by process name (survive stale PID files)
-    foreach ($bin in @('llama-swap','llama-server','whisper-server')) {
-      $procs = Get-Process -Name $bin -ErrorAction SilentlyContinue
-      if ($procs) { $procs | Stop-Process -Force; $killed.Add($bin) }
-    }
-
-    # 2) Kill Python-hosted services via PID files (litellm, piper, open-webui)
-    foreach ($svc in @('litellm','piper','open-webui')) {
-      $pf = Join-Path $repo "logs\$svc.pid"
-      if (Test-Path $pf) {
-        $wPid = [int](Get-Content $pf -Raw -ErrorAction SilentlyContinue)
-        if ($wPid) {
-          # Also kill child processes (uvicorn workers etc.) — NC1 seam, OS-aware child reap.
-          try {
-            Get-Process -Id $wPid -ErrorAction Stop | Out-Null   # verify alive before claiming a kill
-            Stop-ProcessTree -ProcessId $wPid
-            $killed.Add($svc)
-          } catch {}
-        }
-        Remove-Item $pf -ErrorAction SilentlyContinue
-      }
-    }
-
-    # 3) Clean remaining PID files
-    foreach ($svc in @('llama-swap','whisper')) {
-      $pf = Join-Path $repo "logs\$svc.pid"
-      Remove-Item $pf -ErrorAction SilentlyContinue
-    }
-
-    # 4) Docker services (only if docker is available and compose file exists)
-    $compose = Join-Path $repo 'tools' 'compose' 'docker-compose.yml'   # Join-Path: the path goes to native docker
-    if ((Get-Command docker -ErrorAction SilentlyContinue) -and (Test-Path $compose)) {
-      $running = docker compose -f $compose ps -q 2>$null
-      if ($running) {
-        docker compose -f $compose down 2>$null | Out-Null
-        $killed.Add('docker-services')
-      }
-    }
-
-    if ($killed.Count) {
-      Write-Host "Stopped: $($killed -join ', ')" -ForegroundColor Green
-    } else {
-      Write-Host "Nothing was running." -ForegroundColor DarkGray
-    }
-  }
+  # 'stop' -> runtime=python (cli.py _handle_stop over scripts/tools/stack.py:stack_stop); routed by
+  # the dispatch prologue before this switch. Case deleted. (ONE-C Slice 2)
   'build' {
     # NC3/NC8 — (re)build llama.cpp. Auto-selects the CPU tier when no GPU is present (or with --cpu);
     # otherwise a CUDA build for the detected arch. Cross-platform via build-llama.ps1's seam.
@@ -616,61 +510,8 @@ switch ($cmd) {
   }
   'fabric-setup' { & "$repo\scripts\setup-fabric.ps1" }
   # 'fabric' -> runtime=python (cli.py _handle_fabric); routed by the dispatch prologue. (ONE-C Slice 1)
-  'litellm' {
-    $subCmd  = if ($rest.Count -and $rest[0] -in 'stop','status','start') { $rest[0] } else { '' }
-    $fwdArgs = if ($subCmd) { @($rest | Select-Object -Skip 1) } else { @($rest) }
-    $pidFile = Join-Path $repo 'logs\litellm.pid'
-    $lPort   = $d.litellmPort ?? (Get-BobPortDefault 'litellmPort')
-    switch ($subCmd) {
-      'stop' {
-        if (Stop-ServiceByPid -Name 'LiteLLM' -PidFile $pidFile) {
-          Write-Host "LiteLLM stopped." -ForegroundColor Green
-        } else { Write-Host "LiteLLM not running." -ForegroundColor DarkGray }
-      }
-      'status' {
-        if (Test-Path $pidFile) {
-          $wPid = [int](Get-Content $pidFile -Raw)
-          $proc = Get-Process -Id $wPid -ErrorAction SilentlyContinue
-          if ($proc) {
-            $uptime = ([DateTime]::Now - $proc.StartTime).ToString('hh\:mm\:ss')
-            Write-Host "LiteLLM running  PID=$wPid  uptime=$uptime  http://localhost:$lPort/v1" -ForegroundColor Green
-          } else { Write-Host "LiteLLM dead (stale PID $wPid)." -ForegroundColor Red }
-        } else { Write-Host "LiteLLM not running." -ForegroundColor DarkGray }
-      }
-      default { & "$repo\scripts\start-litellm.ps1" @fwdArgs }
-    }
-  }
-  'services' {
-    $action  = if ($rest.Count) { $rest[0] } else { '' }
-    $compose = Join-Path $repo 'tools' 'compose' 'docker-compose.yml'   # Join-Path: the path goes to native docker
-    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-      Write-Host "Docker not found. Run: .\scripts\setup-docker.ps1" -ForegroundColor Yellow; break
-    }
-    $envFile = Join-Path $repo 'tools' 'compose' '.env'
-    switch ($action) {
-      'start'  {
-        # Regenerate .env from current models.psd1 values before starting
-        $dp = (Get-ModelsConfig).defaults
-        @"
-REPO_PATH=$repo
-LANGFUSE_PORT=$($dp.langfusePort ?? (Get-BobPortDefault 'langfusePort'))
-SEARXNG_PORT=$($dp.searxngPort ?? (Get-BobPortDefault 'searxngPort'))
-N8N_PORT=$($dp.n8nPort ?? (Get-BobPortDefault 'n8nPort'))
-"@ | Set-Content $envFile -Encoding utf8
-        docker compose -f $compose up -d
-        Write-Host "Services started:" -ForegroundColor Green
-        docker compose -f $compose ps --format json 2>$null | ConvertFrom-Json | ForEach-Object {
-            $state = if ($_.Health) { $_.Health } else { $_.State }
-            $color = if ($state -eq 'healthy') { 'Green' } else { 'DarkGray' }
-            Write-Host ("  {0,-40} {1}" -f $_.Name, $state) -ForegroundColor $color
-        }
-      }
-      'stop'   { docker compose -f $compose down }
-      'status' { docker compose -f $compose ps }
-      'logs'   { docker compose -f $compose logs --tail=50 -f }
-      default  { Write-Host "Usage: bob services start|stop|status|logs" }
-    }
-  }
+  # 'litellm' and 'services' -> runtime=python (cli.py handlers over scripts/tools/stack.py); routed
+  # by the dispatch prologue before this switch. Cases deleted. (ONE-C Slice 2)
   'eval' {
     $eArgs = @{}
     $pos = @()
@@ -699,54 +540,8 @@ N8N_PORT=$($dp.n8nPort ?? (Get-BobPortDefault 'n8nPort'))
   # ── Phase 2: Voice + Vision ─────────────────────────────────────────────────
   'setup-voice' { & "$repo\scripts\setup-voice.ps1" $(if ($rest -contains '-Force') { '-Force' }) }
 
-  'whisper' {
-    $subCmd  = if ($rest.Count -and $rest[0] -in 'stop','start','status') { $rest[0] } else { '' }
-    $whisperPidFile = Join-Path $repo 'logs\whisper.pid'
-    $sttPort = try { (Get-BobConfig).voice.sttPort ?? (Get-BobPortDefault 'sttPort') } catch { Get-BobPortDefault 'sttPort' }
-    switch ($subCmd) {
-      'stop' {
-        if (Stop-ServiceByPid -Name 'whisper-server' -PidFile $whisperPidFile) {
-          Write-Host "whisper-server stopped." -ForegroundColor Green
-        } else { Write-Host "whisper-server not running." -ForegroundColor DarkGray }
-      }
-      'status' {
-        if (Test-Path $whisperPidFile) {
-          $wPid = [int](Get-Content $whisperPidFile -Raw)
-          $proc = Get-Process -Id $wPid -ErrorAction SilentlyContinue
-          if ($proc) {
-            $uptime = ([DateTime]::Now - $proc.StartTime).ToString('hh\:mm\:ss')
-            Write-Host "whisper-server running  PID=$wPid  uptime=$uptime  http://localhost:$sttPort" -ForegroundColor Green
-          } else { Write-Host "whisper-server dead (stale PID $wPid)." -ForegroundColor Red }
-        } else { Write-Host "whisper-server not running." -ForegroundColor DarkGray }
-      }
-      default { & "$repo\scripts\start-whisper.ps1" $(if ($rest -contains '-NoWindow') { '-NoWindow' }) }
-    }
-  }
-
-  'piper' {
-    $subCmd = if ($rest.Count -and $rest[0] -in 'stop','start','status') { $rest[0] } else { '' }
-    $piperPidFile = Join-Path $repo 'logs\piper.pid'
-    $ttsPort = try { (Get-BobConfig).voice.ttsPort ?? (Get-BobPortDefault 'ttsPort') } catch { Get-BobPortDefault 'ttsPort' }
-    switch ($subCmd) {
-      'stop' {
-        if (Stop-ServiceByPid -Name 'piper-server' -PidFile $piperPidFile) {
-          Write-Host "piper-server stopped." -ForegroundColor Green
-        } else { Write-Host "piper-server not running." -ForegroundColor DarkGray }
-      }
-      'status' {
-        if (Test-Path $piperPidFile) {
-          $wPid = [int](Get-Content $piperPidFile -Raw)
-          $proc = Get-Process -Id $wPid -ErrorAction SilentlyContinue
-          if ($proc) {
-            $uptime = ([DateTime]::Now - $proc.StartTime).ToString('hh\:mm\:ss')
-            Write-Host "piper-server running  PID=$wPid  uptime=$uptime  http://localhost:$ttsPort" -ForegroundColor Green
-          } else { Write-Host "piper-server dead (stale PID $wPid)." -ForegroundColor Red }
-        } else { Write-Host "piper-server not running." -ForegroundColor DarkGray }
-      }
-      default { & "$repo\scripts\start-piper-server.ps1" $(if ($rest -contains '-NoWindow') { '-NoWindow' }) }
-    }
-  }
-
+  # 'whisper' and 'piper' -> runtime=python (cli.py handlers over scripts/tools/stack.py control fns);
+  # routed by the dispatch prologue before this switch. Cases deleted. (ONE-C Slice 2)
   'agent' {
     $bobCfg     = Get-BobConfig
     $venvPy     = Get-VenvExe -Venv 'venv-litellm' -Exe 'python'

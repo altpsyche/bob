@@ -223,9 +223,18 @@ Ordered by dependency and value; a slice is the template the rest follow.
   `runtime=python`, verbs.json regenerated, the 8 dead `bob.ps1` cases + orphaned `bob-budget.ps1`
   deleted (`bob-memory.ps1` kept — still used by `onboard.ps1`, an ONE-D script). D6 functional-grouping
   noted in AUTHORING.md. tests/test_slice1_meta.py (15).
-- **Slice 2 — Lifecycle** *(the real template; high agent value):* `ps`, `logs`, `stop`, `restart`, `up`,
-  `serve`, `webui`, `litellm`, `whisper`, `piper`, `services`, `down`(new). Depends on §1b. Port the
-  `start-*.ps1` logic into a `scripts/tools/stack.py` module; mark mutating ones approval-gated.
+- **Slice 2 — Lifecycle** ✅ **DONE** (on main; 605 tests green): `scripts/tools/stack.py` ports
+  `start*.ps1`+`up.ps1`+the bob.ps1 lifecycle cases into one module (D6). 9 agent tools (`stack_up`/
+  `stack_stop`/`stack_restart`/`stack_ps`/`stack_logs` + `litellm`/`whisper`/`piper`/`services`_control;
+  mutating ones flagged) + cli handlers for `up/serve/restart/stop/ps/logs/webui/litellm/whisper/piper/
+  services`. Binaries launch DIRECTLY via `osenv.start_detached` (log_path/env added — no pwsh
+  Tee-Object); teardown uses the osenv process seams; `ps` uses the new `osenv.process_stats`. **`down`
+  deleted** (D1). Individual service verbs now always background-start (removed the pwsh fg/bg duality —
+  `bob serve` is the one foreground path). Interim: `_ensure_configs` regenerates via pwsh `gen`
+  best-effort (gen ports in Slice 6), erroring only if configs are absent. `status` stays pwsh (needs
+  models.json → Slice 4). start-*.ps1/up.ps1 KEPT (still used by setup.ps1/setup-voice.ps1, ONE-D).
+  Verified with a real litellm start→status→ps→stop round-trip. tests/test_slice2_stack.py (15) + osenv
+  (+3).
 - **Slice 3 — Health:** `setup`(check), `doctor`, `version`, then `diagnose` (heaviest — GPU/CUDA/NUMA discovery).
 - **C0c — models.json neutralization** *(the gating prerequisite for the rest):* convert `models.psd1` +
   `user.psd1` → JSON with the split writable `activeProfile`; teach `Get-ModelsConfig` to read JSON; add a
