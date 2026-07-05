@@ -46,13 +46,13 @@ recommends a Fedora distrobox — see [MANUAL-INSTALL.md](MANUAL-INSTALL.md).
 Prereqs you provide first: **Git**, **Python 3.12** (`winget install Python.Python.3.12`), and **VS2022**
 with the *Desktop development with C++* workload (for the CUDA build).
 
-```powershell
+```bat
 git clone --recurse-submodules <your-remote> C:\bob
 cd C:\bob
-install_prereqs.bat        # Node, uv, Go, CUDA, cmake, Docker
-# (log out/in if Docker Desktop was just installed)
-setup.bat                  # build → venvs → models → wire clients
-bob                        # inference auto-starts
+install_prereqs.bat        :: Node, uv, Go, CUDA, cmake, Docker
+:: (log out/in if Docker Desktop was just installed)
+setup.bat                  :: build -> venvs -> models -> wire clients
+bob                        :: inference auto-starts
 ```
 
 </td></tr>
@@ -63,9 +63,11 @@ Both entry scripts print the Bob release they belong to (`VERSION`) at startup, 
 fails partway, fix it and re-run; completed steps are skipped. Common flags (same on both):
 
 - `--skip-models`: build + configure but skip the model downloads
+- `--skip-build`: skip the llama.cpp/llama-swap compile (use an existing `bin/`)
 - `--skip-voice`: skip the voice + vision step (whisper build + model downloads)
 - `--profile 12gb` / `--profile cpu`: pick a model profile before downloading anything
 - `--cpu`: force the CPU build tier (skip CUDA)
+- `--with-webui`: also build the Open WebUI venv (opt-in; multi-GB torch/transformers)
 - `--launch`: start the stack when setup finishes
 
 `setup` needs **no root** — only `install_prereqs` (system packages) uses sudo. After setup, open a new
@@ -115,7 +117,7 @@ Docker services start automatically at the end of `setup` (if Docker is present)
 > If this setting is on, SearXNG fails with `exec /bin/sh: exec format error`. Only needs to be changed once.
 
 Verify the containers started:
-```powershell
+```bash
 bob services status
 # Expected: four rows, all "Up": compose-langfuse-postgres-1, compose-langfuse-1, compose-searxng-1, compose-n8n-1
 ```
@@ -131,7 +133,7 @@ For a detailed walkthrough of what the Docker step does internally, including tr
 
 ## Verifying the install
 
-```powershell
+```bash
 bob up                    # starts llama-swap (:8080) + LiteLLM proxy (:8081)  (+ Open WebUI :3000 if set up with --with-webui)
 bob models                # should list: planner, coder, chat, fim, embed, vision, agent
 bob bench                 # performance check (see expected numbers below)

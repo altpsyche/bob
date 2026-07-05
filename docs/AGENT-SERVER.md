@@ -3,23 +3,26 @@
 `bob agent serve` runs the agent tool-loop as a small HTTP service (FastAPI + uvicorn), so
 WebUIs, n8n, or other clients can drive Bob over REST or SSE.
 
-```powershell
+```bash
 bob agent serve            # binds agent.serveHost:agent.agentPort (default 127.0.0.1:8084)
 ```
 
 The registry and session store are built once at startup and shared across requests.
 
-The server is pure Python (FastAPI + uvicorn), so it runs unchanged on Windows and Linux; `bob agent serve` resolves to `python -m bob agent serve` on any OS (contract C1). On either OS, `scripts/smoke.ps1` exercises `/health` + an owner-scoped session turn + an SSE stream as the end-to-end gate (the shared cross-OS smoke the ND2 CI matrix runs).
+The server is pure Python (FastAPI + uvicorn), so it runs unchanged on Windows, Linux, and macOS;
+`bob agent serve` resolves to `python -m bob agent serve` on any OS. The CI acceptance matrix
+exercises `/health` + an owner-scoped session turn + an SSE stream as the end-to-end gate on every PR.
 
 ## Security
 
-- **Bind:** loopback (`127.0.0.1`) by default. Set `agent.serveHost = '0.0.0.0'` in `config/bob.psd1`
-  to expose on the LAN, and **only** with `agent.allowPrivateFetch = $false` (the default), so a
-  remote caller can't use `web_fetch` for SSRF against your private network.
+- **Bind:** loopback (`127.0.0.1`) by default. Set `agent.serveHost` to `"0.0.0.0"` (via
+  `config/user.json`, or `config/bob.psd1` on Windows) to expose on the LAN, and **only** with
+  `agent.allowPrivateFetch` left `false` (the default), so a remote caller can't use `web_fetch` for
+  SSRF against your private network. `bob agent serve` prints a warning when it binds `0.0.0.0`.
 - **Auth:** every endpoint except `/health` requires `Authorization: Bearer <token>`, where `<token>`
   is the litellm key (`litellmKey`, default `sk-local`) or an `agent.apiTokens` entry.
 - **Identity + ownership (N1):** each token maps to an owner id: `agent.apiTokens` entries are
-  `@{ token = 'sk-alice-…'; owner = 'alice' }` records (bare strings still work, mapping the token
+  `{ "token": "sk-alice-…", "owner": "alice" }` records (bare strings still work, mapping the token
   to itself), and the litellm key maps to `agent.defaultOwner` (default `local`). Sessions are
   owner-scoped: a token can only read/delete/continue sessions its owner created; any other
   `session_id` returns **404**, indistinguishable from an unknown id. Revoke a token by removing it
@@ -27,9 +30,10 @@ The server is pure Python (FastAPI + uvicorn), so it runs unchanged on Windows a
 
 ## Config
 
-All under the `agent` block of `config/bob.psd1` (see [TUNING.md](TUNING.md#agent-behavior-configbobpsd1)):
+All under the `agent` block of the runtime config — override in `config/user.json` (or
+`config/bob.psd1` on Windows); defaults live in `config/defaults.json` under `runtime.agent`:
 `serveHost`, `agentPort`, `apiTokens`, `defaultOwner`, `sessionDbPath`, `maxSessionTokens`,
-`gitAllowedRoots`, `logMaxBytes`/`logBackupCount`, `mcpEnabled`.
+`gitAllowedRoots`, `logMaxBytes`/`logBackupCount`, `mcpEnabled`. See [TUNING.md](TUNING.md).
 
 ## Endpoints
 

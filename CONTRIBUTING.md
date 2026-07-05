@@ -1,9 +1,9 @@
 # Contributing to Bob
 
-Bob is a personal, local-first AI assistant (PowerShell CLI + Python agent harness) that runs
-cross-platform on Windows and Linux under PowerShell 7 (see [docs/PORTABILITY.md](docs/PORTABILITY.md)).
-This note captures the **conventions** the codebase already follows so new code stays consistent.
-Most of it is enforced by the architecture, not by tooling.
+Bob is a personal, local-first AI assistant — a single Python CLI + agent harness (`python -m bob`)
+that runs cross-platform on Linux and Windows, with zero PowerShell (see
+[docs/PORTABILITY.md](docs/PORTABILITY.md)). This note captures the **conventions** the codebase
+already follows so new code stays consistent. Most of it is enforced by the architecture, not by tooling.
 
 ## Plugin & tool placement
 
@@ -33,9 +33,9 @@ See [plugins/AUTHORING.md](plugins/AUTHORING.md) for the three-layer capability 
    SSE JSON that is expected to be partial, or a best-effort probe), add a one-line comment saying so.
    A silent swallow with no fallback and no comment is a bug.
 
-5. **Writes to shared files are atomic:** write a `.$PID.tmp` (PowerShell) / `os.getpid()`-suffixed temp
-   (Python) then `Move-Item -Force` / `os.replace`. Applies to `data/config.json`, `data/schedules.json`,
-   `.last-agent-result.txt`. Never `Set-Content` a file other code reads concurrently.
+5. **Writes to shared files are atomic:** write an `os.getpid()`-suffixed temp file then `os.replace`.
+   Applies to `data/schedules.json`, `.last-agent-result.txt`, and any generated config cache. Never
+   overwrite in place a file other code reads concurrently.
 
 6. **Every network/LLM call has an explicit client-side timeout** (`agent.requestTimeout`, ≥ the litellm
    `request_timeout` so thinking models aren't cut off). One transient retry at most; log it.
@@ -45,32 +45,38 @@ See [plugins/AUTHORING.md](plugins/AUTHORING.md) for the three-layer capability 
    ([scripts/bob_loop.py](scripts/bob_loop.py) `_agent_logger`).
 
 8. **Single source of truth for defaults (NB1).** Shared constants (service ports and the role
-   table) live only in [config/defaults.json](config/defaults.json), read by both Python
-   (`bob_core.load_defaults()` → `_PORT_DEFAULTS` / `get_role`) and PowerShell
-   (`_models.ps1 Get-BobDefaults` → `$BobPortDefaults` / `Get-RoleForTask`). Never re-inline a port
-   number or role literal; add it to `defaults.json`. A `bob gen` / config change flows through
-   `Get-BobConfig`; a *neutral* (no-PowerShell) runtime config comes from
-   [scripts/bob_config.py](scripts/bob_config.py) `resolve_runtime_config()`.
+   table) live only in [config/defaults.json](config/defaults.json), read by
+   `bob_core.load_defaults()` (→ `_PORT_DEFAULTS` / `get_role`). Never re-inline a port number or
+   role literal; add it to `defaults.json`. The runtime config resolves live from
+   `defaults.json` + `config/user.json` via [scripts/bob_config.py](scripts/bob_config.py)
+   `resolve_runtime_config()`. (`config/bob.psd1` remains a Windows-only authoring source.)
 
 9. **Portability seams (NB3/NB4).** OS-specific behavior goes through one seam, not scattered
    branches: [scripts/osenv.py](scripts/osenv.py) for shell / data-dir (C4) / secrets (C3) / notify;
    secrets resolve via `osenv.secret()` (env → keychain → `data/secrets.json`), never a git-tracked
    file. New `bob` commands are added to the command registry
-   ([scripts/bob/registry.py](scripts/bob/registry.py)); `config/verbs.json` is *generated* from it
-   (`python -m bob.registry`) and its sync is enforced by `check.ps1`; do not hand-edit `verbs.json`.
+   ([scripts/bob/registry.py](scripts/bob/registry.py)) — `registry.COMMANDS` is the sole source for
+   dispatch + help, so adding a verb is one entry + one handler with no generated table to keep in sync.
 
 ## Tests
 
 `tests/` is a stdlib-`unittest` suite (also runnable under `pytest` if installed):
 
-```powershell
-tools\venv-litellm\Scripts\python.exe -m unittest discover -s tests
+Linux / macOS:
+```bash
+tools/venv-litellm/bin/python -m unittest discover -s tests
 # or, if pytest is installed:
+tools/venv-litellm/bin/python -m pytest tests -q
+```
+
+Windows:
+```bat
+tools\venv-litellm\Scripts\python.exe -m unittest discover -s tests
+:: or, if pytest is installed:
 tools\venv-litellm\Scripts\python.exe -m pytest tests -q
 ```
 
-It also runs as section **[11]** of `.\scripts\test-dry-run.ps1` (the PowerShell regression suite),
-and `scripts\check.ps1` runs it alongside `py_compile` + a PowerShell AST parse as one gate.
+The suite also runs as step 4 of the `scripts/check.py` gate (see below).
 Add a test when you add a tool, a routing task, a config default, or a new failure mode. The registry's
 validated-contract + injected-config design makes tools easy to test against a fake config (see
 [tests/_common.py](tests/_common.py)). Cover new public surfaces (routes, auth/ownership, streaming,
@@ -78,10 +84,19 @@ cancellation, concurrency); see the Module N tests for the pattern.
 
 ## Verifying a change
 
-- One gate for all four: `pwsh -File scripts\check.ps1` (py_compile + PowerShell AST parse +
-  `config/verbs.json`↔registry sync + the unittest suite; exits non-zero on any failure). Install it
-  as a pre-commit hook once per clone with `pwsh -File scripts\install-hooks.ps1`. In CI it runs on
-  Linux + Windows ([.github/workflows/ci.yml](.github/workflows/ci.yml)) via a `BOB_PYTHON` override.
-- Individually, Python: `tools\venv-litellm\Scripts\python.exe -m py_compile <files>` then the suite
-  above. PowerShell: `[System.Management.Automation.Language.Parser]::ParseFile(...)` (AST parse).
-- End-to-end: `bob doctor` (full pre-flight) and `.\scripts\test-dry-run.ps1`.
+- One gate for everything: `python scripts/check.py` — `py_compile` over `scripts/`/`plugins/`/`tests/`,
+  a `versions.lock`↔sources sync check, the git exec-bits on the shell entrypoints, and the unittest
+  suite; exits non-zero on the first failing category. Run it with the project interpreter:
+
+  Linux / macOS:
+  ```bash
+  tools/venv-litellm/bin/python scripts/check.py          # add --no-tests for static checks only
+  ```
+  Windows:
+  ```bat
+  tools\venv-litellm\Scripts\python.exe scripts\check.py
+  ```
+
+  Install it as a pre-commit hook once per clone with `python scripts/install_hooks.py`. In CI it runs
+  on Linux + Windows ([.github/workflows/ci.yml](.github/workflows/ci.yml)) via a `BOB_PYTHON` override.
+- End-to-end: `bob doctor` (full pre-flight) and the cross-OS smoke `python scripts/smoke.py`.

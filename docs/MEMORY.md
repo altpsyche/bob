@@ -11,13 +11,13 @@ This page is the reference for the memory engine, persisted sessions, per-projec
   `:8081`; memory costs 0 extra VRAM and one embed call per store/recall).
 - **Local always:** even when `bob chat --pro` routes answers to the cloud, recall and embedding stay
   on BGE-M3 at `:8081`. Memory never leaves the machine.
-- **On by default:** `memory.enabled = true`. Turn it off in `config/bob.psd1` (`memory = @{ enabled = $false }`).
+- **On by default:** `memory.enabled = true`. Turn it off in `config/user.json` (`{"memory": {"enabled": false}}`).
 
 ---
 
 ## Quick start
 
-```powershell
+```bash
 bob remember "I prefer explicit error messages over silent failures"
 bob recall  "error handling preferences"     # blended-rank search, prints JSON
 bob memory list                               # browse what Bob knows
@@ -75,7 +75,7 @@ rated ≥ 9 is **auto-pinned**.
 
 A **pinned** memory is never pruned and ranks first in the profile block.
 
-```powershell
+```bash
 bob memory pin 42
 bob memory unpin 42
 ```
@@ -102,7 +102,7 @@ never read as Bob's own identity, then deduped: exact (content hash) and near (c
 Each consolidated row records the **session that produced it** (`source_session`), visible in
 `bob memory show <id>` / `export`. You can retract everything a session taught Bob:
 
-```powershell
+```bash
 bob memory forget --session <session-id>
 ```
 
@@ -218,7 +218,7 @@ scope). See [SECURITY.md](SECURITY.md).
 ## Configuration (`memory.*`)
 
 All keys live in `config/defaults.json` under `runtime.memory` and can be overridden in
-`config/bob.psd1` (`memory = @{ … }`) or `config/user.psd1`.
+`config/user.json` (`{"memory": {…}}`). (`config/bob.psd1` is the Windows-only authoring source.)
 
 | Key | Default | Effect |
 |-----|---------|--------|

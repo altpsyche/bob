@@ -1,740 +1,672 @@
 # Manual Installation Guide
 
-This guide walks through every step that `install_prereqs.bat` and `setup.bat` perform,
-one command at a time. Use it when you want full control, are troubleshooting a failed
-automated install, or want to understand what the scripts actually do.
+This guide walks through every step that `install_prereqs.sh` / `install_prereqs.bat` and
+`setup.sh` / `setup.bat` perform, one command at a time. Use it when you want full control, are
+troubleshooting a failed automated install, or want to understand what the scripts actually do.
 
-**If you just want to get running quickly, use `install_prereqs.bat` then `setup.bat` instead.**
-This document is for advanced users who prefer to drive each step manually.
+**If you just want to get running quickly, use the two entry scripts instead** — see the
+[README](../README.md#quick-start) and [SETUP](SETUP.md). Each is a thin shell stub that hands off to
+the Python cold-start kernel:
 
-The bulk of this guide (steps 3 to 13) is Windows-specific commands. On **Linux** the same steps run
-under `pwsh` via the OS-aware seam ([PORTABILITY.md](PORTABILITY.md), Module NC). See the Linux
-section below.
+- `install_prereqs.sh` / `install_prereqs.bat` → `python -m bob.kernel prereqs` (Tier 0: toolchain)
+- `setup.sh` / `setup.bat` → `python -m bob.kernel setup` (Tier 1: build, configure, start)
 
----
+Everything below reproduces those two kernel runs by hand. There is **no PowerShell** anywhere in the
+flow. This document is for advanced users who prefer to drive each step manually.
 
-## 0. Linux (Module NC)
-
-Bob's orchestration runs on Linux under PowerShell 7 (`pwsh`). Two thin bootstrappers mirror the
-`.bat` entry points; the real build/serve logic is the same OS-aware `.ps1`.
-
-```bash
-# 1. Prerequisites: installs pwsh, then the toolchain (compiler, cmake, ninja, go, node, python3)
-#    via apt/dnf/pacman/zypper. Add --cpu to skip the CUDA toolkit (CPU-only tier).
-./install_prereqs.sh            # GPU box (expects NVIDIA driver + CUDA toolkit)
-./install_prereqs.sh --cpu      # no GPU / CI runner
-
-# 2. Build + configure: builds llama.cpp (CUDA, or CPU when no GPU), creates venvs, fetches models,
-#    wires clients. Auto-selects the CPU build + 'cpu' profile when no GPU is detected.
-./setup.sh                      # full
-./setup.sh -Profile cpu         # force the tiny CPU profile
-./setup.sh -SkipModels          # skip downloads
-
-# 3. Run
-pwsh scripts/up.ps1             # bring the stack up (nohup + pidfile)
-./bob agent "say hi"            # or: pwsh scripts/bob.ps1 agent "say hi"
-```
-
-What differs from Windows (all behind [`scripts/_platform.ps1`](../scripts/_platform.ps1)):
-
-| Concern | Windows | Linux |
-|---|---|---|
-| Package install | winget / scoop | apt / dnf / pacman / zypper (`Install-Package`) |
-| Compiler / generator | MSVC + Visual Studio cmake | gcc/g++ + Ninja |
-| CUDA toolkit | `C:\Program Files\NVIDIA…` | `/usr/local/cuda*` (`Get-CudaRoot`) |
-| Services | hidden background process | `nohup` + pidfile (`Start-BobBackgroundProcess`) |
-| Agent scheduler | Scheduled Task | crontab line (`Register-AgentTask`) |
-| Secrets | env → `data/secrets.json` | env → `secret-tool` → `data/secrets.json` |
-| Notifications | WinRT toast | `notify-send` |
-
-CUDA toolkit install on Linux is distro-specific: `install_prereqs.sh` installs the toolchain and
-flags CUDA as a manual step (or use `--cpu`). Verify a fresh install end-to-end with
-`pwsh scripts/smoke.ps1 -Up` (the shared cross-OS smoke, formerly `smoke-linux.ps1`), the same gate the
-[ND2 CI acceptance matrix](../.github/workflows/ci.yml) runs on Ubuntu and Windows on every change.
-
-**Reproducibility (Module ND).** Whichever path you take, the install is pinned by
-[`versions.lock`](../versions.lock): `fetch-models.ps1` downloads each model at its locked HF revision and
-verifies the SHA256 (fail-loud on mismatch), and `bob doctor` reports any drift between the installed
-submodules/models and the lock. After changing a submodule, regenerate the lock with `bob lock`
-(`check.ps1` fails on a stale lock). See [PORTABILITY.md § Reproducibility](PORTABILITY.md#reproducibility--releases-module-nd).
-
-Everything below is the Windows walkthrough.
+> **OS coverage.** Linux (glibc; apt/dnf/pacman/zypper, plus rpm-ostree on atomic Fedora) and Windows
+> 11 are supported. macOS is not yet gated — the shared `bash` steps run there, but the CUDA build steps
+> do not apply (Apple has no CUDA; use a CPU build). See the [supported matrix](../README.md#supported-matrix).
 
 ---
 
 ## Table of Contents
 
-1. [Prerequisites](#1-prerequisites)
-2. [Clone the repository](#2-clone-the-repository)
-3. [Set up CUDA environment](#3-set-up-cuda-environment)
+1. [Install the toolchain (prerequisites)](#1-install-the-toolchain-prerequisites)
+2. [Clone the repository and its submodules](#2-clone-the-repository-and-its-submodules)
+3. [Set up the CUDA environment](#3-set-up-the-cuda-environment)
 4. [Build llama.cpp](#4-build-llamacpp)
 5. [Build llama-swap](#5-build-llama-swap)
-6. [Create Python virtual environments](#6-create-python-virtual-environments)
-7. [Generate the llama-swap config](#7-generate-the-llama-swap-config)
-8. [Download models](#8-download-models)
-9. [Wire VS Code clients](#9-wire-vs-code-clients)
-10. [Build and configure fabric](#10-build-and-configure-fabric)
-11. [Install the `llm` CLI command](#11-install-the-llm-cli-command)
-12. [Docker services (Langfuse, SearXNG, n8n)](#12-docker-services)
-13. [Verify the installation](#13-verify-the-installation)
+6. [Create the Python virtual environments](#6-create-the-python-virtual-environments)
+7. [Install the `bob` CLI](#7-install-the-bob-cli)
+8. [Generate the runtime configs](#8-generate-the-runtime-configs)
+9. [Download models](#9-download-models)
+10. [Wire the editor clients (Continue + aider)](#10-wire-the-editor-clients-continue--aider)
+11. [Build and configure fabric](#11-build-and-configure-fabric)
+12. [Voice and vision (whisper + piper)](#12-voice-and-vision-whisper--piper)
+13. [Docker services (Langfuse, SearXNG, n8n)](#13-docker-services-langfuse-searxng-n8n)
+14. [Verify the installation](#14-verify-the-installation)
 
 ---
 
-## 1. Prerequisites
+## 1. Install the toolchain (prerequisites)
 
-Install these in order. Each one is required before the next step can proceed.
+This is the manual equivalent of `python -m bob.kernel prereqs`. It installs the build toolchain
+(compiler, `make`, `cmake`, `ninja`, `go`, `node`/`npm`, Python 3.12) plus, for a GPU build, the CUDA
+toolkit. Only **Git** must exist before you start.
 
-### 1.1 PowerShell 7
+The kernel resolves the concrete package names per distro from a single table
+(`PACKAGE_MAP` in `scripts/osenv.py`). The commands below are that table, expanded.
 
-```powershell
-winget install Microsoft.PowerShell
+### Linux
+
+Pick the block for your package manager. Add the CUDA toolkit only for a GPU build (skip it for the
+CPU-only tier). Cron is optional — needed only for scheduled agents (`bob agent install`); Docker is
+optional — needed only for the compose services in step 13.
+
+**Debian / Ubuntu (apt):**
+```bash
+sudo apt-get update
+sudo apt-get install -y git curl build-essential make cmake ninja-build \
+    golang-go nodejs npm python3 python3-pip python3-venv
+# GPU build only:
+sudo apt-get install -y nvidia-cuda-toolkit
+# Optional extras:
+sudo apt-get install -y cron docker.io
 ```
 
-Restart your terminal. Verify: `pwsh --version` should print `7.x.x`.
-
-### 1.2 Git
-
-Download from https://git-scm.com. During install, keep the default options.
-Verify: `git --version`.
-
-### 1.3 Scoop (package manager)
-
-```powershell
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-irm get.scoop.sh | iex
+**Fedora / RHEL (dnf):**
+```bash
+sudo dnf install -y git curl gcc-c++ make cmake ninja-build \
+    golang nodejs npm python3 python3-pip
+# GPU build only:
+sudo dnf install -y cuda-toolkit
+# Optional extras:
+sudo dnf install -y cronie docker
 ```
 
-Verify: `scoop --version`.
-
-### 1.4 VS2022 with Desktop C++ workload
-
-Required to compile llama.cpp. Cannot be automated.
-
-```powershell
-winget install Microsoft.VisualStudio.2022.Community
+**Arch / CachyOS (pacman):**
+```bash
+sudo pacman -S --needed --noconfirm git curl base-devel cmake ninja \
+    go nodejs npm python
+# GPU build only:
+sudo pacman -S --needed --noconfirm cuda
+# Optional extras:
+sudo pacman -S --needed --noconfirm cronie docker
 ```
 
-After install, open **Visual Studio Installer** → **Modify** → check
-**Desktop development with C++** → click **Modify**.
+**openSUSE (zypper):**
+```bash
+sudo zypper --non-interactive install git curl gcc-c++ make cmake ninja \
+    go nodejs-default npm-default python3 python3-pip
+# GPU build only:
+sudo zypper --non-interactive install cuda
+# Optional extras:
+sudo zypper --non-interactive install cronie docker
+```
 
-Verify: the C++ compiler exists at roughly
-`C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\<ver>\bin\Hostx64\x64\cl.exe`.
+**Atomic Fedora (Bazzite / Silverblue / Kinoite — rpm-ostree):** the base OS is immutable, so packages
+are *layered* and apply on the next boot. The kernel reuses the `dnf` package names above:
+```bash
+sudo rpm-ostree install --idempotent --allow-inactive git curl gcc-c++ make cmake \
+    ninja-build golang nodejs npm python3 python3-pip
+systemctl reboot        # layered packages apply on the next boot
+```
+CUDA is deliberately **not** layered on an atomic host (it needs NVIDIA's repo + akmods and is fragile
+there). The recommended path for GPU work on Bazzite/Silverblue is a Fedora distrobox — plain `dnf`
+inside, native build and CUDA passthrough just work, and nothing touches the immutable host:
+```bash
+distrobox create --name bob --image fedora:latest --nvidia
+distrobox enter bob
+cd /path/to/bob && ./install_prereqs.sh && ./setup.sh
+```
 
-### 1.5 Node.js
+**cmake version note (rolling distros).** llama.cpp and whisper.cpp reject cmake **4.x**. Arch/CachyOS
+and other rolling distros ship only 4.x. If `cmake --version` reports 4.x, the kernel downloads a pinned
+Kitware **cmake 3.31.7** into `tools/` and uses that. To do it by hand:
+```bash
+cd tools
+curl -L -O https://github.com/Kitware/CMake/releases/download/v3.31.7/cmake-3.31.7-linux-x86_64.tar.gz
+tar -xzf cmake-3.31.7-linux-x86_64.tar.gz
+# use tools/cmake-3.31.7-linux-x86_64/bin/cmake wherever `cmake` is called below
+cd ..
+```
 
-Required for Continue.dev MCP servers (`@filesystem`, `@url`, `@github`).
+### Windows
 
-```powershell
+The Windows path uses winget / scoop to install the **toolchain** (not Bob itself). Install these once;
+open a new terminal afterward so each lands on PATH.
+
+```bat
+:: Git — install from https://git-scm.com if not already present, then:
+winget install Python.Python.3.12 --accept-package-agreements --accept-source-agreements
 winget install OpenJS.NodeJS --accept-package-agreements --accept-source-agreements
-```
-
-Verify: `node --version`.
-
-### 1.6 uv / uvx
-
-Required for `mcp-server-fetch` (the Continue `@url` provider runs via `uvx`).
-
-```powershell
 winget install astral-sh.uv --accept-package-agreements --accept-source-agreements
-```
-
-Verify: `uvx --version`.
-
-### 1.7 Go
-
-Required to build llama-swap and fabric.
-
-```powershell
-scoop install go
-```
-
-Verify: `go version`.
-
-### 1.8 Python 3.12
-
-**Must be exactly 3.12.** The venvs are pinned to it; Open WebUI has conflicts with 3.13+.
-
-```powershell
-scoop install python312
-```
-
-The scoop install makes `python3.12` available. Verify:
-```powershell
-scoop prefix python312     # prints the install path
-python3.12 --version       # or: py -3.12 --version
-```
-
-### 1.9 CUDA Toolkit
-
-#### Blackwell (RTX 5080, 5090): requires exactly CUDA 12.8
-
-```powershell
-winget install Nvidia.CUDA --version 12.8 --accept-package-agreements --accept-source-agreements
-```
-
-#### Ada Lovelace (RTX 4090, 4080, 4070 …) or Ampere (RTX 3090, 3080 …): any CUDA 12.x
-
-```powershell
-winget install Nvidia.CUDA --version 12.8 --accept-package-agreements --accept-source-agreements
-```
-
-CUDA 12.8 works on all three generations. After install, verify the toolkit exists:
-```powershell
-Test-Path "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8"   # should be True
-```
-
-Restart your terminal after CUDA installs to pick up the new PATH entries.
-
-### 1.10 cmake 3.x
-
-**Do not use cmake 4.x**: it is explicitly excluded by llama.cpp's `CMakeLists.txt`.
-
-Check first (VS2022 bundles cmake 3.31.x and that's sufficient):
-```powershell
-$vsI = & 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe' `
-    -latest -products * -requires Microsoft.VisualStudio.Component.VC.CMake.Project `
-    -property installationPath
-Test-Path "$vsI\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
-```
-
-If that's not present, install via winget:
-```powershell
+winget install GoLang.Go --accept-package-agreements --accept-source-agreements
+:: cmake 3.x (4.x is rejected by llama.cpp; VS2022 also bundles a usable 3.31.x):
 winget install Kitware.CMake --version 3.31.7 --accept-package-agreements --accept-source-agreements
 ```
 
-After install: `cmake --version`; confirm output starts with `cmake version 3.`.
-
-### 1.11 Docker Desktop
-
-Required for Langfuse, SearXNG, and n8n. Skip if you don't need those services.
-
-```powershell
-winget install Docker.DockerDesktop --accept-package-agreements --accept-source-agreements
+VS2022 with the **Desktop development with C++** workload is required to compile llama.cpp and cannot
+be fully automated:
+```bat
+winget install Microsoft.VisualStudio.2022.Community --accept-package-agreements --accept-source-agreements
+:: Then: open "Visual Studio Installer" -> Modify -> check "Desktop development with C++" -> Modify
 ```
 
-**After install: log out of Windows and back in.** Docker Desktop adds your user to the
-`docker-users` group and this only takes effect at login.
-
-After logging back in, launch Docker Desktop from the Start menu and wait for the whale
-icon in the system tray to go solid (60 to 90 seconds).
-
-**Disable the containerd snapshotter** before pulling any images, otherwise SearXNG fails:
-Docker Desktop → Settings → General → uncheck **"Use containerd for pulling and storing images"**
-→ Apply & Restart.
+For a GPU build, install CUDA (12.8 covers Blackwell, Ada, and Ampere) and, optionally, Docker Desktop:
+```bat
+winget install Nvidia.CUDA --version 12.8 --accept-package-agreements --accept-source-agreements
+winget install Docker.DockerDesktop --accept-package-agreements --accept-source-agreements
+```
+After installing Docker Desktop, **log out of Windows and back in** — Docker adds your user to the
+`docker-users` group and that only takes effect at login. Restart your terminal after CUDA installs to
+pick up the new PATH entries.
 
 ---
 
-## 2. Clone the repository
+## 2. Clone the repository and its submodules
 
-```powershell
+Bob vendors four submodules: `external/llama.cpp` (the engine), `external/llama-swap` (the model-swap
+proxy), `external/whisper.cpp` (STT), and `external/fabric` (prompt patterns).
+
+Linux / macOS:
+```bash
+git clone --recurse-submodules <your-remote> bob
+cd bob
+```
+
+Windows:
+```bat
 git clone --recurse-submodules <your-remote> C:\bob
 cd C:\bob
 ```
 
-The `--recurse-submodules` flag fetches `external/llama.cpp`, `external/llama-swap`,
-and `external/fabric` in one pass. If you cloned without it:
-
-```powershell
+If you cloned without `--recurse-submodules`, populate them now (works the same on every OS):
+```bash
 git submodule update --init --recursive
 ```
 
 Verify the submodules are populated:
-```powershell
-Test-Path external\llama.cpp\CMakeLists.txt   # True
-Test-Path external\llama-swap\main.go         # True
-Test-Path external\fabric\cmd\fabric\main.go  # True
+```bash
+ls external/llama.cpp/CMakeLists.txt external/llama-swap/main.go external/fabric/cmd/fabric/main.go
 ```
 
 ---
 
-## 3. Set up CUDA environment
+## 3. Set up the CUDA environment
 
-The cmake build needs to find the CUDA toolkit. Set these environment variables for the
-current session (and add them to your system environment if you want them permanent):
+Skip this section for a CPU-only build (jump to [step 4](#4-build-llamacpp) and use the CPU block).
 
-```powershell
-$cudaRoot = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8"
-$env:CUDA_PATH       = $cudaRoot
-$env:CUDA_PATH_V12_8 = $cudaRoot
-$env:PATH            = "$cudaRoot\bin;$env:PATH"
-```
+The build finds the CUDA toolkit by probing disk (`/usr/local/cuda*`, `/opt/cuda`, `$CUDA_PATH` on
+Linux; `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\vX.Y` on Windows). Blackwell (sm_120) needs
+CUDA **12.8+**.
 
-Verify nvcc is reachable: `nvcc --version`.
-
-Identify your GPU's CUDA compute architecture; you need this for the cmake step:
-
-```powershell
+Identify your GPU's compute architecture — you need it for the cmake step:
+```bash
 nvidia-smi --query-gpu=compute_cap --format=csv,noheader
-# Returns something like: 12.0  (Blackwell), 8.9 (Ada), 8.6 (Ampere)
+# e.g. 12.0 (Blackwell), 8.9 (Ada), 8.6 (Ampere)
 ```
 
-Convert to the cmake `CUDA_ARCHITECTURES` value (remove the dot):
+Convert to the cmake `CUDA_ARCHITECTURES` value (drop the dot):
 
 | GPU generation | Example cards | `nvidia-smi` output | cmake value |
 |---|---|---|---|
 | Blackwell | RTX 5080, 5090 | `12.0` | `120` |
 | Ada Lovelace | RTX 4090, 4080, 4070 Ti | `8.9` | `89` |
-| Ada Lovelace (lower) | RTX 4070, 4060 Ti | `8.9` | `89` |
 | Ampere | RTX 3090, 3080, 3070 | `8.6` | `86` |
+
+**Linux — put the toolkit on PATH** (a convenience; the build probes disk regardless):
+```bash
+export CUDA_PATH=/usr/local/cuda        # or wherever your toolkit lives
+export PATH="$CUDA_PATH/bin:$PATH"
+nvcc --version                          # confirm it resolves
+```
+
+On rolling distros, the default `g++`/`gcc` is often newer than nvcc accepts. If so, point nvcc at an
+older host compiler (this is what `install_prereqs` wires into `/etc/profile.d/cuda.sh` and the fish
+drop-in):
+```bash
+export NVCC_CCBIN=/usr/bin/g++-13       # an nvcc-compatible g++, if the default is too new
+```
+
+**Windows — set the toolkit path for the session:**
+```bat
+set "CUDA_PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8"
+set "PATH=%CUDA_PATH%\bin;%PATH%"
+nvcc --version
+```
 
 ---
 
 ## 4. Build llama.cpp
 
-All commands run from `C:\bob` unless noted.
+This produces `bin/llama-server`. On Linux the build uses the **Ninja** generator; on Windows it uses
+the **Visual Studio 17 2022** generator. These are the exact flags `scripts/tools/build.py`
+(`build_llama`) passes.
 
-### 4.1 Locate cmake
+### Linux / macOS — CUDA build
 
-Use the VS bundled cmake (3.31.x) to avoid version issues:
-
-```powershell
-$vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
-$vsPath  = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Workload.NativeDesktop -property installationPath
-$cmake   = "$vsPath\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
-# Verify:
-& $cmake --version
+Replace `120` with your GPU's value from the table above. If you provisioned the pinned cmake in step 1,
+use its full path instead of `cmake`.
+```bash
+cd external/llama.cpp
+rm -rf build
+cmake -B build -G Ninja \
+    -DGGML_CUDA=ON \
+    -DCMAKE_CUDA_COMPILER="$CUDA_PATH/bin/nvcc" \
+    -DCMAKE_CUDA_ARCHITECTURES=120 \
+    -DGGML_CUDA_FORCE_CUBLAS=OFF \
+    -DCUDAToolkit_ROOT="$CUDA_PATH" \
+    -DCMAKE_BUILD_TYPE=Release
+    # if nvcc needs an older host compiler, add:
+    # -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-13
+cmake --build build --config Release -j
+cd ../..
 ```
 
-If cmake is on your PATH and is version 3.x, you can use `cmake` directly.
+### Linux / macOS — CPU build
 
-### 4.2 Configure
+```bash
+cd external/llama.cpp
+rm -rf build
+cmake -B build -G Ninja -DGGML_CUDA=OFF -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release -j
+cd ../..
+```
 
-Replace `120` with your GPU's compute architecture value from the table above.
+### Stage the binaries into `bin/` (Linux / macOS)
 
-```powershell
-$cudaRoot = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8"
-$arch     = "120"   # <-- set to your GPU value
+The Ninja build drops binaries in `build/bin/`. Copy them (and the shared GGML libs beside them) into
+the repo's `bin/`:
+```bash
+mkdir -p bin
+cp external/llama.cpp/build/bin/* bin/
+bin/llama-server --version              # sanity check
+```
 
+### Windows — CUDA build
+
+```bat
 cd external\llama.cpp
-
-& $cmake -B build `
-    -G "Visual Studio 17 2022" `
-    -T "cuda=$cudaRoot" `
-    -DGGML_CUDA=ON `
-    -DCMAKE_CUDA_ARCHITECTURES="$arch" `
-    -DGGML_CUDA_FORCE_CUBLAS=OFF `
-    -DCUDAToolkit_ROOT="$cudaRoot"
+if exist build rmdir /s /q build
+cmake -B build -G "Visual Studio 17 2022" -T "cuda=%CUDA_PATH%" ^
+    -DGGML_CUDA=ON ^
+    -DCMAKE_CUDA_ARCHITECTURES=120 ^
+    -DGGML_CUDA_FORCE_CUBLAS=OFF ^
+    -DCUDAToolkit_ROOT="%CUDA_PATH%"
+cmake --build build --config Release -j
+cd ..\..
 ```
 
-Expected output ends with `-- Build files have been written to: .../external/llama.cpp/build`.
+For a **CPU** build on Windows, use `-G "Visual Studio 17 2022" -DGGML_CUDA=OFF` instead.
 
-### 4.3 Build
-
-```powershell
-& $cmake --build build --config Release -j
+Stage the server binary and the CUDA runtime DLLs into `bin\` (the VS build is multi-config, so output
+lands in `build\bin\Release`):
+```bat
+if not exist bin mkdir bin
+copy external\llama.cpp\build\bin\Release\llama-server.exe bin\
+copy "%CUDA_PATH%\bin\cublas64_12.dll"   bin\
+copy "%CUDA_PATH%\bin\cublasLt64_12.dll" bin\
+copy "%CUDA_PATH%\bin\cudart64_12.dll"   bin\
+bin\llama-server.exe --version
 ```
 
-This takes 5 to 20 minutes depending on your machine. Expected output ends with
-`Build succeeded.`
+> **MSVC / nvcc compatibility:** if cmake fails with `unsupported Microsoft Visual Studio version`, add
+> `-DCMAKE_CUDA_FLAGS="-allow-unsupported-compiler"` to the configure command, or install MSVC v14.4x
+> through the VS Installer to match CUDA 12.8.
 
-### 4.4 Copy binaries and CUDA DLLs
-
-```powershell
-cd C:\bob
-
-# Copy the server binary
-Copy-Item external\llama.cpp\build\bin\Release\llama-server.exe bin\
-
-# Copy required CUDA runtime DLLs (from CUDA toolkit)
-$cuBin = "$cudaRoot\bin"
-Copy-Item "$cuBin\cublas64_12.dll"   bin\
-Copy-Item "$cuBin\cublasLt64_12.dll" bin\
-Copy-Item "$cuBin\cudart64_12.dll"   bin\
-```
-
-Verify: `bin\llama-server.exe --version` should print version info without errors.
-
-**MSVC compiler version note:** If cmake fails with `unsupported Microsoft Visual Studio version`,
-add `-DCMAKE_CUDA_FLAGS="-allow-unsupported-compiler"` to the configure command, or install
-MSVC v14.4x through the VS Installer (matches CUDA 12.8).
-
-### 4.5 Pin to a specific commit
-
-The repository records the exact llama.cpp commit verified to work on Blackwell. To switch to a different commit:
-
-```powershell
-cd external\llama.cpp
-git checkout <commit-or-tag>
-cd C:\bob
-git add external/llama.cpp
-git commit -m "pin llama.cpp to <commit>"
-```
-
-After changing the submodule commit, rebuild from scratch:
-
-```powershell
-.\scripts\build-llama.ps1 -Force
-```
-
-See [TUNING.md](TUNING.md#bumping-the-llamacpp-submodule) for bumping to a newer version and re-verifying performance afterward.
+Once you've verified a good build, `bob build` (and `bob build --force`) will rebuild through the same
+code path in future.
 
 ---
 
 ## 5. Build llama-swap
 
-```powershell
-cd C:\bob\external\llama-swap
-go build -o ..\..\bin\llama-swap.exe .
-cd C:\bob
+llama-swap is a small Go binary that fronts llama.cpp and swaps models on demand. Same command on every
+OS (`build_llama_swap` runs `go build -o bin/llama-swap .`):
+
+Linux / macOS:
+```bash
+cd external/llama-swap
+go build -o ../../bin/llama-swap .
+cd ../..
+bin/llama-swap --version
 ```
 
-Verify: `bin\llama-swap.exe --version`.
+Windows:
+```bat
+cd external\llama-swap
+go build -o ..\..\bin\llama-swap.exe .
+cd ..\..
+bin\llama-swap.exe --version
+```
+
+If you don't have Go, drop a prebuilt llama-swap release binary into `bin/` instead.
 
 ---
 
-## 6. Create Python virtual environments
+## 6. Create the Python virtual environments
 
-**All four venvs are required.** They are kept separate because Open WebUI, aider, LiteLLM,
-and lm-eval have conflicting dependency pins that cannot coexist in a single environment.
+Bob keeps its Python tools in isolated venvs under `tools/` because Open WebUI, aider, and LiteLLM have
+conflicting dependency pins. They must be built with **Python 3.11 or 3.12** (3.13+ has Open WebUI
+conflicts). The kernel builds them with `osenv.new_bob_venv`; the manual equivalent is `python -m venv`
+plus a `pip install -r` of the matching requirements file.
 
-First, resolve the Python 3.12 executable:
+Two venvs are built by default; `venv-webui` is opt-in; `venv-eval` is provisioned on demand by the
+first `bob eval`.
 
-```powershell
-# Try scoop shim first
-$py = (Get-Command python3.12 -ErrorAction SilentlyContinue)?.Source
-# Or use the py launcher:
-if (-not $py) { $py = & py -3.12 -c "import sys; print(sys.executable)" }
-Write-Host "Python 3.12: $py"
+| Venv | Requirements file | Built by default? |
+|---|---|---|
+| `venv-litellm` | `tools/litellm-requirements.txt` | yes — the LiteLLM proxy **and** the `bob` CLI's runtime deps live here |
+| `venv-aider` | `tools/aider-requirements.txt` | yes |
+| `venv-webui` | `tools/webui-requirements.txt` | no — opt-in (large: torch/transformers, multi-GB) |
+| `venv-eval` | `tools/eval-requirements.txt` | no — on demand for `bob eval` |
+
+> The `bob` command itself runs under `tools/venv-litellm/bin/python`, so build **venv-litellm first** —
+> nothing else works until it exists. On Windows the venv layout is `tools\<venv>\Scripts\` and the
+> pinned `.lock` files are used in place of `.txt`.
+
+Linux / macOS (repeat per venv, changing the two names):
+```bash
+python3 -m venv tools/venv-litellm
+tools/venv-litellm/bin/python -m pip install --upgrade pip
+tools/venv-litellm/bin/python -m pip install -r tools/litellm-requirements.txt
+
+python3 -m venv tools/venv-aider
+tools/venv-aider/bin/python -m pip install --upgrade pip
+tools/venv-aider/bin/python -m pip install -r tools/aider-requirements.txt
+
+# opt-in Open WebUI venv (only if you want the browser UI):
+python3 -m venv tools/venv-webui
+tools/venv-webui/bin/python -m pip install --upgrade pip
+tools/venv-webui/bin/python -m pip install -r tools/webui-requirements.txt
 ```
 
-### 6.1 Open WebUI venv
+Windows (uses the pinned `.lock` files):
+```bat
+python -m venv tools\venv-litellm
+tools\venv-litellm\Scripts\python.exe -m pip install --upgrade pip
+tools\venv-litellm\Scripts\python.exe -m pip install -r tools\litellm-requirements.lock
 
-```powershell
-& $py -m venv tools\venv-webui
-tools\venv-webui\Scripts\python.exe -m pip install --upgrade pip
-tools\venv-webui\Scripts\python.exe -m pip install -r tools\webui-requirements.lock
-```
-
-### 6.2 aider venv
-
-```powershell
-& $py -m venv tools\venv-aider
+python -m venv tools\venv-aider
 tools\venv-aider\Scripts\python.exe -m pip install --upgrade pip
 tools\venv-aider\Scripts\python.exe -m pip install -r tools\aider-requirements.lock
 ```
 
-### 6.3 LiteLLM venv
-
-```powershell
-& $py -m venv tools\venv-litellm
-tools\venv-litellm\Scripts\python.exe -m pip install --upgrade pip
-tools\venv-litellm\Scripts\python.exe -m pip install -r tools\litellm-requirements.txt
-```
-
-### 6.4 Eval venv (optional, benchmarking only)
-
-`venv-eval` (lm-eval + transformers) is **not** built by setup; it's provisioned on demand by the
-first `bob eval` run, or explicitly with `pwsh scripts/bootstrap-eval.ps1` (both go through the shared
-`New-BobVenv` helper, so you don't hand-roll the paths). To build it manually anyway:
-
-```powershell
-& $py -m venv tools\venv-eval
-tools\venv-eval\Scripts\python.exe -m pip install --upgrade pip
-tools\venv-eval\Scripts\python.exe -m pip install -r tools\eval-requirements.txt
-```
-
-Each venv install takes 2 to 10 minutes. `venv-webui` (Open WebUI) is the largest (torch/transformers,
-multi-GB) and is **opt-in**: build it via `setup … -WithWebui` or `pwsh scripts/bootstrap.ps1 -WithWebui`.
+Each install takes 2–10 minutes; `venv-webui` is by far the largest.
 
 ---
 
-## 7. Generate runtime configs
+## 7. Install the `bob` CLI
 
-Two config files are generated from `config/models.psd1`. Both are overwritten on every
-`bob serve` and `bob gen`; do not edit them by hand.
+This puts `bob` on your PATH so the remaining steps (`bob gen`, `bob fetch`, …) resolve.
 
-```powershell
-.\scripts\gen-llama-swap.ps1   # writes config/llama-swap.yaml (local model routing)
-.\scripts\gen-litellm.ps1      # writes config/litellm.yaml (LiteLLM proxy model list)
+**Linux / macOS.** The repo-root `./bob` shim runs `tools/venv-litellm/bin/python -m bob`. Symlink it
+into `~/.local/bin`:
+```bash
+mkdir -p ~/.local/bin
+ln -sf "$(pwd)/bob" ~/.local/bin/bob
+# ensure ~/.local/bin is on PATH:
+#   fish:      fish_add_path ~/.local/bin
+#   bash/zsh:  add 'export PATH="$HOME/.local/bin:$PATH"' to your rc
 ```
+Open a new terminal, then `bob help` should print the catalog. If you'd rather not install it globally,
+you can run any command in-place as `./bob <verb>`.
 
-To target a specific VRAM profile for llama-swap (litellm.yaml is profile-agnostic):
-```powershell
-.\scripts\gen-llama-swap.ps1 12gb
-.\scripts\gen-litellm.ps1
+**Windows.** The kernel writes a `bob.cmd` shim (`python -m bob`) into your scoop shims directory. If
+you use scoop, `install_cli` does this; by hand, create `bob.cmd` somewhere on PATH:
+```bat
+:: create %USERPROFILE%\scoop\shims\bob.cmd (or any folder on PATH) containing:
+::   @echo off
+::   set "PYTHONPATH=C:\bob\scripts"
+::   "C:\bob\tools\venv-litellm\Scripts\python.exe" -m bob %*
 ```
-
-To customize model parameters or add API pro models, edit `config/models.psd1` or create
-`config/user.psd1` (gitignored per-machine overrides). Re-run both generators after editing.
-
-Verify:
-```powershell
-Test-Path config\llama-swap.yaml   # True
-Test-Path config\litellm.yaml      # True
-```
+If you don't use scoop, add the repo folder to PATH and invoke `bob` from there. Open a new terminal,
+then `bob help`.
 
 ---
 
-## 8. Download models
+## 8. Generate the runtime configs
 
-```powershell
-.\scripts\fetch-models.ps1
+`bob gen` reads the model registry (`config/models.json`, plus your `config/user.json` overrides) and
+writes the generated runtime configs: `config/llama-swap.yaml` (local model routing) and
+`config/litellm.yaml` (the OpenAI-compatible proxy's model list). These are overwritten on every
+`bob gen` — do not edit them by hand.
+
+```bash
+bob gen                 # for the active profile
+bob gen 12gb            # target a specific VRAM profile
 ```
 
-This downloads all GGUF files for the active profile (~38 GB for 16gb, ~21 GB for 12gb).
-Files go to `models/`. Downloads are resumable: if interrupted, re-run the same command.
+To customize model parameters or add cloud "pro" models, edit `config/models.json` or create
+`config/user.json` (a deep-merged per-machine override, e.g. `{"agent":{"maxSteps":3}}` or
+`{"peers":{"deepseek":{"apiKey":"…"}}}`), then re-run `bob gen`.
 
-Useful flags:
+> `config/bob.psd1` is a **Windows-only authoring source** (persona/routing/ports). It still exists but
+> is irrelevant off Windows — configuration there resolves live from `config/defaults.json` +
+> `config/user.json`.
 
-```powershell
-# Preview what would be downloaded without downloading anything
-.\scripts\fetch-models.ps1 -ListOnly
-
-# Skip downloads entirely (if you'll provide models manually)
-# (skip this step; copy .gguf files into models/ manually)
-
-# Download for a specific profile without switching the active profile
-.\scripts\fetch-models.ps1 -Profile 12gb
-```
-
-For gated HuggingFace repos, set `$env:HF_TOKEN` to your access token before running:
-```powershell
-$env:HF_TOKEN = "hf_..."
-.\scripts\fetch-models.ps1
-```
-
-After download, verify SHA256 checksums:
-```powershell
-.\scripts\bob.ps1 verify-urls    # checks download URLs are still valid
+Verify the outputs exist:
+```bash
+ls config/llama-swap.yaml config/litellm.yaml
 ```
 
 ---
 
-## 9. Wire VS Code clients
+## 9. Download models
 
-### 9.1 Continue.dev config
+`bob fetch` downloads the GGUF files for the active profile into `models/`, verifying each against the
+SHA256 pinned in the registry. Downloads are resumable — re-run if interrupted.
 
-Link the repo's Continue config into your home directory so Continue finds it automatically:
-
-```powershell
-# Create the directory if it doesn't exist
-New-Item -ItemType Directory -Force "$HOME\.continue" | Out-Null
-
-# Symlink (requires Developer Mode or admin, preferred)
-New-Item -ItemType SymbolicLink `
-    -Path "$HOME\.continue\config.yaml" `
-    -Target "C:\bob\config\continue\config.yaml"
-
-# Fallback, plain copy (re-run this whenever you edit the repo config)
-Copy-Item "C:\bob\config\continue\config.yaml" "$HOME\.continue\config.yaml" -Force
+```bash
+bob fetch                    # download the active profile (~38 GB for 16gb, ~21 GB for 12gb)
+bob fetch --list             # preview what would be downloaded, download nothing
+bob fetch 12gb               # download a specific profile
 ```
 
-### 9.2 aider config
+For gated HuggingFace repos, set `HF_TOKEN` first:
 
-```powershell
-# Symlink
-New-Item -ItemType SymbolicLink `
-    -Path "$HOME\.aider.conf.yml" `
-    -Target "C:\bob\config\aider\.aider.conf.yml"
-
-# Fallback, copy
-Copy-Item "C:\bob\config\aider\.aider.conf.yml" "$HOME\.aider.conf.yml" -Force
+Linux / macOS:
+```bash
+export HF_TOKEN=hf_...
+bob fetch
 ```
 
-### 9.3 Install VS Code extensions
+Windows:
+```bat
+set HF_TOKEN=hf_...
+bob fetch
+```
 
-```powershell
+To provide models yourself, copy the `.gguf` files into `models/` manually and skip this step.
+
+---
+
+## 10. Wire the editor clients (Continue + aider)
+
+This points VS Code's Continue extension and the aider CLI at the repo's config files (symlink, with a
+copy fallback where symlinks aren't permitted). The kernel does this in `setup_clients`; by hand:
+
+Linux / macOS:
+```bash
+bob gen                                                    # regenerates config/continue/config.yaml too
+mkdir -p ~/.continue
+ln -sf "$(pwd)/config/continue/config.yaml" ~/.continue/config.yaml
+ln -sf "$(pwd)/config/aider/.aider.conf.yml" ~/.aider.conf.yml
+```
+
+Windows (symlinks need Developer Mode or admin; otherwise copy):
+```bat
+if not exist "%USERPROFILE%\.continue" mkdir "%USERPROFILE%\.continue"
+mklink "%USERPROFILE%\.continue\config.yaml" "C:\bob\config\continue\config.yaml"
+mklink "%USERPROFILE%\.aider.conf.yml" "C:\bob\config\aider\.aider.conf.yml"
+:: fallback if mklink is not permitted:
+::   copy "C:\bob\config\continue\config.yaml" "%USERPROFILE%\.continue\config.yaml"
+::   copy "C:\bob\config\aider\.aider.conf.yml" "%USERPROFILE%\.aider.conf.yml"
+```
+
+Install the VS Code extensions (same on every OS):
+```bash
 code --install-extension Continue.continue
 code --install-extension saoudrizwan.claude-dev    # Cline
 ```
 
 ---
 
-## 10. Build and configure fabric
+## 11. Build and configure fabric
 
-### 10.1 Build the binary
+fabric is a Go binary that runs 250+ named LLM prompt patterns. `bob fabric-setup` builds it and wires
+`~/.config/fabric`; the manual equivalent (`setup_fabric` in `scripts/tools/build.py`):
 
-```powershell
-cd C:\bob\external\fabric
-go build -o ..\..\bin\fabric.exe .\cmd\fabric\
-cd C:\bob
-```
+Linux / macOS:
+```bash
+cd external/fabric
+go build -o ../../bin/fabric ./cmd/fabric/
+cd ../..
 
-### 10.2 Configure fabric to use the local endpoint
-
-```powershell
-New-Item -ItemType Directory -Force "$HOME\.config\fabric" | Out-Null
-
-@"
+mkdir -p ~/.config/fabric
+cat > ~/.config/fabric/.env <<'EOF'
 OPENAI_API_KEY=sk-local
 OPENAI_API_BASE_URL=http://localhost:8081/v1
 DEFAULT_VENDOR=OpenAI
 DEFAULT_MODEL=coder
-"@ | Set-Content "$HOME\.config\fabric\.env" -Encoding utf8
+EOF
+ln -sf "$(pwd)/external/fabric/data/patterns" ~/.config/fabric/patterns
+bin/fabric -l            # lists 250+ patterns
 ```
 
-Replace `8081` if you changed `litellmPort` in `config/user.psd1`.
+Windows:
+```bat
+cd external\fabric
+go build -o ..\..\bin\fabric.exe .\cmd\fabric\
+cd ..\..
 
-### 10.3 Link the patterns
-
-```powershell
-# Symlink (preferred, patterns update automatically with submodule bumps)
-New-Item -ItemType SymbolicLink `
-    -Path "$HOME\.config\fabric\patterns" `
-    -Target "C:\bob\external\fabric\data\patterns"
-
-# Fallback, copy
-Copy-Item "C:\bob\external\fabric\data\patterns" "$HOME\.config\fabric\patterns" -Recurse
+if not exist "%USERPROFILE%\.config\fabric" mkdir "%USERPROFILE%\.config\fabric"
+(
+  echo OPENAI_API_KEY=sk-local
+  echo OPENAI_API_BASE_URL=http://localhost:8081/v1
+  echo DEFAULT_VENDOR=OpenAI
+  echo DEFAULT_MODEL=coder
+) > "%USERPROFILE%\.config\fabric\.env"
+mklink /D "%USERPROFILE%\.config\fabric\patterns" "C:\bob\external\fabric\data\patterns"
+bin\fabric.exe -l
 ```
 
-Verify: `bin\fabric.exe -l` lists 200+ patterns.
+Replace `8081` if you changed `litellmPort` in `config/user.json`.
 
 ---
 
-## 11. Install the `llm` CLI command
+## 12. Voice and vision (whisper + piper)
 
-```powershell
-.\scripts\install-cli.ps1
+Optional Phase-2 feature. `bob setup-voice` builds `whisper.cpp` (STT), downloads the whisper model and
+the piper TTS binary + voice, and installs the audio deps into `venv-litellm`. It requires
+`venv-litellm` to already exist (step 6).
+
+```bash
+bob setup-voice              # build whisper-server, fetch STT model + piper voice
+bob setup-voice --force      # rebuild / re-download everything
 ```
 
-This creates a `.cmd` shim in your Scoop shims directory so `llm` is available from any
-terminal (cmd or PowerShell), and registers tab completions in your PowerShell profile.
-
-**Open a new terminal** after this step: the PATH change only takes effect in new sessions.
-
-Verify: `bob help` prints the command list.
+Under the hood this builds `whisper.cpp` with the same CUDA/cmake seams as llama.cpp
+(`-DWHISPER_CUDA=ON` for a GPU, CPU fallback otherwise) into `bin/whisper-server` + `bin/whisper-cli`,
+downloads `ggml-small.bin` into `models/whisper/`, extracts piper into `bin/`, and drops the voice model
+into `bin/voices/`. Enable `voice.enabled` / `vision.enabled` in `config/user.json` to use it.
 
 ---
 
-## 12. Docker services
+## 13. Docker services (Langfuse, SearXNG, n8n)
 
-Docker Desktop must be installed (step 1.11) and you must have logged out and back in for
-group membership to take effect. Docker Desktop must be running (whale icon in system tray).
+Optional. These run in Docker; skip if you don't need observability, private search, or workflow
+automation. Docker must be installed and its daemon running. After setup, manage them with
+`bob services start|stop|status|logs`.
 
-> **Before pulling images:** Docker Desktop → Settings → General → uncheck
-> **"Use containerd for pulling and storing images"** → Apply & Restart.
-> If enabled, SearXNG fails with `exec /bin/sh: exec format error`.
+The kernel's `setup_docker` writes `tools/compose/.env`, creates the persistent data dirs, writes a
+default `config/searxng/settings.yml`, then pulls and starts the stack. To do it by hand, ensure Docker
+is up, then:
 
-### 12.1 Run the setup script
-
-```powershell
-.\scripts\setup-docker.ps1
+Linux / macOS:
+```bash
+docker info                                  # confirm the daemon responds
+docker compose -f tools/compose/docker-compose.yml pull
+docker compose -f tools/compose/docker-compose.yml up -d
 ```
 
-What it does, in order:
-
-1. Checks `docker` is on PATH; adds the Docker Desktop bin directory if installed but PATH not yet refreshed
-2. Waits up to 90 seconds for the Docker daemon; launches Docker Desktop automatically if not running
-3. Reads port and timezone config from `config/models.psd1` (overridable via `config/user.psd1`)
-4. Writes `tools/compose/.env` with `REPO_PATH`, `LANGFUSE_PORT`, `SEARXNG_PORT`, `N8N_PORT`, `N8N_TIMEZONE`
-5. Creates `tools/langfuse-data/` and `tools/n8n-data/` (gitignored; persistent data lives here)
-6. Writes `config/searxng/settings.yml` if it doesn't already exist
-7. Pulls all four images from Docker Hub (~3 GB total on first run):
-   - `postgres:17-alpine` (~80 MB): database for Langfuse
-   - `langfuse/langfuse:2` (~200 MB): observability UI
-   - `searxng/searxng:<date>` (~100 MB): search engine
-   - `n8nio/n8n:latest` (~2.5 GB): workflow automation
-8. Starts all four containers with `docker compose up -d`
-
-### 12.2 Expected output
-
-```
-Checking Docker daemon...
-  Docker ready.
-  Ports: Langfuse=3001  SearXNG=8888  n8n=5678  Timezone=UTC
-Pulling images (first run may take a few minutes)...
- Image postgres:17-alpine Pulled
- Image langfuse/langfuse:2 Pulled
- Image searxng/searxng:... Pulled
- Image n8nio/n8n:latest Pulled
-Starting services...
- Container compose-langfuse-postgres-1 Started
- Container compose-langfuse-postgres-1 Healthy
- Container compose-langfuse-1 Started
- Container compose-searxng-1 Started
- Container compose-n8n-1 Started
-
-Services running:
-  Langfuse:  http://localhost:3001  (login: admin@local.dev / admin123)
-  SearXNG:   http://localhost:8888
-  n8n:       http://localhost:5678
+Windows:
+```bat
+docker info
+docker compose -f tools\compose\docker-compose.yml pull
+docker compose -f tools\compose\docker-compose.yml up -d
 ```
 
-### 12.3 Verify
-
-```powershell
-bob services status
-# Expected: four rows, all "Up"
-#   compose-langfuse-postgres-1
-#   compose-langfuse-1
-#   compose-searxng-1
-#   compose-n8n-1
+The compose file reads ports from `tools/compose/.env` (defaults: Langfuse `3001`, SearXNG `8888`,
+n8n `5678`). If that file is missing, create it:
+```bash
+printf 'REPO_PATH=%s\nLANGFUSE_PORT=3001\nSEARXNG_PORT=8888\nN8N_PORT=5678\nN8N_TIMEZONE=UTC\n' \
+    "$(pwd)" > tools/compose/.env
 ```
 
-### 12.4 Day-to-day management
+Once up:
 
-```powershell
-bob services start    # start all containers (Docker Desktop must be running)
-bob services stop     # stop containers, data is preserved
-bob services status   # container names, state, uptime
-bob services logs     # tail all container logs (Ctrl+C to stop)
+- **Langfuse** — http://localhost:3001 (login `admin@local.dev` / `admin123`)
+- **SearXNG** — http://localhost:8888
+- **n8n** — http://localhost:5678
+
+Verify and manage:
+```bash
+bob services status          # container names, state, uptime
+bob services logs            # tail all container logs
+bob services stop            # stop containers (data is preserved)
 ```
 
-The full `setup-docker.ps1` only needs to run once. Use `bob services start` afterward.
-
-### 12.5 Troubleshooting
-
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| `exec /bin/sh: exec format error` on any container | Image layers corrupted by interrupted download | `docker system prune -af` then re-run `.\scripts\setup-docker.ps1` |
-| `langfuse-postgres unhealthy` / `dependency failed to start` | Postgres failed, almost always the corrupted-layer issue | Same: `docker system prune -af`, re-run |
-| `exec format error` only on SearXNG | Containerd snapshotter enabled | Docker Desktop → Settings → General → uncheck containerd → Apply & Restart → re-run |
-| `docker info` returns 500 Internal Server Error | WSL2 backend crashed or still initializing | Wait 60 s; or restart Docker Desktop from system tray |
-| `docker: command not found` | PATH not refreshed after install | Open new terminal, or add `C:\Program Files\Docker\Docker\resources\bin` to PATH |
-| Port conflict, address already in use | Another process on 3001, 8888, or 5678 | Set `langfusePort`, `searxngPort`, or `n8nPort` in `config/user.psd1`, re-run `.\scripts\setup-docker.ps1` |
-| Daemon timeout (90 s) | Docker Desktop very slow to start | Launch Docker Desktop manually from Start menu, wait for solid whale icon, re-run |
+> **Windows / Docker Desktop:** disable the containerd snapshotter before pulling images (Settings →
+> General → uncheck "Use containerd for pulling and storing images" → Apply & Restart) — otherwise
+> SearXNG fails with `exec format error`.
 
 ---
 
-## 13. Verify the installation
+## 14. Verify the installation
 
-Run these in order. Each one exercises a different part of the stack.
+Run these in order; each exercises a different part of the stack.
 
-```powershell
-# 1. Hardware and config summary
+```bash
+# 1. Hardware, CUDA, and config summary
 bob diagnose
 
-# 2. Start the inference endpoint
+# 2. Start the inference stack (llama-swap :8080 + LiteLLM :8081). Ctrl-C stops it.
+#    Or run `bob up` to start it in the background.
 bob serve
 
-# (in a second terminal)
-
-# 3. List all models and their load state
+# 3. In another terminal: list models and their load state
 bob models
 
-# 4. End-to-end inference test
-bob chat coder "write a fizzbuzz in Rust"
+# 4. End-to-end inference
+bob chat "write a fizzbuzz in Rust"
 
-# 5. Throughput benchmark (should show pp512 ≈ 4600 t/s on RTX 5080)
+# 5. Throughput benchmark (≈ pp512 4600 t/s, tg128 89 t/s on an RTX 5080)
 bob bench
 
-# 6. Docker services (if installed)
-bob services status    # all four containers should show "Up"
+# 6. Docker services, if installed
+bob services status
 ```
 
-If `bob diagnose` shows the wrong CUDA version or GPU is not detected, re-run the CUDA
-install step and restart your terminal.
+You don't need to keep `bob serve` running for everyday use — inference **auto-starts on demand** the
+first time you talk to Bob (`bob`, `bob chat`, `bob agent …`). `bob serve` (foreground) and `bob up`
+(background) are there for when you want the stack pre-warmed or serving outside-terminal clients.
 
-If `bob bench` shows prefill around 1000 t/s rather than 4000+, the build is using a
-CPU fallback path. Force a clean rebuild:
-```powershell
-.\scripts\build-llama.ps1 -Force
+If `bob bench` shows prefill around 1000 t/s rather than 4000+, the build fell back to a CPU path. Force
+a clean rebuild and confirm `CUDA_PATH` points at 12.8+:
+```bash
+bob build --force
 ```
-
-Make sure `$env:CUDA_PATH` points to CUDA 12.8 when you rebuild.
 
 ---
 
 ## Troubleshooting
 
 | Problem | Likely cause | Fix |
-|---------|-------------|-----|
-| cmake fails: `No CUDA toolset found` | `CUDA_PATH` env var not set | Set `$env:CUDA_PATH = "C:\...\CUDA\v12.8"` before cmake |
-| cmake fails: `unsupported Microsoft Visual Studio version` | MSVC toolset newer than CUDA supports | Add `-DCMAKE_CUDA_FLAGS="-allow-unsupported-compiler"` to the cmake configure command, or install MSVC v14.4x through VS Installer |
-| cmake fails: `cmake version 4.x` | Wrong cmake on PATH | Use VS bundled cmake at the path shown in step 4.1 |
-| `llama-server.exe` crashes immediately | CUDA DLLs not copied to `bin/` | Repeat step 4.4; confirm `bin/cublas64_12.dll` exists |
-| `pip install` fails in webui venv | Python version mismatch | Confirm `$py --version` is `3.12.x`; do not use the system `python` |
-| `llm` not found after step 11 | PATH not refreshed | Open a new terminal |
-| Docker services: `exec format error` | Containerd snapshotter enabled | Docker Desktop → Settings → General → uncheck containerd → Apply & Restart |
-| SearXNG `@web` returns nothing | Docker services stopped | `bob services start` |
-| Langfuse shows no traces | LiteLLM not configured | Follow the tracing setup in [USAGE.md § Langfuse](USAGE.md#langfuse--llm-observability) |
+|---|---|---|
+| cmake fails: `No CUDA toolset found` / can't find nvcc | `CUDA_PATH` not set | Set `CUDA_PATH` and `PATH` (step 3), then re-run the configure |
+| cmake fails: version `4.x` rejected | rolling-distro cmake is 4.x | Use the pinned cmake 3.31.7 from step 1 |
+| cmake fails: `unsupported Microsoft Visual Studio version` | MSVC newer than CUDA supports | Add `-DCMAKE_CUDA_FLAGS="-allow-unsupported-compiler"`, or install MSVC v14.4x |
+| nvcc errors about host compiler being too new (Linux) | default `g++` newer than nvcc accepts | Set `NVCC_CCBIN` / `-DCMAKE_CUDA_HOST_COMPILER` to an older g++ |
+| `llama-server` crashes immediately (Windows) | CUDA DLLs not staged into `bin\` | Re-copy `cublas64_12.dll`, `cublasLt64_12.dll`, `cudart64_12.dll` (step 4) |
+| `pip install` fails in a venv | wrong Python | Confirm the venv's Python is 3.11/3.12, not the system default |
+| `bob` not found after step 7 | PATH not refreshed | Open a new terminal; ensure `~/.local/bin` (or the shim dir) is on PATH |
+| `bob gen`/`bob fetch` error importing deps | `venv-litellm` missing | Build `venv-litellm` first (step 6) — the CLI runs under it |
+| `bench` shows ~1000 t/s prefill | CPU fallback build | `bob build --force` with `CUDA_PATH` on 12.8+ |
+| SearXNG `exec format error` (Windows) | containerd snapshotter enabled | Docker Desktop → uncheck containerd → Apply & Restart |
+| Langfuse shows no traces | LiteLLM tracing not configured | See [USAGE § Langfuse](USAGE.md#langfuse--llm-observability) |
+
+For alternatives when a build or install won't cooperate (prebuilt binaries, CPU tier, offline models),
+see [FALLBACKS.md](FALLBACKS.md).

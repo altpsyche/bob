@@ -5,24 +5,25 @@ Uses your GPU for local processing, with optional cloud connectivity (DeepSeek, 
 
 Bob chats, listens, speaks, sees, and acts as an agent that can search your code, summarise files, draft documents, and schedule tasks on your behalf.
 
-## What Bob does
+## The one way to use Bob
+
+Run **`bob`** with no arguments on a terminal. That opens the interactive shell — Bob's home base. Type a message to chat; `/agent <goal>` runs an agentic task; `/voice`, `/model`, `/stop`, `/help` drive the rest. Inference **auto-starts** the first time you talk, so there is nothing to launch first.
+
+The same capabilities are also plain one-shot commands, for scripting and piping:
 
 | Command | What it does |
 |---|---|
-| `bob chat` | Conversational assistant. `--think` for deep reasoning, `--pro` for cloud. |
-| `bob voice` | Continuous voice loop: speak, Bob replies out loud. Whisper STT + piper TTS. |
-| `bob describe <image>` | Describe an image or screenshot. `--pro` routes to DeepSeek vision. |
+| `bob` | The interactive shell (home base). Chat + `/agent`, `/voice`, `/model`, `/stop`, `/help`. |
+| `bob chat "…"` | One-shot chat. `--think` for deep reasoning, `--code` for coding, `--pro` for cloud. |
 | `bob agent "goal"` | Agentic task loop: plans, uses tools, executes steps. Schedulable via cron. |
-| `bob summarise <file>` | Summarise a file or piped text. `--length short/medium/long`. |
-| `bob draft "<prompt>"` | Draft an email, PR description, Slack message, or doc from a one-liner. |
-| `bob search "<query>"` | Ripgrep your codebase and synthesise the results. |
-| `bob play <music>` | Open a song or artist in Spotify or YouTube. |
+| `bob voice` | Continuous voice loop: speak, Bob replies out loud. Whisper STT + piper TTS. |
+| `bob describe <image>` · `bob screenshot` | Describe an image or the screen. `--pro` routes to cloud vision. |
 | `bob clip <url>` | Fetch a page, summarise it, and store it to memory. |
-| `bob remember "<text>"` | Store a fact for future sessions. |
-| `bob recall "<query>"` | Search Bob's memory (blended semantic + recency + importance rank). |
+| `bob remember "…"` · `bob recall "…"` | Store / search Bob's memory (blended semantic + recency + importance). |
 | `bob memory <cmd>` | Inspect/curate memory: `list`, `show`, `edit`, `pin`, `forget`, `export`, … |
+| `bob help` | The full command catalog. |
 
-Agent tools (callable by `bob agent` autonomously): memory, web, git, file, shell, fabric, summarise, draft, search, play.
+**Agent tools** are what the loop calls on your behalf — memory, web, git, file, shell, fabric, and the drop-in plugins **summarise, draft, search, play**. They are *not* `bob <verb>` commands; they run inside `bob agent` / the shell. List them with `bob tools` and `bob plugins`, or invoke one directly with `bob --run <tool> '{json}'`.
 
 ## What the stack includes
 
@@ -79,22 +80,35 @@ Only **Git** is required up front. The two entry scripts install the rest of the
 
 **Step 1: install prerequisites (once per machine)**
 
+Linux / macOS:
 ```bash
 git clone --recurse-submodules <your-remote> bob
 cd bob
-./install_prereqs.sh            # Linux;  add --cpu for a GPU-less box
-# Windows:  install_prereqs.bat
+./install_prereqs.sh            # add --cpu for a GPU-less box
+```
+
+Windows (Command Prompt or PowerShell):
+```bat
+git clone --recurse-submodules <your-remote> bob
+cd bob
+install_prereqs.bat            :: add --cpu for a GPU-less box
 ```
 
 You're asked for your `sudo` password **once** (Linux). On atomic Fedora (Bazzite/Silverblue) it layers via `rpm-ostree` and points you at a Fedora distrobox — the recommended path there.
 
 **Step 2: build, configure, and start**
 
+Linux / macOS:
 ```bash
-./setup.sh                      # Windows:  setup.bat   ·   GPU-less:  ./setup.sh --cpu
+./setup.sh                      # GPU-less: ./setup.sh --cpu
 ```
 
-Builds the inference engine and proxy from source, downloads models, wires VS Code and terminal clients, and (if Docker is present) starts the compose services. Open a new terminal afterward so the `~/.local/bin` PATH update takes effect.
+Windows:
+```bat
+setup.bat                       :: GPU-less: setup.bat --cpu
+```
+
+Builds the inference engine and proxy from source, downloads models, wires VS Code and terminal clients, and (if Docker is present) starts the compose services. Open a new terminal afterward so the `bob` command resolves (Linux/macOS: `~/.local/bin` on PATH; Windows: the `bob.cmd` shim install_cli drops into your scoop shims — if you don't use scoop, add the repo folder to PATH).
 
 Then just talk to Bob — **inference auto-starts on demand**, no separate command needed:
 

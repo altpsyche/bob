@@ -3,7 +3,16 @@
 Scope: the agent tool surface and the `bob agent serve` HTTP server. Bob is a local-first,
 single-operator assistant; the threat model is (1) a prompt-injected or misbehaving LLM abusing
 its tools, and (2) exposure to other machines when the server is bound to `0.0.0.0`. Each claim
-below names the test that backs it. Run `tools\venv-litellm\Scripts\python.exe -m unittest discover -s tests`.
+below names the test that backs it. Run the suite from the litellm venv:
+
+```bash
+# Linux / macOS
+tools/venv-litellm/bin/python -m unittest discover -s tests
+```
+```bat
+:: Windows
+tools\venv-litellm\Scripts\python.exe -m unittest discover -s tests
+```
 
 ## Summary of guarantees
 
@@ -25,7 +34,7 @@ below names the test that backs it. Run `tools\venv-litellm\Scripts\python.exe -
 
 ### `file_read` / `file_write` ([scripts/tools/file.py](../scripts/tools/file.py))
 - **Allowlist.** `file_read` returns `Access denied` for any path outside `agent.allowedReadPaths`
-  (defaults to the repo root at runtime, [_models.ps1](../scripts/_models.ps1)). `file_write` is
+  (defaults to the repo root at runtime, resolved from `config/defaults.json`). `file_write` is
   **disabled** unless `agent.allowedWritePaths` is set.
 - **Secrets denylist (N9, OS-aware since NB3/C3).** Even inside an allowed root, `_is_denied_secret`
   refuses `config.json` (holds `litellmKey` + `apiTokens`), any `*.psd1` (config), any `*.db` (session
@@ -33,8 +42,8 @@ below names the test that backs it. Run `tools\venv-litellm\Scripts\python.exe -
   OS-aware: it also denies the resolved secrets file (`data/secrets.json`) and the platform secret
   dirs (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/bob`) on every OS. This closes the pre-N9 gap
   where the default repo-root allowlist exposed the proxy key and session DB to a prompt-injected
-  read. Secrets themselves resolve through the seam: `osenv.secret()` (Python) / `Get-Secret`
-  (PowerShell, NC1): env → OS keychain → `data/secrets.json` → default; never a git-tracked file. To
+  read. Secrets themselves resolve through the seam `osenv.secret()`:
+  env → OS keychain → `data/secrets.json` → config default; never a git-tracked file. To
   read a legitimately-named-but-safe file that collides with the denylist, place it outside those
   patterns.
 
@@ -57,7 +66,7 @@ below names the test that backs it. Run `tools\venv-litellm\Scripts\python.exe -
 ### `web_search` / `web_fetch` ([scripts/tools/web.py](../scripts/tools/web.py))
 - `web_fetch` allowlists the `http`/`https` schemes (blocks `file://`, `gopher://`, etc.) and
   blocks hosts that resolve to loopback / RFC-1918 private / link-local / reserved / multicast
-  addresses (SSRF), unless `agent.allowPrivateFetch = $true`. `web_search` hits only the local
+  addresses (SSRF), unless `agent.allowPrivateFetch` is `true`. `web_search` hits only the local
   SearXNG instance. Backed by [tests/test_web.py](../tests/test_web.py).
 
 ### `fabric_run` ([scripts/tools/fabric.py](../scripts/tools/fabric.py))
@@ -139,7 +148,7 @@ and shell wiring run everywhere; real-confinement tests (write-outside-root deni
    `sk-local` litellm key. (Auth: 401 without a valid token; ownership: 404 across owners.)
 2. Confirm the `file_read` secrets denylist is in force (N9); the default repo-root allowlist
    would otherwise expose `config.json`. Narrow `allowedReadPaths` further if desired.
-3. Leave `allowPrivateFetch = $false` so `web_fetch` can't be used to SSRF the host's private
+3. Leave `allowPrivateFetch` at `false` so `web_fetch` can't be used to SSRF the host's private
    network from a LAN client.
 4. Leave `allowedWritePaths` empty (or tightly scoped); `file_write` is off by default.
 5. Keep `gitAllowedRoots` empty unless a specific extra repo must be exposed.
