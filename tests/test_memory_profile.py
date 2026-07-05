@@ -82,6 +82,26 @@ class TestProfileInjection(unittest.TestCase):
         self.assertIsNotNone(block)
         self.assertIn("Ada Lovelace", block)
 
+    def test_profile_seeds_when_embed_server_down(self):
+        # The FTUE bug: onboarding runs during a fresh setup, before inference/the embed server is up.
+        # Identity must still persist (NULL embedding) and inject — a profile is a SQL read, not a
+        # semantic recall.
+        def _embed_down(_text):
+            raise RuntimeError("Embedding server unreachable")
+        bob_memory.embed = _embed_down
+        bob_memory.cmd_init_profile("Siva", "graphics engineering", self.db)
+        block = bob_memory.profile_block("local", self.db)
+        self.assertIsNotNone(block)          # persisted despite the embed server being down
+        self.assertIn("Siva", block)
+
+    def test_embed_down_still_raises_without_opt_in(self):
+        # A normal store (not embed_optional) must still fail loudly when the server is down.
+        def _embed_down(_text):
+            raise RuntimeError("Embedding server unreachable")
+        bob_memory.embed = _embed_down
+        with self.assertRaises(RuntimeError):
+            bob_memory.store("some fact", self.db)
+
     def test_disabled_memory_injects_nothing(self):
         bob_memory.cmd_init_profile("Ada Lovelace", "compilers", self.db)
         cfg = _common.fake_config(memory={"enabled": False, "dbPath": str(self.db)})
@@ -96,18 +116,18 @@ class TestOnboardingSkip(unittest.TestCase):
         import bob.kernel as kernel
         self.kernel = kernel
         self.dir = Path(tempfile.mkdtemp(prefix="bob-onb-"))
-        self._orig_env = os.environ.get("BOB_DATA_DIR")
+        # Point data_dir() straight at the temp dir. (NOT via BOB_DATA_DIR — that env path runs a
+        # one-time migrate that copies the repo's data/ in, which would leak a real profile into the
+        # test.) Full isolation from repo state.
+        self._orig_data_dir = kernel.osenv.data_dir
         self._orig_repo = kernel.REPO
         self._orig_hpr = kernel._has_profile_rows
-        os.environ["BOB_DATA_DIR"] = str(self.dir)
+        kernel.osenv.data_dir = lambda: self.dir
 
     def tearDown(self):
+        self.kernel.osenv.data_dir = self._orig_data_dir
         self.kernel.REPO = self._orig_repo
         self.kernel._has_profile_rows = self._orig_hpr
-        if self._orig_env is None:
-            os.environ.pop("BOB_DATA_DIR", None)
-        else:
-            os.environ["BOB_DATA_DIR"] = self._orig_env
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def _make_db(self, with_profile: bool):

@@ -283,7 +283,8 @@ def cosine(a: list[float], b: list[float]) -> float:
 
 def store(content: str, db_path: Path, source: str = "user", mem_type: str = "fact",
           owner: str = "local", scope: str = None, tags: str = None, salience: float = 1.0,
-          dedup_threshold: float = 0.92, source_session: str = None) -> tuple[int, bool]:
+          dedup_threshold: float = 0.92, source_session: str = None,
+          embed_optional: bool = False) -> tuple[int, bool]:
     """Insert a typed, owner-scoped memory (MEM-1). Returns (id, is_new).
 
     Content is normalized to third person (§2.3) before hashing/embedding, so recalled text never
@@ -291,7 +292,12 @@ def store(content: str, db_path: Path, source: str = "user", mem_type: str = "fa
       - exact: a content_hash lookup scoped to the owner — O(1), *before* any embedding call;
       - near:  cosine >= dedup_threshold, scoped to (owner, mem_type).
     Dedup stays best-effort (M16): read-then-insert isn't transactional — benign for a personal DB.
-    Raises RuntimeError if the embed server is unreachable."""
+
+    Raises RuntimeError if the embed server is unreachable — UNLESS `embed_optional` is set, in which
+    case the row is stored with a NULL embedding and near-dedup is skipped. That keeps durable identity
+    persistable when inference isn't up yet (onboarding during a fresh setup): profile_block injection
+    is a plain SQL read, so a NULL-embedding row is fully usable at session start; it just won't surface
+    in *semantic* recall until re-embedded (`bob memory migrate --normalize` with the server up)."""
     normalized = _normalize_third_person(content)
     chash = _content_hash(normalized)
     db = get_db(db_path)
@@ -303,20 +309,29 @@ def store(content: str, db_path: Path, source: str = "user", mem_type: str = "fa
     if hit:
         return hit[0], False
     # 2) near dedup — cosine over this owner's rows of the same type only (scoped, not a full scan).
-    vec = embed(normalized)
-    for eid, emb_json in db.execute(
-        "SELECT id, embedding FROM memories WHERE owner_id=? AND type=? AND superseded_by IS NULL",
-        [owner, mem_type],
-    ).fetchall():
-        try:
-            if cosine(vec, json.loads(emb_json)) >= dedup_threshold:
-                return eid, False
-        except Exception:
-            continue
+    try:
+        vec = embed(normalized)
+    except RuntimeError:
+        if not embed_optional:
+            raise
+        vec = None   # embed server down + caller opted in: persist without a vector, skip near-dedup
+    if vec is not None:
+        for eid, emb_json in db.execute(
+            "SELECT id, embedding FROM memories WHERE owner_id=? AND type=? AND superseded_by IS NULL",
+            [owner, mem_type],
+        ).fetchall():
+            try:
+                if cosine(vec, json.loads(emb_json)) >= dedup_threshold:
+                    return eid, False
+            except Exception:
+                continue
+    # embedding is TEXT NOT NULL; an empty string is the "no vector yet" sentinel — every recall path
+    # does json.loads(embedding) inside try/except, so a "" row is skipped by semantic recall (not
+    # surfaced with a bogus 0-cosine) until re-embedded, while profile_block (a plain SQL read) still uses it.
     db["memories"].insert({
         "content": normalized,
         "content_hash": chash,
-        "embedding": json.dumps(vec),
+        "embedding": json.dumps(vec) if vec is not None else "",
         "type": mem_type,
         "subject": "user",
         "owner_id": owner,
@@ -1045,8 +1060,11 @@ def cmd_init_profile(name: str, work: str, db_path: Path) -> None:
         facts.append(f"The user's name is {name}")
     if work:
         facts.append(f"The user works on {work}")
+    # embed_optional: onboarding runs during a fresh setup, before the inference/embed server is up.
+    # Identity must persist anyway — profile_block injects it with a plain SQL read (no vector needed).
     try:
-        stored = sum(1 for f in facts if store(f, db_path, source="user", mem_type="profile")[1])
+        stored = sum(1 for f in facts
+                     if store(f, db_path, source="user", mem_type="profile", embed_optional=True)[1])
     except RuntimeError as e:
         print(f"Cannot save profile — {e}", file=sys.stderr)
         return
