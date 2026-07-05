@@ -88,7 +88,7 @@ thing that keeps this DRY instead of a second orchestration path.
 | Sub | Name | What | Impact | Effort |
 |-----|------|------|--------|--------|
 | ONE-A | Single-source config | Python becomes sole resolver; port all `.psd1` authoring to `defaults.json` + neutral `user.json`; close the 5 Class-2 drift findings | HIGH | 1–2 d |
-| ONE-B | One engine (= P3) | Multimodal-in-loop + `/voice` shell mode; port voice/vision onto the loop; delete `Invoke-BobStream` | HIGH | 1–2 wk |
+| ONE-B ✓ | One engine (= P3) | **DONE** — multimodal-in-loop + `/voice` shell mode; voice/vision ported onto the loop; `Invoke-BobStream` deleted | HIGH | 1–2 wk |
 | ONE-C | Capabilities-as-tools + `--run` | Port the 40 orchestration/provisioning pwsh handlers to Python capability functions; expose each to agent + `bob --run` | HIGH | 2–3 wk |
 | ONE-D | Kill PowerShell | Port bootstrap kernel to Python; retire pwsh handler-by-handler; delete all `*.ps1` | HIGH | (with C) |
 | ONE-E | Collapse the entry point | Delete `verbs.json` verb table + registry routing map + `bob.ps1` switch; final `bob` surface | MED | 2–3 d |
@@ -170,8 +170,13 @@ via the shared `_image_content_block` encoder. ONE-B2 ✓ (`996d399`) — `descr
 (`scripts/bob_vision.py` capture+resize; `cli._handle_describe`/`_handle_screenshot`; flipped to python in
 verbs.json; ~90 lines of Windows-only pwsh .NET deleted). ONE-B3 ✓ (`479e7c1`) — audio seam in
 `osenv.py` (`play_audio` + `record_audio`, lazy sounddevice); `bob-voice-capture.py` now single-sources
-capture through it. 18 tests. **Remaining: B4 (`/voice` shell mode wrapping `_run_turn` with STT→loop→TTS),
-B5 (delete `Invoke-BobStream` + the pwsh voice loop).**
+capture through it. 18 tests. ONE-B4 ✓ — `/voice` shell mode (`scripts/bob_voice.py` is the voice
+capability core: `format_for_speech` + whisper STT client + piper TTS synth; `bob.shell._cmd_voice` loops
+mic→STT→`_run_turn`→TTS; `bob-voice-capture.py` re-uses the shared `transcribe`). ONE-B5 ✓ — `voice`/
+`listen`/`transcribe`/`speak` ported to Python CLI handlers (`cli._handle_voice`/`_handle_listen`/
+`_handle_transcribe`/`_handle_speak`, `shell.run_voice`), flipped to `python` in registry+verbs.json;
+`Invoke-BobStream`, `Format-ForSpeech`, and the pwsh voice/listen/transcribe/speak switch cases all
+**deleted** (~215 lines of pwsh gone). **ONE-B (=P3) COMPLETE — the second harness is retired.**
 
 - **B1. Multimodal-in-loop** ✓ *(critical path — done).* `run_agent_events`/`run_agent` gained an
   `images: list = None` param (chosen over overloading `goal` to keep `goal` a `str` — recall/recitation/
@@ -191,13 +196,28 @@ B5 (delete `Invoke-BobStream` + the pwsh voice loop).**
   (16 kHz mono RMS-silence capture; sounddevice/numpy lazy). `bob-voice-capture.py` now single-sources
   capture through the seam. STT/TTS remain standalone servers (whisper POST / piper binary) — the seam owns
   only the raw mic-in / speaker-out that the /voice mode composes with them.
-- **B4. `/voice` shell mode** in [shell.py](../../scripts/bob/shell.py): add to `_SLASH`
-  ([:55](../../scripts/bob/shell.py)) and wrap `_run_turn` ([:689](../../scripts/bob/shell.py)) with
-  STT→loop→TTS, streamed + cancellable. Preserve the pwsh watch-list: spoken-prompt formatting
-  (`Format-ForSpeech`), whisper auto-start ([bob.ps1:968-971](../../scripts/bob.ps1)), the `--no_think`
-  fast-reply path ([:994](../../scripts/bob.ps1)), exit handling. Because it wraps `_run_turn`, voice now
-  inherits memory + write-back + one persona + retry + logging + tools automatically.
-- **B5. Delete** `Invoke-BobStream` and the pwsh voice/vision handlers.
+- **B4. `/voice` shell mode** ✓ *(done).* [shell.py](../../scripts/bob/shell.py) gained `/voice` in `_SLASH`
+  + the dispatch map, and `_cmd_voice` — a mic→STT→`_run_turn`→TTS loop that wraps the SAME agent turn as
+  text (streamed + Ctrl-C cancellable per turn; Ctrl-C while listening, or an "exit"/"stop"/"quit"/"goodbye"
+  transcript, leaves the mode). The capability core is [bob_voice.py](../../scripts/bob_voice.py):
+  `format_for_speech` (port of pwsh `Format-ForSpeech`), the whisper STT client (`transcribe`/`listen`/
+  `stt_ready`, now single-sourced — `bob-voice-capture.py` re-uses it), and the piper TTS synth (`speak`,
+  synth→`osenv.play_audio`). Because it wraps `_run_turn`, voice inherits memory + write-back + one persona
+  + retry + logging + tools automatically. Watch-list decisions: `Format-ForSpeech` ported verbatim;
+  whisper *reachability is checked* with an actionable hint (auto-*launch* is a provisioning capability that
+  lands as a tool in ONE-C, not a pwsh shell-out); the `--no_think` fast-reply hack is dropped — reasoning
+  is now a `/model` role choice, not a per-turn string appended to (and thereby corrupting) the persisted
+  turn + memory.
+- **B5. Delete `Invoke-BobStream` + the pwsh voice handlers** ✓ *(done).* `voice`/`listen`/`transcribe`/
+  `speak` ported to Python CLI handlers in [cli.py](../../scripts/bob/cli.py) over the B4
+  [bob_voice.py](../../scripts/bob_voice.py) core: `bob voice [--pro] [--agent]` launches the shell straight
+  into `/voice` mode via `shell.run_voice` (default chat-role/no-tools; `--agent` keeps the full toolset;
+  `--pro` the pro voice model); `bob listen`/`transcribe`/`speak` are thin wrappers over
+  `bob_voice.listen`/`transcribe`/`speak`. Flipped to `runtime=python` in [registry.py](../../scripts/bob/registry.py)
+  + regenerated [verbs.json](../../config/verbs.json). Deleted from [bob.ps1](../../scripts/bob.ps1):
+  `Invoke-BobStream` (the streaming curl path), `Format-ForSpeech` (ported to `bob_voice.format_for_speech`),
+  and the `listen`/`transcribe`/`speak`/`voice` switch cases — ~215 lines. bob.ps1 parses clean; the
+  registry parity test (every switch verb registered) + verbs-in-sync gate stay green.
 
 ### Prerequisites verified missing today (all are B's work)
 Multimodal input into the loop, a `/voice` shell mode, and the `osenv` audio seam are **all absent**; the
