@@ -308,7 +308,7 @@ switch ($cmd) {
     if (-not (Test-Path $webuiExe)) { throw "Open WebUI not installed (opt-in). Run: scripts$([IO.Path]::DirectorySeparatorChar)bootstrap.ps1 -WithWebui" }
     & $webuiExe serve --port ($d.webuiPort ?? (Get-BobPortDefault 'webuiPort'))
   }
-  'aider'  { & (Get-VenvExe -Venv 'venv-aider' -Exe 'aider') @rest }   # runs in your current folder
+  # 'aider' -> runtime=python (cli.py _handle_aider); routed by the dispatch prologue. (ONE-C Slice 1)
   'models' {
     $loadedIds = @{}; $endpointUp = $false
     try {
@@ -615,7 +615,7 @@ switch ($cmd) {
     }
   }
   'fabric-setup' { & "$repo\scripts\setup-fabric.ps1" }
-  'fabric'       { & (Get-BinExe 'fabric') @rest }
+  # 'fabric' -> runtime=python (cli.py _handle_fabric); routed by the dispatch prologue. (ONE-C Slice 1)
   'litellm' {
     $subCmd  = if ($rest.Count -and $rest[0] -in 'stop','status','start') { $rest[0] } else { '' }
     $fwdArgs = if ($subCmd) { @($rest | Select-Object -Skip 1) } else { @($rest) }
@@ -683,25 +683,9 @@ N8N_PORT=$($dp.n8nPort ?? (Get-BobPortDefault 'n8nPort'))
     if ($pos.Count -ge 2) { $eArgs['Task'] = $pos[1] }
     & "$repo\scripts\eval.ps1" @eArgs
   }
-  'remember' {
-    if (-not $rest.Count) { Write-Host "usage: bob remember <text>"; break }
-    & "$repo\scripts\bob-memory.ps1" store ($rest -join ' ')
-  }
-  'recall' {
-    if (-not $rest.Count) { Write-Host "usage: bob recall <query>"; break }
-    & "$repo\scripts\bob-memory.ps1" recall ($rest -join ' ')
-  }
-  'memory' {
-    if (-not $rest.Count) { & "$repo\scripts\bob-memory.ps1" status; break }
-    $sub = $rest[0]
-    if ($sub -in 'status','clear','list','show','forget','edit','pin','unpin','export','migrate','init-profile') {
-      # bob-memory.ps1 prepends --db and forwards the rest to bob_memory.py's subparsers (MEM-5).
-      & "$repo\scripts\bob-memory.ps1" @rest
-    } else {
-      Write-Host "Usage: bob memory <status|clear|list|show|forget|edit|pin|unpin|export|migrate> [args]"
-    }
-  }
-  'budget' { & "$repo\scripts\bob-budget.ps1" }
+  # ONE-C Slice 1: remember/recall/memory/budget are now runtime=python (cli.py handlers over
+  # bob_core memory + bob_memory.py + scripts/tools/budget.py); the dispatch prologue routes them to
+  # `python -m bob` before this switch. Cases deleted.
 
   # ── Phase 3: Agent setup check ──────────────────────────────────────────────
   'setup' {
@@ -958,59 +942,8 @@ N8N_PORT=$($dp.n8nPort ?? (Get-BobPortDefault 'n8nPort'))
     $env:PYTHONIOENCODING = $null
   }
 
-  'tools' {
-    $bobCfg = Get-BobConfig
-    $venvPy = Get-VenvExe -Venv 'venv-litellm' -Exe 'python'
-    $toolSub  = if ($rest.Count) { $rest[0] } else { 'list' }
-    $toolArgs = @($rest | Select-Object -Skip 1)
-    $disabledTools = ($bobCfg.agent.disabledTools ?? @()) -join ','
-    # Join-Path (not "$repo\..."): tool_loader.py runs under a NATIVE python interpreter, which does not
-    # normalize backslashes — a literal-backslash path fails to open on Linux (broke `bob tools` there).
-    $toolLoader = Join-Path $repo 'scripts' 'tools' 'tool_loader.py'
-    switch ($toolSub) {
-      'list' {
-        $env:PYTHONIOENCODING = 'utf-8'
-        & $venvPy $toolLoader --list --disabled $disabledTools
-        $env:PYTHONIOENCODING = $null
-      }
-      'test' {
-        if (-not $toolArgs.Count) { Write-Host "Usage: bob tools test <name>"; break }
-        $env:PYTHONIOENCODING = 'utf-8'
-        & $venvPy $toolLoader --test $toolArgs[0]
-        $env:PYTHONIOENCODING = $null
-      }
-      'info' {
-        if (-not $toolArgs.Count) { Write-Host "Usage: bob tools info <name>"; break }
-        $env:PYTHONIOENCODING = 'utf-8'
-        & $venvPy $toolLoader --info $toolArgs[0]
-        $env:PYTHONIOENCODING = $null
-      }
-      default { Write-Host "bob tools list|test <name>|info <name>" }
-    }
-  }
-
-  'plugins' {
-    $sub = if ($rest.Count) { $rest[0] } else { 'list' }
-    switch ($sub) {
-      'list' {
-        $pluginsRoot = Join-Path $repo 'plugins'
-        if (-not (Test-Path $pluginsRoot)) { Write-Host 'No plugins installed. Create plugins/<name>/invoke.ps1 or invoke.py'; break }
-        $pluginDirs = Get-ChildItem $pluginsRoot -Directory -ErrorAction SilentlyContinue
-        if (-not $pluginDirs) { Write-Host 'No plugins found in plugins/.'; break }
-        Write-Host "`nInstalled plugins:" -ForegroundColor Cyan
-        foreach ($p in $pluginDirs) {
-          $hasPs  = Test-Path "$($p.FullName)\invoke.ps1"
-          $hasPy  = Test-Path "$($p.FullName)\invoke.py"
-          $type   = if ($hasPs) { 'ps1' } elseif ($hasPy) { 'py' } else { '?' }
-          $descFile = Join-Path $p.FullName 'description.txt'
-          $desc = if (Test-Path $descFile) { (Get-Content $descFile -Raw).Trim() } else { '' }
-          Write-Host ("  bob {0,-15} [{1}]  {2}" -f $p.Name, $type, $desc)
-        }
-        Write-Host ''
-      }
-      default { Write-Host 'Usage: bob plugins list' }
-    }
-  }
+  # 'tools' and 'plugins' -> runtime=python (cli.py _handle_tools/_handle_plugins over the engine's
+  # tool_loader.py + a plugins/ scan); routed by the dispatch prologue. Cases deleted. (ONE-C Slice 1)
 
   default {
     # Plugin fallback — run plugins/<cmd>/invoke.ps1 or invoke.py if it exists

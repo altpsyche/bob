@@ -408,6 +408,144 @@ def _handle_speak(rest: list) -> int:
     return 0 if bob_voice.speak(text, load_config()) else 1
 
 
+# --- ONE-C Slice 1: memory + meta -----------------------------------------------------------------
+# Each verb below routes to the same capability the agent uses (no duplicated logic). budget is an
+# agent tool (scripts/tools/budget.py) reached here + via `bob --run budget_summary`; the rest are
+# CLI-only re-exposures of existing Python (bob_core memory, bob_memory.py, tool_loader.py).
+
+_MEMORY_SUBCOMMANDS = {"status", "clear", "list", "show", "forget", "edit", "pin", "unpin",
+                       "export", "migrate", "init-profile"}
+
+
+def _handle_remember(rest: list) -> int:
+    """bob remember <text> — store a memory (wires the verb to bob_core.memory_store, the same write
+    path the agent's memory_store tool uses). Replaces the pwsh shell-out to bob-memory.ps1."""
+    if not rest:
+        print("usage: bob remember <text>", file=sys.stderr)
+        return 1
+    from bob_core import memory_store
+
+    print(memory_store(" ".join(rest)))
+    return 0
+
+
+def _handle_recall(rest: list) -> int:
+    """bob recall <query> — search memory (bob_core.memory_recall, same read path as the tool)."""
+    if not rest:
+        print("usage: bob recall <query>", file=sys.stderr)
+        return 1
+    from bob_core import memory_recall
+
+    print(memory_recall(" ".join(rest)))
+    return 0
+
+
+def _handle_memory(rest: list) -> int:
+    """bob memory <sub> — inspect/curate memory. 1:1 onto bob_memory.py's argparse subcommands (the
+    --db path resolves from config, like the pwsh bob-memory.ps1 wrapper). No args -> status."""
+    if rest and rest[0] not in _MEMORY_SUBCOMMANDS:
+        print("Usage: bob memory <" + "|".join(sorted(_MEMORY_SUBCOMMANDS)) + "> [args]",
+              file=sys.stderr)
+        return 1
+    import bob_memory
+    from bob_core import _get_db_path, load_config
+
+    sub = rest or ["status"]
+    db_path = _get_db_path(load_config())
+    saved = sys.argv
+    try:
+        sys.argv = ["bob_memory", "--db", db_path] + sub
+        bob_memory.main()
+    finally:
+        sys.argv = saved
+    return 0
+
+
+def _handle_budget(rest: list) -> int:
+    """bob budget — token/cost usage summary. Calls the same budget_summary core the agent tool and
+    `bob --run budget_summary` call (scripts/tools/budget.py)."""
+    tools_dir = str(SCRIPTS / "tools")
+    if tools_dir not in sys.path:
+        sys.path.insert(0, tools_dir)
+    import budget
+    from bob_core import load_config
+
+    print(budget.budget_summary(load_config()))
+    return 0
+
+
+def _handle_tools(rest: list) -> int:
+    """bob tools <list|test|info> [name] — the tool catalog via the engine's tool_loader.py (already
+    Python). list honors agent.disabledTools; test/info need a tool name."""
+    from bob_core import load_config
+
+    tools_dir = str(SCRIPTS / "tools")
+    if tools_dir not in sys.path:
+        sys.path.insert(0, tools_dir)
+    sub = rest[0] if rest else "list"
+    tool_args = rest[1:]
+    if sub == "list":
+        disabled_raw = load_config().get("agent", {}).get("disabledTools", [])
+        disabled = ",".join(disabled_raw) if isinstance(disabled_raw, list) else str(disabled_raw)
+        argv = ["--list", "--disabled", disabled]
+    elif sub in ("test", "info"):
+        if not tool_args:
+            print(f"Usage: bob tools {sub} <name>", file=sys.stderr)
+            return 1
+        argv = [f"--{sub}", tool_args[0]]
+    else:
+        print("bob tools list|test <name>|info <name>", file=sys.stderr)
+        return 1
+    os.environ["PYTHONIOENCODING"] = "utf-8"
+    sys.argv = ["tool_loader.py"] + argv
+    runpy.run_path(str(SCRIPTS / "tools" / "tool_loader.py"), run_name="__main__")
+    return 0
+
+
+def _handle_plugins(rest: list) -> int:
+    """bob plugins [list] — enumerate plugins/<name>/ (invoke.ps1|invoke.py + description.txt). Filesystem
+    scan; ports the pwsh listing verbatim."""
+    if rest and rest[0] != "list":
+        print("Usage: bob plugins list", file=sys.stderr)
+        return 1
+    plugins_root = REPO / "plugins"
+    dirs = sorted([d for d in plugins_root.iterdir() if d.is_dir()]) if plugins_root.exists() else []
+    if not dirs:
+        print("No plugins found in plugins/.")
+        return 0
+    print("\nInstalled plugins:")
+    for p in dirs:
+        kind = ("ps1" if (p / "invoke.ps1").exists()
+                else "py" if (p / "invoke.py").exists() else "?")
+        desc_file = p / "description.txt"
+        desc = desc_file.read_text(encoding="utf-8").strip() if desc_file.exists() else ""
+        print(f"  bob {p.name:<15} [{kind}]  {desc}")
+    print("")
+    return 0
+
+
+def _handle_fabric(rest: list) -> int:
+    """bob fabric [pattern] [args] — passthrough to the staged bin/fabric binary (osenv.bin_exe)."""
+    import osenv
+
+    exe = osenv.bin_exe("fabric")
+    if not exe.exists():
+        print("fabric not found. Run: bob fabric-setup", file=sys.stderr)
+        return 1
+    return subprocess.run([str(exe)] + rest).returncode
+
+
+def _handle_aider(rest: list) -> int:
+    """bob aider [args] — start aider in the current folder (venv-aider console script)."""
+    import osenv
+
+    exe = osenv.venv_exe("venv-aider", "aider")
+    if not exe.exists():
+        print(f"aider not installed: {exe}  (run scripts/bootstrap.ps1 -WithAider)", file=sys.stderr)
+        return 1
+    return subprocess.run([str(exe)] + rest).returncode
+
+
 def _handle_shell(rest: list) -> int:
     """bob shell — the interactive REPL/TUI (NE2). Behind an isatty gate: a non-TTY invocation prints
     help instead, so scripts/CI never block on a prompt."""
@@ -452,6 +590,14 @@ _HANDLERS = {
     "listen": _handle_listen,
     "transcribe": _handle_transcribe,
     "speak": _handle_speak,
+    "remember": _handle_remember,     # ONE-C Slice 1 — memory + meta on Python
+    "recall": _handle_recall,
+    "memory": _handle_memory,
+    "budget": _handle_budget,
+    "tools": _handle_tools,
+    "plugins": _handle_plugins,
+    "fabric": _handle_fabric,
+    "aider": _handle_aider,
     "help": _handle_help,
 }
 

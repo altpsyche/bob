@@ -30,6 +30,16 @@ New capability?
 │       └── plugins/<name>/invoke.py only   (Layer 3 only)
 ```
 
+### Functional grouping (ONE-C, decision D6)
+
+The strict rule above is "one directory per capability." The ONE-C capability ports (former PowerShell
+verbs → Python) **bend it deliberately**: several closely-related capabilities share one
+`scripts/tools/<group>.py` module (e.g. `budget.py`, and later `stack.py`/`models.py`/`schedule.py`),
+each exposing multiple tool fns. Rationale: ~45 verbs would otherwise mean ~40 near-empty plugin dirs.
+The **core-logic rule still holds** — the fn is defined once in the module; the agent tool
+(`DISPATCH`), the `bob <verb>` handler (`scripts/bob/cli.py`), and `bob --run <cap>` are all thin
+adapters over it. Group by domain, not per verb, when the capabilities are lifecycle/provisioning kin.
+
 ---
 
 ## Core Logic Rule

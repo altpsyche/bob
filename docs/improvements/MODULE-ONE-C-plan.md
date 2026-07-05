@@ -215,9 +215,14 @@ Ordered by dependency and value; a slice is the template the rest follow.
 
 - **C0 — foundation** *(no verb ports):* §1a `bob --run` invoker · §1b osenv process/path/url seams (+ tests).
   Small, unblocks everything.
-- **Slice 1 — Memory + meta** *(quick wins, prove the pattern):* `remember`, `recall`, `memory`, `budget`,
-  `tools`, `plugins`, `fabric`, `aider`. Mostly thin re-exposures of existing Python; independent of §1b/§1c.
-  Establishes the "verb → capability fn → tool.py + cli handler + --run" template on easy cases.
+- **Slice 1 — Memory + meta** ✅ **DONE** (on main; 587 tests green): `remember`/`recall` → cli handlers over
+  `bob_core.memory_store/recall`; `memory <sub>` → delegates to `bob_memory.py`'s argparse; `budget` →
+  new `scripts/tools/budget.py` (agent tool `budget_summary` + `bob budget` verb + `bob --run
+  budget_summary` — the full 3-adapter template); `tools`/`plugins`/`fabric`/`aider` → cli handlers over
+  `tool_loader.py` / a `plugins/` scan / `osenv.bin_exe`+`venv_exe` passthroughs. All 8 verbs flipped to
+  `runtime=python`, verbs.json regenerated, the 8 dead `bob.ps1` cases + orphaned `bob-budget.ps1`
+  deleted (`bob-memory.ps1` kept — still used by `onboard.ps1`, an ONE-D script). D6 functional-grouping
+  noted in AUTHORING.md. tests/test_slice1_meta.py (15).
 - **Slice 2 — Lifecycle** *(the real template; high agent value):* `ps`, `logs`, `stop`, `restart`, `up`,
   `serve`, `webui`, `litellm`, `whisper`, `piper`, `services`, `down`(new). Depends on §1b. Port the
   `start-*.ps1` logic into a `scripts/tools/stack.py` module; mark mutating ones approval-gated.

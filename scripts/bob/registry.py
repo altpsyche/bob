@@ -71,23 +71,23 @@ COMMANDS = [
     {"name": "shell", "group": "Act", "summary": "Interactive REPL/TUI (the default when you run `bob` on a terminal)",
      "args": "", "runtime": "python", "handler": "shell"},
     {"name": "tools", "group": "Act", "summary": "List / test / inspect the agent's tools",
-     "args": "<list|test|info> [name]", "runtime": "pwsh", "handler": None},
+     "args": "<list|test|info> [name]", "runtime": "python", "handler": "tools"},
     {"name": "plugins", "group": "Act", "summary": "List installed plugins",
-     "args": "list", "runtime": "pwsh", "handler": None},
+     "args": "list", "runtime": "python", "handler": "plugins"},
 
     # --- Make: generate via the local models --------------------------------------------------
     {"name": "fabric", "group": "Make", "summary": "Run Fabric patterns against the local endpoint",
-     "args": "[pattern] [args]", "runtime": "pwsh", "handler": None},
+     "args": "[pattern] [args]", "runtime": "python", "handler": "fabric"},
 
     # --- Know: memory -------------------------------------------------------------------------
     {"name": "recall", "group": "Know", "summary": "Search memory",
-     "args": "<query>", "runtime": "pwsh", "handler": None},
+     "args": "<query>", "runtime": "python", "handler": "recall"},
     {"name": "remember", "group": "Know", "summary": "Store text to memory",
-     "args": "<fact>", "runtime": "pwsh", "handler": None},
+     "args": "<fact>", "runtime": "python", "handler": "remember"},
     {"name": "memory", "group": "Know", "summary": "Inspect/curate memory (list, show, edit, pin, forget, export, status, clear)",
-     "args": "<list|show|edit|pin|unpin|forget|export|migrate|init-profile|status|clear>", "runtime": "pwsh", "handler": None},
+     "args": "<list|show|edit|pin|unpin|forget|export|migrate|init-profile|status|clear>", "runtime": "python", "handler": "memory"},
     {"name": "budget", "group": "Know", "summary": "Token and cost usage summary",
-     "args": "", "runtime": "pwsh", "handler": None},
+     "args": "", "runtime": "python", "handler": "budget"},
 
     # --- Run: lifecycle + status --------------------------------------------------------------
     {"name": "up", "group": "Run", "summary": "Start endpoint + Open WebUI silently",
@@ -111,7 +111,7 @@ COMMANDS = [
     {"name": "webui", "group": "Run", "summary": "Launch Open WebUI only",
      "args": "", "runtime": "pwsh", "handler": None},
     {"name": "aider", "group": "Run", "summary": "Start aider in the current folder",
-     "args": "[args]", "runtime": "pwsh", "handler": None},
+     "args": "[args]", "runtime": "python", "handler": "aider"},
     {"name": "litellm", "group": "Run", "summary": "Manage the LiteLLM proxy",
      "args": "[start|stop|status]", "runtime": "pwsh", "handler": None},
     {"name": "whisper", "group": "Run", "summary": "Manage the whisper STT server (:8082)",
