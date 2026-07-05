@@ -14,12 +14,11 @@ Run **`bob`** with no arguments on a terminal. That opens the interactive shell 
 bob
 ```
 
-The same capabilities are also plain one-shot commands, for scripting and piping. `bob help` prints the live catalog; the sections below cover each group.
+You can also run any capability directly, without opening the shell — for quick questions, scripts, and pipes. `bob help` prints the live catalog; the sections below cover each group.
 
 | Command | What it does |
 |---|---|
-| `bob` | The interactive shell (home base). Chat + slash-commands. |
-| `bob chat "…"` | One-shot chat. `--think` deep reasoning, `--code` coding, `--pro` cloud. |
+| `bob chat "…"` | One-shot chat (great for pipes). `--think` deep reasoning, `--code` coding, `--pro` cloud. |
 | `bob agent "goal"` | Agentic task loop: plans, uses tools, executes steps. Schedulable via cron. |
 | `bob voice` | Continuous voice loop: speak, Bob replies out loud. Whisper STT + piper TTS. |
 | `bob describe <image>` · `bob screenshot` | Describe an image or the screen. `--pro` routes to cloud vision. |

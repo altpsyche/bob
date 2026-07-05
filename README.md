@@ -9,12 +9,11 @@ Bob chats, listens, speaks, sees, and acts as an agent that can search your code
 
 Run **`bob`** with no arguments on a terminal. That opens the interactive shell — Bob's home base. Type a message to chat; `/agent <goal>` runs an agentic task; `/voice`, `/model`, `/stop`, `/help` drive the rest. Inference **auto-starts** the first time you talk, so there is nothing to launch first.
 
-The same capabilities are also plain one-shot commands, for scripting and piping:
+You can also run any capability directly, without opening the shell — handy for quick questions, scripts, and pipes:
 
 | Command | What it does |
 |---|---|
-| `bob` | The interactive shell (home base). Chat + `/agent`, `/voice`, `/model`, `/stop`, `/help`. |
-| `bob chat "…"` | One-shot chat. `--think` for deep reasoning, `--code` for coding, `--pro` for cloud. |
+| `bob chat "…"` | One-shot chat (great for pipes). `--think` for deep reasoning, `--code` for coding, `--pro` for cloud. |
 | `bob agent "goal"` | Agentic task loop: plans, uses tools, executes steps. Schedulable via cron. |
 | `bob voice` | Continuous voice loop: speak, Bob replies out loud. Whisper STT + piper TTS. |
 | `bob describe <image>` · `bob screenshot` | Describe an image or the screen. `--pro` routes to cloud vision. |
