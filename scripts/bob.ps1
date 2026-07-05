@@ -94,76 +94,10 @@ switch ($cmd) {
   # Routed by the dispatch prologue before this switch. _versions.ps1's Write-VersionsLock/Get-VersionsLock
   # are KEPT (fetch-models.ps1 + _models.ps1 pre-venv still use them); they retire in ONE-D Slice D8.
   # (ONE-D Slice D2)
-  'update' {
-    # ND3 — release-aware, cross-platform update with rollback. Moves the working tree to a target
-    # release (default: fast-forward the current branch; `--tag <ref>` for a specific release), syncs
-    # submodules to the NEW lock's pinned commits, rebuilds ONLY what changed with a bin/ snapshot,
-    # verifies the rebuilt binary, and rolls the build output back on failure. Regenerates versions.lock
-    # on success. Cross-platform via the NC1 seam (Get-BinExe / Backup-/Restore-BuildOutput).
-    $targetRef = $null
-    for ($i = 0; $i -lt $rest.Count; $i++) { if ($rest[$i] -eq '--tag' -and ($i + 1) -lt $rest.Count) { $targetRef = $rest[$i + 1] } }
-
-    $binDir = Join-Path $repo 'bin'
-    $llmCpp = Join-Path $repo 'external\llama.cpp'
-    $before = & git -C $llmCpp rev-parse HEAD 2>$null
-
-    Write-Host "Fetching updates..."
-    & git -C $repo fetch --tags --quiet
-    if ($targetRef) {
-      Write-Host "Checking out release '$targetRef'..."
-      & git -C $repo checkout $targetRef
-    } else {
-      Write-Host "Fast-forwarding the current branch..."
-      & git -C $repo pull --ff-only
-    }
-    if ($LASTEXITCODE -ne 0) { Write-Host "Fetch/checkout failed — nothing changed." -ForegroundColor Red; break }
-
-    Write-Host "Syncing submodules to the pinned commits..."
-    & git -C $repo submodule update --init --recursive
-    if ($LASTEXITCODE -ne 0) { Write-Host "Submodule sync failed." -ForegroundColor Red; break }
-    $after = & git -C $llmCpp rev-parse HEAD 2>$null
-
-    # Reinstall the venv from the (possibly updated) requirements lock. Idempotent — a no-op if unchanged.
-    if (Test-Path (Join-Path $repo 'scripts\bootstrap-litellm.ps1')) {
-      Write-Host "Ensuring the Python runtime venv matches the lock..."
-      & "$repo\scripts\bootstrap-litellm.ps1"
-    }
-
-    # Rebuild ONLY changed components. llama.cpp is the heavy one; rebuild only if its commit moved.
-    $short = { param($s) if ($s) { "$s".Substring(0, [Math]::Min(8, "$s".Length)) } else { '(none)' } }
-    if ($before -eq $after) {
-      Write-Host "llama.cpp unchanged ($(& $short $after)) — no rebuild needed." -ForegroundColor DarkGray
-    } else {
-      Write-Host "llama.cpp $(& $short $before) -> $(& $short $after); rebuilding (bin/ snapshotted for rollback)..."
-      $bak = Backup-BuildOutput -Path $binDir
-      & "$repo\scripts\build-llama.ps1" -Force
-      $buildOk = ($LASTEXITCODE -eq 0)
-
-      # Verify the rebuild produced a working server binary (the concrete post-build gate). `bob doctor`
-      # is run afterward for a full readout, but this is what decides rollback.
-      $srv = Get-BinExe 'llama-server'
-      $verifyOk = $false
-      if ($buildOk -and (Test-Path $srv)) {
-        try { & $srv --version 2>&1 | Out-Null; $verifyOk = ($LASTEXITCODE -eq 0) } catch { $verifyOk = $false }
-      }
-
-      if (-not $verifyOk) {
-        Write-Host "Update verification failed (build ok=$buildOk, binary ok=$verifyOk) — rolling back the build output." -ForegroundColor Red
-        if (Restore-BuildOutput -Path $binDir -BakPath $bak) {
-          Write-Host "Rolled bin/ back to the previous build. Your install is unchanged." -ForegroundColor Yellow
-        }
-        break
-      }
-      Remove-BuildOutputBackup -Path $binDir -BakPath $bak
-      Write-Host "Rebuild verified." -ForegroundColor Green
-    }
-
-    # Regenerate versions.lock so it reflects the new installed set, and give a full doctor readout.
-    Write-VersionsLock | Out-Null
-    Write-Host "Running bob doctor..." -ForegroundColor DarkGray
-    & "$repo\scripts\bob.ps1" doctor
-    Write-Host "Update complete (release $(Get-BobVersion))." -ForegroundColor Green
-  }
+  # 'update' -> runtime=python (cli.py _handle_update over scripts/tools/build.py:update_stack — ND3
+  # release-aware update: fetch/checkout, submodule sync, venv reinstall, conditional rebuild via
+  # build_llama with osenv.backup/restore_build_output rollback, relock (bob.versions.write_lock), doctor).
+  # Routed by the dispatch prologue before this switch. (ONE-D Slice D6)
   # 'version' -> runtime=python (cli.py _handle_version over scripts/tools/health.py:version_info);
   # routed by the dispatch prologue before this switch. (ONE-C Slice 3)
   # 'verify-urls' -> runtime=python (cli.py _handle_verify_urls over scripts/tools/models.py:verify_urls);

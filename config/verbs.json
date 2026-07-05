@@ -54,7 +54,7 @@
     "profile": "python",
     "profiles": "python",
     "build": "python",
-    "update": "pwsh",
+    "update": "python",
     "lock": "python",
     "version": "python",
     "mlock": "python",

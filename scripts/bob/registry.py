@@ -145,7 +145,7 @@ COMMANDS = [
     {"name": "build", "group": "Config", "summary": "Build llama.cpp (CUDA, or --cpu for no-GPU)",
      "args": "[--cpu] [--force]", "runtime": "python", "handler": "build"},
     {"name": "update", "group": "Config", "summary": "Pull latest llama.cpp and rebuild",
-     "args": "", "runtime": "pwsh", "handler": None},
+     "args": "[--tag <ref>]", "runtime": "python", "handler": "update"},
     {"name": "lock", "group": "Config", "summary": "(Re)generate versions.lock from pinned sources (ND1)",
      "args": "[--check]", "runtime": "python", "handler": "lock"},
     {"name": "version", "group": "Config", "summary": "Show binary versions and submodule commits",

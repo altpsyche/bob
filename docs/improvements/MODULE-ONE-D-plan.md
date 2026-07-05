@@ -11,7 +11,7 @@ native-first**, C5 CI ownership), [MODULE-ONE-C-plan.md](MODULE-ONE-C-plan.md) (
 per-verb 3-adapter template; the osenv-seam precedent). ONE-C decisions D1–D6 are **settled — do not
 re-litigate.** The new decisions **DD1–DD6 are RESOLVED (2026-07-05, see Part 5):** full Python `build` port ·
 curl-subprocess `fetch` · keep `venv-eval` · `mlock` grant ported CLI-only · minimal-shell-stub → Python
-kernel · ONE-D owns the kernel (D8) as capstone. **Slices D0–D5 ✅ DONE (suite 780 green); next = D6 (update).**
+kernel · ONE-D owns the kernel (D8) as capstone. **Slices D0–D6 ✅ DONE (suite 786 green; 60 python / 1 pwsh verb); next = D7 (setup-voice + onboarding caps).**
 
 ## Goal — and the one distinction that shapes the whole module
 
@@ -292,8 +292,15 @@ capstone once its called-capabilities exist.
   Verified live: `bob build` short-circuits on the built binary; the CUDA arg-construction + atomic swap are
   exercised by a fake-`_run` test (Blackwell sm_120 → -DCMAKE_CUDA_ARCHITECTURES=120 + nvcc + host-compiler
   flags). tests/test_slice_d5_build.py (14); build-stays-pwsh spot-check flipped.
-- **Slice D6 — `update`** *(orchestration over D2+D5):* git sync + submodule + venv reinstall + conditional
-  rebuild w/ `backup/restore_build_output` rollback + relock + doctor. `update` verb → python.
+- **Slice D6 — `update`** ✅ **DONE** (on main; suite 786 green): `build.py:update_stack(tag)` ports the
+  bob.ps1 update case (ND3) — git fetch + checkout(`--tag`)/ff-pull, submodule sync, venv reinstall
+  (interim best-effort via the kept bootstrap-litellm.ps1; the venv provisioner lands in the D8 kernel),
+  **conditional rebuild only if llama.cpp's commit moved** with `osenv.backup_build_output` → `build_llama`
+  → `_verify_binary` → `osenv.restore_build_output` **rollback on failure**, then `versions.write_lock` +
+  a doctor readout. `bob update [--tag <ref>]` (cli._handle_update), CLI-only. Flipped `update`→python,
+  regen verbs.json, deleted the 70-line bob.ps1 update case. **Only 1 pwsh verb remains: `setup-voice`**
+  (60 python / 1 pwsh). tests/test_slice_d6_update.py (6, incl. unchanged-skips-rebuild / rebuild+discard /
+  verify-fail-rollback / --tag-checkout).
 - **Slice D7 — post-venv onboarding capabilities:** `setup-voice` (whisper/piper provision, reuses D1 DL +
   `build-whisper` + stack.py), `setup-clients` (Continue/aider wiring, calls `generate.gen_continue`),
   `install-cli` (PATH shim/completions), `onboard` (interactive profile + `generate.gen_all`). Each a

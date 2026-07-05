@@ -780,6 +780,21 @@ def _handle_fabric_setup(rest: list) -> int:
     return 0
 
 
+def _handle_update(rest: list) -> int:
+    """bob update [--tag <ref>] — release-aware update with rebuild + rollback (ND3)."""
+    rest = list(rest)
+    tag = None
+    if "--tag" in rest:
+        i = rest.index("--tag")
+        if i + 1 < len(rest):
+            tag = rest[i + 1]
+    try:
+        return _build_mod().update_stack(tag=tag)
+    except RuntimeError as e:
+        print(f"update failed: {e}", file=sys.stderr)
+        return 1
+
+
 def _provision_mod():
     tools_dir = str(SCRIPTS / "tools")
     if tools_dir not in sys.path:
@@ -1004,6 +1019,7 @@ _HANDLERS = {
     "eval": _handle_eval,             # ONE-D Slice D4 — lm-eval quality benchmark (scripts/tools/models.py)
     "build": _handle_build,           # ONE-D Slice D5 — native llama.cpp build (scripts/tools/build.py)
     "fabric-setup": _handle_fabric_setup,
+    "update": _handle_update,         # ONE-D Slice D6 — release-aware update + rollback (build.py)
     "fetch": _handle_fetch,           # ONE-D Slice D1 — model downloads (scripts/tools/provision.py)
     "lock": _handle_lock,             # ONE-D Slice D2 — versions.lock writer + gate (scripts/bob/versions.py)
     "mlock": _handle_mlock,           # ONE-D Slice D3 — mlock privilege status/grant (osenv)

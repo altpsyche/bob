@@ -252,6 +252,93 @@ def setup_fabric(force: bool = False) -> str:
     return "\n".join(lines)
 
 
+# --- update (ND3: release-aware, cross-platform, with build rollback) ------------------------------
+
+def _git_head(path: Path) -> str:
+    try:
+        r = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"],
+                           capture_output=True, text=True, timeout=10)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _short(sha: str) -> str:
+    return sha[:8] if sha else "(none)"
+
+
+def _verify_binary(exe: Path) -> bool:
+    try:
+        return subprocess.run([str(exe), "--version"], capture_output=True, text=True, timeout=30).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _reinstall_venv() -> None:
+    """Ensure the runtime venv matches the (possibly updated) requirements lock. The venv provisioner ports
+    into the cold-start kernel at D8; interim best-effort via the kept pre-venv bootstrap-litellm.ps1."""
+    script = SCRIPTS / "bootstrap-litellm.ps1"
+    pwsh = shutil.which("pwsh") or shutil.which("powershell")
+    if pwsh and script.exists():
+        print("Ensuring the Python runtime venv matches the lock...", file=sys.stderr)
+        subprocess.run([pwsh, "-NoProfile", "-File", str(script)])
+    else:
+        print("  (skip venv reinstall — run scripts/bootstrap-litellm.ps1 if requirements changed)",
+              file=sys.stderr)
+
+
+def update_stack(tag: str = None) -> int:
+    """Release-aware update with rollback: fetch/checkout (default: ff the current branch; tag= a release),
+    submodule sync, venv reinstall, conditional rebuild (only if llama.cpp moved) with a bin/ snapshot +
+    binary verify + rollback on failure, relock, then doctor. Port of the bob.ps1 update case (ND3).
+    Returns 0 on success, 1 on a handled failure. CLI-only + long."""
+    import osenv
+
+    before = _git_head(SRC_LLAMA)
+    print("Fetching updates...", file=sys.stderr)
+    _run(["git", "-C", str(REPO), "fetch", "--tags", "--quiet"])
+    if tag:
+        print(f"Checking out release '{tag}'...", file=sys.stderr)
+        _run(["git", "-C", str(REPO), "checkout", tag])
+    else:
+        print("Fast-forwarding the current branch...", file=sys.stderr)
+        _run(["git", "-C", str(REPO), "pull", "--ff-only"])
+    print("Syncing submodules to the pinned commits...", file=sys.stderr)
+    _run(["git", "-C", str(REPO), "submodule", "update", "--init", "--recursive"])
+    after = _git_head(SRC_LLAMA)
+
+    _reinstall_venv()
+
+    if before == after:
+        print(f"llama.cpp unchanged ({_short(after)}) — no rebuild needed.", file=sys.stderr)
+    else:
+        print(f"llama.cpp {_short(before)} -> {_short(after)}; rebuilding (bin/ snapshotted for rollback)...",
+              file=sys.stderr)
+        bak = osenv.backup_build_output(BIN)
+        built = True
+        try:
+            build_llama(force=True, cpu=osenv.gpu_info() is None)
+        except RuntimeError as e:
+            print(f"build failed: {e}", file=sys.stderr)
+            built = False
+        srv = osenv.bin_exe("llama-server")
+        if not (built and srv.exists() and _verify_binary(srv)):
+            print("Update verification failed — rolling back the build output.", file=sys.stderr)
+            if osenv.restore_build_output(BIN, bak):
+                print("Rolled bin/ back to the previous build. Your install is unchanged.", file=sys.stderr)
+            return 1
+        osenv.remove_build_output_backup(BIN, bak)
+        print("Rebuild verified.", file=sys.stderr)
+
+    from bob import versions
+    versions.write_lock()
+    print("Running bob doctor...", file=sys.stderr)
+    import health
+    health.configure(_cfg)
+    print(health.health_check(_cfg, doctor=True))
+    return 0
+
+
 # CLI-only module (long native builds): no agent tools. Declared empty so the auto-discovering
 # tool_loader treats it as a valid tool module with zero tools rather than a missing-TOOL_DEFS error.
 TOOL_DEFS: list = []
