@@ -75,7 +75,7 @@ if (-not $profilePath) {
     # $PROFILE is null in non-interactive batch contexts — derive the standard path manually
     $profilePath = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'PowerShell\profile.ps1'
 }
-$modelsFile = Join-Path $repo 'config\models.psd1'
+$modelsFile = Join-Path $repo 'config\models.json'   # ONE-C C0c: neutral JSON registry
 if (-not (Test-Path $profilePath)) { New-Item -Path $profilePath -Force | Out-Null }
 
 $completerBlock = @"
@@ -97,7 +97,7 @@ Register-ArgumentCompleter -Native -CommandName bob -ScriptBlock {
     } elseif (`$cmd -eq 'profile') {
         `$profiles = @('auto')
         if (Test-Path '$modelsFile') {
-            `$profiles += (Import-PowerShellDataFile '$modelsFile').profiles.Keys | Sort-Object
+            `$profiles += (Get-Content -Raw '$modelsFile' | ConvertFrom-Json -AsHashtable).profiles.Keys | Sort-Object
         }
         `$profiles | Where-Object { `$_ -like "`$wordToComplete*" } |
             ForEach-Object { [System.Management.Automation.CompletionResult]::new(`$_, `$_, 'ParameterValue', `$_) }

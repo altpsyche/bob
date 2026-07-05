@@ -39,6 +39,7 @@
 
 # User-local config overrides (gitignored so git pull never clobbers tuning)
 /config/user.psd1
+/config/user.json
 
 # Docker service data volumes and generated env (reproduced by scripts/setup-docker.ps1)
 /tools/langfuse-data/

@@ -1,7 +1,7 @@
 #requires -Version 7
 # First-run onboarding: asks name, work context, DeepSeek API key.
-# Writes profile to SQLite (via bob-memory.ps1) and API key to config/user.psd1.
-# Invoked by setup.ps1 if config/user.psd1 has no [bob] section.
+# Writes profile to SQLite (via bob-memory.ps1) and API key to config/user.json (ONE-C C0c: the neutral
+# overlay, read by both languages; was user.psd1). Invoked by setup.ps1 if there's no user.json bob section.
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path $PSScriptRoot -Parent
 
@@ -36,53 +36,31 @@ if (Test-Path $memPs) {
   }
 }
 
-# --- Update config/user.psd1 with bob section + optional API key ---
-$userCfg = Join-Path $repo 'config\user.psd1'
-# ONE-A: no persona.name written here — it was a dead key (read nowhere at runtime). The user's name
-# lives in the SQLite profile (init-profile --name above); this just marks the [bob] section present.
-$bobSection = @"
+# --- Update config/user.json with bob section + optional API key ---
+# ONE-C C0c: the overlay is neutral JSON now — build it structurally (ConvertFrom/To-Json) rather than
+# string-splicing a psd1. ONE-A: no persona.name written here (dead key); the user's name lives in the
+# SQLite profile (init-profile --name above); the bob section just marks presence.
+$userCfg = Join-Path $repo 'config\user.json'
+$cfg = if (Test-Path $userCfg) {
+  try { Get-Content -Raw $userCfg | ConvertFrom-Json -AsHashtable } catch { @{} }
+} else { @{} }
+if (-not $cfg.ContainsKey('bob')) { $cfg['bob'] = @{} }
 
-# Per-machine bob overrides (empty by default; see config/bob.psd1 for the shape)
-bob = @{
-}
-"@
-
-if (Test-Path $userCfg) {
-  $existing = Get-Content $userCfg -Raw
-  # Only append if no [bob] section already present
-  if ($existing -notmatch '\bbob\s*=') {
-    # Insert bob section before closing '}'
-    $updated = $existing.TrimEnd().TrimEnd('}') + $bobSection + "}`n"
-    Set-Content $userCfg $updated -Encoding utf8
-  }
-} else {
-  # Create minimal user.psd1
-  @"
-@{
-$bobSection}
-"@ | Set-Content $userCfg -Encoding utf8
-}
-
-# --- API key: append to peers section in user.psd1 ---
+$keyAdded = $false
 if ($apiKey -and $apiKey -ne '') {
-  $existing = Get-Content $userCfg -Raw
-  if ($existing -notmatch 'deepseek.*apiKey') {
-    $peerBlock = @"
+  if (-not $cfg.ContainsKey('peers'))              { $cfg['peers'] = @{} }
+  if (-not $cfg['peers'].ContainsKey('deepseek'))  { $cfg['peers']['deepseek'] = @{} }
+  if ($cfg['peers']['deepseek']['apiKey'] -ne $apiKey) {
+    $cfg['peers']['deepseek']['apiKey'] = $apiKey
+    $keyAdded = $true
+  }
+}
+$cfg | ConvertTo-Json -Depth 10 | Set-Content $userCfg -Encoding utf8
 
-  # DeepSeek API key (added by onboard.ps1)
-  peers = @{
-    deepseek = @{
-      apiKey = '$apiKey'
-    }
-  }
-"@
-    # Insert before closing '}'
-    $updated = $existing.TrimEnd().TrimEnd('}') + $peerBlock + "`n}`n"
-    Set-Content $userCfg $updated -Encoding utf8
-    # Regenerate LiteLLM config so the key takes effect
-    Write-Host "Regenerating config with API key..."
-    try { & "$PSScriptRoot\bob.ps1" gen 2>$null } catch {}
-  }
+if ($keyAdded) {
+  # Regenerate LiteLLM config so the key takes effect
+  Write-Host "Regenerating config with API key..."
+  try { & "$PSScriptRoot\bob.ps1" gen 2>$null } catch {}
 }
 
 Write-Host ""

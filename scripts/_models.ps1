@@ -1,20 +1,20 @@
 #requires -Version 7
-# Shared model-registry helpers. Single source of truth = config/models.psd1.
+# Shared model-registry helpers. Single source of truth = config/models.json (ONE-C C0c).
 # Dot-source from another script:  . "$PSScriptRoot\_models.ps1"
 #
 # Exposes:
-#   Get-ModelsConfig                  -> raw hashtable from the PSD1
+#   Get-ModelsConfig                  -> resolved hashtable from config/models.json (+ user.json overlay)
 #   Get-EnabledPeers [-Config c]      -> list of enabled peer objects (with injected .name)
 #   Resolve-ProfileName [-Profile n]  -> profile name (arg -> $env:BOB_PROFILE -> activeProfile)
 #   Get-Models [-Profile n]           -> @{ profile; config; models } ; models = ordered role objects
-#   Set-ActiveProfile -Name n         -> rewrite the activeProfile line in place (validated)
+#   Set-ActiveProfile -Name n         -> write data/active-profile.json (validated; D4 writable split)
 #   Get-GpuVramGB                     -> total VRAM of GPU 0 in whole GB, or $null
 #   Get-SuggestedProfile [-VramGB n]  -> best-fit profile name for the detected VRAM, or $null
 #   Get-GpuArch                       -> @{ CudaArch; Gen; MinCudaMajor } for GPU 0, or $null
 #   Get-BestCudaRoot [-CudaArch n]    -> best installed CUDA toolkit path for the arch, or $null
 #   Test-PortInUse -Port n [-Hostname h]  -> $true if port is in use
 #   $script:SizeTolPct                    -> 0.10 — ±10% size tolerance for GGUF validation
-#   Get-BobConfig                         -> raw hashtable from config/bob.psd1 (+ user.psd1 [bob] overrides)
+#   Get-BobConfig                         -> raw hashtable from config/bob.psd1 (+ user.json [bob] overrides)
 #   Get-VersionsLock / Write-VersionsLock / Test-VersionsLockSync / Test-BobReproducibility (ND1,
 #     via _versions.ps1 dot-sourced below — the reproducibility lock seam)
 
@@ -23,9 +23,15 @@ $script:ModelsRepo   = Split-Path $PSScriptRoot -Parent
 # Stop-ProcessTree, agent-task + background-launch primitives, …). Dot-sourced here so every entry
 # script that already dot-sources _models.ps1 transitively gets the seam with no per-script edit.
 . "$PSScriptRoot\_platform.ps1"
-$script:ModelsFile   = Join-Path $script:ModelsRepo 'config\models.psd1'
+$script:ModelsFile   = Join-Path $script:ModelsRepo 'config\models.json'   # ONE-C C0c: neutral JSON (was models.psd1)
+$script:UserFile     = Join-Path $script:ModelsRepo 'config\user.json'     # ONE-C C0c: neutral overlay (was user.psd1)
 $script:BobFile      = Join-Path $script:ModelsRepo 'config\bob.psd1'
 $script:DefaultsFile = Join-Path $script:ModelsRepo 'config\defaults.json'
+# ONE-C C0c (D4): the writable activeProfile override lives in data/-side state, NOT the read-only
+# registry. `bob profile` writes it; readers layer it over models.json.activeProfile (env BOB_PROFILE
+# still wins for one invocation). Mirrors osenv.data_dir(): repo data/ by default, BOB_DATA_DIR override.
+$script:DataDir = if ($env:BOB_DATA_DIR) { $env:BOB_DATA_DIR } else { Join-Path $script:ModelsRepo 'data' }
+$script:ActiveProfileFile = Join-Path $script:DataDir 'active-profile.json'
 $script:SizeTolPct   = 0.10
 
 # NB1 (contract C2) — the neutral single source of truth for the shared constants (ports + role
@@ -68,11 +74,15 @@ function Get-DefaultRouting {
 }
 
 function Get-ModelsConfig {
+  # ONE-C C0c — the registry is neutral JSON (config/models.json), read via ConvertFrom-Json -AsHashtable
+  # (same hashtable shape Import-PowerShellDataFile produced, so the merge logic below is unchanged) and
+  # equally readable by Python (bob_models.py). The user overlay is config/user.json (was user.psd1). The
+  # writable activeProfile is layered from data/active-profile.json (D4) over the shipped default.
   if (-not (Test-Path $script:ModelsFile)) { throw "models config not found: $script:ModelsFile" }
-  $base = Import-PowerShellDataFile -LiteralPath $script:ModelsFile
-  $userFile = Join-Path (Split-Path $script:ModelsFile) 'user.psd1'
+  $base = Get-Content -Raw -LiteralPath $script:ModelsFile | ConvertFrom-Json -AsHashtable
+  $userFile = $script:UserFile
   if (Test-Path $userFile) {
-    $user = Import-PowerShellDataFile -LiteralPath $userFile
+    $user = Get-Content -Raw -LiteralPath $userFile | ConvertFrom-Json -AsHashtable
     if ($user.defaults) {
       if (-not $base.defaults) { $base.defaults = @{} }
       foreach ($k in $user.defaults.Keys) { $base.defaults[$k] = $user.defaults[$k] }
@@ -80,11 +90,11 @@ function Get-ModelsConfig {
     if ($user.profiles) {
       foreach ($profName in $user.profiles.Keys) {
         if (-not $base.profiles.Contains($profName)) {
-          Write-Warning "user.psd1: profile '$profName' not in models.psd1 — skipped"; continue
+          Write-Warning "user.json: profile '$profName' not in models.json — skipped"; continue
         }
         foreach ($roleName in $user.profiles[$profName].Keys) {
           if (-not $base.profiles[$profName].Contains($roleName)) {
-            Write-Warning "user.psd1: role '$roleName' in profile '$profName' not found — skipped"; continue
+            Write-Warning "user.json: role '$roleName' in profile '$profName' not found — skipped"; continue
           }
           foreach ($key in $user.profiles[$profName][$roleName].Keys) {
             $base.profiles[$profName][$roleName][$key] = $user.profiles[$profName][$roleName][$key]
@@ -115,6 +125,14 @@ function Get-ModelsConfig {
         }
       }
     }
+  }
+  # D4 — layer the writable activeProfile (data/active-profile.json) over the shipped default. env
+  # BOB_PROFILE still wins for a single invocation (handled in Resolve-ProfileName).
+  if (Test-Path $script:ActiveProfileFile) {
+    try {
+      $ap = (Get-Content -Raw -LiteralPath $script:ActiveProfileFile | ConvertFrom-Json).activeProfile
+      if ($ap) { $base.activeProfile = $ap }
+    } catch {}
   }
   return $base
 }
@@ -150,9 +168,9 @@ function Get-BobConfig {
   if (-not $base.routing) { $base['routing'] = Get-DefaultRouting }
   $overlay = Import-PowerShellDataFile -LiteralPath $script:BobFile
   $base = Merge-BobHashtable -Base $base -Over $overlay
-  $userFile = Join-Path (Split-Path $script:BobFile) 'user.psd1'
+  $userFile = $script:UserFile   # ONE-C C0c — neutral config/user.json (was user.psd1)
   if (Test-Path $userFile) {
-    $user = Import-PowerShellDataFile -LiteralPath $userFile
+    $user = Get-Content -Raw -LiteralPath $userFile | ConvertFrom-Json -AsHashtable
     if ($user.bob) {
       foreach ($section in $user.bob.Keys) {
         if (-not $base.Contains($section)) { $base[$section] = @{} }
@@ -425,6 +443,8 @@ function Test-CronDue {
 }
 
 function Set-ActiveProfile {
+  # ONE-C C0c (D4) — write the writable override to data/active-profile.json instead of rewriting the
+  # (now read-only) registry. Mirrors bob_models.set_active_profile on the Python side.
   param([Parameter(Mandatory)][string]$Name)
   $cfg = Get-ModelsConfig
   if (-not $cfg.profiles.Contains($Name)) {
@@ -433,11 +453,10 @@ function Set-ActiveProfile {
   if ($cfg.activeProfile -eq $Name) {
     Write-Host "activeProfile already '$Name'" -ForegroundColor DarkGray; return
   }
-  $raw = Get-Content -Raw -LiteralPath $script:ModelsFile
-  $new = [regex]::Replace($raw, "(?m)^(\s*activeProfile\s*=\s*)'[^']*'", "`${1}'$Name'")
-  if ($new -eq $raw) { throw "no 'activeProfile = ...' line found to update in $script:ModelsFile" }
-  Set-Content -LiteralPath $script:ModelsFile -Value $new -NoNewline -Encoding utf8
-  Write-Host "activeProfile -> '$Name'  ($script:ModelsFile)" -ForegroundColor Green
+  $dir = Split-Path $script:ActiveProfileFile
+  if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+  @{ activeProfile = $Name } | ConvertTo-Json | Set-Content -LiteralPath $script:ActiveProfileFile -Encoding utf8
+  Write-Host "activeProfile -> '$Name'  ($script:ActiveProfileFile)" -ForegroundColor Green
 }
 
 # ND1 — the reproducibility-lock seam (versions.lock reader/generator/gate). Dot-sourced last so its

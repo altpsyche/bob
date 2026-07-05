@@ -24,7 +24,7 @@ $isCpu  = ($name -eq 'cpu')
 
 # --- build macros from defaults (overrides the empty placeholder values in models.psd1) ---
 $d = $cfg.defaults
-if (-not $d) { throw 'models.psd1 is missing the defaults block. Add it per MODULE-A docs.' }
+if (-not $d) { throw 'models.json is missing the defaults block.' }
 
 $ngl   = if ($isCpu) { 0 } elseif ($null -ne $d.ngl) { $d.ngl } else { 99 }
 $fa    = if ($d.flashAttn -ne $false -and -not $isCpu) { '--flash-attn on' } else { '' }
@@ -69,7 +69,7 @@ $roleNames = $models.role
 foreach ($m in $models) {
   Assert-NoQuote $m.gguf "model '$($m.role)' gguf"
   if ($m.gguf -match 'gemma' -and $m.kv -eq $true) {
-    Write-Warning "[$($m.role)] Gemma model with kv=`$true — KV quant causes quality regression. Set kvQuant='' in config/user.psd1 or set kv=`$false on the model."
+    Write-Warning "[$($m.role)] Gemma model with kv=`$true — KV quant causes quality regression. Set kvQuant='' in config/user.json or set kv=`$false on the model."
   }
   # Flash-attn is incompatible with multimodal projection (mmproj); auto-expand srv without it.
   $srvRef = if ($m.mmproj -and $fa -ne '') {
@@ -123,7 +123,7 @@ foreach ($mem in $members) {
 $sb = [System.Text.StringBuilder]::new()
 $nl = "`n"
 [void]$sb.Append("# =============================================================$nl")
-[void]$sb.Append("#  GENERATED - DO NOT EDIT.  Source: config/models.psd1$nl")
+[void]$sb.Append("#  GENERATED - DO NOT EDIT.  Source: config/models.json$nl")
 [void]$sb.Append("#  Regenerate: scripts/gen-llama-swap.ps1  (also runs on ``bob serve``)$nl")
 [void]$sb.Append("#  Active profile: $name$nl")
 [void]$sb.Append("# =============================================================$nl$nl")

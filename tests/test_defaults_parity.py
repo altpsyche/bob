@@ -78,10 +78,10 @@ class TestDefaultsParityWithPowerShell(unittest.TestCase):
 
     def test_no_shadow_port_literals_in_psd1(self):
         """WI-5 backstop: config/defaults.json.ports is the SOLE port source. No port key may be
-        re-introduced in models.psd1.defaults or anywhere in bob.psd1 (including the voice block)."""
+        re-introduced in models.json.defaults or anywhere in bob.psd1 (including the voice block)."""
         script = r"""
 $ports = @('port','litellmPort','webuiPort','langfusePort','searxngPort','n8nPort','sttPort','ttsPort','agentPort')
-$m = Import-PowerShellDataFile config/models.psd1
+$m = Get-Content -Raw config/models.json | ConvertFrom-Json -AsHashtable   # ONE-C C0c: neutral JSON registry
 $b = Import-PowerShellDataFile config/bob.psd1
 $bad = [System.Collections.Generic.List[string]]::new()
 foreach ($k in @($m.defaults.Keys)) { if ($ports -contains $k) { $bad.Add("models.defaults.$k") } }

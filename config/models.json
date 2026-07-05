@@ -1,0 +1,503 @@
+{
+  "_doc": "THE single source of truth for model selection — read by Python (bob_models.py) and PowerShell (Get-ModelsConfig via ConvertFrom-Json -AsHashtable). Converted from config/models.psd1 in ONE-C C0c; full field prose is in that file's git history. Per-model schema: repo/path=HuggingFace repo+file -> download URL; gguf=local filename in models/ (also the -m runtime path); ctx=context window (-c, omit for embeddings); sizeGB=approx on-disk size; kv=true applies the KV-cache quant macro; flags=extra llama-server flags (appended last, so they override srv-macro defaults); setParams=server-side sampling enforcement; ttl=0 never auto-unloads; pinned=true keeps resident (excluded from the swap group); embedding adds --embedding. Keys starting with '_' are METADATA (e.g. _targetVRAM, _notes, _cpuTier), not models — skipped by the generator and downloader. activeProfile here is the shipped DEFAULT; the writable override lives in data/active-profile.json (bob profile) and env BOB_PROFILE wins for one invocation. Tunable knobs (defaults block) are overridable per-machine in config/user.json (deep-merged). Re-run `bob gen` after editing.",
+  "activeProfile": "16gb",
+  "defaults": {
+    "mlockBig": false,
+    "kvQuantK": "q8_0",
+    "ubatch": 512,
+    "flashAttn": true,
+    "langfuseEnabled": false,
+    "parallel": 1,
+    "noMmap": false,
+    "kvQuantV": "q8_0",
+    "maxTokens": 512,
+    "numa": "",
+    "ngl": 99,
+    "n8nTimezone": "UTC",
+    "webuiSecret": "bob-dev",
+    "threads": -1,
+    "kvQuant": "",
+    "batch": 512
+  },
+  "prompts": {
+    "chat": "Be concise. /no_think",
+    "coder": "You are a skilled software engineer. Be direct. No preambles.",
+    "vision": "You are a vision assistant. Describe images concisely and answer questions about them directly."
+  },
+  "macros": {
+    "kv": "",
+    "srv": ""
+  },
+  "group": {
+    "name": "ondemand",
+    "swap": true,
+    "members": [
+      "planner",
+      "coder",
+      "chat",
+      "vision",
+      "agent"
+    ]
+  },
+  "peers": {
+    "deepseek": {
+      "pro": {
+        "coder": {
+          "maxTokens": 4096,
+          "model": "deepseek-chat",
+          "systemPrompt": "You are an expert software engineer. Be direct. No preambles."
+        },
+        "chat": {
+          "maxTokens": 4096,
+          "model": "deepseek-chat",
+          "systemPrompt": "Be helpful and concise."
+        },
+        "planner": {
+          "maxTokens": 8192,
+          "model": "deepseek-reasoner"
+        },
+        "vision": {
+          "maxTokens": 2048,
+          "model": "deepseek-chat"
+        }
+      },
+      "enabled": true,
+      "apiKeyEnv": "DEEPSEEK_API_KEY",
+      "litellmPrefix": "deepseek",
+      "proxy": "https://api.deepseek.com"
+    },
+    "zhipu": {
+      "pro": {
+        "coder": "glm-4-flash"
+      },
+      "enabled": false,
+      "apiKeyEnv": "ZHIPU_API_KEY",
+      "litellmPrefix": "openai",
+      "proxy": "https://open.bigmodel.cn/api/paas/v4"
+    }
+  },
+  "profiles": {
+    "16gb": {
+      "coder": {
+        "kv": true,
+        "repo": "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF",
+        "path": "Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf",
+        "tokenizer": "Qwen/Qwen2.5-Coder-14B-Instruct",
+        "draftRole": "fim",
+        "ctx": 16384,
+        "sizeGB": 8.4,
+        "gguf": "qwen-coder-14b-q4_k_m.gguf"
+      },
+      "embed": {
+        "ttl": 0,
+        "repo": "gpustack/bge-m3-GGUF",
+        "path": "bge-m3-Q8_0.gguf",
+        "mlock": true,
+        "pinned": true,
+        "embedding": true,
+        "sizeGB": 0.6,
+        "gguf": "bge-m3-q8_0.gguf"
+      },
+      "chat": {
+        "kv": true,
+        "repo": "Qwen/Qwen3-14B-GGUF",
+        "path": "Qwen3-14B-Q4_K_M.gguf",
+        "setParams": {
+          "top_p": 0.9,
+          "temperature": 0.7
+        },
+        "tokenizer": "Qwen/Qwen3-14B",
+        "ctx": 16384,
+        "sizeGB": 8.4,
+        "gguf": "qwen3-14b-q4_k_m.gguf"
+      },
+      "fim": {
+        "ttl": 0,
+        "repo": "Qwen/Qwen2.5-Coder-3B-Instruct-GGUF",
+        "path": "qwen2.5-coder-3b-instruct-q8_0.gguf",
+        "mlock": true,
+        "pinned": true,
+        "ctx": 8192,
+        "sizeGB": 3.4,
+        "gguf": "qwen-coder-3b-q8_0.gguf"
+      },
+      "_targetVRAM": "16GB+ (tested RTX 5080; 30B planner uses light RAM offload)",
+      "vision": {
+        "mmproj": "mmproj-Qwen2-VL-7B-Instruct-f16.gguf",
+        "supportsVision": true,
+        "ttl": 30,
+        "repo": "bartowski/Qwen2-VL-7B-Instruct-GGUF",
+        "path": "Qwen2-VL-7B-Instruct-Q4_K_M.gguf",
+        "pinned": false,
+        "ctx": 4096,
+        "sizeGB": 5.2,
+        "gguf": "qwen2-vl-7b-q4_k_m.gguf"
+      },
+      "planner": {
+        "kv": true,
+        "noMmap": true,
+        "repo": "Qwen/Qwen3-30B-A3B-GGUF",
+        "path": "Qwen3-30B-A3B-Q4_K_M.gguf",
+        "tokenizer": "Qwen/Qwen3-30B-A3B",
+        "ctx": 16384,
+        "flags": [
+          "--temp",
+          "0.3"
+        ],
+        "sizeGB": 17.3,
+        "gguf": "qwen3-30b-a3b-q4.gguf"
+      },
+      "agent": {
+        "kv": true,
+        "repo": "NousResearch/Hermes-3-Llama-3.1-8B-GGUF",
+        "path": "Hermes-3-Llama-3.1-8B.Q5_K_M.gguf",
+        "ctx": 8192,
+        "flags": [
+          "--temp",
+          "0.1",
+          "--jinja"
+        ],
+        "sizeGB": 6.0,
+        "gguf": "hermes-3-8b-q5_k_m.gguf"
+      }
+    },
+    "24gb": {
+      "coder": {
+        "kv": true,
+        "repo": "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF",
+        "path": "Qwen2.5-Coder-14B-Instruct-Q6_K.gguf",
+        "tokenizer": "Qwen/Qwen2.5-Coder-14B-Instruct",
+        "draftRole": "fim",
+        "ctx": 16384,
+        "sizeGB": 10.7,
+        "gguf": "qwen-coder-14b-q6_k.gguf"
+      },
+      "_notes": "Q5_K_M planner (~21.3 GB), Q6_K coder/chat (~10.7 GB). Swaps big models as usual.",
+      "vision": {
+        "mmproj": "mmproj-Qwen2-VL-7B-Instruct-f16.gguf",
+        "supportsVision": true,
+        "ttl": 30,
+        "repo": "bartowski/Qwen2-VL-7B-Instruct-GGUF",
+        "path": "Qwen2-VL-7B-Instruct-Q5_K_M.gguf",
+        "pinned": false,
+        "ctx": 4096,
+        "sizeGB": 6.3,
+        "gguf": "qwen2-vl-7b-q5_k_m.gguf"
+      },
+      "fim": {
+        "ttl": 0,
+        "repo": "bartowski/Qwen2.5-Coder-3B-Instruct-GGUF",
+        "path": "Qwen2.5-Coder-3B-Instruct-Q8_0.gguf",
+        "mlock": true,
+        "pinned": true,
+        "ctx": 8192,
+        "sizeGB": 3.4,
+        "gguf": "qwen-coder-3b-q8_0.gguf"
+      },
+      "chat": {
+        "kv": true,
+        "repo": "bartowski/Qwen3-14B-GGUF",
+        "path": "Qwen3-14B-Q6_K.gguf",
+        "setParams": {
+          "top_p": 0.9,
+          "temperature": 0.7
+        },
+        "tokenizer": "Qwen/Qwen3-14B",
+        "ctx": 16384,
+        "sizeGB": 10.7,
+        "gguf": "qwen3-14b-q6_k.gguf"
+      },
+      "_targetVRAM": "~24GB (RTX 3090 / 4090 / 4080 Super) — NEEDS on-card validation",
+      "agent": {
+        "kv": true,
+        "repo": "NousResearch/Hermes-3-Llama-3.1-8B-GGUF",
+        "path": "Hermes-3-Llama-3.1-8B.Q6_K.gguf",
+        "ctx": 8192,
+        "flags": [
+          "--temp",
+          "0.1",
+          "--jinja"
+        ],
+        "sizeGB": 7.0,
+        "gguf": "hermes-3-8b-q6_k.gguf"
+      },
+      "embed": {
+        "ttl": 0,
+        "repo": "gpustack/bge-m3-GGUF",
+        "path": "bge-m3-Q8_0.gguf",
+        "mlock": true,
+        "pinned": true,
+        "embedding": true,
+        "sizeGB": 0.6,
+        "gguf": "bge-m3-q8_0.gguf"
+      },
+      "planner": {
+        "kv": true,
+        "repo": "bartowski/Qwen3-30B-A3B-GGUF",
+        "path": "Qwen3-30B-A3B-Q5_K_M.gguf",
+        "tokenizer": "Qwen/Qwen3-30B-A3B",
+        "ctx": 16384,
+        "flags": [
+          "--temp",
+          "0.3"
+        ],
+        "sizeGB": 21.3,
+        "gguf": "qwen3-30b-a3b-q5_k_m.gguf"
+      }
+    },
+    "8gb": {
+      "coder": {
+        "kv": true,
+        "repo": "bartowski/Qwen2.5-Coder-7B-Instruct-GGUF",
+        "path": "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
+        "tokenizer": "Qwen/Qwen2.5-Coder-7B-Instruct",
+        "draftRole": "fim",
+        "ctx": 4096,
+        "sizeGB": 4.7,
+        "gguf": "qwen-coder-7b-q4_k_m.gguf"
+      },
+      "embed": {
+        "ttl": 0,
+        "repo": "gpustack/bge-m3-GGUF",
+        "path": "bge-m3-Q8_0.gguf",
+        "mlock": true,
+        "pinned": true,
+        "embedding": true,
+        "sizeGB": 0.6,
+        "gguf": "bge-m3-q8_0.gguf"
+      },
+      "chat": {
+        "kv": true,
+        "repo": "Qwen/Qwen3-4B-GGUF",
+        "path": "Qwen3-4B-Q4_K_M.gguf",
+        "setParams": {
+          "top_p": 0.9,
+          "temperature": 0.7
+        },
+        "tokenizer": "Qwen/Qwen3-4B",
+        "ctx": 4096,
+        "sizeGB": 2.6,
+        "gguf": "qwen3-4b-q4_k_m.gguf"
+      },
+      "fim": {
+        "ttl": 0,
+        "repo": "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
+        "path": "qwen2.5-coder-1.5b-instruct-q8_0.gguf",
+        "mlock": true,
+        "pinned": true,
+        "ctx": 2048,
+        "sizeGB": 1.9,
+        "gguf": "qwen-coder-1.5b-q8_0.gguf"
+      },
+      "_targetVRAM": "~8GB (ctx 4096, smaller quants) — NEEDS on-card validation",
+      "agent": {
+        "kv": true,
+        "repo": "NousResearch/Hermes-3-Llama-3.1-8B-GGUF",
+        "path": "Hermes-3-Llama-3.1-8B.Q4_K_M.gguf",
+        "ctx": 4096,
+        "flags": [
+          "--temp",
+          "0.1",
+          "--jinja"
+        ],
+        "sizeGB": 5.0,
+        "gguf": "hermes-3-8b-q4_k_m.gguf"
+      },
+      "planner": {
+        "kv": true,
+        "repo": "Qwen/Qwen3-8B-GGUF",
+        "path": "Qwen3-8B-Q4_K_M.gguf",
+        "tokenizer": "Qwen/Qwen3-8B",
+        "ctx": 4096,
+        "flags": [
+          "--temp",
+          "0.3"
+        ],
+        "sizeGB": 5.0,
+        "gguf": "qwen3-8b-q4_k_m.gguf"
+      }
+    },
+    "32gb": {
+      "coder": {
+        "kv": true,
+        "repo": "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF",
+        "path": "Qwen2.5-Coder-14B-Instruct-Q8_0.gguf",
+        "tokenizer": "Qwen/Qwen2.5-Coder-14B-Instruct",
+        "draftRole": "fim",
+        "ctx": 32768,
+        "sizeGB": 15.0,
+        "gguf": "qwen-coder-14b-q8_0.gguf"
+      },
+      "_notes": "Near-lossless quants (Q6_K planner ~24 GB, Q8_0 coder/chat ~15 GB). Swaps big models. 48GB+ for true no-swap.",
+      "vision": {
+        "mmproj": "mmproj-Qwen2-VL-7B-Instruct-f16.gguf",
+        "supportsVision": true,
+        "ttl": 30,
+        "repo": "bartowski/Qwen2-VL-7B-Instruct-GGUF",
+        "path": "Qwen2-VL-7B-Instruct-Q6_K.gguf",
+        "pinned": false,
+        "ctx": 4096,
+        "sizeGB": 7.3,
+        "gguf": "qwen2-vl-7b-q6_k.gguf"
+      },
+      "fim": {
+        "ttl": 0,
+        "repo": "bartowski/Qwen2.5-Coder-3B-Instruct-GGUF",
+        "path": "Qwen2.5-Coder-3B-Instruct-Q8_0.gguf",
+        "mlock": true,
+        "pinned": true,
+        "ctx": 8192,
+        "sizeGB": 3.4,
+        "gguf": "qwen-coder-3b-q8_0.gguf"
+      },
+      "chat": {
+        "kv": true,
+        "repo": "bartowski/Qwen3-14B-GGUF",
+        "path": "Qwen3-14B-Q8_0.gguf",
+        "setParams": {
+          "top_p": 0.9,
+          "temperature": 0.7
+        },
+        "tokenizer": "Qwen/Qwen3-14B",
+        "ctx": 32768,
+        "sizeGB": 15.0,
+        "gguf": "qwen3-14b-q8_0.gguf"
+      },
+      "_targetVRAM": "~32GB (RTX 5090 / A6000 / high-VRAM cards) — NEEDS on-card validation",
+      "agent": {
+        "kv": true,
+        "repo": "NousResearch/Hermes-3-Llama-3.1-8B-GGUF",
+        "path": "Hermes-3-Llama-3.1-8B.Q8_0.gguf",
+        "ctx": 8192,
+        "flags": [
+          "--temp",
+          "0.1",
+          "--jinja"
+        ],
+        "sizeGB": 8.5,
+        "gguf": "hermes-3-8b-q8_0.gguf"
+      },
+      "embed": {
+        "ttl": 0,
+        "repo": "gpustack/bge-m3-GGUF",
+        "path": "bge-m3-Q8_0.gguf",
+        "mlock": true,
+        "pinned": true,
+        "embedding": true,
+        "sizeGB": 0.6,
+        "gguf": "bge-m3-q8_0.gguf"
+      },
+      "planner": {
+        "kv": true,
+        "repo": "bartowski/Qwen3-30B-A3B-GGUF",
+        "path": "Qwen3-30B-A3B-Q6_K.gguf",
+        "tokenizer": "Qwen/Qwen3-30B-A3B",
+        "ctx": 32768,
+        "flags": [
+          "--temp",
+          "0.3"
+        ],
+        "sizeGB": 24.2,
+        "gguf": "qwen3-30b-a3b-q6_k.gguf"
+      }
+    },
+    "12gb": {
+      "coder": {
+        "kv": true,
+        "repo": "bartowski/Qwen2.5-Coder-7B-Instruct-GGUF",
+        "path": "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
+        "tokenizer": "Qwen/Qwen2.5-Coder-7B-Instruct",
+        "draftRole": "fim",
+        "ctx": 8192,
+        "sizeGB": 4.7,
+        "gguf": "qwen-coder-7b-q4_k_m.gguf"
+      },
+      "embed": {
+        "ttl": 0,
+        "repo": "gpustack/bge-m3-GGUF",
+        "path": "bge-m3-Q8_0.gguf",
+        "mlock": true,
+        "pinned": true,
+        "embedding": true,
+        "sizeGB": 0.6,
+        "gguf": "bge-m3-q8_0.gguf"
+      },
+      "chat": {
+        "kv": true,
+        "repo": "Qwen/Qwen3-8B-GGUF",
+        "path": "Qwen3-8B-Q4_K_M.gguf",
+        "setParams": {
+          "top_p": 0.9,
+          "temperature": 0.7
+        },
+        "tokenizer": "Qwen/Qwen3-8B",
+        "ctx": 8192,
+        "sizeGB": 5.0,
+        "gguf": "qwen3-8b-q4_k_m.gguf"
+      },
+      "fim": {
+        "ttl": 0,
+        "repo": "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
+        "path": "qwen2.5-coder-1.5b-instruct-q8_0.gguf",
+        "mlock": true,
+        "pinned": true,
+        "ctx": 4096,
+        "sizeGB": 1.9,
+        "gguf": "qwen-coder-1.5b-q8_0.gguf"
+      },
+      "_targetVRAM": "~12GB (smaller quants, ctx 8192/4096) — NEEDS on-card validation",
+      "agent": {
+        "kv": true,
+        "repo": "NousResearch/Hermes-3-Llama-3.1-8B-GGUF",
+        "path": "Hermes-3-Llama-3.1-8B.Q4_K_M.gguf",
+        "ctx": 8192,
+        "flags": [
+          "--temp",
+          "0.1",
+          "--jinja"
+        ],
+        "sizeGB": 5.0,
+        "gguf": "hermes-3-8b-q4_k_m.gguf"
+      },
+      "planner": {
+        "kv": true,
+        "repo": "Qwen/Qwen3-14B-GGUF",
+        "path": "Qwen3-14B-Q4_K_M.gguf",
+        "tokenizer": "Qwen/Qwen3-14B",
+        "ctx": 8192,
+        "flags": [
+          "--temp",
+          "0.3"
+        ],
+        "sizeGB": 8.4,
+        "gguf": "qwen3-14b-q4_k_m.gguf"
+      }
+    },
+    "cpu": {
+      "_cpuTier": true,
+      "_targetVRAM": "CPU-only (no GPU) — tiny model, correctness/wiring only, not performance",
+      "chat": {
+        "setParams": {
+          "temperature": 0.7
+        },
+        "repo": "unsloth/Qwen2.5-0.5B-Instruct-GGUF",
+        "path": "Qwen2.5-0.5B-Instruct-Q8_0.gguf",
+        "ctx": 4096,
+        "sizeGB": 0.5,
+        "gguf": "qwen2.5-0.5b-instruct-q8_0.gguf"
+      },
+      "agent": {
+        "repo": "unsloth/Qwen2.5-0.5B-Instruct-GGUF",
+        "path": "Qwen2.5-0.5B-Instruct-Q8_0.gguf",
+        "ctx": 4096,
+        "flags": [
+          "--temp",
+          "0.1",
+          "--jinja"
+        ],
+        "sizeGB": 0.5,
+        "gguf": "qwen2.5-0.5b-instruct-q8_0.gguf"
+      }
+    }
+  }
+}

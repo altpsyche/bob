@@ -145,5 +145,5 @@ Write-Host "  SearXNG:   http://localhost:$searxngPort" -ForegroundColor Green
 Write-Host "  n8n:       http://localhost:$n8nPort" -ForegroundColor Green
 Write-Host ""
 Write-Host "Manage:          bob services start|stop|status|logs" -ForegroundColor DarkGray
-Write-Host "Change ports:    edit config/user.psd1, re-run .\scripts\setup-docker.ps1" -ForegroundColor DarkGray
+Write-Host "Change ports:    edit config/user.json, re-run .\scripts\setup-docker.ps1" -ForegroundColor DarkGray
 Write-Host "Enable tracing:  uncomment langfuse callbacks in config/litellm.yaml" -ForegroundColor DarkGray

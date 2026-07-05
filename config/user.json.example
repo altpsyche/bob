@@ -1,0 +1,26 @@
+{
+  "_doc": "Copy this file to config/user.json (gitignored) to override defaults per-machine. Deep-merged over config/models.json (defaults/profiles/prompts/peers) and over config/defaults.json.runtime + bob.psd1 (the 'bob' section). Re-run `bob gen` after editing; changes take effect on next `bob serve`. See config/models.json's defaults block for every tunable knob (ngl, kvQuantK/V, batch, ubatch, parallel, noMmap, mlockBig, numa, ...); full prose lives in config/models.psd1's git history.",
+
+  "defaults": {
+    "_example_ngl": 80,
+    "_example_kvQuantK": "q5_1",
+    "_example_kvQuantV": "q4_0",
+    "_example_langfuseEnabled": true
+  },
+
+  "profiles": {
+    "_example_16gb": { "planner": { "ctx": 8192 } }
+  },
+
+  "prompts": {
+    "_example_chat": "Be concise."
+  },
+
+  "peers": {
+    "_example_deepseek": { "pro": { "coder": { "model": "deepseek-chat", "maxTokens": 8192 } } }
+  },
+
+  "bob": {
+    "_example_agent": { "defaultOwner": "you" }
+  }
+}

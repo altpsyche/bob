@@ -1,8 +1,10 @@
 # Module ONE-C — Capabilities-as-tools + the deterministic invoker (detailed plan)
 
-**Status:** executing. **C0 ✓ DONE** (§1a `--run` invoker + §1b osenv process/path/url seams, on main;
-572 tests green). Decisions D1–D6 resolved (see Part 5). **Prereq:** ONE-A ✓ (config single-sourced),
-ONE-B ✓ (one engine; text/vision/voice on the loop). **Read first:**
+**Status:** executing. **C0 ✓ · Slice 1 ✓ · Slice 2 ✓ · C0c ✓ DONE** (all on main; 614 tests green) —
+the models.psd1 gating risk is retired. Decisions D1–D6 resolved (see Part 5). **Next:** Slice 4 (registry
+readers: models/show/profiles/profile/verify-urls/bench — now unblocked) → Slice 3 (health) → Slice 5
+(scheduling) → Slice 6 (generators; then drop stack.py's pwsh `_regen_configs` bridge). **Prereq:** ONE-A ✓
+(config single-sourced), ONE-B ✓ (one engine; text/vision/voice on the loop). **Read first:**
 [MODULE-ONE-bob.md](MODULE-ONE-bob.md) (§ONE-C, the deprecation ledger, the architectural invariant),
 [ARCHITECTURE-CONTRACTS.md](ARCHITECTURE-CONTRACTS.md) (C1 dispatch, C6 registries, **C7 provisioner
 native-first**), [../../plugins/AUTHORING.md](../../plugins/AUTHORING.md) (three-layer placement rule).
@@ -236,9 +238,17 @@ Ordered by dependency and value; a slice is the template the rest follow.
   Verified with a real litellm start→status→ps→stop round-trip. tests/test_slice2_stack.py (15) + osenv
   (+3).
 - **Slice 3 — Health:** `setup`(check), `doctor`, `version`, then `diagnose` (heaviest — GPU/CUDA/NUMA discovery).
-- **C0c — models.json neutralization** *(the gating prerequisite for the rest):* convert `models.psd1` +
-  `user.psd1` → JSON with the split writable `activeProfile`; teach `Get-ModelsConfig` to read JSON; add a
-  Python model-registry reader + parity gate.
+- **C0c — models.json neutralization** ✅ **DONE** (on main; 614 tests green): the gating risk is retired.
+  `config/models.psd1` → `config/models.json` (pure data; a `_doc` field + git history keep the prose);
+  `user.psd1` overlay → neutral `config/user.json` (both `Get-ModelsConfig` and `Get-BobConfig` read it;
+  gitignored, `.example` converted). `Get-ModelsConfig`/`install-cli` now `ConvertFrom-Json -AsHashtable`
+  (unchanged merge logic, so all pwsh consumers — the 4 generators, fetch, versions, dry-run — read JSON
+  transparently). D4: the writable `activeProfile` split to `data/active-profile.json`; `Set-ActiveProfile`
+  writes it; readers layer env `BOB_PROFILE` > that file > the shipped default. New Python reader
+  `scripts/bob_models.py` (load/merge/resolve/set/profile_roles). `onboard.ps1` rewired to write `user.json`
+  (structural JSON, not psd1 string-splice). test_models_parity.py (9, incl. **bidirectional pwsh↔Python
+  active-profile.json**); test_no_shadow_port_literals repointed to models.json. `models.psd1` DELETED.
+  **The 4 generators stay pwsh** (Slice 6) — they just read models.json via `Get-ModelsConfig` now.
 - **Slice 4 — Registry readers:** `models`, `show`, `profiles`, `profile`, `verify-urls`, `bench`. (`eval`
   optional/CLI.) Depends on C0c.
 - **Slice 5 — Scheduling:** the Part 3 seam + runner + `agent install/uninstall/status/log/schedule`.

@@ -33,7 +33,7 @@ $profile   = $cfg.profiles.($cfg.activeProfile)
 $modelCfg  = $profile.$Role
 $tokenizer = $modelCfg.tokenizer
 if (-not $tokenizer) {
-    throw "No tokenizer configured for role '$Role' in profile '$($cfg.activeProfile)'. Add 'tokenizer = ...' to config/models.psd1."
+    throw "No tokenizer configured for role '$Role' in profile '$($cfg.activeProfile)'. Add 'tokenizer = ...' to config/models.json."
 }
 
 try { Invoke-RestMethod "http://localhost:$port/v1/models" -TimeoutSec 3 | Out-Null }

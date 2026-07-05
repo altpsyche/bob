@@ -141,7 +141,7 @@ function Test-VersionsLockSync {
   $want = (Get-VersionsLockText).Trim()
   $have = (Get-Content -Raw -LiteralPath $Path).Trim()
   if ($want -ne $have) {
-    Write-Host "versions.lock is STALE (out of sync with submodules/models.psd1) — run: bob lock" -ForegroundColor Red
+    Write-Host "versions.lock is STALE (out of sync with submodules/models.json) — run: bob lock" -ForegroundColor Red
     return 1
   }
   return 0

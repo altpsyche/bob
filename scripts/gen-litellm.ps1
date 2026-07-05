@@ -19,7 +19,7 @@ $port   = $cfg.defaults.port ?? (Get-BobPortDefault 'port')
 $litellmKey = Get-Secret -Name 'litellmKey' -Default ((Get-BobConfig).litellmKey ?? 'sk-local')
 
 $out = [System.Collections.Generic.List[string]]::new()
-$out.Add('# GENERATED - DO NOT EDIT.  Source: config/models.psd1')
+$out.Add('# GENERATED - DO NOT EDIT.  Source: config/models.json')
 $out.Add('# Regenerate: scripts/gen-litellm.ps1  (also runs on `bob gen` and `bob serve`)')
 $out.Add('')
 $out.Add('model_list:')
@@ -96,7 +96,7 @@ if ($cfg.defaults.langfuseEnabled) {
     $out.Add("  langfuse_host: http://localhost:$langfusePort")
     $out.Add('  # langfuse_public_key and langfuse_secret_key: set as LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY env vars')
 } else {
-    $out.Add('  # Enable Langfuse tracing: set langfuseEnabled = $true in config/user.psd1, then bob gen + bob litellm')
+    $out.Add('  # Enable Langfuse tracing: set langfuseEnabled = $true in config/user.json, then bob gen + bob litellm')
     $out.Add('  # Set LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY as environment variables (Settings → API Keys in Langfuse UI)')
 }
 $out.Add('')

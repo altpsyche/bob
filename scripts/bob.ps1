@@ -138,7 +138,7 @@ function Invoke-BobHealthCheck {
       $modelFile = Join-Path $repo "models\$($agentModel.gguf)"
       Show-Check "Agent model ($($agentModel.gguf))" (Test-Path $modelFile) 'bob fetch'
     } else {
-      Show-Check 'Agent model in active profile' $false 'add agent role to config\models.psd1'
+      Show-Check 'Agent model in active profile' $false 'add agent role to config/models.json'
     }
   } catch { Show-Check 'Agent model (check failed)' $false '' }
 

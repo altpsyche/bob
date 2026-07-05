@@ -41,7 +41,7 @@ $proAssign = @{
 $nameFor = @{ fim = 'autocomplete'; embed = 'embeddings' }
 
 $out = [System.Collections.Generic.List[string]]::new()
-$out.Add('# GENERATED - DO NOT EDIT.  Source: config/models.psd1  (+ config/user.psd1)')
+$out.Add('# GENERATED - DO NOT EDIT.  Source: config/models.json  (+ config/user.json)')
 $out.Add('# Regenerate: scripts/gen-continue.ps1  (also runs on `bob gen`)')
 $out.Add('# Continue.dev config (2026 YAML format). Symlinked to ~/.continue/config.yaml by setup-clients.ps1.')
 $out.Add('name: bob')
