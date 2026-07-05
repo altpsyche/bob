@@ -42,6 +42,33 @@ snap_fallback() {
   return 0
 }
 
+PWSH_VERSION="7.4.6"
+# Distro-agnostic pwsh install from the official linux tarball — the universal LAST resort when the
+# package-manager path can't deliver pwsh: Arch has no AUR helper (CI images), and openSUSE's rpm from
+# Microsoft's RHEL repo wants a RHEL-named 'openssl-libs' that doesn't exist there. Best-effort ICU
+# (pwsh's .NET globalization dep) per manager first. Never fatal on its own.
+pwsh_tarball() {
+  if command -v pwsh >/dev/null 2>&1; then return 0; fi
+  log "Installing pwsh $PWSH_VERSION from the official tarball (distro-agnostic)..."
+  if   command -v pacman  >/dev/null 2>&1; then $SUDO pacman -Sy --noconfirm --needed icu tar || true
+  elif command -v zypper  >/dev/null 2>&1; then $SUDO zypper --non-interactive install libicu tar gzip || true
+  elif command -v dnf     >/dev/null 2>&1; then $SUDO dnf install -y libicu tar || true
+  elif command -v apt-get >/dev/null 2>&1; then $SUDO apt-get install -y libicu-dev tar || true
+  fi
+  local m; m="$(uname -m)"
+  case "$m" in x86_64|amd64) m=x64 ;; aarch64|arm64) m=arm64 ;; esac
+  local url="https://github.com/PowerShell/PowerShell/releases/download/v${PWSH_VERSION}/powershell-${PWSH_VERSION}-linux-${m}.tar.gz"
+  local tgz="/tmp/powershell-${PWSH_VERSION}.tar.gz"
+  if   command -v curl >/dev/null 2>&1; then curl -fsSL "$url" -o "$tgz" || return 1
+  elif command -v wget >/dev/null 2>&1; then wget -q "$url" -O "$tgz"    || return 1
+  else return 1; fi
+  $SUDO mkdir -p /opt/microsoft/powershell/7
+  $SUDO tar zxf "$tgz" -C /opt/microsoft/powershell/7
+  $SUDO chmod +x /opt/microsoft/powershell/7/pwsh
+  $SUDO ln -sf /opt/microsoft/powershell/7/pwsh /usr/bin/pwsh
+  rm -f "$tgz"
+}
+
 install_pwsh() {
   if command -v pwsh >/dev/null 2>&1; then log "pwsh ok"; return; fi
   local mgr="$1"
@@ -55,10 +82,12 @@ install_pwsh() {
       # Rolling/testing apt distros can omit VERSION_ID; default it so `set -u` doesn't abort here.
       local id="${ID:-debian}" ver="${VERSION_ID:-}"
       local deb="/tmp/packages-microsoft-prod.deb"
+      # Nested if (not `A && B && C || D`): shellcheck SC2015 flags that as not-if-then-else, and the
+      # post-case tarball fallback is the real safety net if any step here fails.
       if [ -n "$ver" ] && wget -q "https://packages.microsoft.com/config/${id}/${ver}/packages-microsoft-prod.deb" -O "$deb"; then
-        $SUDO dpkg -i "$deb" && $SUDO apt-get update -y && $SUDO apt-get install -y powershell || snap_fallback
-      else
-        snap_fallback
+        if $SUDO dpkg -i "$deb" && $SUDO apt-get update -y; then
+          $SUDO apt-get install -y powershell || true
+        fi
       fi
       ;;
     dnf)
@@ -78,21 +107,19 @@ install_pwsh() {
       fi
       ;;
     zypper)
-      # openSUSE is rpm-based, so Microsoft's RHEL prod repo provides pwsh. Best-effort; the
-      # opensuse/tumbleweed CI cell validates this path. Falls back to snap, then manual guidance.
+      # openSUSE: Microsoft's RHEL rpm depends on a RHEL-named 'openssl-libs' that openSUSE doesn't
+      # provide, so that repo can't install pwsh here — go straight to snap, then the tarball fallback
+      # below (the tarball is the method that actually works on openSUSE). curl for the tarball fetch.
       $SUDO zypper --non-interactive install curl || true
-      $SUDO rpm --import https://packages.microsoft.com/keys/microsoft.asc 2>/dev/null || true
-      if $SUDO zypper --non-interactive addrepo --refresh https://packages.microsoft.com/rhel/9.0/prod/ microsoft-prod 2>/dev/null &&
-         $SUDO zypper --non-interactive --gpg-auto-import-keys refresh; then
-        $SUDO zypper --non-interactive install powershell || snap_fallback
-      else
-        snap_fallback
-      fi
+      snap_fallback
       ;;
     *)
       snap_fallback
       ;;
   esac
+  # Universal last resort: if the manager-specific path + snap didn't produce pwsh, use the official
+  # tarball (covers Arch-without-AUR and openSUSE). Only the error below is fatal.
+  if ! command -v pwsh >/dev/null 2>&1; then pwsh_tarball || true; fi
   if ! command -v pwsh >/dev/null 2>&1; then
     log "ERROR: pwsh install failed. Install it manually, then re-run:"
     log "  https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-linux"
