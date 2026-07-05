@@ -12,6 +12,7 @@ import json
 import os
 import platform
 import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -19,8 +20,26 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 
 
+def os_name() -> str:
+    """'windows' | 'linux' | 'macos' — the tri-state OS, mirroring pwsh Get-BobOS. Honors a TEST-ONLY
+    BOB_FORCE_OS ('windows'|'linux'|'macos'); anything else warns and is ignored. Replaces the 2-way
+    is_windows() for the ONE-C lifecycle/provisioning seams that must branch macOS separately."""
+    forced = os.environ.get("BOB_FORCE_OS")
+    if forced:
+        f = forced.lower()
+        if f in ("windows", "linux", "macos"):
+            return f
+        print(f"BOB_FORCE_OS='{forced}' is not one of windows/linux/macos — ignoring.", file=sys.stderr)
+    sysname = platform.system()
+    if sysname == "Windows":
+        return "windows"
+    if sysname == "Darwin":
+        return "macos"
+    return "linux"
+
+
 def is_windows() -> bool:
-    return platform.system() == "Windows"
+    return os_name() == "windows"
 
 
 # --- shell (C1: the agent tool shell is OS-native, independent of pwsh-for-orchestration) --------
@@ -237,3 +256,196 @@ def record_audio(silence_sec: float = 1.5, rms_silence: int = 200) -> bytes:
     if not frames:
         return b""
     return _pcm_to_wav(np.concatenate(frames, axis=0).tobytes())
+
+
+# --- process + service lifecycle (ONE-C §1b) -----------------------------------------------------
+# The OS core of every lifecycle/provisioning port. Low-level primitives live here; the orchestration
+# (pidfile read/write, readiness polling) sits above in scripts/tools/stack.py. Mirrors the pwsh split
+# (Test-PortInUse/Stop-ProcessTree/Start-BobBackgroundProcess) and keeps the BOB_FORCE_OS test hook.
+# psutil is an OPTIONAL accelerator (imported lazily like keyring/sounddevice); every function has an
+# stdlib fallback so the base runtime never hard-depends on it. Best-effort: a dead PID is not an error.
+
+
+def is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
+    """True if something accepts a TCP connection on host:port (a service is up). Port of pwsh
+    Test-PortInUse — identical on both OSes."""
+    import socket
+
+    try:
+        with socket.create_connection((host, port), timeout=1.0):
+            return True
+    except OSError:
+        return False
+
+
+def pid_alive(pid: int) -> bool:
+    """True if a process with this PID exists. psutil if present, else os.kill(pid, 0) on POSIX / an
+    OpenProcess probe on Windows."""
+    if not pid or pid <= 0:
+        return False
+    try:
+        import psutil  # type: ignore
+
+        if not psutil.pid_exists(pid):
+            return False
+        try:  # a reaped-but-not-yet-collected zombie is not "alive"
+            return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+        except psutil.NoSuchProcess:
+            return False
+    except ImportError:
+        pass
+    if os_name() == "windows":  # pragma: no cover — Windows-only fallback when psutil is absent
+        import ctypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if handle:
+            ctypes.windll.kernel32.CloseHandle(handle)
+            return True
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists but owned by another user
+    if os_name() == "linux":
+        # A killed-but-unreaped child lingers as a zombie whose PID os.kill(pid,0) still accepts;
+        # /proc reports state 'Z'. Treat defunct as dead so stop_process_tree reads as effective.
+        try:
+            with open(f"/proc/{pid}/stat", encoding="utf-8") as f:
+                state = f.read().rsplit(")", 1)[1].split()[0]
+            if state == "Z":
+                return False
+        except (OSError, IndexError):
+            pass
+    return True
+
+
+def stop_process_tree(pid: int) -> None:
+    """Terminate a process and its children (uvicorn workers, piper's native child, …). Port of pwsh
+    Stop-ProcessTree: Windows reaps children via psutil/taskkill; POSIX prefers a process-GROUP kill
+    (works when start_detached made the PID a group leader) then belt-and-suspenders pkill -P + kill.
+    Best-effort — a dead PID never raises."""
+    if not pid or pid <= 0:
+        return
+    if os_name() == "windows":  # pragma: no cover — exercised only on Windows
+        try:
+            import psutil  # type: ignore
+
+            proc = psutil.Process(pid)
+            for child in proc.children(recursive=True):
+                child.terminate()
+            proc.terminate()
+            return
+        except ImportError:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
+                           check=False, capture_output=True)
+            return
+        except Exception:
+            return
+    # POSIX: group kill first, then children by parent, then the parent itself.
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    if shutil.which("pkill"):
+        subprocess.run(["pkill", "-P", str(pid)], check=False, capture_output=True)
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def stop_processes_by_name(names) -> list:
+    """Kill processes by executable name — the way to reap C++ daemons (llama-swap/llama-server/
+    whisper-server/open-webui) that survive a stale pidfile. Windows: taskkill /IM <name>.exe /F;
+    POSIX: pkill -f <name>. Returns the names for which a live process was actually killed."""
+    if isinstance(names, str):
+        names = [names]
+    killed = []
+    win = os_name() == "windows"
+    for name in names:
+        if win:  # pragma: no cover — exercised only on Windows
+            proc = subprocess.run(["taskkill", "/IM", exe_name(name), "/F"],
+                                  check=False, capture_output=True)
+        else:
+            proc = subprocess.run(["pkill", "-f", name], check=False, capture_output=True)
+        if proc.returncode == 0:  # pkill/taskkill exit 0 only when a match was terminated
+            killed.append(name)
+    return killed
+
+
+def start_detached(argv: list, pidfile=None) -> int:
+    """Launch a fully-detached background process and return its PID. POSIX uses start_new_session=True
+    (setsid) so the child is its own group leader — REQUIRED so stop_process_tree's killpg reaps the
+    whole tree. Windows uses DETACHED_PROCESS|CREATE_NO_WINDOW (no console window, survives the parent).
+    Writes the PID to `pidfile` when given. Port of pwsh Start-BobBackgroundProcess."""
+    if os_name() == "windows":  # pragma: no cover — exercised only on Windows
+        DETACHED_PROCESS = 0x00000008
+        CREATE_NO_WINDOW = 0x08000000
+        proc = subprocess.Popen(argv, creationflags=DETACHED_PROCESS | CREATE_NO_WINDOW,
+                                 close_fds=True)
+    else:
+        proc = subprocess.Popen(argv, start_new_session=True, close_fds=True,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if pidfile is not None:
+        Path(pidfile).write_text(str(proc.pid), encoding="utf-8")
+    return proc.pid
+
+
+# --- executable + path resolvers (ONE-C §1b) -----------------------------------------------------
+# Where binaries and per-app config live, OS-aware. Mirror pwsh Get-BobExeName/Get-VenvExe/Get-BinExe/
+# Get-HomeConfigDir so a capability that shells out to a staged binary resolves the same path in both
+# languages. All key off os_name() so BOB_FORCE_OS drives them in tests.
+
+
+def exe_name(base: str) -> str:
+    """'llama-server' -> 'llama-server.exe' on Windows, bare elsewhere."""
+    return f"{base}.exe" if os_name() == "windows" else base
+
+
+def venv_exe(venv: str, exe: str) -> Path:
+    """Absolute path to a console script in a repo venv: tools/<venv>/Scripts/<exe>.exe on Windows,
+    tools/<venv>/bin/<exe> on POSIX (where `python -m venv` puts scripts)."""
+    base = REPO / "tools" / venv
+    if os_name() == "windows":
+        return base / "Scripts" / f"{exe}.exe"
+    return base / "bin" / exe
+
+
+def bin_exe(base: str) -> Path:
+    """Absolute path to a native binary staged in repo bin/ (adds .exe on Windows)."""
+    return REPO / "bin" / exe_name(base)
+
+
+def home_config_dir(app: str) -> Path:
+    """Per-app config dir: %USERPROFILE%\\.config\\<app> on Windows; $XDG_CONFIG_HOME/<app> (or
+    ~/.config/<app>) on POSIX."""
+    if os_name() == "windows":
+        return Path(os.environ.get("USERPROFILE", str(Path.home()))) / ".config" / app
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / app
+
+
+# --- open a URL (ONE-C §1b) ----------------------------------------------------------------------
+
+
+def open_url(url: str) -> bool:
+    """Open a URL in the user's default browser (e.g. `up` opens the WebUI). POSIX: xdg-open / open;
+    Windows: webbrowser (os.startfile-backed). Returns True if a launcher fired, False on a headless
+    box with no opener."""
+    name = os_name()
+    if name == "windows":  # pragma: no cover — exercised only on Windows
+        import webbrowser
+
+        return webbrowser.open(url)
+    opener = "open" if name == "macos" else "xdg-open"
+    exe = shutil.which(opener)
+    if not exe:
+        return False
+    try:
+        subprocess.Popen([exe, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except OSError:
+        return False

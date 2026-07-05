@@ -29,6 +29,11 @@ def _resolve(argv: list):
 
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    # ONE-C §1a — the deterministic invoker. `bob --run <cap> '{json}'` runs a capability through the
+    # EXACT agent path (ToolRegistry.dispatch_call), no model, no parallel dispatcher, so CI/scripts and
+    # the loop hit identical code. A mode flag (D5), not a verb — kept out of the registry/catalog.
+    if argv and argv[0] == "--run":
+        return _handle_run(argv[1:])
     name, rest = _resolve(argv)
     if name is None:
         # NE2 Decision C — no-arg on an interactive terminal launches the shell; piped/redirected/CI
@@ -52,6 +57,53 @@ def main(argv=None) -> int:
         _print_help()
         return 2
     return handler(rest) or 0
+
+
+# --- the deterministic invoker (ONE-C §1a) -------------------------------------------------------
+
+def _build_registry(config: dict):
+    """Build the same ToolRegistry the agent loop builds (same disabledTools parsing, bob_loop.py:1147),
+    so `--run` dispatches through an identical toolset. scripts/tools must be importable first."""
+    tools_dir = str(SCRIPTS / "tools")
+    if tools_dir not in sys.path:
+        sys.path.insert(0, tools_dir)
+    from tool_registry import ToolRegistry
+
+    disabled_raw = config.get("agent", {}).get("disabledTools", [])
+    if isinstance(disabled_raw, str):
+        disabled = {t.strip() for t in disabled_raw.split(",") if t.strip()}
+    else:
+        disabled = set(disabled_raw)
+    return ToolRegistry.build(config, disabled, quiet=True)
+
+
+def _handle_run(rest: list) -> int:
+    """`bob --run <cap> '{json}'` — invoke one capability deterministically (D5: flag, JSON-only, single
+    surface). Prints the tool's returned string; exits non-zero when the result is an error (unknown cap,
+    bad JSON, or a tool error) so CI can gate on it. Same fn/dispatch as the loop — no parallel path."""
+    if not rest:
+        print("usage: bob --run <capability> ['{json args}']", file=sys.stderr)
+        return 2
+    cap = rest[0]
+    args_json = rest[1] if len(rest) > 1 else "{}"
+    import json as _json
+
+    try:
+        parsed = _json.loads(args_json)
+    except _json.JSONDecodeError as e:
+        print(f"bob --run: arguments must be a JSON object ({e})", file=sys.stderr)
+        return 2
+    if not isinstance(parsed, dict):
+        print("bob --run: arguments must be a JSON object, e.g. '{\"query\": \"x\"}'", file=sys.stderr)
+        return 2
+
+    from bob.shell import _is_error_result
+    from bob_core import load_config
+
+    registry = _build_registry(load_config())
+    result = registry.dispatch_call(cap, args_json)
+    print(result)
+    return 1 if _is_error_result(result) else 0
 
 
 # --- python handlers -----------------------------------------------------------------------------

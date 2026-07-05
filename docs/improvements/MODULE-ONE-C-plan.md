@@ -1,6 +1,7 @@
 # Module ONE-C — Capabilities-as-tools + the deterministic invoker (detailed plan)
 
-**Status:** scoping complete (this doc) — ready to execute. **Prereq:** ONE-A ✓ (config single-sourced),
+**Status:** executing. **C0 ✓ DONE** (§1a `--run` invoker + §1b osenv process/path/url seams, on main;
+572 tests green). Decisions D1–D6 resolved (see Part 5). **Prereq:** ONE-A ✓ (config single-sourced),
 ONE-B ✓ (one engine; text/vision/voice on the loop). **Read first:**
 [MODULE-ONE-bob.md](MODULE-ONE-bob.md) (§ONE-C, the deprecation ledger, the architectural invariant),
 [ARCHITECTURE-CONTRACTS.md](ARCHITECTURE-CONTRACTS.md) (C1 dispatch, C6 registries, **C7 provisioner
@@ -237,20 +238,37 @@ verbs-sync gates, and commit.
 
 ---
 
-## Part 5 — Open decisions to confirm before coding (resolve these in the next chat)
+## Part 5 — Decisions (RESOLVED 2026-07-05)
 
-- **D1 `down`:** add as a `stop` alias? *(recommend yes.)*
-- **D2 build/privilege verbs:** keep `build/update/mlock/setup-voice/fabric-setup/lock/setup`(full) as pwsh
-  through ONE-C and port in ONE-D? *(recommend yes — they need the heavy build-time seams.)*
-- **D3 cron:** exact `Test-CronDue` port (parity, zero dep) vs `croniter`? *(recommend exact port.)*
-- **D4 models.json split:** where does the writable `activeProfile` live (small `config/active-profile.json`
-  vs `data/`-side state), keeping the registry read-mostly + documented?
-- **D5 `--run` surface:** flag `--run` vs verb `run`; JSON-only vs `key=value` sugar. *(recommend `--run` +
-  both.)*
-- **D6 placement:** strict AUTHORING Layer-2 = one `plugins/<verb>/` dir per verb (40 dirs) vs **functional
-  grouping** into a few `scripts/tools/*.py` modules (`stack.py`, `models.py`, `schedule.py`, `provision.py`)
-  each exposing several related tool fns with cli handlers importing the same cores. *(recommend functional
-  grouping — bends the strict rule but avoids 40 dirs; note it in AUTHORING.md.)*
+- **D1 `down`:** ❌ NO alias. "One clean way to start and stop, no silly alias that confuses which is
+  correct later." `stop` stays the single canonical teardown; the existing hidden `down` registry entry
+  gets **deleted** in Slice 2 (not ported).
+- **D2 build/privilege verbs:** port `fetch`, `mlock -Check` (read-only path only), and `lock --check`
+  (CI check path only) **in ONE-C**; everything else
+  (`build/update/setup-voice/fabric-setup/setup`-full + the write/privilege paths of mlock/lock) stays
+  pwsh and ports in **ONE-D**.
+- **D3 cron:** ✅ exact `Test-CronDue` port (parity, zero dep). Upgrade to richer syntax deliberately later.
+- **D4 models.json split:** writable `activeProfile` lives in **`data/`-side state** (e.g.
+  `data/active-profile.json`); the `models.json` registry stays fully read-only + version-controlled.
+- **D5 `--run` surface:** ✅ single clean surface — **`bob --run <cap> '{json}'`** (a mode flag, JSON-only,
+  no `run` verb, no `key=value` sugar). Kept out of the registry/catalog. *(implemented in C0.)*
+- **D6 placement:** ✅ **functional grouping** into a few `scripts/tools/*.py` modules (`stack.py`,
+  `models.py`, `schedule.py`, `provision.py`) each exposing several related tool fns; cli handlers +
+  `--run` import the same cores. Bends the strict one-dir-per-verb AUTHORING rule — note it in
+  AUTHORING.md when Slice 1 lands.
+
+**C0 implementation notes:**
+- §1a `--run` is a branch at the top of [cli.py `main`](../../scripts/bob/cli.py) → `_handle_run` →
+  `_build_registry` (mirrors the loop's `disabledTools` parsing) → `dispatch_call`. Exit non-zero on an
+  error result (reuses `shell._is_error_result`); JSON must be an object.
+- §1b osenv seams added: `os_name()` (tri-state, honors `BOB_FORCE_OS`; `is_windows()` now delegates),
+  `is_port_in_use`, `pid_alive` (psutil-optional, **zombie-aware on Linux via /proc**), `stop_process_tree`,
+  `stop_processes_by_name`, `start_detached`, `exe_name`/`venv_exe`/`bin_exe`/`home_config_dir`, `open_url`.
+  psutil is an optional accelerator (lazy import + stdlib fallback) — it is NOT installed in this env.
+  **Caveat:** `stop_processes_by_name` uses `pkill -f <name>` on POSIX (broader than pwsh's exact
+  `Get-Process -Name`, but needed to catch python-hosted services like open-webui) — Slice 2 must pass
+  specific daemon names. Scheduler quartet (`register/unregister/agent_task_status/crontab_available`)
+  deferred to Slice 5.
 
 ## Part 6 — Acceptance (per the module doc)
 Each capability invoked identically via the agent and via `bob --run <cap>` (one function in the stack);

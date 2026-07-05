@@ -148,5 +148,208 @@ class TestAudioSeam(unittest.TestCase):
         self.assertIn(b"WAVE", wav[:16])
 
 
+# --- ONE-C §1b seams -----------------------------------------------------------------------------
+
+
+class _ForceOSMixin:
+    """setUp/tearDown that drive os_name() via the BOB_FORCE_OS test hook, restoring it after."""
+
+    def _force(self, os_value):
+        os.environ["BOB_FORCE_OS"] = os_value
+
+    def setUp(self):
+        self._saved_force = os.environ.pop("BOB_FORCE_OS", None)
+
+    def tearDown(self):
+        if self._saved_force is not None:
+            os.environ["BOB_FORCE_OS"] = self._saved_force
+        else:
+            os.environ.pop("BOB_FORCE_OS", None)
+
+
+class TestOsName(_ForceOSMixin, unittest.TestCase):
+    def test_forced_values(self):
+        for val in ("windows", "linux", "macos"):
+            self._force(val)
+            self.assertEqual(osenv.os_name(), val)
+
+    def test_invalid_force_is_ignored_and_warns(self):
+        self._force("plan9")
+        with mock.patch("osenv.platform.system", return_value="Linux"):
+            with mock.patch("sys.stderr", new_callable=lambda: __import__("io").StringIO()) as err:
+                self.assertEqual(osenv.os_name(), "linux")
+        self.assertIn("BOB_FORCE_OS", err.getvalue())
+
+    def test_is_windows_follows_os_name(self):
+        self._force("windows")
+        self.assertTrue(osenv.is_windows())
+        self._force("linux")
+        self.assertFalse(osenv.is_windows())
+
+    def test_darwin_maps_to_macos(self):
+        with mock.patch("osenv.platform.system", return_value="Darwin"):
+            self.assertEqual(osenv.os_name(), "macos")
+
+
+class TestPathResolvers(_ForceOSMixin, unittest.TestCase):
+    def test_exe_name(self):
+        self._force("windows")
+        self.assertEqual(osenv.exe_name("llama-server"), "llama-server.exe")
+        self._force("linux")
+        self.assertEqual(osenv.exe_name("llama-server"), "llama-server")
+
+    def test_venv_exe(self):
+        self._force("windows")
+        self.assertEqual(osenv.venv_exe("venv-aider", "aider"),
+                         osenv.REPO / "tools" / "venv-aider" / "Scripts" / "aider.exe")
+        self._force("linux")
+        self.assertEqual(osenv.venv_exe("venv-aider", "aider"),
+                         osenv.REPO / "tools" / "venv-aider" / "bin" / "aider")
+
+    def test_bin_exe(self):
+        self._force("windows")
+        self.assertEqual(osenv.bin_exe("llama-server"), osenv.REPO / "bin" / "llama-server.exe")
+        self._force("linux")
+        self.assertEqual(osenv.bin_exe("llama-server"), osenv.REPO / "bin" / "llama-server")
+
+    def test_home_config_dir_windows(self):
+        self._force("windows")
+        with mock.patch.dict(os.environ, {"USERPROFILE": r"C:\Users\bob"}):
+            self.assertEqual(osenv.home_config_dir("fabric"),
+                             Path(r"C:\Users\bob") / ".config" / "fabric")
+
+    def test_home_config_dir_linux_xdg(self):
+        self._force("linux")
+        with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": "/custom/cfg"}):
+            self.assertEqual(osenv.home_config_dir("fabric"), Path("/custom/cfg") / "fabric")
+
+    def test_home_config_dir_linux_default(self):
+        self._force("linux")
+        env = {k: v for k, v in os.environ.items() if k != "XDG_CONFIG_HOME"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(osenv.home_config_dir("fabric"), Path.home() / ".config" / "fabric")
+
+
+class TestPortAndPid(unittest.TestCase):
+    def test_port_free_is_not_in_use(self):
+        import socket
+        # Bind but DON'T listen/accept on an ephemeral port, then close -> nothing accepts there.
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        free_port = s.getsockname()[1]
+        s.close()
+        self.assertFalse(osenv.is_port_in_use(free_port))
+
+    def test_port_in_use_when_listening(self):
+        import socket
+        srv = socket.socket()
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        try:
+            self.assertTrue(osenv.is_port_in_use(srv.getsockname()[1]))
+        finally:
+            srv.close()
+
+    def test_pid_alive(self):
+        self.assertTrue(osenv.pid_alive(os.getpid()))
+        self.assertFalse(osenv.pid_alive(0))
+        self.assertFalse(osenv.pid_alive(2_000_000_000))  # PID far above any live process
+
+
+@unittest.skipIf(osenv.os_name() == "windows", "POSIX detach/kill round-trip")
+class TestProcessLifecyclePosix(unittest.TestCase):
+    def test_start_detached_writes_pidfile_and_tree_kill_reaps(self):
+        import tempfile
+        import time
+        import warnings
+        # start_detached is fire-and-forget: it discards the Popen, whose finalizer would emit a
+        # spurious ResourceWarning ("still running") even though we reap the child below.
+        warnings.simplefilter("ignore", ResourceWarning)
+        self.addCleanup(warnings.resetwarnings)
+        pidfile = Path(tempfile.mkdtemp(prefix="bob-pid-")) / "svc.pid"
+        pid = osenv.start_detached(["sleep", "30"], pidfile=pidfile)
+        try:
+            self.assertEqual(pidfile.read_text().strip(), str(pid))
+            time.sleep(0.2)
+            self.assertTrue(osenv.pid_alive(pid))
+            osenv.stop_process_tree(pid)
+            # Reap our direct child so it doesn't linger as a zombie for other tests.
+            for _ in range(20):
+                try:
+                    if os.waitpid(pid, os.WNOHANG)[0] != 0:
+                        break
+                except ChildProcessError:
+                    break
+                time.sleep(0.05)
+            self.assertFalse(osenv.pid_alive(pid))
+        finally:
+            try:
+                os.kill(pid, 9)
+                os.waitpid(pid, 0)
+            except (ProcessLookupError, ChildProcessError):
+                pass
+
+
+class TestKillByName(_ForceOSMixin, unittest.TestCase):
+    """Mocked subprocess so the suite never actually pkills anything (a real pkill -f can match the
+    test runner itself). Asserts the right command per OS and the killed-names return contract."""
+
+    def test_linux_uses_pkill_f_and_returns_killed(self):
+        self._force("linux")
+        calls = []
+
+        def fake_run(argv, **kw):
+            calls.append(argv)
+            rc = 0 if argv[-1] == "llama-swap" else 1  # only llama-swap "matched"
+            return types.SimpleNamespace(returncode=rc)
+
+        with mock.patch("osenv.subprocess.run", side_effect=fake_run):
+            killed = osenv.stop_processes_by_name(["llama-swap", "open-webui"])
+        self.assertEqual(killed, ["llama-swap"])
+        self.assertEqual(calls[0], ["pkill", "-f", "llama-swap"])
+        self.assertEqual(calls[1], ["pkill", "-f", "open-webui"])
+
+    def test_string_arg_is_treated_as_single_name(self):
+        self._force("linux")
+        with mock.patch("osenv.subprocess.run",
+                        return_value=types.SimpleNamespace(returncode=1)):
+            self.assertEqual(osenv.stop_processes_by_name("nothing"), [])
+
+    def test_windows_uses_taskkill_im_exe(self):
+        self._force("windows")
+        calls = []
+
+        def fake_run(argv, **kw):
+            calls.append(argv)
+            return types.SimpleNamespace(returncode=0)
+
+        with mock.patch("osenv.subprocess.run", side_effect=fake_run):
+            killed = osenv.stop_processes_by_name("llama-swap")
+        self.assertEqual(killed, ["llama-swap"])
+        self.assertEqual(calls[0], ["taskkill", "/IM", "llama-swap.exe", "/F"])
+
+
+class TestOpenUrl(_ForceOSMixin, unittest.TestCase):
+    def test_linux_uses_xdg_open(self):
+        self._force("linux")
+        with mock.patch("osenv.shutil.which", return_value="/usr/bin/xdg-open"), \
+             mock.patch("osenv.subprocess.Popen") as popen:
+            self.assertTrue(osenv.open_url("http://x"))
+            popen.assert_called_once()
+            self.assertEqual(popen.call_args[0][0][0], "/usr/bin/xdg-open")
+
+    def test_macos_uses_open(self):
+        self._force("macos")
+        with mock.patch("osenv.shutil.which", return_value="/usr/bin/open") as which, \
+             mock.patch("osenv.subprocess.Popen"):
+            self.assertTrue(osenv.open_url("http://x"))
+            self.assertEqual(which.call_args[0][0], "open")
+
+    def test_no_opener_returns_false(self):
+        self._force("linux")
+        with mock.patch("osenv.shutil.which", return_value=None):
+            self.assertFalse(osenv.open_url("http://x"))
+
+
 if __name__ == "__main__":
     unittest.main()
