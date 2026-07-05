@@ -60,8 +60,10 @@ if (Test-Path $webui) {
     "`$env:RAG_OPENAI_API_BASE_URL='http://localhost:$litellmPort/v1';",
     "`$env:RAG_OPENAI_API_KEY='sk-local';",
     "`$env:RAG_EMBEDDING_MODEL='embed';",
-    # keep ALL Open WebUI state inside the (gitignored) repo data dir, not scattered in CWD
-    "`$env:DATA_DIR='$repo\tools\webui-data';",
+    # keep ALL Open WebUI state inside the (gitignored) repo data dir, not scattered in CWD.
+    # Join-Path (not "$repo\..."): the value is consumed by open-webui (Python), which doesn't
+    # normalize backslashes — a literal-backslash path scatters state into a bogus dir on Linux.
+    "`$env:DATA_DIR='$(Join-Path $repo 'tools' 'webui-data')';",
     "`$env:WEBUI_SECRET_KEY='$secret';"
   ) -join ""
   $uiLog = Join-Path $logsDir 'open-webui.log'
@@ -101,8 +103,8 @@ if (Test-Path $webui) {
 if ($WithServices) {
   if (Get-Command docker -ErrorAction SilentlyContinue) {
     Write-Host "Starting Docker services..." -ForegroundColor Cyan
-    $compose  = "$repo\tools\compose\docker-compose.yml"
-    $envFile  = "$repo\tools\compose\.env"
+    $compose  = Join-Path $repo 'tools' 'compose' 'docker-compose.yml'   # Join-Path: path goes to native docker
+    $envFile  = Join-Path $repo 'tools' 'compose' '.env'
     @"
 REPO_PATH=$repo
 LANGFUSE_PORT=$($cfg.defaults.langfusePort ?? (Get-BobPortDefault 'langfusePort'))

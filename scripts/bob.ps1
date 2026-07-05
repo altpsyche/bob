@@ -530,7 +530,7 @@ switch ($cmd) {
     }
     $default = & $resolveModel 'coder'
     $m = if ($rest.Count) { & $resolveModel $rest[0] } else { $default }
-    & "$repo\bin\llama-bench.exe" -m $m -ngl 99 -fa 1 -p 512 -n 128
+    & (Get-BinExe 'llama-bench') -m $m -ngl 99 -fa 1 -p 512 -n 128
   }
   # 'chat' / 'code' / 'think' — MIGRATED to Python (Module S2). They are runtime=python in
   # config/verbs.json, so the front door routes `bob chat|code|think` to `python -m bob` (the agent
@@ -570,7 +570,7 @@ switch ($cmd) {
     }
 
     # 4) Docker services (only if docker is available and compose file exists)
-    $compose = "$repo\tools\compose\docker-compose.yml"
+    $compose = Join-Path $repo 'tools' 'compose' 'docker-compose.yml'   # Join-Path: the path goes to native docker
     if ((Get-Command docker -ErrorAction SilentlyContinue) -and (Test-Path $compose)) {
       $running = docker compose -f $compose ps -q 2>$null
       if ($running) {
@@ -689,8 +689,8 @@ switch ($cmd) {
     $srvBin  = Get-BinExe 'llama-server'
     $swapVer = if (Test-Path $swapBin) { & $swapBin --version 2>&1 | Select-Object -First 1 } else { '(not built)' }
     $srvVer  = if (Test-Path $srvBin)  { & $srvBin  --version 2>&1 | Select-Object -First 1 } else { '(not built)' }
-    $swapCommit = & git -C "$repo\external\llama-swap" rev-parse --short HEAD 2>$null
-    $llmCommit  = & git -C "$repo\external\llama.cpp"  rev-parse --short HEAD 2>$null
+    $swapCommit = & git -C (Join-Path $repo 'external' 'llama-swap') rev-parse --short HEAD 2>$null
+    $llmCommit  = & git -C (Join-Path $repo 'external' 'llama.cpp')  rev-parse --short HEAD 2>$null
     Write-Host "llama-swap:   $swapVer  ($swapCommit)"
     Write-Host "llama-server: $srvVer  ($llmCommit)"
   }
@@ -716,7 +716,7 @@ switch ($cmd) {
     }
   }
   'fabric-setup' { & "$repo\scripts\setup-fabric.ps1" }
-  'fabric'       { & "$repo\bin\fabric.exe" @rest }
+  'fabric'       { & (Get-BinExe 'fabric') @rest }
   'litellm' {
     $subCmd  = if ($rest.Count -and $rest[0] -in 'stop','status','start') { $rest[0] } else { '' }
     $fwdArgs = if ($subCmd) { @($rest | Select-Object -Skip 1) } else { @($rest) }
@@ -743,11 +743,11 @@ switch ($cmd) {
   }
   'services' {
     $action  = if ($rest.Count) { $rest[0] } else { '' }
-    $compose = "$repo\tools\compose\docker-compose.yml"
+    $compose = Join-Path $repo 'tools' 'compose' 'docker-compose.yml'   # Join-Path: the path goes to native docker
     if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
       Write-Host "Docker not found. Run: .\scripts\setup-docker.ps1" -ForegroundColor Yellow; break
     }
-    $envFile = "$repo\tools\compose\.env"
+    $envFile = Join-Path $repo 'tools' 'compose' '.env'
     switch ($action) {
       'start'  {
         # Regenerate .env from current models.psd1 values before starting
