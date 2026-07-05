@@ -52,16 +52,36 @@ $epUp = $false
 try { $c = [System.Net.Sockets.TcpClient]::new(); $c.Connect('127.0.0.1', $port); $epUp = $true; $c.Close() } catch {}
 Row "Endpoint" "http://localhost:$port/v1  ($(if ($epUp) { 'up' } else { 'not running' }))" $(if ($epUp) { 'Green' } else { 'DarkGray' })
 
-# CUDA — base dir from the NC1 descriptor (no re-inlined path); enumerate installed toolkits for display
-$cudaBase  = (Resolve-CudaRootCandidates).Base
-$installed = @()
-if (Test-Path $cudaBase) {
-  $installed = @(Get-ChildItem $cudaBase -Directory | ForEach-Object {
-    if ($_.Name -match '^v(\d+)\.(\d+)$') {
-      [pscustomobject]@{ Name = $_.Name; Major = [int]$Matches[1]; Minor = [int]$Matches[2] }
-    }
-  } | Where-Object { $_ })
+# Platform / package manager (Linux) — surface what the install seam detected so an unsupported distro
+# is obvious (brew-doctor style). Windows uses winget; only the Linux manager mapping can be "missing".
+if ((Get-BobOS) -ne 'windows') {
+  $mgr = Get-LinuxPackageManager
+  $fam = Get-LinuxOsFamily
+  if ($mgr) {
+    Row "Package" "$mgr  (family: $($fam ?? 'unknown'))  — supported" 'Green'
+  } else {
+    Row "Package" "no supported manager (apt/dnf/pacman/zypper) detected — install the toolchain manually" 'Red'
+    $issues++
+  }
 }
+
+# CUDA — enumerate installed toolkits for display from the NC1 descriptor. Uses $c.DirPrefix (v on
+# Windows, cuda- on Linux) and probes $c.Fixed (Linux canonical /opt/cuda + /usr/local/cuda), so this
+# no longer hard-assumes the Windows 'v12.8' dir shape and finds Arch/CachyOS's /opt/cuda.
+$c = Resolve-CudaRootCandidates -CudaArch ($(if ($gpu) { $gpu.CudaArch } else { 0 }))
+$installed = @()
+if (Test-Path $c.Base) {
+  $pat = "^$([regex]::Escape($c.DirPrefix))(\d+)\.(\d+)$"
+  $installed += @(Get-ChildItem $c.Base -Directory -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Name -match $pat } | ForEach-Object { $_.Name })
+}
+foreach ($fx in @($c.Fixed)) {   # canonical/symlink roots — name carries no version, read it from disk
+  if ($fx -and (Test-Path $fx)) {
+    $v = Get-CudaToolkitVersion -Root $fx
+    $installed += "$(Split-Path $fx -Leaf)$(if ($v) { " ($v)" })"
+  }
+}
+$installed = @($installed | Select-Object -Unique)
 
 if ($gpu) {
   $best = Get-BestCudaRoot -CudaArch $gpu.CudaArch
@@ -69,12 +89,12 @@ if ($gpu) {
     Row "CUDA" "$(Split-Path $best -Leaf)  ok" 'Green'
   } else {
     $need  = if ($gpu.CudaArch -ge 120) { '12.8 (required for Blackwell)' } else { '12.x' }
-    $found = if ($installed.Count -gt 0) { "found: $(($installed | ForEach-Object { $_.Name }) -join ', ')" } else { 'none installed' }
+    $found = if ($installed.Count -gt 0) { "found: $($installed -join ', ')" } else { 'none installed' }
     Row "CUDA" "needs $need  ($found)  — setup will install" 'Yellow'
     $issues++
   }
 } else {
-  $label = if ($installed.Count -gt 0) { ($installed | ForEach-Object { $_.Name } | Sort-Object | Select-Object -Last 1) + '  (no GPU detected)' } else { 'not installed  (no GPU detected — skipping)' }
+  $label = if ($installed.Count -gt 0) { ($installed | Sort-Object | Select-Object -Last 1) + '  (no GPU detected)' } else { 'not installed  (no GPU detected — skipping)' }
   Row "CUDA" $label 'DarkGray'
 }
 
@@ -86,11 +106,13 @@ try {
 } catch {}
 $d = $cfg.defaults
 $mlockEnabled = ($d.mlockBig -eq $true)
+# OS-aware wording: SeLockMemoryPrivilege is Windows; Linux gates on the memlock rlimit (ulimit -l).
+$mlockPriv = if ((Get-BobOS) -eq 'windows') { 'SeLockMemoryPrivilege' } else { 'memlock limit (ulimit -l)' }
 if ($mlockEnabled -and -not $mlockGranted) {
-    Row "mlock" "mlockBig=true but SeLockMemoryPrivilege NOT granted — run: bob mlock" 'Yellow'
+    Row "mlock" "mlockBig=true but $mlockPriv NOT granted — run: bob mlock" 'Yellow'
     $issues++
 } elseif ($mlockEnabled -and $mlockGranted) {
-    Row "mlock" "SeLockMemoryPrivilege granted  (--mlock active)" 'Green'
+    Row "mlock" "$mlockPriv granted  (--mlock active)" 'Green'
 } else {
     $mlockRamHint = if ($ram -and $ram.FreeGB -ge 32) { "  — $($ram.FreeGB) GB free RAM; eligible" } else { '' }
     Row "mlock" "not enabled$mlockRamHint  (set mlockBig=true in user.psd1 + run: bob mlock)" 'DarkGray'
@@ -101,7 +123,7 @@ $numaNodes = Get-NumaNodeCount
 $numaConfig = $cfg.defaults.numa
 if ($numaConfig -and $numaConfig -ne '') {
     if ($numaNodes -le 1) {
-        Row "NUMA" "config: '--numa $numaConfig' but Windows reports $numaNodes node — flag is a no-op; set numa='' in user.psd1" 'Yellow'
+        Row "NUMA" "config: '--numa $numaConfig' but the OS reports $numaNodes node — flag is a no-op; set numa='' in user.psd1" 'Yellow'
         $issues++
     } else {
         Row "NUMA" "$numaNodes nodes  — '--numa $numaConfig' active" 'Green'
@@ -168,3 +190,7 @@ if ($issues -gt 0) {
   Write-Host "  All checks passed." -ForegroundColor Green
 }
 Write-Host ''
+# brew-doctor contract: report, don't fix; exit non-zero when any check flagged a problem so CI (the
+# distro-matrix job) and callers get one honest health signal. Expected pre-setup states (no GPU, models
+# not downloaded yet, mlock disabled) are DarkGray and NOT counted, so a clean fresh box still exits 0.
+exit $issues

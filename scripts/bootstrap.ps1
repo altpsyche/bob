@@ -3,7 +3,7 @@
 # Re-runnable. Heavy steps are skippable via flags.
 #   .\scripts\bootstrap.ps1                 # full
 #   .\scripts\bootstrap.ps1 -SkipModels     # everything except the multi-GB downloads
-param([switch]$SkipModels, [switch]$SkipBuild, [string]$Profile)
+param([switch]$SkipModels, [switch]$SkipBuild, [string]$Profile, [switch]$WithWebui)
 $ErrorActionPreference = "Stop"
 $repo = Split-Path $PSScriptRoot -Parent
 . "$PSScriptRoot\_models.ps1"
@@ -40,27 +40,11 @@ if ($gpuArch) { "GPU    : $($gpuArch.Gen) (sm_$($gpuArch.CudaArch))" }
 "CUDA   : $(if ($cudaRoot) { "ok — $cudaRoot" } else { 'MISSING — install CUDA 12.x before building' })"
 "go     : $(if (Have go) { 'ok' } else { 'missing — will need llama-swap release binary instead' })"
 
-# locate a venv-compatible Python (3.11/3.12; pinned deps like open-webui cap at <3.13).
-$py = $null
-if ((Get-BobOS) -eq 'windows') {
-    # Windows: scoop python312 (preferred, isolated) -> py launcher -> PATH, pinned to 3.12.
-    try { $p = (scoop prefix python312) 2>$null; if ($p) { $py = Join-Path $p "python.exe" } } catch {}
-    if ($py -and -not (Test-Path $py)) { $py = $null }
-    if (-not $py -and (Have py)) {
-        try { $resolved = & py -3.12 -c "import sys; print(sys.executable)" 2>&1; if ($resolved -and (Test-Path $resolved)) { $py = $resolved } } catch {}
-    }
-    if (-not $py) {
-        foreach ($cand in 'python3.12', 'python', 'python3') {
-            if ((Have $cand) -and (Test-PythonVersionAtLeast -Exe $cand -MinVer '3.12')) { $py = $cand; break }
-        }
-    }
-    $pyHint = 'scoop install python312'
-} else {
-    # Linux/macOS: an in-range interpreter, provisioning CPython 3.12 via uv when the system Python is
-    # too new (Arch/CachyOS ship 3.14, which open-webui & other pinned deps reject with Requires-Python).
-    $py = Get-BobPython
-    $pyHint = 'install Python 3.12, or ensure uv is available so bob can provision it'
-}
+# locate a venv-compatible Python (3.11/3.12; pinned deps like open-webui cap at <3.13). Resolution
+# (scoop/py/PATH on Windows, uv-provisioned on Linux) lives in the Get-BobVenvPython seam — shared with
+# New-BobVenv so there's one interpreter-selection path, not a hand-rolled copy per bootstrap script.
+$py = Get-BobVenvPython
+$pyHint = if ((Get-BobOS) -eq 'windows') { 'scoop install python312' } else { 'install Python 3.12, or ensure uv is available so bob can provision it' }
 "python : $(if ($py) { $py } else { "MISSING — $pyHint" })"
 
 # --- submodules ---
@@ -85,7 +69,7 @@ if (-not $SkipBuild) {
 
   Step "Build llama-swap"
   if (Have go) { & "$PSScriptRoot\build-llama-swap.ps1" }
-  else { Write-Warning "Skipping llama-swap build — Go missing. Download the release binary into bin\llama-swap.exe." }
+  else { Write-Warning "Skipping llama-swap build — Go missing. Download the llama-swap release binary into bin/ (llama-swap.exe on Windows, llama-swap on Linux)." }
 
   Step "Build fabric"
   if (Have go) { & "$PSScriptRoot\setup-fabric.ps1" }
@@ -93,36 +77,20 @@ if (-not $SkipBuild) {
 } else { Write-Host "Skipping builds (-SkipBuild)" -ForegroundColor DarkGray }
 
 # --- Python tools: ISOLATED venvs (open-webui & aider have conflicting dep pins) ---
+# venv-aider + venv-litellm are the default clients. venv-webui (open-webui pulls torch/transformers,
+# multi-GB) is opt-in via -WithWebui. venv-eval (lm-eval + transformers, benchmarking-only) is NOT built
+# here — it's lazy: `bob eval` / scripts\bootstrap-eval.ps1 own it. All go through the New-BobVenv seam
+# (self-heal + .lock/.txt selection + loud failure live in one place).
 Step "Python venvs (3.12+) + tools"
 if ($py) {
-  foreach ($t in @(
-    @{n='venv-webui';   base='webui-requirements'},
+  $venvs = @(
     @{n='venv-aider';   base='aider-requirements'},
-    @{n='venv-litellm'; base='litellm-requirements'},
-    @{n='venv-eval';    base='eval-requirements'}
-  )) {
-    $venv = Join-Path $repo "tools\$($t.n)"
-    $venvPy = Get-VenvExe -Venv $t.n -Exe 'python'   # NC4: OS-aware (Scripts\python.exe | bin/python)
-    # Self-heal: recreate a venv built with an out-of-range Python (e.g. a pre-fix 3.14 venv left by a
-    # failed run) so it doesn't just re-fail the pip install. In range = 3.11/3.12.
-    if ((Test-Path $venv) -and (Test-Path $venvPy)) {
-        $vv = (& $venvPy --version 2>&1) -replace 'Python\s+', ''
-        $inRange = ($vv -match '(\d+)\.(\d+)') -and ([version]"$($Matches[1]).$($Matches[2])" -ge [version]'3.11') -and ([version]"$($Matches[1]).$($Matches[2])" -lt [version]'3.13')
-        if (-not $inRange) { Write-Host "  recreating $($t.n) (was Python $vv — need 3.11/3.12)" -ForegroundColor Yellow; Remove-Item -Recurse -Force $venv }
-    }
-    if (-not (Test-Path $venv)) { & $py -m venv $venv }
-    if (-not (Test-Path $venvPy)) { throw "venv creation failed for $($t.n) — $venvPy not found" }
-    & $venvPy -m pip install --upgrade pip
-    # The committed .lock files are Windows `pip freeze` snapshots (they pin pywin32 / win32_setctime),
-    # so they only resolve on Windows. Use the pinned lock on Windows for reproducibility; on Linux/macOS
-    # use the platform-agnostic top-level .txt and let pip resolve per-platform. (A Linux lock could be
-    # frozen post-install for reproducibility — ND follow-up.)
-    $lock = Join-Path $repo "tools\$($t.base).lock"
-    $txt  = Join-Path $repo "tools\$($t.base).txt"
-    $req  = if (((Get-BobOS) -eq 'windows') -and (Test-Path $lock)) { $lock } else { $txt }
-    Write-Host "  installing $($t.n) from $(Split-Path $req -Leaf)" -ForegroundColor DarkGray
-    & $venvPy -m pip install -r $req
-    if ($LASTEXITCODE -ne 0) { throw "pip install failed for $($t.n) — re-run scripts\bootstrap.ps1 to retry" }
+    @{n='venv-litellm'; base='litellm-requirements'}   # sqlite-utils (bob memory) is pinned in the requirements
+  )
+  if ($WithWebui) { $venvs += @{n='venv-webui'; base='webui-requirements'} }
+  else { Write-Host "  skipping venv-webui (open-webui is opt-in — re-run with -WithWebui to install)" -ForegroundColor DarkGray }
+  foreach ($t in $venvs) {
+    New-BobVenv -Name $t.n -RequirementsBase $t.base -Python $py | Out-Null
   }
 } else { Write-Warning "Skipping venvs — Python 3.12+ not found." }
 

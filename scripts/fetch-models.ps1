@@ -99,7 +99,7 @@ $neededGB = ($missing | Measure-Object -Property sizeGB -Sum).Sum
 if ($neededGB -gt 0) {
   try {
     $freeGB = $null
-    if ($IsWindows) {
+    if ((Get-BobOS) -eq 'windows') {
       $drive = Split-Path $outDir -Qualifier   # 'C:' — string-only parse, works before dir exists
       $drv   = Get-PSDrive ($drive -replace ':','') -ErrorAction SilentlyContinue
       if ($drv) { $freeGB = $drv.Free / 1GB }
@@ -132,6 +132,10 @@ foreach ($m in $models) {
     $dlSw = [Diagnostics.Stopwatch]::StartNew()
     & $curl -L -C - --fail-with-body --progress-bar @hdr -o "$dest.part" $url
     if ($LASTEXITCODE -ne 0) {
+      # curl 22 = HTTP >=400 with --fail-with-body: the error page was written INTO the .part, so a
+      # resume (-C -) would append onto a poisoned prefix. Delete it. Other exits (network interruption)
+      # leave a valid partial that -C - can legitimately resume, so keep those.
+      if ($LASTEXITCODE -eq 22) { Remove-Item -LiteralPath "$dest.part" -Force -ErrorAction SilentlyContinue }
       Write-Warning "FAILED $url  (verify repo/filename on huggingface.co)"; $fail++; continue
     }
     Move-Item "$dest.part" $dest -Force
@@ -151,9 +155,13 @@ foreach ($m in $models) {
       $dlSw2 = [Diagnostics.Stopwatch]::StartNew()
       & $curl -L -C - --fail-with-body --progress-bar @hdr -o "$mmprojDest.part" $mmprojUrl
       if ($LASTEXITCODE -ne 0) {
+        if ($LASTEXITCODE -eq 22) { Remove-Item -LiteralPath "$mmprojDest.part" -Force -ErrorAction SilentlyContinue }
         Write-Warning "FAILED $mmprojUrl  (verify mmproj filename on huggingface.co)"; $fail++
       } else {
         Move-Item "$mmprojDest.part" $mmprojDest -Force
+        # Verify + manifest the mmproj like the main GGUF (was skipped — a truncated mmproj was kept silently).
+        $mSha = Confirm-Download -File $mmprojDest -Gguf $m.mmproj -Lock $lock
+        Update-Manifest -ModelsDir $outDir -Gguf $m.mmproj -Url $mmprojUrl -SizeGB 0.6 -Sha $mSha
         Write-Host "done    $($m.mmproj) in $([int]$dlSw2.Elapsed.TotalMinutes)m$($dlSw2.Elapsed.Seconds)s" -ForegroundColor Green
       }
     }

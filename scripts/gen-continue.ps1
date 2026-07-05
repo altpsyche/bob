@@ -8,6 +8,7 @@
 # Run automatically on `bob gen` and by setup-clients.ps1. Safe to run manually anytime.
 
 param([string]$Profile)
+$ErrorActionPreference = "Stop"   # a mid-generation cmdlet failure must abort, not emit a partial YAML
 
 . "$PSScriptRoot\_models.ps1"
 

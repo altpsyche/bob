@@ -11,6 +11,9 @@ $port        = $cfg.defaults.port ?? (Get-BobPortDefault 'port')
 $litellmPort = $cfg.defaults.litellmPort ?? (Get-BobPortDefault 'litellmPort')
 $webuiPort   = $cfg.defaults.webuiPort ?? (Get-BobPortDefault 'webuiPort')
 $secret     = $cfg.defaults.webuiSecret ?? 'bob-dev'
+# Open WebUI talks to LiteLLM with this key — derive it from the SAME seam gen-litellm.ps1 uses for
+# master_key, so a custom litellmKey doesn't silently mismatch (hardcoded 'sk-local' broke custom keys).
+$litellmKey = Get-Secret -Name 'litellmKey' -Default ($cfg.defaults.litellmKey ?? 'sk-local')
 $logsDir    = Join-Path $repo 'logs'
 if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory $logsDir | Out-Null }
 
@@ -38,27 +41,32 @@ while ($sw.Elapsed.TotalSeconds -lt 60) {
 if ($up) { Write-Host "`r  Endpoint ready ($([int]$sw.Elapsed.TotalSeconds)s)              " -ForegroundColor Green }
 else      { Write-Warning "Endpoint did not respond in 60s. Check: bob logs" }
 
-# 2) LiteLLM proxy — routes all clients through :8081 (local + pro models)
+# 2) LiteLLM proxy + Whisper STT are started by start.ps1 (launched above) — DON'T re-launch them here.
+#    up.ps1 used to start them again, racing two near-simultaneous pidfile checks. Just poll LiteLLM
+#    readiness so it's reported honestly (a proxy that dies immediately no longer looks "started").
 $litellmExe = Get-VenvExe -Venv 'venv-litellm' -Exe 'litellm'
-if (Test-Path $litellmExe) { & "$PSScriptRoot\start-litellm.ps1" -NoWindow }
-else { Write-Host "LiteLLM venv not found — skipping proxy. Run scripts\bootstrap-litellm.ps1" -ForegroundColor DarkGray }
-
-# 2b) Whisper STT server — auto-start when voice.enabled = $true and binary is present
-$bobVoice = try { (Get-BobConfig).voice } catch { $null }
-$whisperBin = Get-BinExe -Base 'whisper-server'
-if ($bobVoice.enabled -and (Test-Path $whisperBin)) {
-    & "$PSScriptRoot\start-whisper.ps1" -NoWindow
-    Write-Host "Whisper STT: http://localhost:$($bobVoice.sttPort ?? (Get-BobPortDefault 'sttPort'))   (voice enabled)" -ForegroundColor Green
+if (Test-Path $litellmExe) {
+    $swL = [Diagnostics.Stopwatch]::StartNew(); $llUp = $false
+    while ($swL.Elapsed.TotalSeconds -lt 60) {
+        if (Test-PortInUse -Port $litellmPort) { $llUp = $true; break }
+        Start-Sleep -Milliseconds 300
+    }
+    if ($llUp) { Write-Host "LiteLLM:    http://localhost:$litellmPort/v1   (proxy ready)" -ForegroundColor Green }
+    else       { Write-Warning "LiteLLM proxy didn't come up on :$litellmPort in 60s — check: bob logs" }
+} else {
+    Write-Host "LiteLLM venv not found — proxy skipped. Run scripts\bootstrap-litellm.ps1" -ForegroundColor DarkGray
 }
+$bobVoice = try { (Get-BobConfig).voice } catch { $null }
+if ($bobVoice.enabled) { Write-Host "Whisper STT: http://localhost:$($bobVoice.sttPort ?? (Get-BobPortDefault 'sttPort'))   (voice enabled)" -ForegroundColor Green }
 
 # 3) Open WebUI — hidden window, log to logs/open-webui.log
 if (Test-Path $webui) {
   $owEnv = @(
     "`$env:OPENAI_API_BASE_URL='http://localhost:$litellmPort/v1';",
-    "`$env:OPENAI_API_KEY='sk-local';",
+    "`$env:OPENAI_API_KEY='$litellmKey';",
     "`$env:RAG_EMBEDDING_ENGINE='openai';",
     "`$env:RAG_OPENAI_API_BASE_URL='http://localhost:$litellmPort/v1';",
-    "`$env:RAG_OPENAI_API_KEY='sk-local';",
+    "`$env:RAG_OPENAI_API_KEY='$litellmKey';",
     "`$env:RAG_EMBEDDING_MODEL='embed';",
     # keep ALL Open WebUI state inside the (gitignored) repo data dir, not scattered in CWD.
     # Join-Path (not "$repo\..."): the value is consumed by open-webui (Python), which doesn't
@@ -98,7 +106,7 @@ if (Test-Path $webui) {
     } else { Write-Warning "Open WebUI didn't respond. Open manually: http://localhost:$webuiPort" }
   }
 } else {
-  Write-Warning "open-webui not found — run scripts\bootstrap.ps1 first. Skipping Open WebUI."
+  Write-Warning "open-webui not installed (opt-in) — run 'scripts\bootstrap.ps1 -WithWebui' to enable it. Skipping Open WebUI."
 }
 if ($WithServices) {
   if (Get-Command docker -ErrorAction SilentlyContinue) {
@@ -113,7 +121,8 @@ N8N_PORT=$($cfg.defaults.n8nPort ?? (Get-BobPortDefault 'n8nPort'))
 "@ | Set-Content $envFile -Encoding utf8
     docker compose -f $compose up -d 2>$null
     Write-Host "Services started:" -ForegroundColor Green
-    docker compose -f $compose ps --format json 2>$null | ConvertFrom-Json | ForEach-Object {
+    # NDJSON-safe: modern compose emits one JSON object per line — parse per-line, not as one doc.
+    docker compose -f $compose ps --format json 2>$null | Where-Object { $_ } | ForEach-Object { $_ | ConvertFrom-Json } | ForEach-Object {
         $state = if ($_.Health) { $_.Health } else { $_.State }
         $color = if ($state -eq 'healthy') { 'Green' } else { 'DarkGray' }
         Write-Host ("  {0,-40} {1}" -f $_.Name, $state) -ForegroundColor $color

@@ -409,7 +409,11 @@ switch ($cmd) {
     Write-Host "Tailing $logFile (last $n lines, Ctrl+C to stop):`n"
     Get-Content $logFile -Wait -Tail $n
   }
-  'webui'  { & (Get-VenvExe -Venv 'venv-webui' -Exe 'open-webui') serve --port ($d.webuiPort ?? (Get-BobPortDefault 'webuiPort')) }
+  'webui'  {
+    $webuiExe = Get-VenvExe -Venv 'venv-webui' -Exe 'open-webui'
+    if (-not (Test-Path $webuiExe)) { throw "Open WebUI not installed (opt-in). Run: scripts$([IO.Path]::DirectorySeparatorChar)bootstrap.ps1 -WithWebui" }
+    & $webuiExe serve --port ($d.webuiPort ?? (Get-BobPortDefault 'webuiPort'))
+  }
   'aider'  { & (Get-VenvExe -Venv 'venv-aider' -Exe 'aider') @rest }   # runs in your current folder
   'models' {
     $loadedIds = @{}; $endpointUp = $false
@@ -1191,7 +1195,9 @@ N8N_PORT=$($dp.n8nPort ?? (Get-BobPortDefault 'n8nPort'))
       'tools' {
         $disabledTools = ($bobCfg.agent.disabledTools ?? @()) -join ','
         $env:PYTHONIOENCODING = 'utf-8'
-        & $venvPy "$repo\scripts\tools\tool_loader.py" --list --disabled $disabledTools
+        # Join-Path (not "$repo\..."): the path goes to a NATIVE python interpreter, which does not
+        # normalize backslashes — a literal-backslash path fails to open on Linux.
+        & $venvPy (Join-Path $repo 'scripts' 'tools' 'tool_loader.py') --list --disabled $disabledTools
         $env:PYTHONIOENCODING = $null
       }
 
@@ -1234,7 +1240,7 @@ N8N_PORT=$($dp.n8nPort ?? (Get-BobPortDefault 'n8nPort'))
       'mcp' {
         # N10 — expose Bob's tools over the Model Context Protocol (stdio). Gated by agent.mcpEnabled.
         $env:PYTHONIOENCODING = 'utf-8'
-        & $venvPy "$repo\scripts\bob_mcp_server.py"
+        & $venvPy (Join-Path $repo 'scripts' 'bob_mcp_server.py')   # Join-Path: native python consumer
         $env:PYTHONIOENCODING = $null
       }
 
@@ -1246,7 +1252,7 @@ N8N_PORT=$($dp.n8nPort ?? (Get-BobPortDefault 'n8nPort'))
     if (-not $rest.Count) { Write-Host "Usage: bob clip <url> [--note <text>]"; break }
     $venvPy = Get-VenvExe -Venv 'venv-litellm' -Exe 'python'
     $env:PYTHONIOENCODING = 'utf-8'
-    & $venvPy "$repo\scripts\bob_clip.py" @rest
+    & $venvPy (Join-Path $repo 'scripts' 'bob_clip.py') @rest   # Join-Path: native python consumer
     $env:PYTHONIOENCODING = $null
   }
 
@@ -1256,22 +1262,25 @@ N8N_PORT=$($dp.n8nPort ?? (Get-BobPortDefault 'n8nPort'))
     $toolSub  = if ($rest.Count) { $rest[0] } else { 'list' }
     $toolArgs = @($rest | Select-Object -Skip 1)
     $disabledTools = ($bobCfg.agent.disabledTools ?? @()) -join ','
+    # Join-Path (not "$repo\..."): tool_loader.py runs under a NATIVE python interpreter, which does not
+    # normalize backslashes — a literal-backslash path fails to open on Linux (broke `bob tools` there).
+    $toolLoader = Join-Path $repo 'scripts' 'tools' 'tool_loader.py'
     switch ($toolSub) {
       'list' {
         $env:PYTHONIOENCODING = 'utf-8'
-        & $venvPy "$repo\scripts\tools\tool_loader.py" --list --disabled $disabledTools
+        & $venvPy $toolLoader --list --disabled $disabledTools
         $env:PYTHONIOENCODING = $null
       }
       'test' {
         if (-not $toolArgs.Count) { Write-Host "Usage: bob tools test <name>"; break }
         $env:PYTHONIOENCODING = 'utf-8'
-        & $venvPy "$repo\scripts\tools\tool_loader.py" --test $toolArgs[0]
+        & $venvPy $toolLoader --test $toolArgs[0]
         $env:PYTHONIOENCODING = $null
       }
       'info' {
         if (-not $toolArgs.Count) { Write-Host "Usage: bob tools info <name>"; break }
         $env:PYTHONIOENCODING = 'utf-8'
-        & $venvPy "$repo\scripts\tools\tool_loader.py" --info $toolArgs[0]
+        & $venvPy $toolLoader --info $toolArgs[0]
         $env:PYTHONIOENCODING = $null
       }
       default { Write-Host "bob tools list|test <name>|info <name>" }
@@ -1307,10 +1316,10 @@ N8N_PORT=$($dp.n8nPort ?? (Get-BobPortDefault 'n8nPort'))
     if (Test-Path "$pluginDir\invoke.ps1") {
       & "$pluginDir\invoke.ps1" @rest
       break
-    } elseif (Test-Path "$pluginDir\invoke.py") {
+    } elseif (Test-Path (Join-Path $pluginDir 'invoke.py')) {
       $venvPy = Get-VenvExe -Venv 'venv-litellm' -Exe 'python'
       $env:PYTHONIOENCODING = 'utf-8'
-      & $venvPy "$pluginDir\invoke.py" @rest
+      & $venvPy (Join-Path $pluginDir 'invoke.py') @rest   # Join-Path: native python consumer
       $env:PYTHONIOENCODING = $null
       break
     }

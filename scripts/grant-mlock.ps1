@@ -13,7 +13,18 @@ $ErrorActionPreference = "Stop"
 
 # Windows-only: the whole script uses WindowsIdentity / secedit. On Linux `bob mlock` reached this
 # directly and crashed with PlatformNotSupportedException — guard and point at the Linux equivalent.
+# On Linux the "privilege" is the memlock rlimit (ulimit -l); -Check probes it and returns a real
+# status (exit 0 = unlimited/granted, 1 = insufficient) so `bob diagnose` doesn't report a false grant.
 if ((Get-BobOS) -ne 'windows') {
+    if ($Check) {
+        $lim = try { (& sh -c 'ulimit -l' 2>$null | Select-Object -First 1).Trim() } catch { '' }
+        if ($lim -eq 'unlimited') {
+            Write-Host "  mlock (memlock limit): unlimited  (--mlock active)" -ForegroundColor Green
+            exit 0
+        }
+        Write-Host "  mlock (memlock limit): $lim KB — insufficient for large models. Raise it (see 'bob mlock')." -ForegroundColor Yellow
+        exit 1
+    }
     Write-Host "mlock (SeLockMemoryPrivilege) is a Windows privilege. On Linux, raise the memlock limit instead:" -ForegroundColor Yellow
     Write-Host "  session:    ulimit -l unlimited" -ForegroundColor DarkGray
     Write-Host "  persistent: add '<user> - memlock unlimited' to /etc/security/limits.conf, then re-login" -ForegroundColor DarkGray

@@ -10,7 +10,7 @@ $ErrorActionPreference = 'Stop'
 
 $dbPath = Join-Path $script:ModelsRepo 'tools\webui-data\webui.db'
 if (-not (Test-Path $dbPath)) {
-    Write-Host "gen-webui: webui.db not found — skipping (run `bob webui` once to create it)" -ForegroundColor DarkGray
+    Write-Host "gen-webui: webui.db not found — skipping (run 'bob webui' once to create it)" -ForegroundColor DarkGray
     return
 }
 
@@ -38,9 +38,10 @@ foreach ($peer in $peers) {
     }
 }
 
-# Write entries via Python (PowerShell has no native SQLite support)
+# Write entries via Python (PowerShell has no native SQLite support). Build the .py name directly
+# (GetTempFileName() + '.py' would create AND leak a zero-byte base temp file every run).
 $tmpJson = [System.IO.Path]::GetTempFileName()
-$tmpPy   = [System.IO.Path]::GetTempFileName() + '.py'
+$tmpPy   = Join-Path ([System.IO.Path]::GetTempPath()) "bob-genwebui-$PID.py"
 
 try {
     $entries | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $tmpJson -Encoding utf8

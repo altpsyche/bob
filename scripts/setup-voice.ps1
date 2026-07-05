@@ -77,7 +77,7 @@ if ($Force -or -not (Test-Path $piperExe)) {
     New-Item -ItemType Directory -Force $piperTmp | Out-Null
     if ($os -eq 'windows') {
         Write-Host "  Downloading piper Windows release (.zip)..." -ForegroundColor Cyan
-        $piperArc = [System.IO.Path]::GetTempFileName() + '.zip'
+        $piperArc = Join-Path ([System.IO.Path]::GetTempPath()) "bob-piper-$PID.zip"
         Invoke-WebRequest -Uri $piperUrl -OutFile $piperArc -UseBasicParsing
         Expand-Archive -Path $piperArc -DestinationPath $piperTmp -Force
         $extracted = Get-ChildItem $piperTmp -Recurse -Filter 'piper.exe' | Select-Object -First 1
@@ -86,7 +86,7 @@ if ($Force -or -not (Test-Path $piperExe)) {
         Copy-Item (Join-Path $extracted.DirectoryName '*.dll') $binDir -Force -ErrorAction SilentlyContinue
     } else {
         Write-Host "  Downloading piper Linux release (.tar.gz)..." -ForegroundColor Cyan
-        $piperArc = [System.IO.Path]::GetTempFileName() + '.tar.gz'
+        $piperArc = Join-Path ([System.IO.Path]::GetTempPath()) "bob-piper-$PID.tar.gz"
         Invoke-WebRequest -Uri $piperUrl -OutFile $piperArc -UseBasicParsing
         & tar -xzf $piperArc -C $piperTmp
         if ($LASTEXITCODE -ne 0) { throw "tar extraction failed for the piper tarball ($piperArc)" }
@@ -129,12 +129,9 @@ $sttPort = $bobCfg.voice.sttPort ?? (Get-BobPortDefault 'sttPort')
 
 # Create minimal 2-second silent WAV (44100 Hz mono 16-bit)
 $sampleRate = 44100; $seconds = 2; $numSamples = $sampleRate * $seconds
-$wavBytes = [System.Collections.Generic.List[byte]]::new()
-# RIFF header
 $dataSize   = $numSamples * 2   # 16-bit = 2 bytes/sample
 $chunkSize  = 36 + $dataSize
-foreach ($b in [BitConverter]::GetBytes([int32]$chunkSize))  { $wavBytes.Add($b) }
-# Prepend "RIFF" and "WAVE"
+# Full RIFF/WAVE header + silence, written in one shot below ($header is the whole file).
 $header = [System.Text.Encoding]::ASCII.GetBytes("RIFF") + [BitConverter]::GetBytes([int32]$chunkSize) +
           [System.Text.Encoding]::ASCII.GetBytes("WAVE") +
           [System.Text.Encoding]::ASCII.GetBytes("fmt ") +
@@ -148,7 +145,7 @@ $header = [System.Text.Encoding]::ASCII.GetBytes("RIFF") + [BitConverter]::GetBy
           [System.Text.Encoding]::ASCII.GetBytes("data") +
           [BitConverter]::GetBytes([int32]$dataSize) +
           [byte[]]::new($dataSize)                    # silence
-$silenceWav = [System.IO.Path]::GetTempFileName() + '.wav'
+$silenceWav = Join-Path ([System.IO.Path]::GetTempPath()) "bob-stt-probe-$PID.wav"
 [System.IO.File]::WriteAllBytes($silenceWav, $header)
 
 # Start whisper-server in background for the test

@@ -33,6 +33,26 @@ function Get-BobOS {
   return 'windows'   # pwsh 5.1 has no autovars, but everything here is #requires -Version 7
 }
 
+# --- honest-failure helpers (rustup `ensure`/`err` discipline) -----------------------------------
+# NOTE: we deliberately do NOT set $PSNativeCommandUseErrorActionPreference globally. Many Bob call
+# sites intentionally tolerate a non-zero native exit — `nvidia-smi` absent, `docker info` with the
+# daemon down, `crontab -l` when empty, `systemctl is-active` — and a blanket throw would turn those
+# expected states into spurious failures. Instead, wrap the calls whose failure MUST be fatal.
+
+function Assert-LastExit {
+  # Throw if the most recent native command exited non-zero. Call right after a `& nativecmd` whose
+  # failure must abort (the pwsh analog of rustup's `ensure`).
+  param([string]$Message = 'native command failed')
+  if ($LASTEXITCODE -ne 0) { throw "$Message (exit $LASTEXITCODE)" }
+}
+
+function Invoke-Ensure {
+  # Run a native command and throw on non-zero exit. Usage: Invoke-Ensure git -C $repo submodule update --init
+  param([Parameter(Mandatory, ValueFromRemainingArguments)][string[]]$Command)
+  & $Command[0] @($Command[1..($Command.Count - 1)])
+  if ($LASTEXITCODE -ne 0) { throw "command failed: $($Command -join ' ') (exit $LASTEXITCODE)" }
+}
+
 # --- data / state location (C4) ------------------------------------------------------------------
 # Mirrors osenv.data_dir/cache_dir/_migrate_once: repo-relative data/ + logs/ by default (local-first,
 # zero migration); BOB_DATA_DIR relocates them with a one-time .migrated-stamped copy.
@@ -246,6 +266,35 @@ function Get-CudaHostCompiler {
   return $null
 }
 
+function Assert-CudaHostCompilerOk {
+  # Linux CUDA builds: verify nvcc actually accepts the host C++ compiler BEFORE the long real build, by
+  # compiling a trivial kernel. A too-new default g++ (e.g. CachyOS gcc 16) otherwise fails deep in the
+  # build with a cryptic "unsupported GNU version" from the CUDA headers — this turns it into an early,
+  # actionable error. $HostCxx is the -ccbin nvcc will use ($null = nvcc's own default g++). No-op on
+  # Windows or when nvcc isn't at the given path (a missing-toolkit error is handled upstream).
+  param([Parameter(Mandatory)][string]$Nvcc, [string]$HostCxx)
+  if ((Get-BobOS) -eq 'windows') { return }
+  if (-not (Test-Path $Nvcc)) { return }
+  $tmp = Join-Path ([IO.Path]::GetTempPath()) "bob-nvcc-probe-$PID.cu"
+  $obj = "$tmp.o"
+  Set-Content -LiteralPath $tmp -Value '__global__ void k(){}' -NoNewline -Encoding ascii
+  $ccbin = @(); if ($HostCxx) { $ccbin = @('-ccbin', $HostCxx) }   # direct @(...) — no if-block splat unwrap
+  try {
+    & $Nvcc @ccbin '-c' $tmp '-o' $obj 2>&1 | Out-Null
+    $ok = ($LASTEXITCODE -eq 0)
+  } finally {
+    Remove-Item -LiteralPath $tmp, $obj -ErrorAction SilentlyContinue
+  }
+  if (-not $ok) {
+    $hint = if ($HostCxx) {
+      "nvcc rejected host compiler '$HostCxx'. Set NVCC_CCBIN to a g++ this CUDA supports and re-run."
+    } else {
+      "nvcc rejected the default g++ (likely too new for this CUDA). Install an older g++ (e.g. g++-14/g++-13) and 'export NVCC_CCBIN=<path>', then re-run."
+    }
+    throw "CUDA host-compiler check failed: $hint"
+  }
+}
+
 function Get-SystemRamGB {
   # OS-aware physical RAM @{ TotalGB; FreeGB }, or $null on failure. Windows uses CIM (byte-identical
   # to the pre-NC helper); Linux parses /proc/meminfo (MemTotal / MemAvailable, kB -> GB).
@@ -280,7 +329,13 @@ function Stop-ProcessTree {
       ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Get-Process -Id $ProcessId -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
   } else {
-    & pkill -P $ProcessId 2>$null   # children first
+    # Prefer a process-GROUP kill so services that fork their own workers (uvicorn multi-worker, etc.)
+    # don't leave orphaned grandchildren. When the PID is its own group leader (Start-BobBackgroundProcess
+    # launches via nohup), `kill -TERM -<pgid>` reaps the whole tree; fall back to pkill -P + kill.
+    $pgid = (& ps -o pgid= -p $ProcessId 2>$null | Select-Object -First 1)
+    $pgid = if ($pgid) { "$pgid".Trim() } else { '' }
+    if ($pgid) { & kill -TERM "-$pgid" 2>$null }
+    & pkill -P $ProcessId 2>$null   # children (belt-and-suspenders if not a group leader)
     & kill $ProcessId    2>$null    # then the parent
   }
 }
@@ -310,23 +365,26 @@ function Send-Notification {
 # The SAME tool is named differently on each distro family, so Bob's installer asks for a *logical*
 # name and this table resolves it. A $null entry means "that manager bundles it elsewhere — skip it"
 # (e.g. make ships inside build-essential/base-devel; pip/venv ship inside Arch's python). Adding a new
-# manager (zypper/apk) is a pure data change: add its column here + a probe in Get-LinuxPackageManager.
-# Keys are the normalized managers Get-LinuxPackageManager returns (apt/dnf/pacman).
+# manager (apk) is a pure data change: add its column here + a probe in Get-LinuxPackageManager.
+# Keys are the normalized managers Get-LinuxPackageManager returns (apt/dnf/pacman/zypper). zypper names
+# target openSUSE Tumbleweed (rolling, matching the project's rolling-distro target); the
+# opensuse/tumbleweed CI cell proves every zypper cell resolves (see .github/workflows/ci.yml).
 $script:PackageMap = @{
-  'git'          = @{ apt = 'git';            dnf = 'git';          pacman = 'git' }
-  'curl'         = @{ apt = 'curl';           dnf = 'curl';         pacman = 'curl' }
-  'toolchain-cc' = @{ apt = 'build-essential'; dnf = 'gcc-c++';     pacman = 'base-devel' }
-  'make'         = @{ apt = $null;            dnf = 'make';         pacman = $null }        # bundled in the toolchain meta-pkg elsewhere
-  'cmake'        = @{ apt = 'cmake';          dnf = 'cmake';        pacman = 'cmake' }
-  'ninja'        = @{ apt = 'ninja-build';    dnf = 'ninja-build';  pacman = 'ninja' }
-  'go'           = @{ apt = 'golang-go';      dnf = 'golang';       pacman = 'go' }
-  'node'         = @{ apt = 'nodejs';         dnf = 'nodejs';       pacman = 'nodejs' }
-  'npm'          = @{ apt = 'npm';            dnf = 'npm';          pacman = 'npm' }
-  'python'       = @{ apt = 'python3';        dnf = 'python3';      pacman = 'python' }
-  'python-pip'   = @{ apt = 'python3-pip';    dnf = 'python3-pip';  pacman = $null }        # bundled in Arch 'python'
-  'python-venv'  = @{ apt = 'python3-venv';   dnf = $null;          pacman = $null }        # bundled in dnf python3 / arch python
-  'cron'         = @{ apt = 'cron';           dnf = 'cronie';       pacman = 'cronie' }     # Linux parity for Windows Task Scheduler
-  'cuda'         = @{ apt = 'nvidia-cuda-toolkit'; dnf = 'cuda-toolkit'; pacman = 'cuda' }  # apt/dnf may need NVIDIA's repo (see Install-LinuxCuda)
+  'git'          = @{ apt = 'git';            dnf = 'git';          pacman = 'git';       zypper = 'git' }
+  'curl'         = @{ apt = 'curl';           dnf = 'curl';         pacman = 'curl';      zypper = 'curl' }
+  'toolchain-cc' = @{ apt = 'build-essential'; dnf = 'gcc-c++';     pacman = 'base-devel'; zypper = 'gcc-c++' }
+  'make'         = @{ apt = $null;            dnf = 'make';         pacman = $null;       zypper = 'make' }        # bundled in build-essential/base-devel; standalone on dnf/zypper
+  'cmake'        = @{ apt = 'cmake';          dnf = 'cmake';        pacman = 'cmake';     zypper = 'cmake' }
+  'ninja'        = @{ apt = 'ninja-build';    dnf = 'ninja-build';  pacman = 'ninja';     zypper = 'ninja' }
+  'go'           = @{ apt = 'golang-go';      dnf = 'golang';       pacman = 'go';        zypper = 'go' }
+  'node'         = @{ apt = 'nodejs';         dnf = 'nodejs';       pacman = 'nodejs';    zypper = 'nodejs-default' }
+  'npm'          = @{ apt = 'npm';            dnf = 'npm';          pacman = 'npm';       zypper = 'npm-default' }
+  'python'       = @{ apt = 'python3';        dnf = 'python3';      pacman = 'python';    zypper = 'python3' }
+  'python-pip'   = @{ apt = 'python3-pip';    dnf = 'python3-pip';  pacman = $null;       zypper = 'python3-pip' } # bundled in Arch 'python'
+  'python-venv'  = @{ apt = 'python3-venv';   dnf = $null;          pacman = $null;       zypper = $null }         # bundled in dnf/zypper python3 / arch python
+  'cron'         = @{ apt = 'cron';           dnf = 'cronie';       pacman = 'cronie';    zypper = 'cronie' }      # Linux parity for Windows Task Scheduler
+  'cuda'         = @{ apt = 'nvidia-cuda-toolkit'; dnf = 'cuda-toolkit'; pacman = 'cuda'; zypper = 'cuda' }        # apt/dnf/zypper may need NVIDIA's repo (see Install-LinuxCuda)
+  'docker'       = @{ apt = 'docker.io';      dnf = 'docker';       pacman = 'docker'; zypper = 'docker' }        # optional — the compose services (setup-docker.ps1)
 }
 
 function Resolve-PackageName {
@@ -421,6 +479,86 @@ function Get-BobPython {
   return $null
 }
 
+function Get-BobVenvPython {
+  # Resolve a Python interpreter suitable for CREATING Bob's venvs (>= 3.11, < 3.13). Windows: scoop
+  # python312 (isolated) -> py launcher -3.12 -> an in-range PATH interpreter. Linux/macOS: defer to
+  # Get-BobPython (which uv-provisions CPython 3.12 when the system one is out of range). Returns a
+  # path/command or $null. This is the single resolver New-BobVenv and the bootstrap loop share, so
+  # the Windows/Linux interpreter-selection logic lives in ONE place instead of 3 hand-rolled copies.
+  if ((Get-BobOS) -eq 'windows') {
+    try { $p = (scoop prefix python312) 2>$null; if ($p) { $cand = Join-Path $p 'python.exe'; if (Test-Path $cand) { return $cand } } } catch {}
+    if (Get-Command py -ErrorAction SilentlyContinue) {
+      try { $resolved = (& py -3.12 -c "import sys; print(sys.executable)" 2>&1 | Select-Object -First 1); if ($resolved -and (Test-Path $resolved)) { return "$resolved".Trim() } } catch {}
+    }
+    foreach ($cand in 'python3.12', 'python', 'python3') {
+      if ((Get-Command $cand -ErrorAction SilentlyContinue) -and (Test-PythonVersionAtLeast -Exe $cand -MinVer '3.12')) { return $cand }
+    }
+    return $null
+  }
+  return (Get-BobPython)
+}
+
+function New-BobVenv {
+  # Create (or self-heal) a Bob Python venv under tools/<Name> and install its requirements. THE single
+  # venv-build path — bootstrap.ps1's loop and the standalone bootstrap-litellm/-eval scripts all call
+  # this, so self-heal, .lock/.txt selection, and OS-aware interpreter/venv-python resolution live once.
+  # Idempotent: reuses an in-range venv, recreates one built with an out-of-range interpreter (>=3.11,<3.13).
+  # Requirements come from tools/<RequirementsBase>.lock on Windows (pip-freeze pins, reproducible) else
+  # tools/<RequirementsBase>.txt (platform-agnostic — the Windows .lock pins pywin32 and won't resolve on
+  # Linux). Returns the venv's python path (Get-VenvExe). Throws loudly on any failure — no silent success.
+  param(
+    [Parameter(Mandatory)][string]$Name,
+    [string]$RequirementsBase,
+    [string[]]$ExtraPackages = @(),
+    [string]$Python,                 # pre-resolved interpreter (loop callers resolve once, pass it in)
+    [switch]$Force,                  # recreate even if a healthy venv is present
+    [switch]$Quiet                   # pass --quiet to pip
+  )
+  if (-not $Python) { $Python = Get-BobVenvPython }
+  if (-not $Python) { throw "New-BobVenv: no venv-compatible Python (3.11/3.12) found and couldn't provision one via uv. Install Python 3.12 and re-run." }
+
+  $venv   = Join-Path (Join-Path $script:PlatRepo 'tools') $Name
+  $venvPy = Get-VenvExe -Venv $Name -Exe 'python'
+  # Direct @(...) assignment (never `$x = if(c){@(...)}else{@()}`, which unwraps a 1-elem array to a
+  # scalar and splats char-by-char) so @quietArg splats as one arg or nothing. NB: the local is
+  # $quietArg, NOT $quiet — PowerShell variables are case-INSENSITIVE, so `$quiet` would alias the
+  # [switch]$Quiet parameter and assigning @() to it throws "cannot convert Object[] to SwitchParameter".
+  $quietArg = @(); if ($Quiet) { $quietArg = @('--quiet') }
+
+  if ($Force -and (Test-Path $venv)) { Remove-Item -Recurse -Force $venv }
+  # Self-heal: recreate a venv built with an out-of-range interpreter (e.g. a pre-fix 3.14 venv left by a
+  # failed run) rather than re-failing the pip install against it.
+  if ((Test-Path $venv) -and (Test-Path $venvPy)) {
+    $vv = (& $venvPy --version 2>&1) -replace 'Python\s+', ''
+    $inRange = ($vv -match '(\d+)\.(\d+)') -and ([version]"$($Matches[1]).$($Matches[2])" -ge [version]'3.11') -and ([version]"$($Matches[1]).$($Matches[2])" -lt [version]'3.13')
+    if (-not $inRange) { Write-Host "  recreating $Name (was Python $vv — need 3.11/3.12)" -ForegroundColor Yellow; Remove-Item -Recurse -Force $venv }
+  }
+  if (-not (Test-Path $venv)) {
+    Write-Host "  creating $Name ($Python)..." -ForegroundColor DarkGray
+    & $Python -m venv $venv
+    if ($LASTEXITCODE -ne 0) { throw "python -m venv failed for $Name." }
+  }
+  if (-not (Test-Path $venvPy)) { throw "venv creation failed for $Name — $venvPy not found" }
+
+  & $venvPy -m pip install --upgrade pip @quietArg
+  if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed for $Name." }
+
+  if ($RequirementsBase) {
+    $lock = Join-Path (Join-Path $script:PlatRepo 'tools') "$RequirementsBase.lock"
+    $txt  = Join-Path (Join-Path $script:PlatRepo 'tools') "$RequirementsBase.txt"
+    $req  = if (((Get-BobOS) -eq 'windows') -and (Test-Path $lock)) { $lock } else { $txt }
+    Write-Host "  installing $Name from $(Split-Path $req -Leaf)" -ForegroundColor DarkGray
+    & $venvPy -m pip install -r $req @quietArg
+    if ($LASTEXITCODE -ne 0) { throw "pip install failed for $Name — re-run to retry." }
+  }
+  foreach ($pkg in $ExtraPackages) {
+    Write-Host "  installing $pkg into $Name" -ForegroundColor DarkGray
+    & $venvPy -m pip install $pkg @quietArg
+    if ($LASTEXITCODE -ne 0) { throw "pip install $pkg failed for $Name." }
+  }
+  return $venvPy
+}
+
 function Resolve-PackageCmd {
   # PURE. The install command spec for the OS (and, on Linux, the detected package manager). Callers
   # in setup/install-prereqs pass -Manager in tests; the executor auto-detects.
@@ -433,14 +571,15 @@ function Resolve-PackageCmd {
     'apt'    { return @{ Exe = 'apt-get'; Args = @('install', '-y', $Package); Sudo = $true } }
     'dnf'    { return @{ Exe = 'dnf';     Args = @('install', '-y', $Package); Sudo = $true } }
     'pacman' { return @{ Exe = 'pacman';  Args = @('-S', '--noconfirm', $Package); Sudo = $true } }
+    'zypper' { return @{ Exe = 'zypper';  Args = @('--non-interactive', 'install', $Package); Sudo = $true } }
     default  { return @{ Exe = $null; Args = @(); Sudo = $false; Manager = $Manager } }
   }
 }
 
 function Get-LinuxPackageManager {
-  foreach ($m in 'apt-get', 'dnf', 'pacman') {
+  foreach ($m in 'apt-get', 'dnf', 'pacman', 'zypper') {
     if (Get-Command $m -ErrorAction SilentlyContinue) {
-      return @{ 'apt-get' = 'apt'; 'dnf' = 'dnf'; 'pacman' = 'pacman' }[$m]
+      return @{ 'apt-get' = 'apt'; 'dnf' = 'dnf'; 'pacman' = 'pacman'; 'zypper' = 'zypper' }[$m]
     }
   }
   return $null
@@ -448,12 +587,21 @@ function Get-LinuxPackageManager {
 
 function Install-Package {
   # EXECUTOR. Windows: winget (tolerates the already-installed exit code, like _common.ps1
-  # Install-WithWinget). Linux: detected apt/dnf/pacman via sudo.
-  param([Parameter(Mandatory)][string]$Package, [string[]]$ExtraArgs = @())
+  # Install-WithWinget). Linux: detected apt/dnf/pacman/zypper via sudo. -DryRun prints and returns the
+  # resolved command spec WITHOUT executing (Docker's DRY_RUN pattern) — lets test-dry-run.ps1 assert
+  # every $PackageMap cell resolves for every manager with no container and no real install.
+  param([Parameter(Mandatory)][string]$Package, [string[]]$ExtraArgs = @(), [switch]$DryRun)
   $os = Get-BobOS
   $mgr = if ($os -eq 'windows') { $null } else { Get-LinuxPackageManager }
-  if ($os -ne 'windows' -and -not $mgr) { throw "Install-Package: no supported package manager (apt/dnf/pacman) found for '$Package'." }
+  if ($os -ne 'windows' -and -not $mgr) { throw "Install-Package: no supported package manager (apt/dnf/pacman/zypper) found for '$Package'." }
   $spec = Resolve-PackageCmd -Package $Package -Os $os -Manager $mgr
+  if ($DryRun) {
+    $prefix = if ($spec.Sudo) { 'sudo ' } else { '' }
+    $parts  = @($spec.Args) + @($ExtraArgs)
+    $line   = ("$prefix$($spec.Exe) " + ($parts -join ' ')).Trim()
+    Write-Host "  [dry-run] $line" -ForegroundColor DarkGray
+    return $spec
+  }
   if ($spec.Sudo -and (Get-Command sudo -ErrorAction SilentlyContinue)) {
     & sudo $spec.Exe @($spec.Args) @ExtraArgs
   } else {
@@ -538,6 +686,14 @@ function Register-AgentTask {
     }
     $existing = @(& crontab -l 2>$null) | Where-Object { $_ -notmatch "# $($spec.Name)$" }   # idempotent
     (@($existing) + $spec.Crontab | Where-Object { $_ -ne '' }) -join "`n" | & crontab -
+    # A crontab binary can exist while the cron DAEMON is stopped (common on Arch/CachyOS, which don't
+    # enable cronie by default) — the entry is then written but never fires. Warn so it's not a silent no-op.
+    if (Get-Command systemctl -ErrorAction SilentlyContinue) {
+      $active = (& systemctl is-active cronie 2>$null), (& systemctl is-active cron 2>$null), (& systemctl is-active crond 2>$null)
+      if ($active -notcontains 'active') {
+        Write-Warning "cron entry written, but no cron daemon appears to be running — scheduled agents won't fire. Enable it, e.g.: sudo systemctl enable --now cronie (Arch/Fedora) or cron (Debian/Ubuntu)."
+      }
+    }
   }
 }
 

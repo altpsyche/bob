@@ -4,7 +4,7 @@
 #
 # Run once after cloning:  bob fabric-setup
 # Re-run to reconfigure or after a submodule update.
-# Pass -Force to rebuild bin\fabric.exe even if it already exists.
+# Pass -Force to rebuild the fabric binary in bin/ even if it already exists.
 param([switch]$Force)
 $ErrorActionPreference = "Stop"
 $repo = Split-Path $PSScriptRoot -Parent

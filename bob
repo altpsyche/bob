@@ -18,6 +18,16 @@ while [ -h "$SELF" ]; do
   esac
 done
 REPO="$(CDPATH= cd -- "$(dirname -- "$SELF")" && pwd)"
+# $BOB_REPO overrides for the copy-install case: symlink-resolution above only finds the repo when the
+# on-PATH `bob` is a SYMLINK (how install-cli.ps1 sets it up). If someone COPIED this shim onto PATH,
+# REPO points at the copy's dir and `python -m bob` can't find the package — so honor an explicit
+# override and, failing that, fail loudly instead of with a confusing ModuleNotFoundError.
+REPO="${BOB_REPO:-$REPO}"
+if [ ! -d "$REPO/scripts/bob" ]; then
+  echo "bob: can't find the Bob repo (looked in '$REPO'). If you copied this shim onto PATH instead of" >&2
+  echo "     symlinking it, set BOB_REPO=/path/to/bob, or run scripts/install-cli.ps1 to symlink it." >&2
+  exit 1
+fi
 # Run under the venv-litellm interpreter — it holds the runtime deps (openai, rich, requests,
 # prompt_toolkit, sqlite-utils). Mirrors the Windows dispatch (bob.ps1 routes python commands to
 # `& venv-litellm\python -m bob`). $BOB_PYTHON overrides; fall back to system python3 for the
