@@ -153,7 +153,7 @@ COMMANDS = [
     {"name": "mlock", "group": "Config", "summary": "Check/grant SeLockMemoryPrivilege (for --mlock)",
      "args": "[--grant]", "runtime": "python", "handler": "mlock"},
     {"name": "eval", "group": "Config", "summary": "Benchmark model quality (mmlu / humaneval / gsm8k)",
-     "args": "<role> [task]", "runtime": "pwsh", "handler": None},
+     "args": "<role> [task] [--shots N] [--limit N]", "runtime": "python", "handler": "eval"},
     {"name": "verify-urls", "group": "Config", "summary": "Check HuggingFace download URLs",
      "args": "[profile]", "runtime": "python", "handler": "verify-urls", "hidden": True},
 

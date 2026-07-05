@@ -289,6 +289,68 @@ def bench(role: str, config: dict) -> str:
     return (r.stdout or r.stderr or "(no output)").strip()
 
 
+def eval_model(role: str = "coder", task: str = "mmlu", shots: int = 0, limit: int = 0,
+               config: dict = None, now: str = None) -> int:
+    """Benchmark a role's quality with lm-evaluation-harness (DD3: the isolated venv-eval). CLI-only + very
+    long (minutes→hours), so it inherits stdio and returns the process exit code — NOT an agent tool, not
+    on --run. Reads the tokenizer from the active profile (config/models.json) and checks the endpoint
+    first. Port of scripts/eval.ps1. `now` is an injectable timestamp for tests."""
+    import os
+    import subprocess
+    from datetime import datetime
+
+    import bob_models
+    import osenv
+    import requests
+    from bob_core import _port
+
+    config = config if config is not None else _cfg
+    lm_eval = osenv.venv_exe("venv-eval", "lm_eval")
+    if not lm_eval.exists():
+        print(f"lm-eval not installed ({lm_eval}). Set up the eval venv first: scripts/bootstrap-eval.ps1",
+              file=sys.stderr)
+        return 1
+
+    roles = bob_models.profile_roles()
+    spec = roles.get(role)
+    if not spec:
+        print(f"unknown role '{role}'. Roles: {', '.join(sorted(roles))}", file=sys.stderr)
+        return 1
+    tokenizer = spec.get("tokenizer")
+    if not tokenizer:
+        print(f"no tokenizer configured for role '{role}'. Add 'tokenizer' to its entry in "
+              "config/models.json.", file=sys.stderr)
+        return 1
+
+    port = _port(config, "port")
+    try:
+        requests.get(f"http://localhost:{port}/v1/models", timeout=3).raise_for_status()
+    except requests.RequestException:
+        print(f"endpoint not running at http://localhost:{port}/v1 — start it first: bob serve",
+              file=sys.stderr)
+        return 1
+
+    results_dir = REPO / "results"
+    results_dir.mkdir(exist_ok=True)
+    stamp = now or datetime.now().strftime("%Y%m%d-%H%M")
+    out_path = results_dir / f"eval-{role}-{task}-{stamp}"
+
+    limit_note = f" (limit={limit})" if limit > 0 else ""
+    print(f"Benchmarking '{role}' on '{task}' (shots={shots}){limit_note}...", file=sys.stderr)
+    print(f"Endpoint:  http://localhost:{port}/v1/chat/completions", file=sys.stderr)
+    print(f"Tokenizer: {tokenizer}\nResults:   {out_path}\n", file=sys.stderr)
+
+    args = [str(lm_eval), "--model", "local-chat-completions",
+            "--model_args", (f"base_url=http://localhost:{port}/v1/chat/completions,model={role},"
+                             f"tokenizer={tokenizer},tokenized_requests=False"),
+            "--tasks", task, "--apply_chat_template", "--num_fewshot", str(shots),
+            "--output_path", str(out_path), "--log_samples"]
+    if limit > 0:
+        args += ["--limit", str(limit)]
+    env = {**os.environ, "PYTHONUTF8": "1"}  # avoid UnicodeEncodeError on a cp1252 Windows console
+    return subprocess.run(args, env=env).returncode
+
+
 # --- agent tool adapters --------------------------------------------------------------------------
 
 def _models_list() -> str:

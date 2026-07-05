@@ -824,6 +824,24 @@ def _handle_bench(rest: list) -> int:
     return 0
 
 
+def _handle_eval(rest: list) -> int:
+    """bob eval <role> [task] [--shots N] [--limit N] — lm-eval quality benchmark (DD3: venv-eval)."""
+    rest = list(rest)
+    shots = limit = 0
+    positional = []
+    i = 0
+    while i < len(rest):
+        if rest[i] == "--shots" and i + 1 < len(rest):
+            shots = int(rest[i + 1]); i += 2
+        elif rest[i] == "--limit" and i + 1 < len(rest):
+            limit = int(rest[i + 1]); i += 2
+        else:
+            positional.append(rest[i]); i += 1
+    role = positional[0] if positional else "coder"
+    task = positional[1] if len(positional) > 1 else "mmlu"
+    return _models_mod().eval_model(role, task, shots=shots, limit=limit, config=_cfg())
+
+
 # --- ONE-C Slice 3: health / diagnostics (scripts/tools/health.py) -------------------------------
 # setup(check) + doctor share health_check(); version + diagnose are separate cores. diagnose is the
 # SPLIT port (registry + light discovery); the deep OS discovery stays in scripts/diagnose.ps1 (ONE-D).
@@ -946,6 +964,7 @@ _HANDLERS = {
     "profile": _handle_profile,
     "verify-urls": _handle_verify_urls,
     "bench": _handle_bench,
+    "eval": _handle_eval,             # ONE-D Slice D4 — lm-eval quality benchmark (scripts/tools/models.py)
     "fetch": _handle_fetch,           # ONE-D Slice D1 — model downloads (scripts/tools/provision.py)
     "lock": _handle_lock,             # ONE-D Slice D2 — versions.lock writer + gate (scripts/bob/versions.py)
     "mlock": _handle_mlock,           # ONE-D Slice D3 — mlock privilege status/grant (osenv)

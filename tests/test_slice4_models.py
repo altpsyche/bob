@@ -25,8 +25,10 @@ class TestRegistryWiring(unittest.TestCase):
             self.assertEqual(by_name[verb]["runtime"], "python", verb)
             self.assertIn(by_name[verb]["handler"], cli._HANDLERS, verb)
 
-    def test_eval_stays_pwsh(self):
-        self.assertEqual(registry.by_name()["eval"]["runtime"], "pwsh")
+    def test_eval_ported_in_one_d(self):
+        # eval stayed pwsh through ONE-C; ONE-D Slice D4 ported it to Python (models.py:eval_model,
+        # CLI-only — not an agent tool). See test_slice_d4_eval for its behaviour.
+        self.assertEqual(registry.by_name()["eval"]["runtime"], "python")
 
     def test_tools_registered_and_only_profile_mutates(self):
         self.assertEqual(set(models_mod.DISPATCH), {

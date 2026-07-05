@@ -58,7 +58,7 @@
     "lock": "python",
     "version": "python",
     "mlock": "python",
-    "eval": "pwsh",
+    "eval": "python",
     "verify-urls": "python",
     "help": "python"
   },

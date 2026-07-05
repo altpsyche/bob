@@ -186,18 +186,10 @@ switch ($cmd) {
   # 'fabric' -> runtime=python (cli.py _handle_fabric); routed by the dispatch prologue. (ONE-C Slice 1)
   # 'litellm' and 'services' -> runtime=python (cli.py handlers over scripts/tools/stack.py); routed
   # by the dispatch prologue before this switch. Cases deleted. (ONE-C Slice 2)
-  'eval' {
-    $eArgs = @{}
-    $pos = @()
-    for ($i = 0; $i -lt $rest.Count; $i++) {
-      if ($rest[$i] -eq '--shots' -and $i+1 -lt $rest.Count) { $eArgs['Shots'] = [int]$rest[++$i] }
-      elseif ($rest[$i] -eq '--limit' -and $i+1 -lt $rest.Count) { $eArgs['Limit'] = [int]$rest[++$i] }
-      else { $pos += $rest[$i] }
-    }
-    if ($pos.Count -ge 1) { $eArgs['Role'] = $pos[0] }
-    if ($pos.Count -ge 2) { $eArgs['Task'] = $pos[1] }
-    & "$repo\scripts\eval.ps1" @eArgs
-  }
+  # 'eval' -> runtime=python (cli.py _handle_eval over scripts/tools/models.py:eval_model — DD3 keeps the
+  # isolated venv-eval; CLI-only + very long, not an agent tool). Routed by the dispatch prologue before
+  # this switch. eval.ps1 is retired (fully replaced); bootstrap-eval.ps1 (the venv-eval creator) is KEPT
+  # until D8 (pre-venv). (ONE-D Slice D4)
   # ONE-C Slice 1: remember/recall/memory/budget are now runtime=python (cli.py handlers over
   # bob_core memory + bob_memory.py + scripts/tools/budget.py); the dispatch prologue routes them to
   # `python -m bob` before this switch. Cases deleted.

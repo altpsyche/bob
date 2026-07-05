@@ -11,7 +11,7 @@ native-first**, C5 CI ownership), [MODULE-ONE-C-plan.md](MODULE-ONE-C-plan.md) (
 per-verb 3-adapter template; the osenv-seam precedent). ONE-C decisions D1–D6 are **settled — do not
 re-litigate.** The new decisions **DD1–DD6 are RESOLVED (2026-07-05, see Part 5):** full Python `build` port ·
 curl-subprocess `fetch` · keep `venv-eval` · `mlock` grant ported CLI-only · minimal-shell-stub → Python
-kernel · ONE-D owns the kernel (D8) as capstone. **Slices D0–D3 ✅ DONE (suite 756 green); next = D4 (eval).**
+kernel · ONE-D owns the kernel (D8) as capstone. **Slices D0–D4 ✅ DONE (suite 766 green); next = D5 (build — the big native port).**
 
 ## Goal — and the one distinction that shapes the whole module
 
@@ -270,9 +270,15 @@ capstone once its called-capabilities exist.
   (`/opt/cuda` = CUDA 13.3, correctly accepted for the sm_120 ≥12.8 floor). Deleted the bob.ps1 mlock case;
   **`diagnose.ps1` + `grant-mlock.ps1` KEPT** (pre-venv setup.ps1 calls them; retire at D8).
   tests/test_slice_d3_mlock_diag.py (21) + reworked test_slice3_health TestDiagnoseLightRows.
-- **Slice D4 — `eval`** *(CLI-only, isolated):* `eval.py` (or provision.py) shells `venv-eval` lm_eval;
-  tokenizer from `bob_models`; endpoint check. DD3 keeps `venv-eval`. `bootstrap-eval.ps1` → an
-  `osenv.new_bob_venv('venv-eval', …)` lazy ensure (kernel-family). `eval` verb → python.
+- **Slice D4 — `eval`** ✅ **DONE** (on main; suite 766 green): `models.py:eval_model(role, task, shots,
+  limit)` ports `eval.ps1` — resolves `osenv.venv_exe('venv-eval','lm_eval')` (DD3: the isolated venv),
+  reads the tokenizer from the active profile (`bob_models`), checks the endpoint, builds the
+  timestamped `results/` output, and runs lm_eval inheriting stdio (very long → returns the process rc).
+  **CLI-only** — `bob eval <role> [task] [--shots N] [--limit N]` (cli._handle_eval); deliberately NOT an
+  agent tool and NOT on `--run` (long + separate venv). Flipped `eval`→python, regen verbs.json, **deleted
+  `eval.ps1`** (fully replaced — nothing else called it). `bootstrap-eval.ps1` (the venv-eval creator) is
+  KEPT until D8 (pre-venv). Not runnable live here (no venv-eval/endpoint); tests cover arg-building +
+  every guard path. tests/test_slice_d4_eval.py (10); test_slice4 eval-stays-pwsh assertion flipped.
 - **Slice D5 — `build` + `build-llama-swap` + `fabric-setup`** *(the native toolchain; DD1):*
   `build.py` — `build_llama(cpu, arch, force)` (cmake orchestration over the 1b build seams; cmake/nvcc/go
   stay subprocess as they always were), `build_llama_swap()`, `setup_fabric()`. `bin/` swap + verify.
