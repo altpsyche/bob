@@ -9,6 +9,16 @@
 
 param([switch]$Check)
 $ErrorActionPreference = "Stop"
+. "$PSScriptRoot\_platform.ps1"   # Get-BobOS
+
+# Windows-only: the whole script uses WindowsIdentity / secedit. On Linux `bob mlock` reached this
+# directly and crashed with PlatformNotSupportedException — guard and point at the Linux equivalent.
+if ((Get-BobOS) -ne 'windows') {
+    Write-Host "mlock (SeLockMemoryPrivilege) is a Windows privilege. On Linux, raise the memlock limit instead:" -ForegroundColor Yellow
+    Write-Host "  session:    ulimit -l unlimited" -ForegroundColor DarkGray
+    Write-Host "  persistent: add '<user> - memlock unlimited' to /etc/security/limits.conf, then re-login" -ForegroundColor DarkGray
+    exit 0
+}
 
 # ---------------------------------------------------------------------------
 # Helpers

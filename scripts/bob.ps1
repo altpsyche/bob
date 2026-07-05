@@ -838,8 +838,8 @@ N8N_PORT=$($dp.n8nPort ?? (Get-BobPortDefault 'n8nPort'))
   'speak' {
     $bobCfg = Get-BobConfig
     $voice  = Join-Path $repo "bin\voices\$($bobCfg.voice.ttsVoice ?? 'en_GB-alan-medium').onnx"
-    $piperExe = Join-Path $repo 'bin\piper.exe'
-    if (-not (Test-Path $piperExe)) { Write-Host "piper.exe not found — run: bob setup-voice" -ForegroundColor Yellow; break }
+    $piperExe = Get-BinExe 'piper'
+    if (-not (Test-Path $piperExe)) { Write-Host "piper not found — run: bob setup-voice" -ForegroundColor Yellow; break }
     if (-not (Test-Path $voice))    { Write-Host "Voice model not found at $voice — run: bob setup-voice" -ForegroundColor Yellow; break }
     $text = if ($rest.Count) { $rest -join ' ' } else { $input | Out-String }
     if (-not $text -or -not $text.Trim()) { Write-Host "Nothing to speak." -ForegroundColor DarkGray; break }
@@ -849,7 +849,15 @@ N8N_PORT=$($dp.n8nPort ?? (Get-BobPortDefault 'n8nPort'))
       Set-Content $tmpTxt -Value $text -Encoding utf8 -NoNewline
       Get-Content $tmpTxt | & $piperExe --model $voice --output_file $tmpWav --quiet 2>&1 | Out-Null
       if ($LASTEXITCODE -ne 0) { throw "piper exited with code $LASTEXITCODE" }
-      (New-Object System.Media.SoundPlayer $tmpWav).PlaySync()
+      if ((Get-BobOS) -eq 'windows') {
+        (New-Object System.Media.SoundPlayer $tmpWav).PlaySync()
+      } else {
+        # System.Media.SoundPlayer is Windows-only .NET — use a Linux CLI player.
+        $player = @('paplay','aplay','ffplay') | Where-Object { Get-Command $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
+        if (-not $player)              { Write-Host "No audio player found (install pipewire/pulseaudio, alsa-utils, or ffmpeg). WAV: $tmpWav" -ForegroundColor Yellow }
+        elseif ($player -eq 'ffplay')  { & ffplay -nodisp -autoexit -loglevel quiet $tmpWav }
+        else                           { & $player $tmpWav }
+      }
     } finally {
       Remove-Item $tmpTxt, $tmpWav -ErrorAction SilentlyContinue
     }
@@ -863,27 +871,31 @@ N8N_PORT=$($dp.n8nPort ?? (Get-BobPortDefault 'n8nPort'))
     if (-not (Test-Path $imagePath)) { Write-Host "File not found: $imagePath" -ForegroundColor Red; break }
     $bobCfg   = Get-BobConfig
     $prompt   = if ($rest.Count -gt 1) { $rest[1..($rest.Count-1)] -join ' ' } else { 'Describe this image.' }
-    # Resize image to max 1024px on longest edge — large screenshots exceed context limits.
-    Add-Type -AssemblyName System.Drawing
-    $srcBmp  = [Drawing.Bitmap]::new($imagePath)
-    $maxDim  = 1024
-    $scale   = [Math]::Min($maxDim / $srcBmp.Width, $maxDim / $srcBmp.Height)
-    $scale   = [Math]::Min($scale, 1.0)   # never upscale
-    $w = [int]($srcBmp.Width  * $scale)
-    $h = [int]($srcBmp.Height * $scale)
+    # Resize image to max 1024px on longest edge — large screenshots exceed context limits. System.Drawing
+    # is Windows-only .NET, so this runs on Windows only; on Linux the image is sent as-is (the vision
+    # model tolerates larger inputs). Full cross-platform resize + in-loop vision lands in P3.
     $resizedTmp = $null
-    if ($scale -lt 1.0) {
-      $dstBmp = [Drawing.Bitmap]::new($w, $h)
-      $g = [Drawing.Graphics]::FromImage($dstBmp)
-      $g.InterpolationMode = [Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-      $g.DrawImage($srcBmp, 0, 0, $w, $h)
-      $g.Dispose(); $srcBmp.Dispose()
-      $resizedTmp = [IO.Path]::GetTempFileName() + '.png'
-      $dstBmp.Save($resizedTmp, [Drawing.Imaging.ImageFormat]::Png)
-      $dstBmp.Dispose()
-      $imagePath = $resizedTmp
-    } else {
-      $srcBmp.Dispose()
+    if ((Get-BobOS) -eq 'windows') {
+      Add-Type -AssemblyName System.Drawing
+      $srcBmp  = [Drawing.Bitmap]::new($imagePath)
+      $maxDim  = 1024
+      $scale   = [Math]::Min($maxDim / $srcBmp.Width, $maxDim / $srcBmp.Height)
+      $scale   = [Math]::Min($scale, 1.0)   # never upscale
+      $w = [int]($srcBmp.Width  * $scale)
+      $h = [int]($srcBmp.Height * $scale)
+      if ($scale -lt 1.0) {
+        $dstBmp = [Drawing.Bitmap]::new($w, $h)
+        $g = [Drawing.Graphics]::FromImage($dstBmp)
+        $g.InterpolationMode = [Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+        $g.DrawImage($srcBmp, 0, 0, $w, $h)
+        $g.Dispose(); $srcBmp.Dispose()
+        $resizedTmp = [IO.Path]::GetTempFileName() + '.png'
+        $dstBmp.Save($resizedTmp, [Drawing.Imaging.ImageFormat]::Png)
+        $dstBmp.Dispose()
+        $imagePath = $resizedTmp
+      } else {
+        $srcBmp.Dispose()
+      }
     }
     try {
       $b64  = [Convert]::ToBase64String([IO.File]::ReadAllBytes($imagePath))
@@ -908,14 +920,27 @@ N8N_PORT=$($dp.n8nPort ?? (Get-BobPortDefault 'n8nPort'))
   }
 
   'screenshot' {
-    Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-    $screen = [Windows.Forms.Screen]::PrimaryScreen.Bounds
-    $bmp    = [Drawing.Bitmap]::new($screen.Width, $screen.Height)
-    $g      = [Drawing.Graphics]::FromImage($bmp)
-    $g.CopyFromScreen($screen.Location, [Drawing.Point]::Empty, $screen.Size)
     $tmp = [IO.Path]::GetTempFileName() + '.png'
-    $bmp.Save($tmp, [Drawing.Imaging.ImageFormat]::Png)
-    $g.Dispose(); $bmp.Dispose()
+    if ((Get-BobOS) -eq 'windows') {
+      Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+      $screen = [Windows.Forms.Screen]::PrimaryScreen.Bounds
+      $bmp    = [Drawing.Bitmap]::new($screen.Width, $screen.Height)
+      $g      = [Drawing.Graphics]::FromImage($bmp)
+      $g.CopyFromScreen($screen.Location, [Drawing.Point]::Empty, $screen.Size)
+      $bmp.Save($tmp, [Drawing.Imaging.ImageFormat]::Png)
+      $g.Dispose(); $bmp.Dispose()
+    } else {
+      # Linux capture — Wayland (grim) or X11 (spectacle / scrot / imagemagick import).
+      $cap = @('grim','spectacle','scrot','import') | Where-Object { Get-Command $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
+      if (-not $cap) { Write-Host "No screenshot tool found (install grim, spectacle, scrot, or imagemagick), or pass an image to 'bob describe'." -ForegroundColor Yellow; break }
+      switch ($cap) {
+        'grim'      { & grim $tmp }
+        'spectacle' { & spectacle -b -n -o $tmp }
+        'scrot'     { & scrot $tmp }
+        'import'    { & import -window root $tmp }
+      }
+      if (-not (Test-Path $tmp) -or (Get-Item $tmp).Length -eq 0) { Write-Host "Screenshot capture failed via $cap." -ForegroundColor Red; break }
+    }
     try {
       $descArgs = @('describe', $tmp) + $rest
       & "$PSScriptRoot\bob.ps1" @descArgs

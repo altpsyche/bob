@@ -79,11 +79,11 @@ foreach ($entry in $schedules) {
 
   $changed = $true
 
-  # Toast notification
+  # Desktop notification via the OS seam (Windows toast | Linux notify-send), not the raw WinRT
+  # bob-toast.ps1 directly — so agent notifications actually appear on Linux too.
   if ($entry.notify -and $result) {
     $toastTitle = if ($entry.notifyTitle) { $entry.notifyTitle } else { $entry.name }
-    . "$PSScriptRoot\bob-toast.ps1"
-    Send-BobToast -Title $toastTitle -Body $result -AppId ($bobCfg.agent.toastAppId ?? '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\powershell.exe')
+    Send-Notification -Title $toastTitle -Body $result
   }
 
   Add-Content $logFile -Value "[$($now.ToString('o'))] Done: $($entry.name)" -Encoding UTF8
