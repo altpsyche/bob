@@ -1,8 +1,9 @@
 #!/usr/bin/env sh
 # NB4 (contract C1) — POSIX front-door shim for Bob. Dumb by design: it hands every command to
-# `python -m bob`, which resolves config/verbs.json and handles the command. Every verb is Python
-# now (ONE-D); the cold-start provisioner is `python -m bob.kernel` (setup.sh/install_prereqs.sh
-# call it). Windows uses a bob.cmd -> `python -m bob` shim (written by bob.kernel's install_cli).
+# `python -m bob`, which resolves it against the command registry (scripts/bob/registry.py) and runs
+# the matching handler. Every verb is Python (ONE-D/E); the cold-start provisioner is
+# `python -m bob.kernel` (setup.sh/install_prereqs.sh call it). Windows uses a bob.cmd -> `python -m
+# bob` shim (written by bob.kernel's install_cli).
 set -e
 # Resolve symlinks so REPO is the real repo dir even when invoked via a symlink on PATH
 # (install-cli.ps1 links this into ~/.local/bin). POSIX: walk the chain — readlink -f is GNU-only.

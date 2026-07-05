@@ -1,8 +1,6 @@
-"""NB4 (contracts C1, C6) — the command registry is enumerable and is the single source that
-config/verbs.json is generated from. Proves every command declares a valid runtime, python
-commands map to a real handler, and the on-disk verbs.json is in sync with the registry."""
-import json
-import shutil
+"""C6 (ONE-E) — the command registry is THE single source for dispatch + help. Proves every entry is
+well-formed and maps to a real cli.py handler, and that the whole config/verbs.json + pwsh scaffolding is
+gone (registry.COMMANDS is now the only catalog — no generated table to keep in sync)."""
 import unittest
 from pathlib import Path
 
@@ -15,74 +13,35 @@ class TestRegistry(unittest.TestCase):
         cmds = registry.commands()
         self.assertTrue(cmds)
         for c in cmds:
-            for field in ("name", "group", "summary", "args", "runtime", "handler"):
+            for field in ("name", "group", "summary", "args", "handler"):
                 self.assertIn(field, c, f"{c.get('name')} missing {field}")
-            self.assertIn(c["runtime"], {"python", "pwsh"}, c["name"])
-            if c["runtime"] == "python":
-                self.assertIn(c["handler"], cli._HANDLERS, f"{c['name']} handler not wired")
-            else:
-                self.assertIsNone(c["handler"], f"pwsh {c['name']} should have no handler")
+            self.assertNotIn("runtime", c, f"{c['name']} still carries the retired runtime field")
+            self.assertIn(c["handler"], cli._HANDLERS, f"{c['name']} handler not wired")
 
-    def test_runtime_spot_checks(self):
-        rt = registry.verbs_json_dict()["commands"]
-        self.assertEqual(rt["agent serve"], "python")
-        self.assertEqual(rt["agent mcp"], "python")
-        self.assertEqual(rt["clip"], "python")
-        self.assertEqual(rt["serve"], "python")     # ONE-C Slice 2 — lifecycle ported to Python (stack.py)
-        self.assertEqual(rt["stop"], "python")
-        self.assertEqual(rt["up"], "python")
-        self.assertEqual(rt["setup"], "python")      # ONE-C Slice 3 — setup(check)/doctor/version/diagnose (health.py)
-        self.assertEqual(rt["doctor"], "python")
-        self.assertEqual(rt["diagnose"], "python")
-        self.assertEqual(rt["version"], "python")
-        self.assertEqual(rt["build"], "python")      # ONE-D Slice D5 — native build ported (build.py)
-        self.assertEqual(rt["fetch"], "python")      # ONE-D Slice D1 (provision.py)
-        self.assertEqual(rt["lock"], "python")       # ONE-D Slice D2 (versions.py)
-        self.assertEqual(rt["mlock"], "python")      # ONE-D Slice D3 (osenv)
-        self.assertEqual(rt["eval"], "python")       # ONE-D Slice D4 (models.py)
-        self.assertEqual(rt["update"], "python")     # ONE-D Slice D6 — update ported (build.py:update_stack)
-        self.assertEqual(rt["fabric-setup"], "python")  # ONE-D Slice D5 (build.py:setup_fabric)
-        self.assertEqual(rt["status"], "python")     # ONE-C — loaded-models status (stack.py)
-        self.assertEqual(rt["chat"], "python")      # S2 — chat/code/think ported onto the agent loop
-        self.assertEqual(rt["code"], "python")
-        self.assertEqual(rt["think"], "python")
-        self.assertEqual(rt["agent schedule"], "python")   # ONE-C Slice 5 — scheduling ported (schedule.py)
-        self.assertEqual(rt["agent install"], "python")
-        self.assertEqual(rt["agent status"], "python")
+    def test_every_verb_maps_to_a_handler(self):
+        # spot-check the load-bearing verbs (all Python since ONE-D/E — no pwsh, no verbs.json table).
+        by = registry.by_name()
+        for name in ("agent serve", "agent mcp", "clip", "serve", "stop", "up", "setup", "doctor",
+                     "diagnose", "version", "build", "fetch", "lock", "mlock", "eval", "update",
+                     "fabric-setup", "status", "chat", "code", "think", "agent schedule", "help"):
+            self.assertIn(name, by, name)
+            self.assertIn(by[name]["handler"], cli._HANDLERS, name)
 
-    def test_verbs_json_on_disk_in_sync(self):
-        disk = json.loads((Path(registry.REPO) / "config" / "verbs.json").read_text(encoding="utf-8"))
-        self.assertEqual(disk, registry.verbs_json_dict(),
-                         "config/verbs.json is stale — regenerate: python -m bob.registry")
-
-    def test_check_gate(self):
-        import tempfile
-
-        # in sync (the real committed file) -> 0
-        self.assertEqual(registry._check(), 0)
-        # a stale/mismatched file -> 1 (this is what the pre-commit gate catches)
-        stale = Path(tempfile.mkdtemp(prefix="bob-verbs-")) / "verbs.json"
-        stale.write_text(json.dumps({"commands": {}, "default": "python"}), encoding="utf-8")
-        try:
-            self.assertEqual(registry._check(stale), 1)
-        finally:
-            shutil.rmtree(stale.parent, ignore_errors=True)
+    def test_no_verbs_json_machinery(self):
+        # ONE-E collapsed the verb table: the generated file + its generator/sync gate are gone.
+        self.assertFalse((Path(registry.REPO) / "config" / "verbs.json").exists())
+        for gone in ("verbs_json_dict", "write_verbs", "_check", "VERBS_FILE"):
+            self.assertFalse(hasattr(registry, gone), f"registry.{gone} should be removed")
 
 
 class TestNoPowerShellFrontDoor(unittest.TestCase):
-    """ONE-E — the PowerShell front door (bob.ps1) and its switch are retired: every verb is Python now,
-    and the registry is the sole catalog (no pwsh dispatch table to keep in parity with)."""
-
-    def test_every_verb_is_python(self):
-        for c in registry.commands():
-            self.assertEqual(c["runtime"], "python", f"{c['name']} is still pwsh — no pwsh verbs remain")
+    """ONE-E — the PowerShell front door (bob.ps1) + seam library are retired; registry.COMMANDS is the
+    sole catalog."""
 
     def test_help_is_registry_driven(self):
-        self.assertEqual(registry.by_name()["help"]["runtime"], "python")
         self.assertEqual(registry.by_name()["help"]["handler"], "help")
 
     def test_no_pwsh_scripts_under_scripts(self):
-        # the whole scripts/*.ps1 layer (front door + seams + gate) is gone.
         self.assertEqual(list((Path(registry.REPO) / "scripts").glob("*.ps1")), [])
 
 

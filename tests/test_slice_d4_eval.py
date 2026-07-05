@@ -19,7 +19,7 @@ CFG = {"port": 8080}
 class TestRegistryWiring(unittest.TestCase):
     def test_eval_flipped_to_python(self):
         entry = registry.by_name()["eval"]
-        self.assertEqual(entry["runtime"], "python")
+        self.assertTrue(entry.get("handler"))
         self.assertEqual(entry["handler"], "eval")
         self.assertIn("eval", cli._HANDLERS)
 

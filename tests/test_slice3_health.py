@@ -35,7 +35,7 @@ class TestRegistryWiring(unittest.TestCase):
     def test_flipped_to_python_with_handlers(self):
         by_name = registry.by_name()
         for verb in self.VERBS:
-            self.assertEqual(by_name[verb]["runtime"], "python", verb)
+            self.assertTrue(by_name[verb].get("handler"), verb)
             self.assertIn(by_name[verb]["handler"], cli._HANDLERS, verb)
 
     def test_tools_registered_none_mutating(self):

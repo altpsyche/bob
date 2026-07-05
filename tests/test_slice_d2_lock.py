@@ -36,7 +36,7 @@ _MODELS_CFG = {
 class TestRegistryWiring(unittest.TestCase):
     def test_lock_flipped_to_python(self):
         entry = registry.by_name()["lock"]
-        self.assertEqual(entry["runtime"], "python")
+        self.assertTrue(entry.get("handler"))
         self.assertEqual(entry["handler"], "lock")
         self.assertIn("lock", cli._HANDLERS)
 

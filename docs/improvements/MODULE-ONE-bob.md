@@ -310,15 +310,32 @@ logic. `bob-memory.ps1` is already a 17-line wrapper over `bob_memory.py` — no
 
 ## ONE-E — Collapse the entry point
 
-Delete the verb table in [verbs.json](../../config/verbs.json) and the routing map in
-[registry.py](../../scripts/bob/registry.py). Final `bob` surface:
+**Part 1 ✅ DONE (commit fa8627e; suite 814 green) — the PowerShell layer is retired.** Ported both CI
+gates to stdlib-only Python (`scripts/check.py` ← check.ps1; `scripts/smoke.py` ← smoke.ps1) +
+`scripts/install_hooks.py` (← install-hooks.ps1; the pre-commit hook now execs check.py); deleted the last
+10 `*.ps1` (bob.ps1 front door + the _models/_platform/_versions/_common seam library + check/smoke/
+smoke-linux/test-platform/install-hooks); rewired ci.yml (lint drops PSScriptAnalyzer; core-suite runs
+`python scripts/check.py`; acceptance runs `python scripts/smoke.py --up`); removed cli.py's dead pwsh
+dispatch (`_exec_pwsh`) and the obsolete pwsh↔Python parity tests. `git ls-files '*.ps1'` now returns only
+the sample `plugins/play/invoke.ps1`. **Part 2 (below) is what remains.**
 
-- `bob` (bare) → kernel → interface (tty→REPL, piped→one-shot)
-- `bob "text"` → one-shot loop turn
-- `bob --serve` → headless daemon (the one surviving flag)
-- `bob --run <cap> [json]` → deterministic tool (CI)
+**Part 2 ✅ DONE (suite 811 green) — the verb table collapsed to a single source.** Deleted
+`config/verbs.json` + its whole generate/sync machinery (`verbs_json_dict`/`write_verbs`/`_check`/
+`VERBS_FILE` + the `python -m bob.registry` gate + the check.py sync step) and the now-vestigial `runtime`
+field on every command. `scripts/bob/registry.py`'s `COMMANDS` is now the **one** source for both dispatch
+and help — adding a verb is one entry + one cli.py handler, with no generated table to regenerate.
 
-**One word.**
+**Scope decision (per "DRY, clean, maintainable, expandable"):** the deprecation ledger below imagined
+*deleting every `bob <verb>`* so only `bob`/`bob "text"`/`bob --serve`/`bob --run` survive. That was
+rejected — forcing `bob up`/`bob doctor`/`bob build` through `--run <cap>` JSON is *less* usable and no
+more maintainable. The clean/expandable end state keeps the verbs, sourced from the one registry. What was
+genuinely redundant — the generated routing *table* (needed only by the retired pwsh shim) — is gone.
+
+Surviving `bob` surface: `bob` (bare, tty→REPL / piped→help) · `bob <verb> …` (registry-dispatched) ·
+`bob --run <cap> [json]` (deterministic tool, CI). (`bob "freeform text"`→one-shot and a `--serve` alias
+for `agent serve` were part of the maximal vision; not adopted — explicit verbs are clearer.)
+
+**ONE-E COMPLETE. The one-harness north star is reached: one word, one engine (Python), zero PowerShell.**
 
 ---
 

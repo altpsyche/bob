@@ -16,7 +16,7 @@ CFG = {}
 
 class TestRegistryWiring(unittest.TestCase):
     def test_update_flipped(self):
-        self.assertEqual(registry.by_name()["update"]["runtime"], "python")
+        self.assertTrue(registry.by_name()["update"].get("handler"))
         self.assertIn("update", cli._HANDLERS)
 
 

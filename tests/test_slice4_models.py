@@ -22,13 +22,13 @@ class TestRegistryWiring(unittest.TestCase):
     def test_flipped_to_python_with_handlers(self):
         by_name = registry.by_name()
         for verb in self.VERBS:
-            self.assertEqual(by_name[verb]["runtime"], "python", verb)
+            self.assertTrue(by_name[verb].get("handler"), verb)
             self.assertIn(by_name[verb]["handler"], cli._HANDLERS, verb)
 
     def test_eval_ported_in_one_d(self):
         # eval stayed pwsh through ONE-C; ONE-D Slice D4 ported it to Python (models.py:eval_model,
         # CLI-only — not an agent tool). See test_slice_d4_eval for its behaviour.
-        self.assertEqual(registry.by_name()["eval"]["runtime"], "python")
+        self.assertTrue(registry.by_name()["eval"].get("handler"))
 
     def test_tools_registered_and_only_profile_mutates(self):
         self.assertEqual(set(models_mod.DISPATCH), {

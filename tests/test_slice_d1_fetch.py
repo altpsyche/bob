@@ -36,7 +36,7 @@ def _patch_registry(roles=None):
 class TestRegistryWiring(unittest.TestCase):
     def test_fetch_flipped_to_python(self):
         entry = registry.by_name()["fetch"]
-        self.assertEqual(entry["runtime"], "python")
+        self.assertTrue(entry.get("handler"))
         self.assertEqual(entry["handler"], "fetch")
         self.assertIn("fetch", cli._HANDLERS)
 

@@ -22,7 +22,7 @@ class TestRegistryWiring(unittest.TestCase):
     def test_build_and_fabric_flipped(self):
         by_name = registry.by_name()
         for verb, handler in (("build", "build"), ("fabric-setup", "fabric-setup")):
-            self.assertEqual(by_name[verb]["runtime"], "python", verb)
+            self.assertTrue(by_name[verb].get("handler"), verb)
             self.assertIn(handler, cli._HANDLERS, verb)
 
     def test_build_not_an_agent_tool(self):

@@ -2,10 +2,9 @@
 """ONE-E — the pre-commit / CI gate, in Python (port of the retired check.ps1). Runs, in order:
 
   1. py_compile over scripts/, plugins/, tests/ (excluding external/)
-  2. config/verbs.json in sync with the command registry (python -m bob.registry --check)
-  3. versions.lock in sync with its sources    (python -m bob.versions --check)
-  4. executable bits on the shell entrypoints   (git-tracked mode 100755)
-  5. the stdlib-unittest suite in tests/         (skip with --no-tests)
+  2. versions.lock in sync with its sources    (python -m bob.versions --check)
+  3. executable bits on the shell entrypoints   (git-tracked mode 100755)
+  4. the stdlib-unittest suite in tests/         (skip with --no-tests)
 
 Exits non-zero on the first category that fails, so the git pre-commit hook (or CI) blocks. Stdlib-only,
 so any interpreter runs it — the pwsh AST-parse step is gone (there is no PowerShell left to parse).
@@ -47,17 +46,12 @@ def main(argv=None) -> int:
     if _run([PY, "-m", "py_compile", *py_files]) != 0:
         print("[check] py_compile FAILED"); failed = True
 
-    # 2. verbs.json in sync with the registry -------------------------------
-    print("[check] verbs.json in sync...")
-    if _run([PY, "-m", "bob.registry", "--check"]) != 0:
-        print("[check] verbs.json STALE — run: python -m bob.registry"); failed = True
-
-    # 3. versions.lock in sync with its sources -----------------------------
+    # 2. versions.lock in sync with its sources -----------------------------
     print("[check] versions.lock in sync...")
     if _run([PY, "-m", "bob.versions", "--check"]) != 0:
         print("[check] versions.lock STALE — run: bob lock"); failed = True
 
-    # 4. executable bits on the shell entrypoints ---------------------------
+    # 3. executable bits on the shell entrypoints ---------------------------
     # git tracks the +x bit; a file committed 100644 makes './setup.sh' die with 'permission denied' on
     # every fresh clone. Assert the entrypoints + hook stay executable (reads the tracked mode, so it
     # works on Windows too, where the filesystem bit is meaningless).
@@ -72,7 +66,7 @@ def main(argv=None) -> int:
             print(f"[check] NOT EXECUTABLE: {f} (git mode {mode}) — run: git update-index --chmod=+x {f}")
             failed = True
 
-    # 5. unittest suite -----------------------------------------------------
+    # 4. unittest suite -----------------------------------------------------
     if not no_tests:
         print("[check] unittest suite...")
         if _run([PY, "-m", "unittest", "discover", "-s", str(REPO / "tests"), "-p", "test_*.py"]) != 0:

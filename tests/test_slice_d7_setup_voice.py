@@ -19,13 +19,13 @@ import provision as prov  # noqa: E402
 class TestAllVerbsPython(unittest.TestCase):
     def test_setup_voice_flipped(self):
         entry = registry.by_name()["setup-voice"]
-        self.assertEqual(entry["runtime"], "python")
+        self.assertEqual(entry["handler"], "setup-voice")
         self.assertIn("setup-voice", cli._HANDLERS)
 
-    def test_no_pwsh_verbs_remain(self):
-        # ONE-D Slice D7 milestone: every verb routes to Python.
-        rt = registry.verbs_json_dict()["commands"]
-        self.assertEqual([v for v, r in rt.items() if r == "pwsh"], [])
+    def test_every_verb_maps_to_a_handler(self):
+        # ONE-D/E milestone: every verb is Python (no pwsh runtime, no verbs.json table).
+        for c in registry.commands():
+            self.assertIn(c["handler"], cli._HANDLERS, c["name"])
 
 
 class TestInstallPiper(unittest.TestCase):

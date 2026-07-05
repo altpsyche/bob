@@ -37,13 +37,8 @@ class TestRegistryWiring(unittest.TestCase):
         by_name = registry.by_name()
         for verb, handler_key in self.SLICE1.items():
             entry = by_name[verb]
-            self.assertEqual(entry["runtime"], "python", f"{verb} should be python")
             self.assertEqual(entry["handler"], handler_key, f"{verb} handler key")
             self.assertIn(handler_key, cli._HANDLERS, f"{handler_key} missing from _HANDLERS")
-
-    def test_verbs_json_in_sync(self):
-        # The generated verbs.json must match the registry (the CI gate) after the flip.
-        self.assertEqual(registry._check(), 0)
 
 
 class TestBudgetCore(unittest.TestCase):
