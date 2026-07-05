@@ -18,6 +18,16 @@ while [ -h "$SELF" ]; do
   esac
 done
 REPO="$(CDPATH= cd -- "$(dirname -- "$SELF")" && pwd)"
-PYTHON="${BOB_PYTHON:-python3}"
+# Run under the venv-litellm interpreter — it holds the runtime deps (openai, rich, requests,
+# prompt_toolkit, sqlite-utils). Mirrors the Windows dispatch (bob.ps1 routes python commands to
+# `& venv-litellm\python -m bob`). $BOB_PYTHON overrides; fall back to system python3 for the
+# stdlib-only pre-bootstrap commands (version/help) when the venv isn't built yet.
+if [ -n "$BOB_PYTHON" ]; then
+  PYTHON="$BOB_PYTHON"
+elif [ -x "$REPO/tools/venv-litellm/bin/python" ]; then
+  PYTHON="$REPO/tools/venv-litellm/bin/python"
+else
+  PYTHON="python3"
+fi
 export PYTHONPATH="$REPO/scripts${PYTHONPATH:+:$PYTHONPATH}"
 exec "$PYTHON" -m bob "$@"
