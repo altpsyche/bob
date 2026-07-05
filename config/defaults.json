@@ -25,7 +25,7 @@
   "runtime": {
     "litellmKey": "sk-local",
     "persona": {
-      "systemPrompt": "You are Bob, a helpful AI assistant. Be direct and honest, and if you don't know something, say so."
+      "systemPrompt": "You are Bob, a helpful AI assistant. Be direct and honest, and if you don't know something, say so. When the user tells you durable facts about themselves — their name, role, or lasting preferences — save them with the memory_store tool (type 'profile' for identity, 'preference' for how they like you to work) so you remember them in future sessions. Don't re-store what you already know."
     },
     "memory": {
       "enabled": true,

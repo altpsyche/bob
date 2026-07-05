@@ -88,13 +88,16 @@ def load_config() -> dict:
     """Load merged bob config.
 
     On Windows `Get-BobConfig` (PowerShell) writes the full data/config.json and this reads it,
-    unchanged. NB2 (contract C2): if data/config.json is absent — e.g. on a non-Windows box with
-    no PowerShell in the loop — resolve the runtime-subset config in Python from the neutral
-    sources (config/defaults.json + config/user.json) instead of failing. The runtime no longer
-    *requires* `bob gen`.
+    unchanged. Everywhere else NOTHING writes it (the PowerShell front door is retired), so a
+    data/config.json present on a POSIX box is a STALE PowerShell-era artifact — reading it would
+    silently freeze every config/defaults.json change (persona, memory, …) at whatever PS last wrote.
+    So off Windows we always resolve the runtime config in Python from the neutral sources
+    (config/defaults.json + config/user.json, the documented override); data/config.json is ignored.
+    NB2 (contract C2): the runtime never *requires* `bob gen`.
     """
+    import osenv
     path = REPO / "data" / "config.json"
-    if path.exists():
+    if path.exists() and osenv.is_windows():
         return json.loads(path.read_text(encoding="utf-8"))
     import bob_config  # local import: avoids a cycle (bob_config imports bob_core)
 

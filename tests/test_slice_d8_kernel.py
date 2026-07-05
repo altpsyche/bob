@@ -226,16 +226,19 @@ class TestKernelWiring(unittest.TestCase):
             kernel._wire(target, link)
 
     def test_needs_onboard(self):
-        with tempfile.TemporaryDirectory() as d:
-            cfg = Path(d) / "user.json"
-            with mock.patch.object(kernel, "REPO", Path(d)):
-                # config/user.json missing
-                (Path(d) / "config").mkdir()
-                self.assertTrue(kernel._needs_onboard())
-                (Path(d) / "config" / "user.json").write_text('{"bob": {}}', encoding="utf-8")
-                self.assertFalse(kernel._needs_onboard())
-                (Path(d) / "config" / "user.json").write_text('{"peers": {}}', encoding="utf-8")
-                self.assertTrue(kernel._needs_onboard())
+        # POST-ONE: the real signal is a durable profile row, not just the config `bob` marker (onboard()
+        # writes that marker even when the profile save failed — the "Bob doesn't know me" bug).
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(kernel, "REPO", Path(d)), \
+             mock.patch.object(kernel, "_has_profile_rows", return_value=True) as hpr:
+            (Path(d) / "config").mkdir()
+            self.assertTrue(kernel._needs_onboard())                       # user.json missing
+            (Path(d) / "config" / "user.json").write_text('{"bob": {}}', encoding="utf-8")
+            self.assertFalse(kernel._needs_onboard())                      # marked + profile present
+            hpr.return_value = False
+            self.assertTrue(kernel._needs_onboard())                       # marked but NEVER seeded (bug)
+            (Path(d) / "config" / "user.json").write_text('{"peers": {}}', encoding="utf-8")
+            self.assertTrue(kernel._needs_onboard())                       # not marked
 
     def test_onboard_skips_on_non_tty(self):
         # stdin is not a TTY under the test runner -> onboard must return without prompting/raising.

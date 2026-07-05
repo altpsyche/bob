@@ -261,15 +261,38 @@ def _install_cli_windows() -> None:  # pragma: no cover — Windows path
     print("Open a NEW terminal, then try:  bob help", file=sys.stderr)
 
 
+def _has_profile_rows() -> bool:
+    """True if the memory DB already holds a durable identity (type='profile') row. Stdlib sqlite3 only
+    (no venv deps) — this runs on the kernel path. A missing DB/table means no profile yet."""
+    import sqlite3
+    db = osenv.data_dir() / "bob.db"
+    if not db.exists():
+        return False
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        try:
+            return con.execute("SELECT count(*) FROM memories WHERE type='profile'").fetchone()[0] > 0
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return False
+
+
 def _needs_onboard() -> bool:
+    """Onboard when we've never recorded the user OR the durable profile was never seeded. The real
+    signal is a profile row in memory — the config `bob` marker alone is NOT enough: onboard() writes
+    that marker even if the profile save failed (venv not built yet, or the subprocess errored), which
+    left machines marked-but-unknown ("Bob doesn't know me"). Keying on profile presence self-heals: a
+    failed seed re-triggers onboarding next run."""
     import json
     user_cfg = REPO / "config" / "user.json"
-    if not user_cfg.exists():
-        return True
-    try:
-        return "bob" not in json.loads(user_cfg.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return True
+    marked = False
+    if user_cfg.exists():
+        try:
+            marked = "bob" in json.loads(user_cfg.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            marked = False
+    return (not marked) or (not _has_profile_rows())
 
 
 def onboard() -> None:
@@ -284,6 +307,15 @@ def onboard() -> None:
     def bob(msg: str) -> None:
         print(f"Bob: {msg}")
 
+    # A re-onboard (marked but the profile never seeded) shouldn't re-nag for a key already on file.
+    user_cfg = REPO / "config" / "user.json"
+    try:
+        _existing = json.loads(user_cfg.read_text(encoding="utf-8")) if user_cfg.exists() else {}
+    except (OSError, ValueError):
+        _existing = {}
+    has_key = bool(isinstance(_existing, dict)
+                   and _existing.get("peers", {}).get("deepseek", {}).get("apiKey"))
+
     print()
     bob("Hi. Let me set up your profile.")
     print()
@@ -291,8 +323,11 @@ def onboard() -> None:
     user_name = (input("> ").strip() or "User")
     bob("What kind of work do you do most? (e.g. game dev, web, writing)")
     user_work = (input("> ").strip() or "software development")
-    bob("Got a DeepSeek API key? Enables cloud-quality answers when you want them. (Enter to skip)")
-    api_key = input("> ").strip()
+    if has_key:
+        api_key = ""   # already configured — don't ask again on a re-onboard
+    else:
+        bob("Got a DeepSeek API key? Enables cloud-quality answers when you want them. (Enter to skip)")
+        api_key = input("> ").strip()
 
     # Save the profile to SQLite. Memory needs venv-only deps (sqlite-utils + requests), but onboarding
     # runs under the *system* python (the kernel) — so shell out to the venv-litellm interpreter, which
@@ -308,7 +343,6 @@ def onboard() -> None:
     else:
         print("  (venv-litellm not built yet — run `bob memory init-profile` after setup.)", file=sys.stderr)
 
-    user_cfg = REPO / "config" / "user.json"
     try:
         cfg = json.loads(user_cfg.read_text(encoding="utf-8")) if user_cfg.exists() else {}
         if not isinstance(cfg, dict):

@@ -111,8 +111,21 @@ def health_check(config: dict, doctor: bool = False) -> str:
     else:
         check("Python packages (openai, requests)", False, "run bootstrap-litellm.ps1 first")
 
+    # Config resolves cross-OS: Windows reads data/config.json (Get-BobConfig writes it); everywhere else
+    # it's resolved from config/defaults.json + config/user.json (data/config.json is a retired-PS
+    # artifact and no longer required — nor read).
     cfg_json = REPO / "data" / "config.json"
-    check("data/config.json exists", cfg_json.exists(), "run any bob command to generate")
+    if osenv.is_windows():
+        check("data/config.json exists", cfg_json.exists(), "run any bob command to generate")
+    else:
+        from bob_core import load_config
+        resolved = False
+        try:
+            resolved = bool(load_config().get("persona"))
+        except Exception:  # noqa: BLE001
+            pass
+        check("config resolves (config/defaults.json)", resolved,
+              "check config/defaults.json is valid JSON")
 
     check("scripts/tools/ exists", (SCRIPTS / "tools").is_dir())
 
@@ -208,13 +221,16 @@ def health_check(config: dict, doctor: bool = False) -> str:
                 pass
             check(f"{name}/ writable", writable, f"check permissions on {path}")
 
-        parse_ok = False
-        try:
-            import json
-            parse_ok = json.loads(cfg_json.read_text(encoding="utf-8")) is not None
-        except (OSError, ValueError):
-            pass
-        check("data/config.json parses", parse_ok, "run any bob command to regenerate")
+        # Off Windows data/config.json is a retired-PS artifact (ignored); only assert it parses on
+        # Windows, where Get-BobConfig writes it and load_config reads it.
+        if osenv.is_windows():
+            parse_ok = False
+            try:
+                import json
+                parse_ok = json.loads(cfg_json.read_text(encoding="utf-8")) is not None
+            except (OSError, ValueError):
+                pass
+            check("data/config.json parses", parse_ok, "run any bob command to regenerate")
 
         # Reproducibility (versions.lock, ND1) — compare the lock to the installed state via the Python
         # reader (bob.versions.check_reproducibility). A missing lock is a pending (it is generated), not
