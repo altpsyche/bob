@@ -11,7 +11,11 @@ native-first**, C5 CI ownership), [MODULE-ONE-C-plan.md](MODULE-ONE-C-plan.md) (
 per-verb 3-adapter template; the osenv-seam precedent). ONE-C decisions D1–D6 are **settled — do not
 re-litigate.** The new decisions **DD1–DD6 are RESOLVED (2026-07-05, see Part 5):** full Python `build` port ·
 curl-subprocess `fetch` · keep `venv-eval` · `mlock` grant ported CLI-only · minimal-shell-stub → Python
-kernel · ONE-D owns the kernel (D8) as capstone. **Slices D0–D7 ✅ DONE (suite 797 green; ALL 61 verbs on Python, zero pwsh verbs); next = D8 (the cold-start kernel + delete scripts/*.ps1).**
+kernel · ONE-D owns the kernel (D8) as capstone. **Slices D0–D8 ✅ ALL DONE (suite 824 green; ALL 61 verbs
+on Python + the cold-start kernel is Python; 29 provisioning `*.ps1` deleted). ONE-D COMPLETE.** The only
+PowerShell left = the interdependent test/CI harness + seam cluster (10 files: check/smoke*/test-platform/
+_models/_platform/_versions/_common/bob.ps1/install-hooks), which **ONE-E** rewrites/retires together (the
+kept gates functionally dot-source the seams, so they can't split — see the D8 scope note in Part 4).
 
 ## Goal — and the one distinction that shapes the whole module
 
@@ -312,13 +316,32 @@ capstone once its called-capabilities exist.
   (11, incl. a real tar-extraction test for _install_piper + build_whisper CPU/short-circuit).
   **`setup-clients` / `install-cli` / `onboard` are NOT verbs** (setup.ps1 calls them pre-venv) — they port
   as kernel-called capability fns in **D8** (retiring bob-memory.ps1 there).
-- **Slice D8 — the cold-start kernel (capstone, Part 3):** `install_prereqs.py` (Tier 0) + `kernel.py`
-  (Tier 1); shrink `setup.sh`/`.bat` + `install_prereqs.sh`/`.bat` to the minimal python3-ensuring stub
-  (DD5); the kernel *imports* D1/D5/D7 + generate + stack. **Now delete** every remaining `*.ps1` under
-  `scripts/` (`bob.ps1`, `_models.ps1`, `_platform.ps1`, `_versions.ps1`, `_common.ps1`, `bootstrap*.ps1`,
-  `start-*.ps1`, `up.ps1`, `gen-*.ps1`, `setup*.ps1`, `install-*.ps1`, `build-*.ps1`, `grant-mlock.ps1`,
-  `onboard.ps1`, `bob-memory.ps1`, `bob-toast.ps1`) — except the test/CI harness (`check.ps1`/`smoke*.ps1`/
-  `test-*.ps1`), whose rewire/deletion is ONE-E. Rewire the full `ci.yml` provisioning path to the kernel.
+- **Slice D8 — the cold-start kernel (capstone, Part 3)** ✅ **DONE** (suite 824 green; +27): added the
+  Tier-0 osenv provisioning seams (`PACKAGE_MAP`/`resolve_package_name`/`resolve_package_cmd`/
+  `install_package`/`python_at_least`/`install_uv`/`bob_python`/`bob_venv_python`/`new_bob_venv`); wrote
+  `scripts/bob/install_prereqs.py` (Tier 0 — port of install-prereqs.ps1 + _common.ps1, Linux via the
+  package seams + CUDA/cron, Windows via winget/scoop) and `scripts/bob/kernel.py` (Tier 1 — ports
+  setup.ps1's 12 steps + bootstrap.ps1 + setup-clients/install-cli/onboard/setup-docker as functions,
+  **importing** the D1/D5/D7 + generate + stack capabilities, never subprocessing them). Subcommands:
+  `python -m bob.kernel prereqs|setup|bootstrap|venv <name>|build-swap`; a pwsh-style flag normalizer keeps
+  `./setup.sh -SkipModels`/`--cpu` working. Shrank `setup.sh`/`.bat` + `install_prereqs.sh`/`.bat` to the
+  minimal python3-ensuring shell stub (DD5 — the .sh ensures python3 via the OS pkg mgr, then
+  `exec python3 -m bob.kernel …`; zero pwsh). Rewired `_reinstall_venv` (update) + `eval_model`'s venv-eval
+  ensure off the retired bootstrap-*.ps1 to `osenv.new_bob_venv`. **Deleted 29 provisioning/capability
+  `*.ps1`** (setup/bootstrap*/install-prereqs/install-cli/build-*/gen-*/start-*/up/setup-*/onboard/
+  grant-mlock/diagnose/fetch-models/bob-memory/bob-toast/test-dry-run). Rewired the full `ci.yml`
+  provisioning path (acceptance-cpu, acceptance-gpu, prereqs-distro) to `python -m bob` / `python -m
+  bob.kernel`. tests/test_slice_d8_kernel.py (27). **Scope note / plan-contradiction resolved:** the plan
+  listed the shared seams (`bob.ps1`/`_models.ps1`/`_platform.ps1`/`_versions.ps1`/`_common.ps1`) for D8
+  deletion AND said keep the test/CI harness for ONE-E — but the kept harness *functionally depends* on
+  those seams (`check.ps1` dot-sources `_platform.ps1` + runs `test-platform.ps1`; `smoke.ps1` dot-sources
+  `_models.ps1` + invokes `bob.ps1`). Deleting the seams blind would red the two per-PR gates (unverifiable
+  on this box). So the interdependent **seam + harness + bob.ps1 cluster (10 files) retires together in
+  ONE-E**, when the pwsh gates are rewritten/deleted — D8 deletes everything the kernel *replaces*. The
+  remaining 10: `check.ps1`, `smoke.ps1`, `smoke-linux.ps1`, `test-platform.ps1`, `_platform.ps1`,
+  `_models.ps1`, `_versions.ps1`, `_common.ps1`, `bob.ps1`, `install-hooks.ps1`. **CANNOT be fully verified
+  here** — correctness of the fresh-install path needs the ci.yml CPU/distro matrices (build/venv/fetch on
+  a clean runner + the fedora/arch/opensuse prereq containers).
 
 After each slice: flip verbs to `runtime=python` in [registry.py](../../scripts/bob/registry.py), regen
 `verbs.json` (`python -m bob.registry`), delete the dead `bob.ps1` case(s), keep the parity + verbs-sync +

@@ -1,23 +1,25 @@
 @echo off
 REM ============================================================================
-REM  Bob master setup. Run ONCE after cloning. Idempotent (safe to re-run).
-REM  Installs prereqs (CUDA 12.8, Python 3.12, Go) -> builds engine+proxy ->
-REM  creates venvs + installs tools -> fetches models -> wires Continue/aider.
+REM  Bob master setup (ONE-D Slice D8, DD5 — Python kernel, zero PowerShell).
+REM  Run ONCE after cloning + install_prereqs.bat. Idempotent (safe to re-run).
+REM  Builds engine+proxy -> creates venvs + installs tools -> fetches models ->
+REM  wires Continue/aider, via `python -m bob.kernel setup`.
 REM
 REM  Usage:   setup.bat                 (full, includes voice+vision)
-REM           setup.bat -SkipModels     (skip the ~38GB model downloads)
-REM           setup.bat -SkipVoice      (skip whisper/piper/mmproj downloads)
-REM           setup.bat -Profile 12gb   (smaller models for ~12GB VRAM; see config\models.psd1)
-REM           setup.bat -Launch         (start the stack when done)
+REM           setup.bat --skip-models   (skip the ~38GB model downloads)
+REM           setup.bat --skip-voice    (skip whisper/piper/mmproj downloads)
+REM           setup.bat --profile 12gb  (smaller models for ~12GB VRAM)
+REM           setup.bat --launch        (start the stack when done)
 REM ============================================================================
 setlocal
 REM ND4 — version-stamp: state which Bob release this blessed entry belongs to.
 set "BOBVER=?"
 if exist "%~dp0VERSION" set /p BOBVER=<"%~dp0VERSION"
 echo [setup] Bob %BOBVER% - setup
-where pwsh >nul 2>nul || (
-  echo [setup] PowerShell 7 ^(pwsh^) is required. Install it with:  winget install Microsoft.PowerShell
+set "PYTHONPATH=%~dp0scripts"
+where python >nul 2>nul || (
+  echo [setup] Python 3.12 is required. Run install_prereqs.bat first.
   exit /b 1
 )
-pwsh -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\setup.ps1" %*
+python -m bob.kernel setup %*
 exit /b %ERRORLEVEL%

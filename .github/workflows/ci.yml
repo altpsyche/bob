@@ -114,6 +114,8 @@ jobs:
   acceptance-cpu:
     name: acceptance-cpu (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    env:
+      PYTHONPATH: scripts   # so `python -m bob` / `python -m bob.kernel` resolve from the checkout
     strategy:
       fail-fast: false
       matrix:
@@ -149,27 +151,29 @@ jobs:
       - name: Install prerequisites (Windows, CPU)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: pwsh -File scripts/install-prereqs.ps1 -Cpu
+        run: python -m bob.kernel prereqs --cpu
 
       # Bob's Python runtime venv (the agent server the smoke exercises is python -m bob — NB, not NC).
+      # The cold-start kernel provisions it via osenv.new_bob_venv (replaces bootstrap-litellm.ps1).
       - name: Bootstrap the Python runtime venv
         shell: pwsh
-        run: pwsh -File scripts/bootstrap-litellm.ps1
+        run: python -m bob.kernel venv litellm
 
       # CPU tier: select the profile, build CPU-only llama.cpp + the llama-swap proxy (Go, from the
       # submodule), fetch the tiny GGUF (verified against versions.lock). llama-swap is what `bob up`
-      # launches as the endpoint, so it must be built before the stack comes up.
+      # launches as the endpoint, so it must be built before the stack comes up. All via the Python
+      # front door / kernel — zero PowerShell provisioning (ONE-D Slice D8).
       - name: Select CPU profile + build + fetch (from versions.lock)
         shell: pwsh
         run: |
-          pwsh -File scripts/bob.ps1 profile cpu
-          pwsh -File scripts/bob.ps1 build --cpu
-          pwsh -File scripts/build-llama-swap.ps1
-          pwsh -File scripts/bob.ps1 fetch cpu
+          python -m bob profile cpu
+          python -m bob build --cpu
+          python -m bob.kernel build-swap
+          python -m bob fetch cpu
 
       - name: Bring the stack up
         shell: pwsh
-        run: pwsh -File scripts/bob.ps1 up -NoOpen
+        run: python -m bob up -NoOpen
 
       # The shared cross-OS end-to-end gate (promoted from smoke-linux.ps1). -Up also starts the agent
       # server and tears it down after. A red smoke blocks the PR.
@@ -215,7 +219,7 @@ jobs:
             set -e
             chmod +x install_prereqs.sh
             ./install_prereqs.sh --cpu
-            pwsh -NoProfile -File scripts/diagnose.ps1
+            PYTHONPATH=scripts python3 -m bob diagnose
           '
 
   # ND2 (contracts C5 + C7) — native-from-source CUDA + REAL inference. RELEASE TAGS ONLY (job-level
@@ -225,6 +229,8 @@ jobs:
     name: acceptance-gpu (native CUDA, release tags)
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: [self-hosted, gpu]
+    env:
+      PYTHONPATH: scripts
     steps:
       - uses: actions/checkout@v4
         with:
@@ -233,11 +239,12 @@ jobs:
       - name: Provision (native CUDA), build, fetch, serve
         shell: pwsh
         run: |
-          pwsh -File scripts/bootstrap-litellm.ps1
-          pwsh -File scripts/bob.ps1 build            # native-from-source CUDA (auto-detected arch)
-          pwsh -File scripts/bob.ps1 profile auto      # size to the card's VRAM
-          pwsh -File scripts/bob.ps1 fetch             # active profile's models (verified vs versions.lock)
-          pwsh -File scripts/bob.ps1 up -NoOpen
+          python -m bob.kernel venv litellm
+          python -m bob build             # native-from-source CUDA (auto-detected arch)
+          python -m bob.kernel build-swap  # the llama-swap proxy (Go)
+          python -m bob profile auto       # size to the card's VRAM
+          python -m bob fetch              # active profile's models (verified vs versions.lock)
+          python -m bob up -NoOpen
 
       - name: End-to-end smoke (real inference)
         shell: pwsh

@@ -1,28 +1,26 @@
 @echo off
 REM ============================================================================
-REM  Bob prerequisite installer. Run ONCE on a fresh machine.
-REM  Installs: Node.js, uv, Go, Python 3.12, CUDA Toolkit, cmake, Docker Desktop.
-REM
-REM  After this script finishes:
-REM    - If Docker Desktop was just installed: LOG OUT and back in, then run setup.bat
-REM    - If Docker was already installed: run setup.bat directly
+REM  Bob prerequisite installer (ONE-D Slice D8, DD5 — Python kernel, zero PowerShell).
+REM  Ensures Python is present, then hands off to `python -m bob.kernel prereqs`,
+REM  which installs Node.js, uv, Go, Python 3.12, CUDA Toolkit, cmake, Docker.
+REM  Run ONCE on a fresh machine. Idempotent.
 REM
 REM  Manual prereqs (install before running this):
 REM    Git          https://git-scm.com
-REM    Scoop        irm get.scoop.sh | iex   (in PowerShell)
+REM    Python 3.12  winget install Python.Python.3.12
 REM    VS2022 C++   winget install Microsoft.VisualStudio.2022.Community
 REM                 (then: VS Installer -> Modify -> Desktop development with C++)
-REM    PowerShell 7 winget install Microsoft.PowerShell
 REM ============================================================================
 setlocal
 REM ND4 — version-stamp: state which Bob release this blessed entry belongs to.
 set "BOBVER=?"
 if exist "%~dp0VERSION" set /p BOBVER=<"%~dp0VERSION"
 echo [install_prereqs] Bob %BOBVER% - prerequisite install
-where pwsh >nul 2>nul || (
-    echo [install_prereqs] PowerShell 7 ^(pwsh^) is required.
-    echo Install it with:  winget install Microsoft.PowerShell
+set "PYTHONPATH=%~dp0scripts"
+where python >nul 2>nul || (
+    echo [install_prereqs] Python 3.12 is required.
+    echo Install it with:  winget install Python.Python.3.12   then re-run install_prereqs.bat
     exit /b 1
 )
-pwsh -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\install-prereqs.ps1" %*
+python -m bob.kernel prereqs %*
 exit /b %ERRORLEVEL%

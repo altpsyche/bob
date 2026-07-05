@@ -171,8 +171,7 @@ def _notify_windows(title: str, body: str) -> bool:  # pragma: no cover — exer
         ToastNotifier().show_toast(title, body, threaded=True)
         return True
     except Exception:
-        # WinRT/toast is handled by scripts/bob-toast.ps1 in the PowerShell layer today; the
-        # Python seam is a no-op fallback rather than a hard dependency.
+        # No win10toast (optional) — the Python seam is a no-op fallback, not a hard dependency.
         return False
 
 
@@ -1153,3 +1152,234 @@ def _mlock_grant_windows() -> str:  # pragma: no cover — exercised only on Win
     finally:
         inf.unlink(missing_ok=True)
         db.unlink(missing_ok=True)
+
+
+# --- Tier-0 provisioning seams (ONE-D §1b, Slice D8 — the cold-start KERNEL uses these under the
+# system python3, before any venv exists). Ports the _platform.ps1 python-provisioning + package
+# family: PACKAGE_MAP / Resolve-PackageName / Resolve-PackageCmd / Install-Package + the venv-creator
+# cluster Test-PythonVersionAtLeast / Install-Uv / Get-BobPython / Get-BobVenvPython / New-BobVenv. ----
+
+# Logical package -> concrete name per manager; None means the manager bundles it (caller skips).
+# Single source (C2) — adding a distro column is a data change here, never re-inlined in a script.
+PACKAGE_MAP = {
+    "git":          {"apt": "git",             "dnf": "git",         "pacman": "git",        "zypper": "git"},
+    "curl":         {"apt": "curl",            "dnf": "curl",        "pacman": "curl",       "zypper": "curl"},
+    "toolchain-cc": {"apt": "build-essential", "dnf": "gcc-c++",     "pacman": "base-devel", "zypper": "gcc-c++"},
+    "make":         {"apt": None,              "dnf": "make",        "pacman": None,         "zypper": "make"},
+    "cmake":        {"apt": "cmake",           "dnf": "cmake",       "pacman": "cmake",      "zypper": "cmake"},
+    "ninja":        {"apt": "ninja-build",     "dnf": "ninja-build", "pacman": "ninja",      "zypper": "ninja"},
+    "go":           {"apt": "golang-go",       "dnf": "golang",      "pacman": "go",         "zypper": "go"},
+    "node":         {"apt": "nodejs",          "dnf": "nodejs",      "pacman": "nodejs",     "zypper": "nodejs-default"},
+    "npm":          {"apt": "npm",             "dnf": "npm",         "pacman": "npm",        "zypper": "npm-default"},
+    "python":       {"apt": "python3",         "dnf": "python3",     "pacman": "python",     "zypper": "python3"},
+    "python-pip":   {"apt": "python3-pip",     "dnf": "python3-pip", "pacman": None,         "zypper": "python3-pip"},
+    "python-venv":  {"apt": "python3-venv",    "dnf": None,          "pacman": None,         "zypper": None},
+    "cron":         {"apt": "cron",            "dnf": "cronie",      "pacman": "cronie",     "zypper": "cronie"},
+    "cuda":         {"apt": "nvidia-cuda-toolkit", "dnf": "cuda-toolkit", "pacman": "cuda",  "zypper": "cuda"},
+    "docker":       {"apt": "docker.io",       "dnf": "docker",      "pacman": "docker",     "zypper": "docker"},
+}
+
+
+def resolve_package_name(logical: str, manager: str = None):
+    """Concrete package name for a logical one on a manager, or None when it's bundled (caller skips).
+    Raises KeyError on an unknown logical name or a manager with no column — a mapping gap fails loudly
+    instead of silently no-op'ing an install. Port of _platform.ps1 Resolve-PackageName."""
+    manager = manager or linux_package_manager()
+    if logical not in PACKAGE_MAP:
+        raise KeyError(f"resolve_package_name: no mapping for logical package '{logical}' — "
+                       "add it to PACKAGE_MAP in osenv.py.")
+    row = PACKAGE_MAP[logical]
+    if manager not in row:
+        raise KeyError(f"resolve_package_name: logical '{logical}' has no entry for manager "
+                       f"'{manager}' — add the '{manager}' column to PACKAGE_MAP.")
+    return row[manager]
+
+
+def resolve_package_cmd(package: str, os: str = None, manager: str = None) -> dict:
+    """PURE. The install command spec {'Exe','Args','Sudo'} for the OS (+ Linux manager). Windows uses
+    winget; Linux uses the detected apt/dnf/pacman/zypper. Port of _platform.ps1 Resolve-PackageCmd."""
+    os = os or os_name()
+    if os == "windows":
+        return {"Exe": "winget", "Args": ["install", package, "--accept-package-agreements",
+                                          "--accept-source-agreements", "--disable-interactivity"],
+                "Sudo": False}
+    specs = {
+        "apt":    {"Exe": "apt-get", "Args": ["install", "-y", package], "Sudo": True},
+        "dnf":    {"Exe": "dnf",     "Args": ["install", "-y", package], "Sudo": True},
+        "pacman": {"Exe": "pacman",  "Args": ["-S", "--noconfirm", package], "Sudo": True},
+        "zypper": {"Exe": "zypper",  "Args": ["--non-interactive", "install", package], "Sudo": True},
+    }
+    return specs.get(manager, {"Exe": None, "Args": [], "Sudo": False, "Manager": manager})
+
+
+def install_package(package: str, extra_args=(), dry_run: bool = False):
+    """EXECUTOR. Install a package: Windows via winget (tolerating already-installed), Linux via the
+    detected manager under sudo. dry_run prints and returns the resolved spec without executing (lets
+    tests assert every PACKAGE_MAP cell resolves). Raises RuntimeError on a real failure. Port of
+    _platform.ps1 Install-Package."""
+    os = os_name()
+    mgr = None if os == "windows" else linux_package_manager()
+    if os != "windows" and not mgr:
+        raise RuntimeError(f"install_package: no supported package manager (apt/dnf/pacman/zypper) "
+                           f"found for '{package}'.")
+    spec = resolve_package_cmd(package, os=os, manager=mgr)
+    extra = list(extra_args)
+    if dry_run:
+        prefix = "sudo " if spec["Sudo"] else ""
+        line = (prefix + spec["Exe"] + " " + " ".join(spec["Args"] + extra)).strip()
+        print(f"  [dry-run] {line}", file=sys.stderr)
+        return spec
+    if spec["Sudo"] and shutil.which("sudo"):
+        argv = ["sudo", spec["Exe"], *spec["Args"], *extra]
+    else:
+        argv = [spec["Exe"], *spec["Args"], *extra]
+    rc = subprocess.run(argv).returncode
+    # -1978335189 = APPINSTALLER_CLI_ERROR_PACKAGE_ALREADY_INSTALLED (winget); treat as success.
+    if rc not in (0, -1978335189):
+        raise RuntimeError(f"install failed for '{package}' (exit {rc}).")
+    return spec
+
+
+def _py_minor(exe: str):
+    """(major, minor) tuple from `<exe> --version`, or None."""
+    import re
+    try:
+        out = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"(\d+)\.(\d+)", (out.stdout or "") + (out.stderr or ""))
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def python_at_least(exe: str = "python", min_ver: str = "3.12") -> bool:
+    """True if `<exe> --version` reports >= min_ver. Bob needs 3.12+ but not exactly 3.12. Port of
+    _platform.ps1 Test-PythonVersionAtLeast."""
+    v = _py_minor(exe)
+    return bool(v and v >= (_parse_ver(min_ver) or (3, 12)))
+
+
+def install_uv():
+    """Ensure astral `uv` is on PATH; return its path or None. pacman ships uv; apt/dnf don't, so fall
+    back to astral's official installer (~/.local/bin, no sudo). Linux/macOS only. Port of Install-Uv."""
+    uv = shutil.which("uv")
+    if uv:
+        return uv
+    if linux_package_manager() == "pacman":
+        try:
+            install_package("uv")
+        except (RuntimeError, KeyError):
+            pass
+    uv = shutil.which("uv")
+    if uv:
+        return uv
+    print("  installing uv (astral) via the official installer...", file=sys.stderr)
+    try:
+        subprocess.run(["sh", "-c", "curl -LsSf https://astral.sh/uv/install.sh | sh"], check=False)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    for p in (Path.home() / ".local/bin/uv", Path.home() / ".cargo/bin/uv"):
+        if p.exists():
+            os.environ["PATH"] = f"{p.parent}{os.pathsep}{os.environ.get('PATH', '')}"
+            return str(p)
+    return shutil.which("uv")
+
+
+def bob_python(prefer: str = "3.12"):
+    """A Python interpreter Bob's venvs can use: >= 3.11 and < 3.13 (pinned deps cap at <3.13, so a
+    too-NEW system Python is rejected). Prefer one on PATH in range; else uv-provision CPython 3.12 (any
+    distro, no root). Returns a path/command, or None (Windows resolves upstream). Port of Get-BobPython."""
+    for cand in ("python3.12", "python3.11", "python3", "python"):
+        exe = shutil.which(cand)
+        if exe:
+            v = _py_minor(cand)
+            if v and (3, 11) <= v < (3, 13):
+                return exe
+    if os_name() == "windows":
+        return None
+    uv = install_uv()
+    if not uv:
+        return None
+    print(f"  system Python is out of range (venvs need 3.11/3.12) — provisioning CPython {prefer} via uv...",
+          file=sys.stderr)
+    subprocess.run([uv, "python", "install", prefer], check=False)
+    try:
+        found = subprocess.run([uv, "python", "find", prefer], capture_output=True, text=True).stdout
+        found = found.strip().splitlines()[0].strip() if found.strip() else ""
+    except (OSError, subprocess.SubprocessError, IndexError):
+        found = ""
+    return found if found and Path(found).exists() else None
+
+
+def bob_venv_python():
+    """Resolve a Python suitable for CREATING venvs (>= 3.11, < 3.13). Windows: scoop python312 -> py
+    launcher -3.12 -> an in-range PATH interpreter. Linux/macOS: defer to bob_python (uv-provisions when
+    the system one is out of range). Returns a path/command or None. The single resolver new_bob_venv and
+    the kernel bootstrap share. Port of Get-BobVenvPython."""
+    if os_name() != "windows":
+        return bob_python()
+    try:  # pragma: no cover — Windows path
+        p = subprocess.run(["scoop", "prefix", "python312"], capture_output=True, text=True).stdout.strip()
+        if p:
+            cand = Path(p) / "python.exe"
+            if cand.exists():
+                return str(cand)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if shutil.which("py"):  # pragma: no cover — Windows path
+        try:
+            resolved = subprocess.run(["py", "-3.12", "-c", "import sys; print(sys.executable)"],
+                                      capture_output=True, text=True).stdout.strip().splitlines()
+            if resolved and Path(resolved[0].strip()).exists():
+                return resolved[0].strip()
+        except (OSError, subprocess.SubprocessError, IndexError):
+            pass
+    for cand in ("python3.12", "python", "python3"):  # pragma: no cover — Windows path
+        if shutil.which(cand) and python_at_least(cand, "3.12"):
+            return cand
+    return None
+
+
+def new_bob_venv(name: str, requirements_base: str = None, extra_packages=(), python: str = None,
+                 force: bool = False, quiet: bool = False) -> str:
+    """Create (or self-heal) a Bob venv under tools/<name> and install its requirements. THE single
+    venv-build path (the kernel bootstrap loop + `update`/`eval` all call it). Idempotent: reuses an
+    in-range venv, recreates one built with an out-of-range interpreter. Requirements from
+    tools/<base>.lock on Windows (pinned) else tools/<base>.txt. Returns the venv python path (str).
+    Raises RuntimeError on any failure. Port of _platform.ps1 New-BobVenv."""
+    python = python or bob_venv_python()
+    if not python:
+        raise RuntimeError("new_bob_venv: no venv-compatible Python (3.11/3.12) found and couldn't "
+                           "provision one via uv. Install Python 3.12 and re-run.")
+    venv = REPO / "tools" / name
+    venv_py = venv_exe(name, "python")
+    quiet_arg = ["--quiet"] if quiet else []
+
+    if force and venv.exists():
+        _rm_rf(venv)
+    if venv.exists() and venv_py.exists():
+        v = _py_minor(str(venv_py))
+        if not (v and (3, 11) <= v < (3, 13)):
+            print(f"  recreating {name} (was Python {v} — need 3.11/3.12)", file=sys.stderr)
+            _rm_rf(venv)
+    if not venv.exists():
+        print(f"  creating {name} ({python})...", file=sys.stderr)
+        if subprocess.run([python, "-m", "venv", str(venv)]).returncode != 0:
+            raise RuntimeError(f"python -m venv failed for {name}.")
+    if not venv_py.exists():
+        raise RuntimeError(f"venv creation failed for {name} — {venv_py} not found")
+
+    if subprocess.run([str(venv_py), "-m", "pip", "install", "--upgrade", "pip", *quiet_arg]).returncode != 0:
+        raise RuntimeError(f"pip upgrade failed for {name}.")
+
+    if requirements_base:
+        lock = REPO / "tools" / f"{requirements_base}.lock"
+        txt = REPO / "tools" / f"{requirements_base}.txt"
+        req = lock if (os_name() == "windows" and lock.exists()) else txt
+        print(f"  installing {name} from {req.name}", file=sys.stderr)
+        if subprocess.run([str(venv_py), "-m", "pip", "install", "-r", str(req), *quiet_arg]).returncode != 0:
+            raise RuntimeError(f"pip install failed for {name} — re-run to retry.")
+    for pkg in extra_packages:
+        print(f"  installing {pkg} into {name}", file=sys.stderr)
+        if subprocess.run([str(venv_py), "-m", "pip", "install", pkg, *quiet_arg]).returncode != 0:
+            raise RuntimeError(f"pip install {pkg} failed for {name}.")
+    return str(venv_py)

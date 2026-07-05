@@ -307,9 +307,19 @@ def eval_model(role: str = "coder", task: str = "mmlu", shots: int = 0, limit: i
     config = config if config is not None else _cfg
     lm_eval = osenv.venv_exe("venv-eval", "lm_eval")
     if not lm_eval.exists():
-        print(f"lm-eval not installed ({lm_eval}). Set up the eval venv first: scripts/bootstrap-eval.ps1",
+        # DD3 — the isolated eval venv is provisioned lazily via the shared osenv.new_bob_venv (Slice D8,
+        # replacing the retired bootstrap-eval.ps1); lm-eval + transformers are heavy so it's kept off the
+        # default bootstrap. Best-effort: a provisioning failure surfaces the actionable hint.
+        print("lm-eval venv not found — provisioning tools/venv-eval (lm-eval + transformers)...",
               file=sys.stderr)
-        return 1
+        try:
+            osenv.new_bob_venv("venv-eval", "eval-requirements")
+        except RuntimeError as e:
+            print(f"could not provision venv-eval ({e}). Create it manually and re-run.", file=sys.stderr)
+            return 1
+        if not lm_eval.exists():
+            print(f"lm-eval still not installed ({lm_eval}) after provisioning.", file=sys.stderr)
+            return 1
 
     roles = bob_models.profile_roles()
     spec = roles.get(role)

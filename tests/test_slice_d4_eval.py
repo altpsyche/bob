@@ -46,13 +46,17 @@ class TestEvalModel(unittest.TestCase):
                 captured["env"] = kw.get("env", {})
             return mock.Mock(returncode=0)
 
+        # D8: a missing venv-eval triggers a lazy osenv.new_bob_venv provision (replacing the retired
+        # bootstrap-eval.ps1). Simulate "couldn't provision" so the missing-venv path stays deterministic.
         with mock.patch("osenv.venv_exe", return_value=exe), \
+             mock.patch("osenv.new_bob_venv", side_effect=RuntimeError("no venv here")), \
              mock.patch("bob_models.profile_roles", return_value=roles if roles is not None else self.roles), \
              mock.patch("requests.get", get), \
              mock.patch("subprocess.run", side_effect=fake_sub):
             return models_mod.eval_model(role, task, shots=shots, limit=limit, config=CFG, now="20260705-1200")
 
-    def test_missing_venv_returns_1(self):
+    def test_missing_venv_provisions_then_returns_1_when_unavailable(self):
+        # venv-eval absent -> attempts provisioning; when that fails, returns 1 (not a crash).
         self.assertEqual(self._run(venv_exists=False), 1)
 
     def test_unknown_role_returns_1(self):

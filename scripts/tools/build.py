@@ -349,16 +349,15 @@ def _verify_binary(exe: Path) -> bool:
 
 
 def _reinstall_venv() -> None:
-    """Ensure the runtime venv matches the (possibly updated) requirements lock. The venv provisioner ports
-    into the cold-start kernel at D8; interim best-effort via the kept pre-venv bootstrap-litellm.ps1."""
-    script = SCRIPTS / "bootstrap-litellm.ps1"
-    pwsh = shutil.which("pwsh") or shutil.which("powershell")
-    if pwsh and script.exists():
-        print("Ensuring the Python runtime venv matches the lock...", file=sys.stderr)
-        subprocess.run([pwsh, "-NoProfile", "-File", str(script)])
-    else:
-        print("  (skip venv reinstall — run scripts/bootstrap-litellm.ps1 if requirements changed)",
-              file=sys.stderr)
+    """Ensure the runtime venv matches the (possibly updated) requirements lock, via the shared
+    osenv.new_bob_venv provisioner (Slice D8 — the cold-start kernel and `update` share one venv path).
+    Best-effort: a reinstall failure warns but doesn't abort the update."""
+    import osenv
+    print("Ensuring the Python runtime venv matches the lock...", file=sys.stderr)
+    try:
+        osenv.new_bob_venv("venv-litellm", "litellm-requirements", quiet=True)
+    except RuntimeError as e:
+        print(f"  (venv reinstall skipped: {e})", file=sys.stderr)
 
 
 def update_stack(tag: str = None) -> int:
