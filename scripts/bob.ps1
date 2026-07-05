@@ -54,48 +54,9 @@ if (Test-Path $verbsFile) {
 }
 
 switch ($cmd) {
-  'status' {
-    try { $apiModels = (Invoke-RestMethod "$base/models" -TimeoutSec 3).data }
-    catch {
-      Write-Host "Endpoint not running. Start with: bob serve" -ForegroundColor Yellow; break
-    }
-    $loadedIds = @{}; foreach ($m in $apiModels) { $loadedIds[$m.id] = $true }
-    $cfg     = Get-ModelsConfig
-    $profile = Resolve-ProfileName -Config $cfg
-    $models  = (Get-Models -Profile $profile).models
-    Write-Host "`nEndpoint: $base  " -NoNewline; Write-Host "[running]" -ForegroundColor Green
-    Write-Host "Profile:  $profile`n"
-    Write-Host ("{0,-10} {1,-36} {2,-9} {3}" -f 'Role','Model','VRAM','State')
-    Write-Host ('-' * 70)
-    foreach ($m in $models) {
-      $label  = "$($m.gguf -replace '\.gguf$') ($($m.sizeGB) GB)"
-      $loaded = $loadedIds.ContainsKey($m.role)
-      $state  = if ($m.pinned -and $loaded) { 'loaded (pinned)' }
-                elseif ($m.pinned)           { 'loading...' }
-                elseif ($loaded)             { 'loaded' }
-                else                         { 'unloaded' }
-      $color  = if ($loaded) { 'Green' } else { 'DarkGray' }
-      $vram   = if ($loaded) { "$($m.sizeGB) GB" } else { '--' }
-      Write-Host ("{0,-10} {1,-36} {2,-9} " -f $m.role, $label, $vram) -NoNewline
-      Write-Host $state -ForegroundColor $color
-    }
-    $bobVoice = try { (Get-BobConfig).voice } catch { $null }
-    $sttPort  = $bobVoice.sttPort ?? (Get-BobPortDefault 'sttPort')
-    if (Test-PortInUse -Port $sttPort) {
-      Write-Host ("  {0,-10} {1,-36} {2}" -f 'whisper','(stt server)',"UP (port $sttPort)") -ForegroundColor Green
-    } else {
-      Write-Host ("  {0,-10} {1,-36} {2}" -f 'whisper','(stt server)',"down (port $sttPort)") -ForegroundColor DarkGray
-    }
-    $ttsPort = $bobVoice.ttsPort ?? (Get-BobPortDefault 'ttsPort')
-    if (Test-PortInUse -Port $ttsPort) {
-      Write-Host ("  {0,-10} {1,-36} {2}" -f 'piper','(tts server)',"UP (port $ttsPort)") -ForegroundColor Green
-    } else {
-      Write-Host ("  {0,-10} {1,-36} {2}" -f 'piper','(tts server)',"down (port $ttsPort)") -ForegroundColor DarkGray
-    }
-    Write-Host ""
-  }
-  # ONE-C Slice 2: ps/up/serve/restart/logs/webui are runtime=python (scripts/tools/stack.py via
-  # cli.py handlers); the dispatch prologue routes them to `python -m bob` before this switch. Deleted.
+  # ONE-C: status/ps/up/serve/restart/logs/webui are runtime=python (scripts/tools/stack.py via cli.py
+  # handlers); the dispatch prologue routes them to `python -m bob` before this switch. Deleted.
+  # ('status' ported after Slice 6 — the registry read it needs became Python-native in Slice 4.)
   # 'diagnose' -> runtime=python (cli.py _handle_diagnose over scripts/tools/health.py:diagnose — the
   # SPLIT port: registry + light discovery. scripts/diagnose.ps1 stays for the DEEP OS discovery
   # (CUDA/RAM/NUMA/mlock/package) called by setup.ps1/fetch-models.ps1; ports to Python in ONE-D.)

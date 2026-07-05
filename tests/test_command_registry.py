@@ -37,7 +37,7 @@ class TestRegistry(unittest.TestCase):
         self.assertEqual(rt["diagnose"], "python")
         self.assertEqual(rt["version"], "python")
         self.assertEqual(rt["build"], "pwsh")        # build/update/mlock stay pwsh through ONE-D (D2)
-        self.assertEqual(rt["status"], "pwsh")       # status needs live VRAM query — later
+        self.assertEqual(rt["status"], "python")     # ONE-C — loaded-models status (stack.py)
         self.assertEqual(rt["chat"], "python")      # S2 — chat/code/think ported onto the agent loop
         self.assertEqual(rt["code"], "python")
         self.assertEqual(rt["think"], "python")

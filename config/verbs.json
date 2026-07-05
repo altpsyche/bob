@@ -32,7 +32,7 @@
     "serve": "python",
     "restart": "python",
     "stop": "python",
-    "status": "pwsh",
+    "status": "python",
     "ps": "python",
     "logs": "python",
     "services": "python",

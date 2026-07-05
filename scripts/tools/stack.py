@@ -111,6 +111,52 @@ def stack_ps(config: dict) -> str:
     return "\n".join(lines)
 
 
+def stack_status(config: dict) -> str:
+    """Loaded models + VRAM state (queries /v1/models) plus whisper/piper port probes. Port of the
+    `status` case. Read-only; bails with a hint if the endpoint isn't running (needs the registry, which
+    it reads via bob_models — ONE-C Slice 4 made that Python-native)."""
+    import bob_models
+    import requests
+    from bob_core import _port
+
+    osenv = _osenv()
+    port = _port(config, "port")
+    base = f"http://localhost:{port}/v1"
+    try:
+        data = requests.get(f"{base}/models", timeout=3).json()
+    except (requests.RequestException, ValueError):
+        return "Endpoint not running. Start with: bob serve"
+    loaded = {m.get("id") for m in data.get("data", [])}
+
+    mcfg = bob_models.load_models_config()
+    profile = bob_models.resolve_profile_name(config=mcfg)
+    roles = bob_models.profile_roles(profile, mcfg)
+    ordered = [r for r in _ROLE_ORDER if r in roles] + sorted(r for r in roles if r not in _ROLE_ORDER)
+
+    lines = ["", f"Endpoint: {base}  [running]", f"Profile:  {profile}", "",
+             f"{'Role':<10} {'Model':<36} {'VRAM':<9} {'State'}", "-" * 70]
+    for role in ordered:
+        spec = roles[role]
+        label = f"{spec.get('gguf', '').replace('.gguf', '')} ({spec.get('sizeGB', '?')} GB)"
+        is_loaded = role in loaded
+        pinned = spec.get("pinned")
+        state = ("loaded (pinned)" if pinned and is_loaded else "loading..." if pinned
+                 else "loaded" if is_loaded else "unloaded")
+        vram = f"{spec.get('sizeGB', '?')} GB" if is_loaded else "--"
+        lines.append(f"{role:<10} {label:<36} {vram:<9} {state}")
+    for name, key in (("whisper", "sttPort"), ("piper", "ttsPort")):
+        p = _port(config, key)
+        up = osenv.is_port_in_use(p)
+        lbl = "(stt server)" if name == "whisper" else "(tts server)"
+        lines.append(f"  {name:<10} {lbl:<36} {('UP (port ' + str(p) + ')') if up else ('down (port ' + str(p) + ')')}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+# canonical role order (mirrors Get-Models / models.py)
+_ROLE_ORDER = ["planner", "coder", "chat", "fim", "embed"]
+
+
 def stack_logs(config: dict, lines: int = 50) -> str:
     """Bounded tail of logs/llama-swap.log (the agent-facing, non-follow read). CLI follow is separate."""
     log_file = _logfile("llama-swap")
@@ -501,6 +547,10 @@ def _stack_restart() -> str:
     return stack_restart(_cfg)
 
 
+def _stack_status() -> str:
+    return stack_status(_cfg)
+
+
 def _stack_ps() -> str:
     return stack_ps(_cfg)
 
@@ -546,6 +596,12 @@ TOOL_DEFS = [
         "description": "Restart the inference endpoint in the background (stop, then start + wait for ready).",
         "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {
+        "name": "stack_status",
+        "description": ("Show which models are loaded and their VRAM state (queries the endpoint) plus "
+                        "whisper/piper server status. Read-only. Use when the user asks what's running / "
+                        "loaded / the model status."),
+        "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
         "name": "stack_ps",
         "description": "Show Bob's running daemons with PID, RAM, uptime, and liveness. Read-only.",
         "parameters": {"type": "object", "properties": {}}}},
@@ -576,7 +632,7 @@ TOOL_DEFS = [
 
 DISPATCH = {
     "stack_up": _stack_up, "stack_stop": _stack_stop, "stack_restart": _stack_restart,
-    "stack_ps": _stack_ps, "stack_logs": _stack_logs,
+    "stack_status": _stack_status, "stack_ps": _stack_ps, "stack_logs": _stack_logs,
     "litellm_control": _litellm_control, "whisper_control": _whisper_control,
     "piper_control": _piper_control, "services_control": _services_control,
 }

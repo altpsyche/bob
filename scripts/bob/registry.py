@@ -99,7 +99,7 @@ COMMANDS = [
     {"name": "stop", "group": "Run", "summary": "Stop all services (frees VRAM)",
      "args": "", "runtime": "python", "handler": "stop"},
     {"name": "status", "group": "Run", "summary": "Loaded models and VRAM usage",
-     "args": "", "runtime": "pwsh", "handler": None},
+     "args": "", "runtime": "python", "handler": "status"},
     {"name": "ps", "group": "Run", "summary": "Daemon processes with PID, RAM, uptime",
      "args": "", "runtime": "python", "handler": "ps"},
     {"name": "logs", "group": "Run", "summary": "Tail the server log",

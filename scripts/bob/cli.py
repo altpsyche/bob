@@ -683,6 +683,11 @@ def _handle_ps(rest: list) -> int:
     return 0
 
 
+def _handle_status(rest: list) -> int:
+    print(_stack().stack_status(_cfg()))
+    return 0
+
+
 def _handle_logs(rest: list) -> int:
     """bob logs [-n N | N] — tail-follow the endpoint log."""
     rest = list(rest)
@@ -880,6 +885,7 @@ _HANDLERS = {
     "serve": _handle_serve,
     "restart": _handle_restart,
     "stop": _handle_stop,
+    "status": _handle_status,         # ONE-C follow-up — loaded-models status (scripts/tools/stack.py)
     "ps": _handle_ps,
     "logs": _handle_logs,
     "webui": _handle_webui,

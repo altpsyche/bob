@@ -22,7 +22,7 @@ CFG = {"port": 8080, "litellmPort": 8081, "sttPort": 8082, "ttsPort": 8083, "web
 
 
 class TestRegistryWiring(unittest.TestCase):
-    LIFECYCLE = ["up", "serve", "restart", "stop", "ps", "logs", "webui",
+    LIFECYCLE = ["up", "serve", "restart", "stop", "status", "ps", "logs", "webui",
                  "litellm", "whisper", "piper", "services"]
 
     def test_verbs_flipped_to_python_with_handlers(self):
@@ -36,13 +36,11 @@ class TestRegistryWiring(unittest.TestCase):
         # D1 — "one clean way, no silly alias." `down` is no longer a command.
         self.assertNotIn("down", registry.by_name())
 
-    def test_status_stays_pwsh_until_slice4(self):
-        self.assertEqual(registry.by_name()["status"]["runtime"], "pwsh")
-
     def test_agent_tools_registered_and_mutating(self):
         self.assertEqual(set(stack.DISPATCH), {
-            "stack_up", "stack_stop", "stack_restart", "stack_ps", "stack_logs",
+            "stack_up", "stack_stop", "stack_restart", "stack_status", "stack_ps", "stack_logs",
             "litellm_control", "whisper_control", "piper_control", "services_control"})
+        self.assertNotIn("stack_status", stack.MUTATING_TOOLS)  # read-only
         # ps/logs are read-only; the rest mutate.
         self.assertNotIn("stack_ps", stack.MUTATING_TOOLS)
         self.assertNotIn("stack_logs", stack.MUTATING_TOOLS)
@@ -62,6 +60,26 @@ class TestPs(unittest.TestCase):
         self.assertRegex(out, r"llama-swap\s+100\s+50 MB\s+0:01:00\s+running")
         self.assertRegex(out, r"litellm\s+200\s+--\s+--\s+dead \(stale PID file\)")
         self.assertRegex(out, r"whisper\s+--\s+--\s+--\s+not running")
+
+
+class TestStatus(unittest.TestCase):
+    def test_endpoint_down_bails(self):
+        import requests
+        with mock.patch("requests.get", side_effect=requests.RequestException("down")):
+            self.assertEqual(stack.stack_status(CFG), "Endpoint not running. Start with: bob serve")
+
+    def test_endpoint_up_marks_loaded_and_probes_voice(self):
+        resp = mock.Mock()
+        resp.json.return_value = {"data": [{"id": "planner"}]}   # planner loaded, others not
+        with mock.patch("requests.get", return_value=resp), \
+             mock.patch.object(osenv, "is_port_in_use", side_effect=lambda p, *a, **k: p == 8082):
+            out = stack.stack_status(CFG)
+        self.assertIn("[running]", out)
+        self.assertRegex(out, r"planner\s+.*\bloaded\b")
+        self.assertRegex(out, r"coder\s+.*\bunloaded\b")
+        self.assertIn("whisper", out)
+        self.assertIn("UP (port 8082)", out)     # stt up
+        self.assertIn("down (port 8083)", out)   # tts down
 
 
 class TestStop(unittest.TestCase):
