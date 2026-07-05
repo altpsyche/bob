@@ -165,11 +165,18 @@ callers today are `voice` ([:995](../../scripts/bob.ps1)) and `describe`/`screen
 **no memory recall, no write-back, a different persona, a hard 256-token cap, no retry, no logging, and no
 tools** vs `bob chat` — all because it runs the pwsh path, not the loop.
 
-- **B1. Multimodal-in-loop** *(critical path — nothing else lands first).* `run_agent_events`
-  ([bob_loop.py:1008](../../scripts/bob_loop.py)) accepts image content: `goal` becomes
-  `str | list[content-block]`; the message builder ([:1207-1212](../../scripts/bob_loop.py)) emits OpenAI
-  `image_url`/base64 list-of-blocks content; image-bearing turns route to `get_role("vision")`. Define an
-  **image-carrying tool-result contract** so a tool returning an image is threaded into the next model turn
+**Progress:** ONE-B1 ✓ landed (commits `dd464ee`, `0a80286`) — `run_agent_events`/`run_agent` accept an
+`images` param (goal turn → OpenAI content-block list; vision auto-routing) and the tool-result image
+contract (`{"__images__":[...],"text":...}` → threaded into the next turn + vision reroute), via the shared
+`_image_content_block` encoder. 4 loop tests. Remaining: B2 (wire describe/screenshot), B3 (audio seam),
+B4 (`/voice`), B5 (delete `Invoke-BobStream`).
+
+- **B1. Multimodal-in-loop** ✓ *(critical path — done).* `run_agent_events`/`run_agent` gained an
+  `images: list = None` param (chosen over overloading `goal` to keep `goal` a `str` — recall/recitation/
+  logging untouched, minimal blast radius); when present the goal turn becomes an OpenAI content-block list
+  `[text, image_url…]` (else a plain string, byte-identical); image-bearing turns route to
+  `get_role(config, "vision")` unless the caller pinned a role. The **image-carrying tool-result contract**
+  (`{"__images__":[...],"text":...}`) threads a tool-returned image into the next model turn
   ([:1421-1426](../../scripts/bob_loop.py) is JSON-string-only today). Grep confirms zero `image_url`
   handling in the loop today — this is greenfield.
 - **B2. Port `describe`/`screenshot`** into Python capability functions calling the loop; port the 1024px
