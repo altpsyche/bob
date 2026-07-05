@@ -322,8 +322,9 @@ def _voice_smoke(stt_port: int) -> str:
         req = urllib.request.Request(f"http://localhost:{stt_port}/inference", data=body,
                                      headers={"Content-Type": ctype}, method="POST")
         with urllib.request.urlopen(req, timeout=30) as r:  # noqa: S310 — localhost only
-            text = _json.loads(r.read().decode("utf-8", "replace")).get("text", "")
-        return f"  smoke test passed. Transcript of silence: '{text}'"
+            data = _json.loads(r.read().decode("utf-8", "replace"))
+        text = data.get("text", "") if isinstance(data, dict) else str(data)
+        return f"  smoke test passed. Transcript of silence: '{text.strip()}'"
     except Exception as e:  # noqa: BLE001 — smoke is advisory
         return f"  smoke test skipped/failed ({e}) — verify later: bob transcribe <file>"
     finally:
