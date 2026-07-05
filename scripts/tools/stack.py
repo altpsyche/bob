@@ -87,6 +87,26 @@ def _regen_configs() -> bool:
     return bob_models.regenerate_configs()
 
 
+# --- HTTP health probes (stdlib — stack orchestration stays venv-free, like smoke.py/check.py; the
+# runtime deps live in venv-litellm, which the orchestrator launches but doesn't import) -----------
+
+def _http_json(url: str, timeout: float = 3):
+    import json
+    import urllib.request
+    with urllib.request.urlopen(url, timeout=timeout) as r:  # noqa: S310 — localhost only
+        return json.loads(r.read().decode("utf-8", "replace"))
+
+
+def _http_ok(url: str, timeout: float = 2) -> bool:
+    import urllib.error
+    import urllib.request
+    try:
+        urllib.request.urlopen(url, timeout=timeout)  # noqa: S310 — localhost only
+        return True
+    except (urllib.error.URLError, OSError):
+        return False
+
+
 # --- ps / logs (read-only) ------------------------------------------------------------------------
 
 def stack_ps(config: dict) -> str:
@@ -116,15 +136,14 @@ def stack_status(config: dict) -> str:
     `status` case. Read-only; bails with a hint if the endpoint isn't running (needs the registry, which
     it reads via bob_models — ONE-C Slice 4 made that Python-native)."""
     import bob_models
-    import requests
     from bob_core import _port
 
     osenv = _osenv()
     port = _port(config, "port")
     base = f"http://localhost:{port}/v1"
     try:
-        data = requests.get(f"{base}/models", timeout=3).json()
-    except (requests.RequestException, ValueError):
+        data = _http_json(f"{base}/models", timeout=3)
+    except (OSError, ValueError):
         return "Endpoint not running. Start with: bob serve"
     loaded = {m.get("id") for m in data.get("data", [])}
 
@@ -215,8 +234,8 @@ def _ensure_configs() -> str:
     error message."""
     _regen_configs()
     if not (REPO / "config" / "llama-swap.yaml").exists():
-        return ("config/llama-swap.yaml is missing and could not be generated (PowerShell `gen` "
-                "unavailable; it ports to Python in ONE-C Slice 6). Run `bob gen` on a box with pwsh.")
+        return ("config/llama-swap.yaml is missing and could not be generated from config/models.json. "
+                "Run `bob gen` (or check that config/models.json is valid).")
     return ""
 
 
@@ -312,16 +331,8 @@ def _start_endpoint_bg(config: dict) -> tuple:
     if config.get("voice", {}).get("enabled"):
         lines.append(_start_whisper_bg(config))
 
-    import requests
-
     def ready():
-        if not osenv.pid_alive(pid):
-            return False
-        try:
-            requests.get(f"http://localhost:{port}/v1/models", timeout=2)
-            return True
-        except requests.RequestException:
-            return False
+        return osenv.pid_alive(pid) and _http_ok(f"http://localhost:{port}/v1/models", timeout=2)
 
     ok = _poll(ready, timeout=60, interval=0.3)
     lines.append("Endpoint ready." if ok else "Endpoint did not respond in 60s — check: bob logs")

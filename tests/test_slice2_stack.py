@@ -64,14 +64,12 @@ class TestPs(unittest.TestCase):
 
 class TestStatus(unittest.TestCase):
     def test_endpoint_down_bails(self):
-        import requests
-        with mock.patch("requests.get", side_effect=requests.RequestException("down")):
+        # stack orchestration polls via stdlib urllib now (no requests dep) — mock the _http_json helper.
+        with mock.patch.object(stack, "_http_json", side_effect=OSError("down")):
             self.assertEqual(stack.stack_status(CFG), "Endpoint not running. Start with: bob serve")
 
     def test_endpoint_up_marks_loaded_and_probes_voice(self):
-        resp = mock.Mock()
-        resp.json.return_value = {"data": [{"id": "planner"}]}   # planner loaded, others not
-        with mock.patch("requests.get", return_value=resp), \
+        with mock.patch.object(stack, "_http_json", return_value={"data": [{"id": "planner"}]}), \
              mock.patch.object(osenv, "is_port_in_use", side_effect=lambda p, *a, **k: p == 8082):
             out = stack.stack_status(CFG)
         self.assertIn("[running]", out)
@@ -170,8 +168,14 @@ class TestConfigBridge(unittest.TestCase):
         rc.assert_called_once()
 
     def test_ensure_configs_ok_when_yaml_present(self):
-        # The real repo has config/llama-swap.yaml locally; regen is best-effort.
-        with mock.patch.object(stack, "_regen_configs", return_value=False):
+        # Isolated: config/llama-swap.yaml is gitignored (absent on a fresh checkout / in CI), so stand up
+        # a temp repo with the file present and assert regen-not-needed returns "". (Was flaky — it relied
+        # on the committed-locally-but-gitignored file existing.)
+        repo = Path(tempfile.mkdtemp(prefix="bob-cfgok-"))
+        (repo / "config").mkdir()
+        (repo / "config" / "llama-swap.yaml").write_text("models: {}\n", encoding="utf-8")
+        with mock.patch.object(stack, "REPO", repo), \
+             mock.patch.object(stack, "_regen_configs", return_value=False):
             self.assertEqual(stack._ensure_configs(), "")
 
     def test_ensure_configs_errors_when_missing(self):

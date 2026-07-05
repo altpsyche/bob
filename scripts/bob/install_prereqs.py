@@ -27,6 +27,15 @@ def _have(name: str) -> bool:
     return shutil.which(name) is not None
 
 
+def _sudo() -> list:
+    """['sudo'] when it's present and we're not already root, else [] — so the same install path works on
+    a normal desktop (sudo) AND a root container/minimal image where sudo isn't installed (CI distros)."""
+    import os
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return []
+    return ["sudo"] if shutil.which("sudo") else []
+
+
 def _winget(package: str, extra=()):  # pragma: no cover — Windows path
     """Install a winget package, tolerating the already-installed exit code. Port of Install-WithWinget."""
     argv = ["winget", "install", package, *extra, "--accept-package-agreements",
@@ -65,8 +74,8 @@ def _set_linux_cuda_path(root: str, host_cxx: str = None) -> None:
         try:
             tmp = Path(tempfile.gettempdir()) / "bob-cuda.sh"
             tmp.write_text("\n".join(sh) + "\n", encoding="utf-8")
-            subprocess.run(["sudo", "cp", str(tmp), "/etc/profile.d/cuda.sh"], check=False)
-            subprocess.run(["sudo", "chmod", "0644", "/etc/profile.d/cuda.sh"], check=False)
+            subprocess.run([*_sudo(), "cp", str(tmp), "/etc/profile.d/cuda.sh"], check=False)
+            subprocess.run([*_sudo(), "chmod", "0644", "/etc/profile.d/cuda.sh"], check=False)
             tmp.unlink(missing_ok=True)
             if Path("/etc/profile.d/cuda.sh").exists():
                 print("  wired CUDA onto bash/zsh PATH -> /etc/profile.d/cuda.sh", file=sys.stderr)
@@ -164,7 +173,7 @@ def _install_linux(cpu: bool) -> int:
             print(f"  {cron_pkg} failed: {e} (optional — needed only for scheduled agents)", file=sys.stderr)
     if _have("crontab") and _have("systemctl"):
         for svc in dict.fromkeys([cron_pkg, "cronie", "crond", "cron"]):
-            if subprocess.run(["sudo", "systemctl", "enable", "--now", svc],
+            if subprocess.run([*_sudo(), "systemctl", "enable", "--now", svc],
                               capture_output=True).returncode == 0:
                 break
 
