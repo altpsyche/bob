@@ -1,7 +1,7 @@
 # Portability & config resolution
 
-Bob is one Python runtime that boots and runs the same on every supported OS — no PowerShell
-anywhere in the lifecycle. Portability comes from three pieces:
+Bob is one Python runtime that boots and runs the same on every supported OS. Portability comes from
+three pieces:
 
 - **`scripts/osenv.py`** — the OS seam. Every OS-specific behavior (data dir, secrets, package
   install, notifications, process teardown, shell) funnels through here, so the rest of the code
@@ -9,9 +9,8 @@ anywhere in the lifecycle. Portability comes from three pieces:
 - **`scripts/bob_config.py`** (NB2) — the Python config resolver. Builds the runtime config from
   neutral JSON at startup; no generated cache is required off Windows.
 - **`scripts/bob/kernel.py`** — the cold-start provisioner. Installs prerequisites, builds the
-  engine, creates venvs, generates configs, downloads models, and wires clients. It replaces the
-  old PowerShell chain; the two shell stubs (`setup.sh` / `setup.bat`) just ensure `python3` and
-  hand off to `python -m bob.kernel`.
+  engine, creates venvs, generates configs, downloads models, and wires clients. The two shell stubs
+  (`setup.sh` / `setup.bat`) just ensure `python3` is present and hand off to `python -m bob.kernel`.
 
 ## Config resolution (all JSON)
 
@@ -25,12 +24,10 @@ Bob's runtime config is resolved live, per OS, from neutral sources:
   `{"agent": {"maxSteps": 8}}` or `{"peers": {"deepseek": {"apiKey": "…"}}}`. This is the documented
   authoring surface off Windows. (A `config/user.toml` is also accepted on Python 3.11+.)
 
-`bob_core.load_config()` resolves in Python from `defaults.json` + `user.json` on Linux/macOS —
-`data/config.json` is **not** written or read there. On **Windows only**, `data/config.json` is a
-generated cache (written by `Get-BobConfig` from `config/bob.psd1`, the Windows authoring source) and
-`load_config()` reads it. A stray `data/config.json` on a POSIX box is a stale artifact and is
-ignored. There is **no `verbs.json`** and no command-routing config — `scripts/bob/registry.py` is
-the sole source for dispatch and help.
+`bob_core.load_config()` resolves the config live from `defaults.json` + `user.json` on Linux. On
+Windows, `config/bob.psd1` is an additional authoring source that compiles to a `data/config.json`
+cache, which `load_config()` reads there. Command dispatch and help both come from
+`scripts/bob/registry.py`, the single source.
 
 Secrets never live in a tracked file. They resolve through the seam `osenv.secret(name)` with
 precedence **env var → OS keychain → `data/secrets.json` → config default** (contract C3). See

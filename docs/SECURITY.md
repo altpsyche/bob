@@ -6,7 +6,7 @@ its tools, and (2) exposure to other machines when the server is bound to `0.0.0
 below names the test that backs it. Run the suite from the litellm venv:
 
 ```bash
-# Linux / macOS
+# Linux
 tools/venv-litellm/bin/python -m unittest discover -s tests
 ```
 ```bat

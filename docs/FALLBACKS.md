@@ -53,7 +53,7 @@ This is auto-selected when no GPU is detected. It produces a `-DGGML_CUDA=OFF` e
   }
   ```
 
-  Export the key first (Linux/macOS: `export MYPROVIDER_API_KEY=…`; Windows: `set MYPROVIDER_API_KEY=…`), then `bob chat --pro "…"` routes to it while local roles keep working.
+  Export the key first (Linux: `export MYPROVIDER_API_KEY=…`; Windows: `set MYPROVIDER_API_KEY=…`), then `bob chat --pro "…"` routes to it while local roles keep working.
 
 ## No Go compiler for llama-swap
 

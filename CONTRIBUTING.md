@@ -1,7 +1,7 @@
 # Contributing to Bob
 
 Bob is a personal, local-first AI assistant — a single Python CLI + agent harness (`python -m bob`)
-that runs cross-platform on Linux and Windows, with zero PowerShell (see
+that runs cross-platform on Linux and Windows (see
 [docs/PORTABILITY.md](docs/PORTABILITY.md)). This note captures the **conventions** the codebase
 already follows so new code stays consistent. Most of it is enforced by the architecture, not by tooling.
 
@@ -62,7 +62,7 @@ See [plugins/AUTHORING.md](plugins/AUTHORING.md) for the three-layer capability 
 
 `tests/` is a stdlib-`unittest` suite (also runnable under `pytest` if installed):
 
-Linux / macOS:
+Linux:
 ```bash
 tools/venv-litellm/bin/python -m unittest discover -s tests
 # or, if pytest is installed:
@@ -88,7 +88,7 @@ cancellation, concurrency); see the Module N tests for the pattern.
   a `versions.lock`↔sources sync check, the git exec-bits on the shell entrypoints, and the unittest
   suite; exits non-zero on the first failing category. Run it with the project interpreter:
 
-  Linux / macOS:
+  Linux:
   ```bash
   tools/venv-litellm/bin/python scripts/check.py          # add --no-tests for static checks only
   ```

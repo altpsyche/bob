@@ -9,7 +9,7 @@ bob agent serve            # binds agent.serveHost:agent.agentPort (default 127.
 
 The registry and session store are built once at startup and shared across requests.
 
-The server is pure Python (FastAPI + uvicorn), so it runs unchanged on Windows, Linux, and macOS;
+The server is pure Python (FastAPI + uvicorn), so it runs unchanged on Windows and Linux;
 `bob agent serve` resolves to `python -m bob agent serve` on any OS. The CI acceptance matrix
 exercises `/health` + an owner-scoped session turn + an SSE stream as the end-to-end gate on every PR.
 

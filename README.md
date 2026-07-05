@@ -76,11 +76,11 @@ block a merge; native-from-source is verified when a release is tagged. See
 
 ## Quick start
 
-Only **Git** is required up front. The two entry scripts install the rest of the toolchain (CUDA, Python 3.12, Go, Node.js, cmake) and build everything. Two thin shell stubs hand off to a Python cold-start kernel (`python -m bob.kernel`) — no PowerShell anywhere.
+Only **Git** is required up front. The two entry scripts install the rest of the toolchain (CUDA, Python 3.12, Go, Node.js, cmake) and build everything. Two thin shell stubs hand off to a Python cold-start kernel (`python -m bob.kernel`).
 
 **Step 1: install prerequisites (once per machine)**
 
-Linux / macOS:
+Linux:
 ```bash
 git clone --recurse-submodules <your-remote> bob
 cd bob
@@ -98,7 +98,7 @@ You're asked for your `sudo` password **once** (Linux). On atomic Fedora (Bazzit
 
 **Step 2: build, configure, and start**
 
-Linux / macOS:
+Linux:
 ```bash
 ./setup.sh                      # GPU-less: ./setup.sh --cpu
 ```
@@ -108,7 +108,7 @@ Windows:
 setup.bat                       :: GPU-less: setup.bat --cpu
 ```
 
-Builds the inference engine and proxy from source, downloads models, wires VS Code and terminal clients, and (if Docker is present) starts the compose services. Open a new terminal afterward so the `bob` command resolves (Linux/macOS: `~/.local/bin` on PATH; Windows: the `bob.cmd` shim install_cli drops into your scoop shims — if you don't use scoop, add the repo folder to PATH).
+Builds the inference engine and proxy from source, downloads models, wires VS Code and terminal clients, and (if Docker is present) starts the compose services. Open a new terminal afterward so the `bob` command resolves (Linux: `~/.local/bin` on PATH; Windows: the `bob.cmd` shim install_cli drops into your scoop shims — if you don't use scoop, add the repo folder to PATH).
 
 Then just talk to Bob — **inference auto-starts on demand**, no separate command needed:
 

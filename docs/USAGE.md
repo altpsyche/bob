@@ -4,7 +4,7 @@ This document is the full command and usage reference: the interactive shell, on
 
 > **New here?** [DAY-IN-THE-LIFE.md](DAY-IN-THE-LIFE.md) walks through every feature in one hands-on session. It's a better starting point than reading this document top to bottom.
 
-Bob is Python-only and cross-OS. The same `bob <verb>` commands work identically on Linux, macOS, and Windows — only install, PATH, and shell-integration steps differ per OS, and those are shown in paired blocks below.
+Bob is Python-only and cross-OS. The same `bob <verb>` commands work identically on Linux and Windows — only install, PATH, and shell-integration steps differ per OS, and those are shown in paired blocks below.
 
 ## The one way to use Bob
 
@@ -141,7 +141,7 @@ The endpoint logs go to `logs/llama-swap.log`; tail them live with `bob logs`. T
 
 **Start automatically at login (optional):**
 
-Linux / macOS:
+Linux:
 ```bash
 # add to crontab -e
 @reboot cd /path/to/bob && ./bob up --no-open
@@ -184,7 +184,7 @@ Additional model names are available via the LiteLLM proxy (`:8081`) when the co
 
 **API keys**: all four pro roles route through DeepSeek by default, so only one key is needed. Set it in the environment:
 
-Linux / macOS:
+Linux:
 ```bash
 export DEEPSEEK_API_KEY='sk-...'   # platform.deepseek.com -> API keys
 ```
@@ -204,7 +204,7 @@ Or store it via onboarding (it writes the key to `config/user.json`, gitignored)
 
 The endpoint speaks the OpenAI chat completions API, so any HTTP client works. Point any tool already configured for OpenAI at `http://localhost:8081/v1` and it works unchanged.
 
-Linux / macOS:
+Linux:
 ```bash
 curl http://localhost:8081/v1/chat/completions \
   -H "Content-Type: application/json" \
@@ -228,7 +228,7 @@ The LiteLLM proxy port defaults to `8081` (`ports.litellmPort` in `config/defaul
 
 The `embed` model (bge-m3) exposes an embeddings endpoint:
 
-Linux / macOS:
+Linux:
 ```bash
 curl http://localhost:8081/v1/embeddings \
   -H "Content-Type: application/json" \
@@ -277,7 +277,7 @@ Bob's persona `name`/`systemPrompt` and defaults live in the neutral `config/def
 }
 ```
 
-On Windows, `config/bob.psd1` is the authoring source for persona/routing/ports; it generates the runtime config. Off Windows, `bob.psd1` is irrelevant — everything resolves live from `defaults.json` + `user.json`. Re-run `bob gen` after editing config.
+Re-run `bob gen` after editing config. (On Windows, `config/bob.psd1` is an additional authoring source for persona/routing/ports.)
 
 ### Memory
 
@@ -431,7 +431,7 @@ bob agent "check git status, find any TODO comments in modified files, and list 
 
 The agent prints tool calls and results to stderr, then the final answer to stdout. Suppress the trace by redirecting stderr:
 
-Linux / macOS:
+Linux:
 ```bash
 bob agent "summarise the last 10 commits" 2>/dev/null
 ```
@@ -554,7 +554,7 @@ Qwen3 models (`planner`, `chat`) support a reasoning scratchpad. `planner` has i
 
 Append `/no_think` to your prompt. Via the API:
 
-Linux / macOS:
+Linux:
 ```bash
 curl http://localhost:8081/v1/chat/completions \
   -H "Content-Type: application/json" \
@@ -771,7 +771,7 @@ Langfuse records every bob request routed through LiteLLM: the full prompt, resp
 2. Open `http://localhost:3001` → **Settings → API Keys** → create a key pair; copy the **Public** and **Secret** keys.
 3. Set the keys as environment variables:
 
-   Linux / macOS:
+   Linux:
    ```bash
    export LANGFUSE_PUBLIC_KEY='pk-lf-...'
    export LANGFUSE_SECRET_KEY='sk-lf-...'
@@ -892,7 +892,7 @@ Scores well below these ranges usually mean the chat template wasn't applied cor
 
 ## Browser chat and RAG: Open WebUI
 
-Open WebUI is opt-in — install it at setup with `--with-webui` (Linux/macOS `./setup.sh --with-webui`, Windows `setup.bat --with-webui`). Once installed, `bob up` starts it on port 3000 (pre-wired to the local endpoint and embedding model), or `bob webui` launches it alone.
+Open WebUI is opt-in — install it at setup with `--with-webui` (Linux `./setup.sh --with-webui`, Windows `setup.bat --with-webui`). Once installed, `bob up` starts it on port 3000 (pre-wired to the local endpoint and embedding model), or `bob webui` launches it alone.
 
 Open WebUI uses the `embed` model for document search automatically. Add documents through the workspace panel; they're indexed locally and available in any chat via the RAG interface. You can create model presets in Workspace → Models (e.g. a low-temperature "Planner" preset).
 
@@ -952,6 +952,6 @@ See [TUNING.md](TUNING.md#bumping-the-llamacpp-submodule) for verifying performa
 
 **Docker services (Langfuse, SearXNG, n8n):** bump image tags in `tools/compose/docker-compose.yml` and re-pull (see [Updating Docker service images](#updating-docker-service-images)).
 
-**Python venv dependencies:** delete the relevant `tools/venv-*` directory and re-run setup (Linux/macOS `./setup.sh`, Windows `setup.bat`); it recreates missing venvs automatically.
+**Python venv dependencies:** delete the relevant `tools/venv-*` directory and re-run setup (Linux `./setup.sh`, Windows `setup.bat`); it recreates missing venvs automatically.
 
 **Fabric patterns:** re-run `bob fabric-setup` after bumping the `external/fabric` submodule; it re-copies the pattern directory.

@@ -4,7 +4,7 @@ This document covers the internals of how the server is configured and how to ge
 
 ## How the server config is generated
 
-The runtime config files (and the Open WebUI model table) are generated automatically from [config/models.json](../config/models.json) every time you run `bob serve` or `bob gen`. Don't edit them by hand; edit `config/models.json` (or your `config/user.json` override) instead. The generators are plain Python functions in [scripts/tools/generate.py](../scripts/tools/generate.py) — no PowerShell.
+The runtime config files (and the Open WebUI model table) are generated automatically from [config/models.json](../config/models.json) every time you run `bob serve` or `bob gen`. Don't edit them by hand; edit `config/models.json` (or your `config/user.json` override) instead. The generators are plain Python functions in [scripts/tools/generate.py](../scripts/tools/generate.py).
 
 - `config/llama-swap.yaml` (`gen_llama_swap`): local model routing, swap groups, KV cache flags
 - `config/litellm.yaml` (`gen_litellm`): LiteLLM proxy model list, including pro models (API-backed peers)
@@ -159,7 +159,8 @@ Recall/injection are best-effort: a memory-server error is logged and skipped, n
 
 Plugins live in `plugins/<name>/` as an `invoke.py` (CLI + core logic) plus an optional `tool.py`
 (agent-facing wrapper). They are discovered and dispatched automatically — there is nothing to register.
-The only sample plugin still shipping a PowerShell `invoke.ps1` is `plugins/play`; everything else is Python.
+A plugin can be written in any language that reads arguments and writes stdout; the bundled examples
+are Python.
 
 Python plugins read config through `bob_core.load_config()` (which resolves `config/defaults.json` +
 `config/user.json` live; on Windows it reads the generated `data/config.json`) and can use any routing
@@ -277,7 +278,7 @@ bob bench
 
 If the numbers look good, commit the updated submodule pointer:
 
-Linux / macOS:
+Linux:
 ```bash
 git add external/llama.cpp
 git commit -m "bump llama.cpp to <commit>"
@@ -291,7 +292,7 @@ git commit -m "bump llama.cpp to <commit>"
 
 To check out a specific commit or tag by hand instead of using `bob update`:
 
-Linux / macOS:
+Linux:
 ```bash
 cd external/llama.cpp
 git fetch origin
@@ -539,7 +540,7 @@ Expected speedup: **20 to 40% on generation-heavy tasks** (autocomplete, inline 
 
 **Verify it's active:** run `bob gen`, then grep the generated config for the draft-model flag:
 
-Linux / macOS:
+Linux:
 ```bash
 grep -- '-md ' config/llama-swap.yaml
 ```

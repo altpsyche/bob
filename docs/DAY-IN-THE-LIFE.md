@@ -2,7 +2,7 @@
 
 This is a hands-on tour of every feature in the stack, structured as a typical working session. Follow it end-to-end the first time to see everything in action. After that, jump to any section as a quick reference.
 
-**Prerequisites:** `install_prereqs.sh` + `setup.sh` (Linux / macOS) or `install_prereqs.bat` + `setup.bat` (Windows) have been run and completed successfully, and you have opened a new terminal so the `bob` command resolves. Bob is one Python engine — the same commands work on Linux, macOS, and Windows, with no PowerShell anywhere. If setup isn't done yet, start at [SETUP.md](SETUP.md).
+**Prerequisites:** `install_prereqs.sh` + `setup.sh` (Linux) or `install_prereqs.bat` + `setup.bat` (Windows) have been run and completed successfully, and you have opened a new terminal so the `bob` command resolves. Bob is one Python engine — the same commands work on Linux and Windows. If setup isn't done yet, start at [SETUP.md](SETUP.md).
 
 ---
 
@@ -87,11 +87,11 @@ You should see the models listed: `planner`, `coder`, `chat`, `fim`, `embed`, `v
 
 > **Pro models:** If you've set `DEEPSEEK_API_KEY` and `ZHIPU_API_KEY`, three additional models are available via the LiteLLM proxy at `:8081`: `chat-pro`, `planner-pro`, `coder-pro`. These route directly to DeepSeek and Zhipu APIs — no local GPU required, no platform fee. See [USAGE.md § Pro models](USAGE.md#pro-models-api-backed-no-platform-fee).
 
-> **Tip — start at login:** To bring the background stack up automatically every login, run `bob up --no-open` from a startup entry: on Linux a user systemd unit or a `@reboot` cron line; on macOS a `launchd` agent; on Windows a Task Scheduler task set to "At log on".
+> **Tip — start at login:** To bring the background stack up automatically every login, run `bob up --no-open` from a startup entry: on Linux a user systemd unit or a `@reboot` cron line; on Windows a Task Scheduler task set to "At log on".
 
 ### Start Docker services
 
-The optional services (Langfuse, SearXNG, n8n) run in Docker. Make sure Docker is running (Docker Desktop on Windows/macOS, or the `docker` daemon on Linux), then:
+The optional services (Langfuse, SearXNG, n8n) run in Docker. Make sure Docker is running (Docker Desktop on Windows, or the `docker` daemon on Linux), then:
 
 ```bash
 bob services start
@@ -320,7 +320,7 @@ With this on, Cline uses `planner` (the larger reasoning model) to figure out th
 
 Open a terminal, navigate to a project, and start aider:
 
-Linux / macOS:
+Linux:
 ```bash
 cd ~/my-project
 bob aider
@@ -516,7 +516,7 @@ Langfuse only captures requests routed through the LiteLLM proxy (port 8081). Di
 
 **Step 2: Set API keys as environment variables:**
 
-Linux / macOS (add to your shell profile so they persist):
+Linux (add to your shell profile so they persist):
 ```bash
 export LANGFUSE_PUBLIC_KEY='pk-lf-...'   # paste your public key
 export LANGFUSE_SECRET_KEY='sk-lf-...'   # paste your secret key
@@ -617,7 +617,7 @@ Vision uses Qwen2-VL-7B to describe images and answer visual questions. The mode
 
 ### Try it: describe an image file
 
-Linux / macOS:
+Linux:
 ```bash
 bob describe ~/Pictures/photo.jpg
 bob describe ~/Pictures/diagram.png "What does this diagram show?"
@@ -720,7 +720,7 @@ bob agent schedule add morning-summary --cron "0 9 * * *" --goal "check git log 
 bob agent schedule list
 ```
 
-The recurring `BobAgent` task (registered with `bob agent install`: a cron entry on Linux/macOS, a Scheduled Task on Windows) runs every minute and fires any due entries. Results are stored in `data/schedules.json`. The scheduler always runs in `silent` mode, with no terminal output.
+The recurring `BobAgent` task (registered with `bob agent install`: a cron entry on Linux, a Scheduled Task on Windows) runs every minute and fires any due entries. Results are stored in `data/schedules.json`. The scheduler always runs in `silent` mode, with no terminal output.
 
 ### Save a web page to memory
 
@@ -825,7 +825,7 @@ Opens Spotify via URI protocol if installed, otherwise opens YouTube Music in yo
 
 ## Command Reference: Everything at a Glance
 
-The same `bob <verb>` commands work identically on Linux, macOS, and Windows.
+The same `bob <verb>` commands work identically on Linux and Windows.
 
 ### The shell (home base)
 

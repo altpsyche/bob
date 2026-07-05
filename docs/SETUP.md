@@ -20,8 +20,8 @@ for exactly what each OS × GPU combination is tested to do. macOS and AMD/ROCm 
 
 Two commands per OS (a possible logout between them on Windows if Docker Desktop was just installed).
 The entry scripts are thin shell stubs — the Linux `.sh` ensures a system `python3`, the Windows `.bat`
-requires Python — that then hand off to the Python cold-start kernel (`python -m bob.kernel`). **No
-PowerShell.** Add `--cpu` to either command on a GPU-less box.
+requires Python — that then hand off to the Python cold-start kernel (`python -m bob.kernel`). Add
+`--cpu` to either command on a GPU-less box.
 
 <table>
 <tr><th>Linux (glibc; apt/dnf/pacman/zypper; atomic Fedora via rpm-ostree)</th><th>Windows 11 (NVIDIA)</th></tr>
@@ -78,7 +78,7 @@ terminal to pick up the PATH change, then just run `bob` (inference auto-starts 
 ## What setup does, step by step
 
 `setup` runs `python -m bob.kernel setup`, which imports the same capability functions the agent and
-`bob --run` use (one code path, no PowerShell) and runs these steps in order:
+`bob --run` use (one code path) and runs these steps in order:
 
 0. **Diagnose** — a machine summary (GPU, VRAM, RAM, CUDA, NUMA topology, mlock privilege, active profile, model files) before anything is installed. Run `bob diagnose` at any time to see the same report.
 1. `git submodule update --init --recursive` fetches the llama.cpp and llama-swap source trees.

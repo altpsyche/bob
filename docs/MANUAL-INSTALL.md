@@ -11,12 +11,14 @@ the Python cold-start kernel:
 - `install_prereqs.sh` / `install_prereqs.bat` → `python -m bob.kernel prereqs` (Tier 0: toolchain)
 - `setup.sh` / `setup.bat` → `python -m bob.kernel setup` (Tier 1: build, configure, start)
 
-Everything below reproduces those two kernel runs by hand. There is **no PowerShell** anywhere in the
-flow. This document is for advanced users who prefer to drive each step manually.
+Everything below reproduces those two kernel runs by hand. This document is for advanced users who
+prefer to drive each step manually.
 
 > **OS coverage.** Linux (glibc; apt/dnf/pacman/zypper, plus rpm-ostree on atomic Fedora) and Windows
-> 11 are supported. macOS is not yet gated — the shared `bash` steps run there, but the CUDA build steps
-> do not apply (Apple has no CUDA; use a CPU build). See the [supported matrix](../README.md#supported-matrix).
+> 11 are supported. macOS is not supported — there is no package-manager provisioning path and the GPU
+> build is CUDA-only. The bash steps below are a starting point if you adapt them by hand (e.g. with
+> Homebrew and a CPU build), but nothing here is tested on macOS. See the
+> [supported matrix](../README.md#supported-matrix).
 
 ---
 
@@ -160,7 +162,7 @@ pick up the new PATH entries.
 Bob vendors four submodules: `external/llama.cpp` (the engine), `external/llama-swap` (the model-swap
 proxy), `external/whisper.cpp` (STT), and `external/fabric` (prompt patterns).
 
-Linux / macOS:
+Linux:
 ```bash
 git clone --recurse-submodules <your-remote> bob
 cd bob
@@ -235,7 +237,7 @@ This produces `bin/llama-server`. On Linux the build uses the **Ninja** generato
 the **Visual Studio 17 2022** generator. These are the exact flags `scripts/tools/build.py`
 (`build_llama`) passes.
 
-### Linux / macOS — CUDA build
+### Linux — CUDA build
 
 Replace `120` with your GPU's value from the table above. If you provisioned the pinned cmake in step 1,
 use its full path instead of `cmake`.
@@ -255,7 +257,7 @@ cmake --build build --config Release -j
 cd ../..
 ```
 
-### Linux / macOS — CPU build
+### Linux — CPU build
 
 ```bash
 cd external/llama.cpp
@@ -265,7 +267,7 @@ cmake --build build --config Release -j
 cd ../..
 ```
 
-### Stage the binaries into `bin/` (Linux / macOS)
+### Stage the binaries into `bin/` (Linux)
 
 The Ninja build drops binaries in `build/bin/`. Copy them (and the shared GGML libs beside them) into
 the repo's `bin/`:
@@ -316,7 +318,7 @@ code path in future.
 llama-swap is a small Go binary that fronts llama.cpp and swaps models on demand. Same command on every
 OS (`build_llama_swap` runs `go build -o bin/llama-swap .`):
 
-Linux / macOS:
+Linux:
 ```bash
 cd external/llama-swap
 go build -o ../../bin/llama-swap .
@@ -357,7 +359,7 @@ first `bob eval`.
 > nothing else works until it exists. On Windows the venv layout is `tools\<venv>\Scripts\` and the
 > pinned `.lock` files are used in place of `.txt`.
 
-Linux / macOS (repeat per venv, changing the two names):
+Linux (repeat per venv, changing the two names):
 ```bash
 python3 -m venv tools/venv-litellm
 tools/venv-litellm/bin/python -m pip install --upgrade pip
@@ -392,7 +394,7 @@ Each install takes 2–10 minutes; `venv-webui` is by far the largest.
 
 This puts `bob` on your PATH so the remaining steps (`bob gen`, `bob fetch`, …) resolve.
 
-**Linux / macOS.** The repo-root `./bob` shim runs `tools/venv-litellm/bin/python -m bob`. Symlink it
+**Linux.** The repo-root `./bob` shim runs `tools/venv-litellm/bin/python -m bob`. Symlink it
 into `~/.local/bin`:
 ```bash
 mkdir -p ~/.local/bin
@@ -433,10 +435,6 @@ To customize model parameters or add cloud "pro" models, edit `config/models.jso
 `config/user.json` (a deep-merged per-machine override, e.g. `{"agent":{"maxSteps":3}}` or
 `{"peers":{"deepseek":{"apiKey":"…"}}}`), then re-run `bob gen`.
 
-> `config/bob.psd1` is a **Windows-only authoring source** (persona/routing/ports). It still exists but
-> is irrelevant off Windows — configuration there resolves live from `config/defaults.json` +
-> `config/user.json`.
-
 Verify the outputs exist:
 ```bash
 ls config/llama-swap.yaml config/litellm.yaml
@@ -457,7 +455,7 @@ bob fetch 12gb               # download a specific profile
 
 For gated HuggingFace repos, set `HF_TOKEN` first:
 
-Linux / macOS:
+Linux:
 ```bash
 export HF_TOKEN=hf_...
 bob fetch
@@ -478,7 +476,7 @@ To provide models yourself, copy the `.gguf` files into `models/` manually and s
 This points VS Code's Continue extension and the aider CLI at the repo's config files (symlink, with a
 copy fallback where symlinks aren't permitted). The kernel does this in `setup_clients`; by hand:
 
-Linux / macOS:
+Linux:
 ```bash
 bob gen                                                    # regenerates config/continue/config.yaml too
 mkdir -p ~/.continue
@@ -509,7 +507,7 @@ code --install-extension saoudrizwan.claude-dev    # Cline
 fabric is a Go binary that runs 250+ named LLM prompt patterns. `bob fabric-setup` builds it and wires
 `~/.config/fabric`; the manual equivalent (`setup_fabric` in `scripts/tools/build.py`):
 
-Linux / macOS:
+Linux:
 ```bash
 cd external/fabric
 go build -o ../../bin/fabric ./cmd/fabric/
@@ -575,7 +573,7 @@ The kernel's `setup_docker` writes `tools/compose/.env`, creates the persistent 
 default `config/searxng/settings.yml`, then pulls and starts the stack. To do it by hand, ensure Docker
 is up, then:
 
-Linux / macOS:
+Linux:
 ```bash
 docker info                                  # confirm the daemon responds
 docker compose -f tools/compose/docker-compose.yml pull
