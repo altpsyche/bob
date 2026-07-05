@@ -292,6 +292,11 @@ that already broke `bob tools` on Linux). All of this dissolves when capabilitie
 
 ## ONE-D — Kill PowerShell
 
+> **Detailed, scoped execution plan: [MODULE-ONE-D-plan.md](MODULE-ONE-D-plan.md).** It carries the full
+> 9-verb + tails inventory (CAPABILITY vs KERNEL disposition), the build-time osenv seam-gap table, the
+> versions.lock writer/gate gap, the two-tier cold-start kernel design, an 9-slice shippable sequence
+> (D0–D8), and 6 open decisions (DD1–DD6) to confirm before coding. Start there.
+
 As each capability becomes a Python function (ONE-C), delete its `bob.ps1` handler and remove/flip its
 `verbs.json` entry. Port the bootstrap kernel (`scripts/bob/kernel.py`) to Python — cold-start ensure-brain
 + first-run, calling the capability functions. Windows-specifics go through [osenv.py](../../scripts/osenv.py)
