@@ -350,10 +350,15 @@ function Get-BestCudaRoot {
 # Linux). Callers are unchanged; the seam is dot-sourced above so the name resolves here.
 
 function Get-NumaNodeCount {
-  # Returns the number of NUMA nodes reported by Windows.
-  # AM5 (7950X3D) exposes 1 node on Windows regardless of CCD count.
+  # Number of NUMA nodes. Windows: CIM Win32_NumaNode (AM5/7950X3D exposes 1 regardless of CCD count).
+  # Linux: count /sys/devices/system/node/node* (Win32_* CIM throws on Linux). Falls back to 1.
   try {
-    $nodes = @(Get-CimInstance -ClassName Win32_NumaNode -ErrorAction Stop)
+    if ((Get-BobOS) -eq 'windows') {
+      $nodes = @(Get-CimInstance -ClassName Win32_NumaNode -ErrorAction Stop)
+      return if ($nodes.Count -gt 0) { $nodes.Count } else { 1 }
+    }
+    $nodes = @(Get-ChildItem -Path '/sys/devices/system/node' -Directory -ErrorAction Stop |
+               Where-Object { $_.Name -match '^node\d+$' })
     return if ($nodes.Count -gt 0) { $nodes.Count } else { 1 }
   } catch { return 1 }
 }
