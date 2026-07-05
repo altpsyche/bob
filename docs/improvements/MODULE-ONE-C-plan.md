@@ -4,8 +4,9 @@
 Slice 6 all ✓ DONE** (on main; 685 tests green). Every ONE-C-scoped verb is on Python: registry readers,
 health/diagnostics, scheduling (pwsh runner + seams retired), and the config generators — and
 `bob_models.regenerate_configs` now runs the Python generators, so **there is no pwsh in the lifecycle hot
-path**. Decisions D1–D6 resolved (see Part 5). **Remaining pwsh (10 verbs, all deferred to ONE-D by D2):**
-`build`/`update`/`setup`(full)/`setup-voice`/`fabric-setup`/`fetch`/`mlock`/`lock`/`eval`/`status` —
+path**. Decisions D1–D6 resolved (see Part 5). `status` was also ported as a follow-up quick win (stack.py).
+**Remaining pwsh (9 verbs, all deferred to ONE-D by D2):**
+`build`/`update`/`setup`(full)/`setup-voice`/`fabric-setup`/`fetch`/`mlock`/`lock`/`eval` —
 toolchain/privilege/git-heavy or pre-venv bootstrap; the `gen-*.ps1` scripts stay too (the pre-venv
 cold-start path still calls them). **Prereq:** ONE-A ✓, ONE-B ✓. **Read first:**
 [MODULE-ONE-bob.md](MODULE-ONE-bob.md) (§ONE-C, the deprecation ledger, the architectural invariant),
