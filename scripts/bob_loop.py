@@ -64,6 +64,25 @@ def _image_content_block(src: str) -> dict:
     return {"type": "image_url", "image_url": {"url": url}}
 
 
+def _split_tool_result_images(result) -> tuple:
+    """ONE-B1 — the tool-result image contract. A tool signals image output by returning a JSON object
+    `{"__images__": ["<src>"...], "text": "<summary>"}` (src = path / data: / http(s) URL). Returns
+    `(text_for_transcript, [image_srcs])`. Any other result — a plain string, or JSON without the
+    reserved key — returns `(result, [])` unchanged, so non-image tools stay byte-identical. The fast
+    substring guard avoids JSON-parsing every ordinary tool result."""
+    if not isinstance(result, str) or "__images__" not in result:
+        return result, []
+    try:
+        obj = json.loads(result)
+    except (ValueError, TypeError):
+        return result, []
+    if not isinstance(obj, dict) or not isinstance(obj.get("__images__"), list):
+        return result, []
+    images = [s for s in obj["__images__"] if isinstance(s, str)]
+    text = obj.get("text") or obj.get("content") or f"[tool returned {len(images)} image(s)]"
+    return str(text), images
+
+
 def _is_transient(e) -> bool:
     """True for LLM errors worth a retry: connection / timeout / 5xx / 429. A llama-swap model swap
     500s the first request after an idle-unload ('upstream command exited prematurely') and recovers
@@ -1444,17 +1463,34 @@ def run_agent_events(
                 yield {"type": "final", "result": _final_answer(last_content, hermes_mode),
                        "exit_requested": exit_requested, "reason": "cancelled"}
                 return
+            # ONE-B1 — a tool may return image(s) via the {"__images__":[...], "text":...} contract;
+            # split them out so the transcript carries the text summary and the images ride as
+            # image_url blocks in a follow-up user turn (below). Non-image results are unchanged.
+            step_images = []
             if hermes_mode:
                 messages.append({"role": "assistant", "content": content})
-                tool_results = [
-                    f'<tool_response>{{"name": "{tc.function.name}", "content": {json.dumps(result)}}}</tool_response>'
-                    for (tc, cid, result) in step["results"]
-                ]
+                tool_results = []
+                for (tc, cid, result) in step["results"]:
+                    text, imgs = _split_tool_result_images(result)
+                    step_images += imgs
+                    tool_results.append(
+                        f'<tool_response>{{"name": "{tc.function.name}", "content": {json.dumps(text)}}}</tool_response>')
                 messages.append({"role": "user", "content": "\n".join(tool_results)})
             else:
                 messages.append(build_assistant_message(msg))
                 for (tc, cid, result) in step["results"]:
-                    messages.append(build_tool_message(tc, result))
+                    text, imgs = _split_tool_result_images(result)
+                    step_images += imgs
+                    messages.append(build_tool_message(tc, text))
+            # A tool that returned image(s) threads them into the next turn as image_url blocks and
+            # flips the run to the vision role so the model can actually see them (image_url in a user
+            # message is the portable form — works for both hermes and openai tool-result modes).
+            if step_images:
+                effective_role = get_role(config, "vision")
+                messages.append({"role": "user",
+                                 "content": [{"type": "text", "text": "[image(s) returned by the tool above]"}]
+                                            + [_image_content_block(s) for s in step_images]})
+                log.info(f"[{rid}] tool returned {len(step_images)} image(s); routing to vision={effective_role}")
 
         log.warning(f"[{rid}] stopped after {max_steps} steps without a final answer")
         print(f"Agent stopped after {max_steps} steps without a final answer.", file=sys.stderr)

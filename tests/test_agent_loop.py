@@ -1,4 +1,5 @@
 """M13 — agent loop event generator (M15 refactor): tool step, final, streaming, history."""
+import json
 import unittest
 from types import SimpleNamespace
 
@@ -369,6 +370,44 @@ class TestAgentLoop(unittest.TestCase):
             "hi", self.cfg, role="chat", agency="silent", registry=_common.FakeRegistry(),
             images=["data:image/png;base64,AA=="], no_tools=True))
         self.assertEqual(captured["model"], "chat")
+
+    def test_tool_returned_image_threads_into_next_turn_and_routes_vision(self):
+        # ONE-B1 — a tool returning {"__images__":[...], "text":...} feeds the image into the next
+        # model turn as an image_url block and flips the run to the vision role.
+        img = "data:image/png;base64,iVBORw0KGgo="
+        calls = []
+
+        class Recorder:
+            def __init__(self):
+                self.chat = type("C", (), {"completions": self})()
+                self._turns = ['<tool_call>{"name": "grab", "arguments": {}}</tool_call>',
+                               "I see a cat."]
+                self._i = 0
+
+            def create(self, model, messages, tools, stream, timeout):
+                calls.append({"model": model, "messages": messages})
+                content = self._turns[min(self._i, len(self._turns) - 1)]
+                self._i += 1
+                return iter([SimpleNamespace(choices=[SimpleNamespace(
+                    delta=SimpleNamespace(content=content, tool_calls=None))])])
+
+        bob_core.get_llm_client = lambda config=None: Recorder()
+        reg = _common.FakeRegistry({"grab": json.dumps({"__images__": [img], "text": "a screenshot"})})
+        events = list(bob_loop.run_agent_events("look at my screen", self.cfg,
+                                                agency="silent", registry=reg))
+        # first turn ran on the default agent role; the image-bearing follow-up routed to vision
+        self.assertNotEqual(calls[0]["model"], "vision")
+        self.assertEqual(calls[1]["model"], "vision")
+        last_user = calls[1]["messages"][-1]
+        self.assertEqual(last_user["role"], "user")
+        self.assertIsInstance(last_user["content"], list)
+        self.assertTrue(any(b.get("type") == "image_url" and b["image_url"]["url"] == img
+                            for b in last_user["content"]))
+        # transcript shows the tool's text summary, not the raw __images__ payload
+        wire = json.dumps(calls[1]["messages"])
+        self.assertIn("a screenshot", wire)
+        self.assertNotIn("__images__", wire)
+        self.assertEqual(events[-1]["result"], "I see a cat.")
 
 
 class TestApproval(unittest.TestCase):
