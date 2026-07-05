@@ -58,13 +58,38 @@ class TestPackageSeams(unittest.TestCase):
     def test_resolve_cmd_linux_all_managers(self):
         cases = {"apt": ("apt-get", ["install", "-y", "cmake"]),
                  "dnf": ("dnf", ["install", "-y", "cmake"]),
-                 "pacman": ("pacman", ["-S", "--noconfirm", "cmake"]),
-                 "zypper": ("zypper", ["--non-interactive", "install", "cmake"])}
+                 "pacman": ("pacman", ["-S", "--needed", "--noconfirm", "cmake"]),
+                 "zypper": ("zypper", ["--non-interactive", "install", "cmake"]),
+                 "rpm-ostree": ("rpm-ostree", ["install", "--idempotent", "--allow-inactive", "cmake"])}
         for mgr, (exe, args) in cases.items():
             spec = osenv.resolve_package_cmd("cmake", os="linux", manager=mgr)
             self.assertEqual(spec["Exe"], exe, mgr)
             self.assertEqual(spec["Args"], args, mgr)
             self.assertTrue(spec["Sudo"], mgr)
+
+    def test_rpm_ostree_reuses_the_dnf_names(self):
+        # atomic Fedora layers Fedora RPMs — resolve via the dnf column, no separate table.
+        self.assertEqual(osenv.resolve_package_name("toolchain-cc", "rpm-ostree"), "gcc-c++")
+        self.assertEqual(osenv.resolve_package_name("node", "rpm-ostree"), "nodejs")
+
+    def test_install_packages_batches_one_call(self):
+        # the fix for sudo-prompt-per-package: many packages -> ONE manager invocation.
+        with mock.patch.dict(os.environ, {"BOB_FORCE_OS": "linux"}), \
+             mock.patch.object(osenv, "linux_package_manager", return_value="pacman"), \
+             mock.patch.object(osenv.subprocess, "run", return_value=mock.Mock(returncode=0)) as run, \
+             mock.patch.object(osenv.shutil, "which", return_value="/usr/bin/sudo"), \
+             mock.patch.object(osenv.os, "geteuid", return_value=1000, create=True):
+            osenv.install_packages(["git", "cmake", "ninja", "git"], manager="pacman")  # dupe dropped
+            self.assertEqual(run.call_count, 1)
+            argv = run.call_args[0][0]
+            self.assertEqual(argv[:5], ["sudo", "pacman", "-S", "--needed", "--noconfirm"])
+            self.assertEqual(argv[5:], ["git", "cmake", "ninja"])
+
+    def test_install_packages_dry_run_no_exec(self):
+        with mock.patch.dict(os.environ, {"BOB_FORCE_OS": "linux"}), \
+             mock.patch.object(osenv.subprocess, "run") as run:
+            osenv.install_packages(["git", "cmake"], manager="dnf", dry_run=True)
+            run.assert_not_called()
 
     def test_resolve_cmd_unknown_manager_is_null(self):
         spec = osenv.resolve_package_cmd("x", os="linux", manager="brew")
@@ -96,39 +121,52 @@ class TestNewBobVenv(unittest.TestCase):
 # --- install_prereqs (Tier 0) --------------------------------------------------------------------
 
 class TestInstallPrereqsLinux(unittest.TestCase):
-    def _run(self, cpu, install_side_effect=None):
-        installed = []
+    def _run(self, cpu, mgr="apt", batch_side_effect=None):
+        batched = []   # toolchain, installed in ONE call via install_packages
+        singles = []   # cuda/cron/docker, individual install_package
 
-        def fake_install(pkg, *a, **k):
-            installed.append(pkg)
-            if install_side_effect:
-                install_side_effect(pkg)
+        def fake_batch(pkgs, *a, **k):
+            batched.extend(pkgs)
+            if batch_side_effect:
+                batch_side_effect(pkgs)
+
+        def fake_single(pkg, *a, **k):
+            singles.append(pkg)
 
         with mock.patch.dict(os.environ, {"BOB_FORCE_OS": "linux"}), \
-             mock.patch.object(osenv, "linux_package_manager", return_value="apt"), \
-             mock.patch.object(osenv, "install_package", side_effect=fake_install), \
+             mock.patch.object(osenv, "linux_package_manager", return_value=mgr), \
+             mock.patch.object(osenv, "install_packages", side_effect=fake_batch), \
+             mock.patch.object(osenv, "install_package", side_effect=fake_single), \
              mock.patch.object(osenv, "bob_python", return_value="/usr/bin/python3"), \
              mock.patch.object(osenv, "linux_cmake3", return_value="/usr/bin/cmake"), \
+             mock.patch.object(install_prereqs, "_prime_sudo"), \
              mock.patch.object(install_prereqs, "_have", return_value=True):
             rc = install_prereqs.install_prereqs(cpu=cpu)
-        return rc, installed
+        return rc, batched, singles
 
-    def test_cpu_installs_toolchain_skips_cuda(self):
-        rc, installed = self._run(cpu=True)
+    def test_cpu_installs_toolchain_in_one_batch_skips_cuda(self):
+        rc, batched, singles = self._run(cpu=True)
         self.assertEqual(rc, 0)
-        # apt toolchain (make bundled in build-essential -> skipped); cuda skipped (--cpu).
-        self.assertIn("build-essential", installed)
-        self.assertIn("cmake", installed)
-        self.assertIn("golang-go", installed)
-        self.assertNotIn("nvidia-cuda-toolkit", installed)
-        self.assertNotIn("make", installed)  # bundled on apt
+        # one batched toolchain install (make bundled in build-essential -> skipped); cuda skipped (--cpu).
+        self.assertIn("build-essential", batched)
+        self.assertIn("cmake", batched)
+        self.assertIn("golang-go", batched)
+        self.assertNotIn("make", batched)  # bundled on apt
+        self.assertNotIn("nvidia-cuda-toolkit", batched + singles)
 
     def test_toolchain_failure_raises_before_setup(self):
-        def boom(pkg):
-            if pkg == "cmake":
-                raise RuntimeError("apt exploded")
+        def boom(pkgs):
+            raise RuntimeError("apt exploded")
         with self.assertRaises(RuntimeError):
-            self._run(cpu=True, install_side_effect=boom)
+            self._run(cpu=True, batch_side_effect=boom)
+
+    def test_atomic_host_layers_and_returns_with_reboot_note(self):
+        # rpm-ostree host: toolchain layers in one transaction, CUDA is NOT layered (distrobox steer).
+        rc, batched, singles = self._run(cpu=False, mgr="rpm-ostree")
+        self.assertEqual(rc, 0)
+        self.assertIn("gcc-c++", batched)      # dnf/rpm-ostree name for toolchain-cc
+        self.assertIn("nodejs", batched)
+        self.assertEqual(singles, [])          # no per-pkg cuda/cron/docker on the atomic path
 
     def test_no_manager_raises(self):
         with mock.patch.dict(os.environ, {"BOB_FORCE_OS": "linux"}), \

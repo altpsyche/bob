@@ -730,11 +730,21 @@ def numa_node_count() -> int:
 _LINUX_PKG_MANAGERS = (("apt-get", "apt"), ("dnf", "dnf"), ("pacman", "pacman"), ("zypper", "zypper"))
 
 
+def is_atomic_linux() -> bool:
+    """True on an rpm-ostree / atomic-Fedora host (Silverblue/Kinoite/Bazzite/uBlue). /run/ostree-booted
+    is the canonical marker that the running system is an ostree deployment (read-only /usr; packages are
+    LAYERED via rpm-ostree and apply on the next boot)."""
+    return os_name() == "linux" and Path("/run/ostree-booted").exists() and shutil.which("rpm-ostree") is not None
+
+
 def linux_package_manager():
-    """Normalized Linux package-manager name (apt/dnf/pacman/zypper) for the first one on PATH, or None.
-    Port of _platform.ps1 Get-LinuxPackageManager. None on non-Linux."""
+    """Normalized Linux package manager: 'rpm-ostree' on an atomic host (checked first — an atomic box may
+    also carry a dnf that doesn't persist), else the first of apt/dnf/pacman/zypper on PATH, or None. Port
+    of _platform.ps1 Get-LinuxPackageManager (+ ONE-E atomic support). None on non-Linux."""
     if os_name() != "linux":
         return None
+    if is_atomic_linux():
+        return "rpm-ostree"
     for cmd, name in _LINUX_PKG_MANAGERS:
         if shutil.which(cmd):
             return name
@@ -1189,55 +1199,96 @@ def resolve_package_name(logical: str, manager: str = None):
         raise KeyError(f"resolve_package_name: no mapping for logical package '{logical}' — "
                        "add it to PACKAGE_MAP in osenv.py.")
     row = PACKAGE_MAP[logical]
-    if manager not in row:
+    # rpm-ostree layers Fedora RPMs — reuse the dnf column rather than duplicating a whole table.
+    key = "dnf" if manager == "rpm-ostree" else manager
+    if key not in row:
         raise KeyError(f"resolve_package_name: logical '{logical}' has no entry for manager "
-                       f"'{manager}' — add the '{manager}' column to PACKAGE_MAP.")
-    return row[manager]
+                       f"'{manager}' — add the '{key}' column to PACKAGE_MAP.")
+    return row[key]
+
+
+# Batchable install-arg templates per Linux manager (one transaction, one sudo prompt). rpm-ostree
+# LAYERS packages (read-only /usr) and they apply on the next boot; --idempotent avoids erroring on
+# already-layered pkgs.
+def _linux_pkg_spec(manager: str, packages: list) -> dict:
+    pkgs = list(packages)
+    specs = {
+        "apt":         {"Exe": "apt-get", "Args": ["install", "-y", *pkgs], "Sudo": True},
+        "dnf":         {"Exe": "dnf",     "Args": ["install", "-y", *pkgs], "Sudo": True},
+        "pacman":      {"Exe": "pacman",  "Args": ["-S", "--needed", "--noconfirm", *pkgs], "Sudo": True},
+        "zypper":      {"Exe": "zypper",  "Args": ["--non-interactive", "install", *pkgs], "Sudo": True},
+        "rpm-ostree":  {"Exe": "rpm-ostree", "Args": ["install", "--idempotent", "--allow-inactive", *pkgs],
+                        "Sudo": True},
+    }
+    return specs.get(manager, {"Exe": None, "Args": [], "Sudo": False, "Manager": manager})
 
 
 def resolve_package_cmd(package: str, os: str = None, manager: str = None) -> dict:
     """PURE. The install command spec {'Exe','Args','Sudo'} for the OS (+ Linux manager). Windows uses
-    winget; Linux uses the detected apt/dnf/pacman/zypper. Port of _platform.ps1 Resolve-PackageCmd."""
+    winget; Linux uses the detected manager. Port of _platform.ps1 Resolve-PackageCmd (+ rpm-ostree)."""
     os = os or os_name()
     if os == "windows":
         return {"Exe": "winget", "Args": ["install", package, "--accept-package-agreements",
                                           "--accept-source-agreements", "--disable-interactivity"],
                 "Sudo": False}
-    specs = {
-        "apt":    {"Exe": "apt-get", "Args": ["install", "-y", package], "Sudo": True},
-        "dnf":    {"Exe": "dnf",     "Args": ["install", "-y", package], "Sudo": True},
-        "pacman": {"Exe": "pacman",  "Args": ["-S", "--noconfirm", package], "Sudo": True},
-        "zypper": {"Exe": "zypper",  "Args": ["--non-interactive", "install", package], "Sudo": True},
-    }
-    return specs.get(manager, {"Exe": None, "Args": [], "Sudo": False, "Manager": manager})
+    return _linux_pkg_spec(manager, [package])
+
+
+def _run_pkg_spec(spec: dict, extra=(), label: str = "") -> None:
+    """Run an install spec once (sudo-prefixed only when needed + available). Raises on real failure."""
+    argv = spec["Args"] + list(extra)
+    if spec["Sudo"] and shutil.which("sudo") and not (hasattr(os, "geteuid") and os.geteuid() == 0):
+        cmd = ["sudo", spec["Exe"], *argv]
+    else:
+        cmd = [spec["Exe"], *argv]
+    rc = subprocess.run(cmd).returncode
+    # -1978335189 = APPINSTALLER_CLI_ERROR_PACKAGE_ALREADY_INSTALLED (winget); treat as success.
+    if rc not in (0, -1978335189):
+        raise RuntimeError(f"install failed for {label or spec['Exe']} (exit {rc}).")
 
 
 def install_package(package: str, extra_args=(), dry_run: bool = False):
-    """EXECUTOR. Install a package: Windows via winget (tolerating already-installed), Linux via the
-    detected manager under sudo. dry_run prints and returns the resolved spec without executing (lets
-    tests assert every PACKAGE_MAP cell resolves). Raises RuntimeError on a real failure. Port of
-    _platform.ps1 Install-Package."""
-    os = os_name()
-    mgr = None if os == "windows" else linux_package_manager()
-    if os != "windows" and not mgr:
-        raise RuntimeError(f"install_package: no supported package manager (apt/dnf/pacman/zypper) "
-                           f"found for '{package}'.")
-    spec = resolve_package_cmd(package, os=os, manager=mgr)
-    extra = list(extra_args)
+    """EXECUTOR (single). Install one package: Windows via winget (tolerating already-installed), Linux via
+    the detected manager. dry_run prints + returns the resolved spec without executing. Raises on failure."""
+    osname = os_name()
+    mgr = None if osname == "windows" else linux_package_manager()
+    if osname != "windows" and not mgr:
+        raise RuntimeError(f"install_package: no supported package manager found for '{package}'.")
+    spec = resolve_package_cmd(package, os=osname, manager=mgr)
     if dry_run:
         prefix = "sudo " if spec["Sudo"] else ""
-        line = (prefix + spec["Exe"] + " " + " ".join(spec["Args"] + extra)).strip()
-        print(f"  [dry-run] {line}", file=sys.stderr)
+        print(f"  [dry-run] {(prefix + spec['Exe'] + ' ' + ' '.join(spec['Args'] + list(extra_args))).strip()}",
+              file=sys.stderr)
         return spec
-    if spec["Sudo"] and shutil.which("sudo"):
-        argv = ["sudo", spec["Exe"], *spec["Args"], *extra]
-    else:
-        argv = [spec["Exe"], *spec["Args"], *extra]
-    rc = subprocess.run(argv).returncode
-    # -1978335189 = APPINSTALLER_CLI_ERROR_PACKAGE_ALREADY_INSTALLED (winget); treat as success.
-    if rc not in (0, -1978335189):
-        raise RuntimeError(f"install failed for '{package}' (exit {rc}).")
+    _run_pkg_spec(spec, extra_args, label=f"'{package}'")
     return spec
+
+
+def install_packages(packages, manager: str = None, dry_run: bool = False) -> None:
+    """EXECUTOR (batch). Install MANY packages in ONE transaction — so the user is asked for their sudo
+    password ONCE (up front), not per package. Windows: winget one at a time (it doesn't batch). Linux:
+    a single manager call. Raises RuntimeError on failure (the whole set fails — fix + re-run)."""
+    seen, pkgs = set(), []
+    for p in packages:  # drop falsy (bundled -> None) + dupes, preserve order
+        if p and p not in seen:
+            seen.add(p)
+            pkgs.append(p)
+    if not pkgs:
+        return
+    if os_name() == "windows":
+        for p in pkgs:
+            install_package(p, dry_run=dry_run)
+        return
+    mgr = manager or linux_package_manager()
+    if not mgr:
+        raise RuntimeError("install_packages: no supported package manager (apt/dnf/pacman/zypper/"
+                           "rpm-ostree) found.")
+    spec = _linux_pkg_spec(mgr, pkgs)
+    if dry_run:
+        prefix = "sudo " if spec["Sudo"] else ""
+        print(f"  [dry-run] {(prefix + spec['Exe'] + ' ' + ' '.join(spec['Args'])).strip()}", file=sys.stderr)
+        return
+    _run_pkg_spec(spec, label=f"{len(pkgs)} package(s): {' '.join(pkgs)}")
 
 
 def _py_minor(exe: str):

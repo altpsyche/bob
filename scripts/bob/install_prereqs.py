@@ -113,28 +113,79 @@ def _install_linux_cuda(manager: str) -> None:
     _set_linux_cuda_path(root, host_cxx)
 
 
+_ATOMIC_NOTE = """Toolchain layered via rpm-ostree. On an atomic/ostree host (Bazzite / Silverblue /
+Kinoite) layered packages apply on the NEXT BOOT — so reboot, then run setup:
+    systemctl reboot
+    ./setup.sh{cpu}
+
+RECOMMENDED ALTERNATIVE (no reboot, better isolation, simple GPU) — run Bob in a Fedora distrobox:
+    distrobox create --name bob --image fedora:latest{nvidia}
+    distrobox enter bob
+    cd {repo} && ./install_prereqs.sh{cpu} && ./setup.sh{cpu}
+Inside the box it's plain Fedora (dnf) — the native build and CUDA passthrough just work, and nothing
+touches the immutable host."""
+
+
+def _layer_atomic(pkgs: list, mgr: str, cpu: bool) -> int:
+    """Layer the toolchain on an rpm-ostree host in one transaction. CUDA is intentionally NOT layered on
+    the host (it needs NVIDIA's repo + akmods and is fragile on atomic) — the printed note steers GPU users
+    to a Fedora distrobox, which is the blessed dev path on Bazzite/Silverblue anyway."""
+    print(f"  layering {len(pkgs)} package(s) via rpm-ostree: {' '.join(pkgs)}", file=sys.stderr)
+    try:
+        osenv.install_packages(pkgs, manager=mgr)
+    except (RuntimeError, KeyError) as e:
+        raise RuntimeError(
+            f"rpm-ostree layering failed: {e}\nOn an atomic host the recommended path is a Fedora "
+            "distrobox instead:\n    distrobox create --name bob --image fedora:latest --nvidia && "
+            "distrobox enter bob\nthen run ./install_prereqs.sh + ./setup.sh inside it.")
+    suffix = " --cpu" if cpu else ""
+    nvidia = "" if cpu else " --nvidia"
+    print("\n" + _ATOMIC_NOTE.format(cpu=suffix, nvidia=nvidia, repo=REPO), file=sys.stderr)
+    return 0
+
+
+def _prime_sudo() -> None:
+    """Ask for the sudo password ONCE, up front, and cache it — so the batched installs below don't
+    prompt per package, and a wrong password fails fast (not after hammering every install). No-op when
+    already root or sudo is absent (root containers)."""
+    if not _sudo():
+        return
+    print("  sudo is needed — you'll be asked for your password once.", file=sys.stderr)
+    if subprocess.run(["sudo", "-v"]).returncode != 0:
+        raise RuntimeError("sudo authentication failed. Re-run in a terminal where you can type your "
+                           "password (or configure passwordless sudo), then try again.")
+
+
 def _install_linux(cpu: bool) -> int:
-    """Port of Install-LinuxPrereqs: toolchain via PACKAGE_MAP, a venv-compatible Python, a build-usable
-    cmake 3.x, optional CUDA + cron + docker. Fails non-zero if any toolchain package won't install."""
+    """Port of Install-LinuxPrereqs: toolchain via PACKAGE_MAP (ONE batched install = one sudo prompt), a
+    venv-compatible Python, a build-usable cmake 3.x, optional CUDA + cron + docker. On an atomic/ostree
+    host (rpm-ostree) the toolchain LAYERS and applies on the next boot. Fails non-zero if the toolchain
+    install fails."""
     mgr = osenv.linux_package_manager()
     if not mgr:
-        raise RuntimeError("No supported package manager (apt/dnf/pacman/zypper) found. Install the "
-                           "toolchain manually — see docs/MANUAL-INSTALL.md.")
-    print(f"=== Linux prerequisites ({mgr}) ===", file=sys.stderr)
+        raise RuntimeError("No supported package manager (apt/dnf/pacman/zypper/rpm-ostree) found. "
+                           "Install the toolchain manually — see docs/MANUAL-INSTALL.md.")
+    atomic = (mgr == "rpm-ostree")
+    print(f"=== Linux prerequisites ({mgr}{' — atomic/ostree host' if atomic else ''}) ===", file=sys.stderr)
+    _prime_sudo()
 
     toolchain = ["git", "curl", "toolchain-cc", "make", "cmake", "ninja", "go", "node", "npm",
                  "python", "python-pip", "python-venv"]
-    failed = []
+    pkgs = []
     for logical in toolchain:
-        pkg = osenv.resolve_package_name(logical, mgr)
-        if not pkg:
-            continue  # bundled on this manager -> nothing to install
-        print(f"  install {pkg} ({logical}) ...", file=sys.stderr)
-        try:
-            osenv.install_package(pkg)
-        except (RuntimeError, KeyError) as e:
-            print(f"  {pkg} failed: {e} (install it manually and re-run)", file=sys.stderr)
-            failed.append(pkg)
+        name = osenv.resolve_package_name(logical, mgr)
+        if name and name not in pkgs:
+            pkgs.append(name)  # None => bundled on this manager, skip
+
+    if atomic:
+        return _layer_atomic(pkgs, mgr, cpu)
+
+    print(f"  installing {len(pkgs)} package(s): {' '.join(pkgs)}", file=sys.stderr)
+    try:
+        osenv.install_packages(pkgs, manager=mgr)
+    except (RuntimeError, KeyError) as e:
+        raise RuntimeError(f"toolchain install failed: {e}\n"
+                           f"Fix the error above, then re-run ./install_prereqs.sh{' --cpu' if cpu else ''}.")
 
     # Guarantee a venv-compatible Python 3.11/3.12 (uv-provisioned if the system one is out of range).
     try:
@@ -183,13 +234,7 @@ def _install_linux(cpu: bool) -> int:
         print("  docker not found (optional — needed only for the compose services). Install docker + "
               "add your user to the docker group.", file=sys.stderr)
 
-    if failed:
-        raise RuntimeError(
-            f"Prerequisite install FAILED for: {', '.join(failed)}.\n"
-            f"Fix the errors above, then re-run ./install_prereqs.sh{' --cpu' if cpu else ''} — do NOT run "
-            "./setup.sh yet. (If the failures were 'sudo: a terminal is required', run this in an "
-            "interactive terminal where sudo can prompt, or configure passwordless sudo.)")
-
+    # The toolchain install above raises on failure (batched), so reaching here means it succeeded.
     print(f"\nLinux prerequisites done. Run: ./setup.sh{' --cpu' if cpu else ''}", file=sys.stderr)
     return 0
 
