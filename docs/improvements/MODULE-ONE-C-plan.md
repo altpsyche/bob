@@ -1,10 +1,11 @@
 # Module ONE-C — Capabilities-as-tools + the deterministic invoker (detailed plan)
 
-**Status:** executing. **C0 ✓ · Slice 1 ✓ · Slice 2 ✓ · C0c ✓ DONE** (all on main; 614 tests green) —
-the models.psd1 gating risk is retired. Decisions D1–D6 resolved (see Part 5). **Next:** Slice 4 (registry
-readers: models/show/profiles/profile/verify-urls/bench — now unblocked) → Slice 3 (health) → Slice 5
-(scheduling) → Slice 6 (generators; then drop stack.py's pwsh `_regen_configs` bridge). **Prereq:** ONE-A ✓
-(config single-sourced), ONE-B ✓ (one engine; text/vision/voice on the loop). **Read first:**
+**Status:** executing. **C0 ✓ · Slice 1 ✓ · Slice 2 ✓ · C0c ✓ · Slice 4 ✓ DONE** (all on main; 632 tests
+green) — the models.psd1 gating risk is retired and the registry readers are live. Decisions D1–D6 resolved
+(see Part 5). **Next:** Slice 3 (health: setup-check/doctor/version/diagnose) → Slice 5 (scheduling: osenv
+scheduler quartet + exact Test-CronDue port + runner) → Slice 6 (generators; then drop the
+`bob_models.regenerate_configs` pwsh bridge). **Prereq:** ONE-A ✓ (config single-sourced), ONE-B ✓ (one
+engine; text/vision/voice on the loop). **Read first:**
 [MODULE-ONE-bob.md](MODULE-ONE-bob.md) (§ONE-C, the deprecation ledger, the architectural invariant),
 [ARCHITECTURE-CONTRACTS.md](ARCHITECTURE-CONTRACTS.md) (C1 dispatch, C6 registries, **C7 provisioner
 native-first**), [../../plugins/AUTHORING.md](../../plugins/AUTHORING.md) (three-layer placement rule).
@@ -249,8 +250,14 @@ Ordered by dependency and value; a slice is the template the rest follow.
   (structural JSON, not psd1 string-splice). test_models_parity.py (9, incl. **bidirectional pwsh↔Python
   active-profile.json**); test_no_shadow_port_literals repointed to models.json. `models.psd1` DELETED.
   **The 4 generators stay pwsh** (Slice 6) — they just read models.json via `Get-ModelsConfig` now.
-- **Slice 4 — Registry readers:** `models`, `show`, `profiles`, `profile`, `verify-urls`, `bench`. (`eval`
-  optional/CLI.) Depends on C0c.
+- **Slice 4 — Registry readers** ✅ **DONE** (on main; 632 tests green): `scripts/tools/models.py` (D6)
+  built on `bob_models.py` — 6 agent tools + cli handlers for `models`/`show`/`profiles`/`profile`/
+  `verify-urls`/`bench`. `profile` (mutating) writes `data/active-profile.json` (D4) + best-effort regen;
+  `auto` detects VRAM (`gpu_vram_gb` via nvidia-smi) → `suggested_profile`, degrading to `cpu` with no GPU.
+  The interim pwsh regen bridge was single-sourced into `bob_models.regenerate_configs` (stack + models
+  share it; deleted in Slice 6). `verify-urls.ps1` deleted; `Get-Models`/`Get-GpuVramGB`/etc kept (still
+  used by the generators/diagnose/fetch). `eval` stays pwsh (very long, separate venv → ONE-D). Verified
+  live (models/show/profiles/profile/bench all ran). tests/test_slice4_models.py (18).
 - **Slice 5 — Scheduling:** the Part 3 seam + runner + `agent install/uninstall/status/log/schedule`.
 - **Slice 6 — Generators:** port `gen` (llama-swap/litellm/continue/webui). Largest; depends on C0c.
 - **Deferred to ONE-D:** `setup`(full)/`setup-voice`/`build`/`update`/`mlock`/`lock`/`fabric-setup`/`fetch`

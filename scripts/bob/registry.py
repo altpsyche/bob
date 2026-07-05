@@ -121,7 +121,7 @@ COMMANDS = [
     {"name": "diagnose", "group": "Run", "summary": "System and model health check",
      "args": "", "runtime": "pwsh", "handler": None},
     {"name": "bench", "group": "Run", "summary": "Throughput benchmark",
-     "args": "[gguf]", "runtime": "pwsh", "handler": None},
+     "args": "[role]", "runtime": "python", "handler": "bench"},
 
     # --- Config: setup + models + provisioning ------------------------------------------------
     {"name": "setup", "group": "Config", "summary": "Pre-flight health check / first-run setup",
@@ -135,13 +135,13 @@ COMMANDS = [
     {"name": "fetch", "group": "Config", "summary": "Download models for a profile",
      "args": "[--list] [profile]", "runtime": "pwsh", "handler": None},
     {"name": "models", "group": "Config", "summary": "List models with backing names and state",
-     "args": "", "runtime": "pwsh", "handler": None},
+     "args": "", "runtime": "python", "handler": "models"},
     {"name": "show", "group": "Config", "summary": "Model info: file, VRAM, SHA256, disk status",
-     "args": "<role>", "runtime": "pwsh", "handler": None},
+     "args": "<role>", "runtime": "python", "handler": "show"},
     {"name": "profile", "group": "Config", "summary": "Switch profile (auto = detect from VRAM)",
-     "args": "<name|auto>", "runtime": "pwsh", "handler": None},
+     "args": "<name|auto>", "runtime": "python", "handler": "profile"},
     {"name": "profiles", "group": "Config", "summary": "List VRAM profiles with sizes",
-     "args": "", "runtime": "pwsh", "handler": None},
+     "args": "", "runtime": "python", "handler": "profiles"},
     {"name": "build", "group": "Config", "summary": "Build llama.cpp (CUDA, or --cpu for no-GPU)",
      "args": "[--cpu] [--force]", "runtime": "pwsh", "handler": None},
     {"name": "update", "group": "Config", "summary": "Pull latest llama.cpp and rebuild",
@@ -155,7 +155,7 @@ COMMANDS = [
     {"name": "eval", "group": "Config", "summary": "Benchmark model quality (mmlu / humaneval / gsm8k)",
      "args": "<role> [task]", "runtime": "pwsh", "handler": None},
     {"name": "verify-urls", "group": "Config", "summary": "Check HuggingFace download URLs",
-     "args": "[profile]", "runtime": "pwsh", "handler": None, "hidden": True},
+     "args": "[profile]", "runtime": "python", "handler": "verify-urls", "hidden": True},
 
     # Meta — the generated help/catalog itself (hidden: it needn't list itself). Registering it routes
     # `bob help` through `python -m bob help` on both front doors, retiring the pwsh here-string (WI-7).

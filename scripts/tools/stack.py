@@ -80,18 +80,11 @@ def _poll(check, timeout: float, interval: float = 0.3) -> bool:
 
 
 def _regen_configs() -> bool:
-    """Best-effort refresh of config/llama-swap.yaml + litellm.yaml from models.psd1 (so profile edits
-    take effect), via the still-PowerShell generators. Returns True if it ran. No-op (False) when pwsh
-    is absent — the ONE goal — leaving the existing configs in place. Ports to Python in Slice 6."""
-    pwsh = shutil.which("pwsh") or shutil.which("powershell")
-    if not pwsh:
-        return False
-    for gen in ("gen-llama-swap.ps1", "gen-litellm.ps1"):
-        script = SCRIPTS / gen
-        if script.exists():
-            subprocess.run([pwsh, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
-                           check=False, capture_output=True)
-    return True
+    """Best-effort refresh of config/llama-swap.yaml + litellm.yaml from models.json (so profile edits
+    take effect). Delegates to the single-sourced bridge in bob_models (shared with the profile switch);
+    no-op when pwsh is absent — the ONE goal. Swaps to the Python generator in Slice 6."""
+    import bob_models
+    return bob_models.regenerate_configs()
 
 
 # --- ps / logs (read-only) ------------------------------------------------------------------------

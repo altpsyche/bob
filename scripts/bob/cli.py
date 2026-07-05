@@ -634,6 +634,53 @@ def _handle_services(rest: list) -> int:
     return 0
 
 
+# --- ONE-C Slice 4: model registry (read-only + profile) ------------------------------------------
+# Each verb routes to the scripts/tools/models.py capability the agent also calls (built on the neutral
+# config/models.json via bob_models.py). profile is mutating (writes data/active-profile.json); the rest
+# are read-only. eval stays pwsh (very long, separate venv — ONE-D).
+
+def _models_mod():
+    tools_dir = str(SCRIPTS / "tools")
+    if tools_dir not in sys.path:
+        sys.path.insert(0, tools_dir)
+    import models as models_mod
+    return models_mod
+
+
+def _handle_models(rest: list) -> int:
+    print(_models_mod().models_list(_cfg()))
+    return 0
+
+
+def _handle_show(rest: list) -> int:
+    if not rest:
+        print("usage: bob show <role>   (roles: planner coder chat fim embed vision agent)",
+              file=sys.stderr)
+        return 1
+    print(_models_mod().model_show(rest[0], _cfg()))
+    return 0
+
+
+def _handle_profiles(rest: list) -> int:
+    print(_models_mod().profiles_list(_cfg()))
+    return 0
+
+
+def _handle_profile(rest: list) -> int:
+    print(_models_mod().profile_switch(rest[0] if rest else "auto", _cfg()))
+    return 0
+
+
+def _handle_verify_urls(rest: list) -> int:
+    print(_models_mod().verify_urls(rest[0] if rest else "", _cfg()))
+    return 0
+
+
+def _handle_bench(rest: list) -> int:
+    print(_models_mod().bench(rest[0] if rest else "coder", _cfg()))
+    return 0
+
+
 def _handle_shell(rest: list) -> int:
     """bob shell — the interactive REPL/TUI (NE2). Behind an isatty gate: a non-TTY invocation prints
     help instead, so scripts/CI never block on a prompt."""
@@ -697,6 +744,12 @@ _HANDLERS = {
     "whisper": _handle_whisper,
     "piper": _handle_piper,
     "services": _handle_services,
+    "models": _handle_models,         # ONE-C Slice 4 — model registry readers (scripts/tools/models.py)
+    "show": _handle_show,
+    "profiles": _handle_profiles,
+    "profile": _handle_profile,
+    "verify-urls": _handle_verify_urls,
+    "bench": _handle_bench,
     "help": _handle_help,
 }
 

@@ -88,3 +88,23 @@ def list_profiles(config: Optional[dict] = None) -> dict:
     """{profile_name: _targetVRAM string} for every profile — for `bob profiles`."""
     config = config if config is not None else load_models_config()
     return {name: prof.get("_targetVRAM", "") for name, prof in config.get("profiles", {}).items()}
+
+
+def regenerate_configs() -> bool:
+    """Interim bridge (ONE-C): regenerate the runtime configs (llama-swap.yaml + litellm.yaml) from
+    models.json via the still-PowerShell generators, best-effort. Returns True if pwsh ran them, False
+    when pwsh is absent (leaving the existing configs in place). Single-sourced here so the stack
+    bring-up (scripts/tools/stack.py) and profile switch (scripts/tools/models.py) share ONE bridge;
+    when Slice 6 ports `gen` to Python this body swaps to the Python generator and callers are unchanged."""
+    import shutil
+    import subprocess
+
+    pwsh = shutil.which("pwsh") or shutil.which("powershell")
+    if not pwsh:
+        return False
+    for gen in ("gen-llama-swap.ps1", "gen-litellm.ps1"):
+        script = REPO / "scripts" / gen
+        if script.exists():
+            subprocess.run([pwsh, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+                           check=False, capture_output=True)
+    return True

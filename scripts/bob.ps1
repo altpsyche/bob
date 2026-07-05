@@ -249,60 +249,9 @@ switch ($cmd) {
   # cli.py handlers); the dispatch prologue routes them to `python -m bob` before this switch. Deleted.
   'diagnose' { & "$repo\scripts\diagnose.ps1" }
   # 'aider' -> runtime=python (cli.py _handle_aider); routed by the dispatch prologue. (ONE-C Slice 1)
-  'models' {
-    $loadedIds = @{}; $endpointUp = $false
-    try {
-      $apiModels = (Invoke-RestMethod "$base/models" -TimeoutSec 3).data
-      foreach ($m in $apiModels) { $loadedIds[$m.id] = $true }
-      $endpointUp = $true
-    } catch {}
-    $cfg     = Get-ModelsConfig
-    $profile = Resolve-ProfileName -Config $cfg
-    $models  = (Get-Models -Profile $profile).models
-    Write-Host "`nProfile: $profile`n"
-    $fmt = "{0,-10} {1,-42} {2,-9} {3}"
-    Write-Host ($fmt -f 'Role','Model','VRAM','State'); Write-Host ('-' * 70)
-    foreach ($m in $models) {
-      $label = "$($m.gguf -replace '\.gguf$','' -replace '[-_]',' ') ($($m.sizeGB) GB)"
-      $state = if (-not $endpointUp)        { '(endpoint down)' }
-               elseif ($loadedIds[$m.role]) { if ($m.pinned) { 'loaded, pinned' } else { 'loaded' } }
-               else                         { 'unloaded' }
-      $color = if ($endpointUp -and $loadedIds[$m.role]) { 'Green' } else { 'DarkGray' }
-      Write-Host ($fmt -f $m.role, $label, "$($m.sizeGB) GB", '') -NoNewline
-      Write-Host $state -ForegroundColor $color
-    }
-    Write-Host ""
-    if (-not $endpointUp) { Write-Host "Endpoint not running — state unknown. bob serve" -ForegroundColor Yellow }
-  }
-  'show' {
-    if (-not $rest.Count) { Write-Host "usage: bob show <role>   (roles: coder chat planner fim embed)"; break }
-    $info = Get-Models
-    $m = $info.models | Where-Object role -eq $rest[0]
-    if (-not $m) { Write-Host "Unknown role '$($rest[0])'. Valid: $($info.models.role -join ', ')"; break }
-    $dest = Join-Path $repo "models\$($m.gguf)"
-    Write-Host "`nRole:     $($m.role)"
-    Write-Host "File:     $($m.gguf)"
-    Write-Host "VRAM:     $($m.sizeGB) GB"
-    Write-Host "Repo:     $($m.repo)"
-    Write-Host "Path:     $($m.path)"
-    if (Test-Path $dest) {
-      $actGB = [math]::Round((Get-Item $dest).Length/1GB, 2)
-      Write-Host "On disk:  $actGB GB" -ForegroundColor Green
-    } else {
-      Write-Host "On disk:  MISSING" -ForegroundColor Yellow
-    }
-    $mf = Join-Path $repo 'models\manifest.json'
-    if (Test-Path $mf) {
-      $manifest = Get-Content $mf -Raw | ConvertFrom-Json -AsHashtable
-      if ($manifest[$m.gguf]) {
-        $entry = $manifest[$m.gguf]
-        Write-Host "SHA256:   $($entry.sha256.Substring(0,24))..."
-        Write-Host "Verified: $($entry.verifiedAt)"
-      }
-    }
-    Write-Host ""
-  }
-  'gen'    {                                                   # regenerate config from models.psd1
+  # 'models' and 'show' -> runtime=python (cli.py handlers over scripts/tools/models.py, built on the
+  # neutral config/models.json); routed by the dispatch prologue before this switch. (ONE-C Slice 4)
+  'gen'    {                                                   # regenerate config from models.json
     & "$repo\scripts\gen-llama-swap.ps1" @rest
     & "$repo\scripts\gen-litellm.ps1"
     & "$repo\scripts\gen-webui.ps1"
@@ -316,60 +265,9 @@ switch ($cmd) {
     if ($prof.Count) { $fa['Profile'] = $prof[0] }
     & "$repo\scripts\fetch-models.ps1" @fa
   }
-  'profiles' {
-    $cfg = Get-ModelsConfig
-    foreach ($p in $cfg.profiles.Keys | Sort-Object) {
-      $roles = @($cfg.profiles[$p].Keys | Where-Object { -not $_.StartsWith('_') })
-      $gb    = ($roles | ForEach-Object { $cfg.profiles[$p][$_].sizeGB } | Measure-Object -Sum).Sum
-      $have  = @($roles | Where-Object { Test-Path (Join-Path $repo "models\$($cfg.profiles[$p][$_].gguf)") }).Count
-      $mark  = if ($p -eq $cfg.activeProfile) { '* ' } else { '  ' }
-      Write-Host ("{0}{1,-6} ~{2,5:N1} GB  {3}/{4} on disk   {5}" -f $mark, $p, $gb, $have, $roles.Count, $cfg.profiles[$p]._targetVRAM)
-    }
-    $vram = Get-GpuVramGB; $sug = Get-SuggestedProfile -VramGB $vram
-    if ($sug) { Write-Host "`nDetected ~$vram GB VRAM -> suggested '$sug'." -ForegroundColor DarkGray }
-    Write-Host "(* = active)  switch: bob profile <name>   peek without switching: bob fetch --list <name>" -ForegroundColor DarkGray
-  }
-  'profile' {
-    if ($rest[0] -eq 'auto' -or -not $rest.Count) {
-      $vramGB = Get-GpuVramGB
-      if (-not $vramGB) {
-        # NC6/NC8 — degrade cleanly on a GPU-less box: select the CPU tier instead of erroring.
-        Write-Host "No GPU detected -> switching to the 'cpu' profile (tiny model, correctness/wiring only)." -ForegroundColor Yellow
-        Set-ActiveProfile 'cpu'
-        & "$repo\scripts\gen-llama-swap.ps1"
-        & "$repo\scripts\fetch-models.ps1" -ListOnly
-        Write-Host "If the model is MISSING above, download it:  bob fetch" -ForegroundColor Yellow
-        break
-      }
-      $sug = Get-SuggestedProfile -VramGB $vramGB
-      if (-not $sug) {
-        Write-Host "No profile fits $vramGB GB VRAM. Available:"
-        (Get-ModelsConfig).profiles.Keys | Sort-Object | ForEach-Object { Write-Host "  $_" }
-        break
-      }
-      Write-Host "Detected $vramGB GB VRAM -> switching to profile: $sug"
-      Set-ActiveProfile $sug
-      & "$repo\scripts\gen-llama-swap.ps1"
-      & "$repo\scripts\fetch-models.ps1" -ListOnly
-      Write-Host "If any model is MISSING above, download it:  bob fetch" -ForegroundColor Yellow
-    } else {
-      Set-ActiveProfile $rest[0]
-      & "$repo\scripts\gen-llama-swap.ps1"
-      & "$repo\scripts\fetch-models.ps1" -ListOnly
-      Write-Host "If any model is MISSING above, download it:  bob fetch" -ForegroundColor Yellow
-    }
-  }
-  'bench'  {
-    $allModels = Get-Models
-    $resolveModel = {
-      param($name)
-      $byRole = $allModels.models | Where-Object role -eq $name
-      if ($byRole) { Join-Path $repo "models\$($byRole.gguf)" } else { $name }
-    }
-    $default = & $resolveModel 'coder'
-    $m = if ($rest.Count) { & $resolveModel $rest[0] } else { $default }
-    & (Get-BinExe 'llama-bench') -m $m -ngl 99 -fa 1 -p 512 -n 128
-  }
+  # 'profiles', 'profile', and 'bench' -> runtime=python (cli.py handlers over scripts/tools/models.py:
+  # profiles_list/profile_switch/bench); routed by the dispatch prologue before this switch. profile
+  # switch writes data/active-profile.json (D4) + regenerates configs best-effort. (ONE-C Slice 4)
   # 'chat'/'code'/'think' (S2), 'describe'/'screenshot' (ONE-B2) and 'voice'/'listen'/'transcribe'/
   # 'speak' (ONE-B5) — MIGRATED to Python. They are runtime=python in config/verbs.json, so the front
   # door routes them to `python -m bob` (the agent loop: chat mode for text, images=[…] + vision role
@@ -487,11 +385,8 @@ switch ($cmd) {
     Write-Host "llama-swap:   $swapVer  ($swapCommit)"
     Write-Host "llama-server: $srvVer  ($llmCommit)"
   }
-  'verify-urls' {
-    $vArgs = @{}
-    if ($rest.Count) { $vArgs['Profile'] = $rest[0] }
-    & "$repo\scripts\verify-urls.ps1" @vArgs
-  }
+  # 'verify-urls' -> runtime=python (cli.py _handle_verify_urls over scripts/tools/models.py:verify_urls);
+  # routed by the dispatch prologue before this switch. (ONE-C Slice 4)
   'mlock' {
     # Check current status first (no admin needed)
     $mlockStatus = & "$repo\scripts\grant-mlock.ps1" -Check 2>&1
