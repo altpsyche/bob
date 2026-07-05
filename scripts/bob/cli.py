@@ -284,6 +284,78 @@ def _handle_screenshot(rest: list) -> int:
             pass
 
 
+def _handle_voice(rest: list) -> int:
+    """bob voice [--pro] [--agent] — spoken conversation (ONE-B5). Launches the shell straight into
+    /voice mode (mic→STT→loop→TTS): the pwsh voice loop + Invoke-BobStream are deleted, so voice now
+    runs on the one engine and inherits memory + write-back + one persona + retry + logging + tools.
+    Default is a plain chat-role conversation (no tools); --agent keeps the full agent toolset; --pro
+    uses the pro voice model."""
+    from bob.shell import run_voice
+    from bob_core import get_role, load_config
+
+    rest = list(rest)
+    pro = "--pro" in rest
+    config = load_config()
+    if "--agent" in rest:
+        return run_voice(config=config)                     # agent role + tools (shell default)
+    return run_voice(config=config, role=get_role(config, "voice", pro=pro), no_tools=True)
+
+
+def _handle_listen(rest: list) -> int:
+    """bob listen — record the mic until silence, print the transcript (whisper). ONE-B5: the STT client
+    is bob_voice (shared with the /voice mode); replaces the pwsh handler that shelled out to a script."""
+    import bob_voice
+    from bob_core import load_config
+
+    print("Listening... (speak now; recording stops after silence)", file=sys.stderr)
+    try:
+        transcript = bob_voice.listen(load_config())
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    if not transcript:
+        print("Error: no speech detected", file=sys.stderr)
+        return 1
+    print(transcript)
+    return 0
+
+
+def _handle_transcribe(rest: list) -> int:
+    """bob transcribe <file> — transcribe an audio file via whisper-server. ONE-B5."""
+    import bob_voice
+    from bob_core import load_config
+
+    if not rest:
+        print("usage: bob transcribe <audio-file>", file=sys.stderr)
+        return 1
+    if not os.path.exists(rest[0]):
+        print(f"File not found: {rest[0]}", file=sys.stderr)
+        return 1
+    try:
+        transcript = bob_voice.transcribe(rest[0], bob_voice.stt_port(load_config()))
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    if not transcript:
+        print("Error: empty transcript", file=sys.stderr)
+        return 1
+    print(transcript)
+    return 0
+
+
+def _handle_speak(rest: list) -> int:
+    """bob speak [text] — synthesize speech with piper, reading stdin if no text is given. ONE-B5: the
+    TTS synth is bob_voice.speak (piper → osenv.play_audio); replaces the pwsh SoundPlayer/paplay branch."""
+    import bob_voice
+    from bob_core import load_config
+
+    text = " ".join(rest) if rest else sys.stdin.read()
+    if not text.strip():
+        print("Nothing to speak.", file=sys.stderr)
+        return 0
+    return 0 if bob_voice.speak(text, load_config()) else 1
+
+
 def _handle_shell(rest: list) -> int:
     """bob shell — the interactive REPL/TUI (NE2). Behind an isatty gate: a non-TTY invocation prints
     help instead, so scripts/CI never block on a prompt."""
@@ -324,6 +396,10 @@ _HANDLERS = {
     "think": _handle_think,
     "describe": _handle_describe,     # ONE-B2 — vision doors on the loop
     "screenshot": _handle_screenshot,
+    "voice": _handle_voice,           # ONE-B5 — voice doors on the loop (pwsh loop deleted)
+    "listen": _handle_listen,
+    "transcribe": _handle_transcribe,
+    "speak": _handle_speak,
     "help": _handle_help,
 }
 

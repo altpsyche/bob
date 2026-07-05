@@ -1,0 +1,165 @@
+"""ONE-B4 — voice capability core: STT (whisper client) + TTS (piper) + speech-safe text formatting,
+ported from the pwsh listen/speak/voice handlers onto the Python agent loop. One importable core shared by
+`bob-voice-capture.py` (the STT CLI), the shell `/voice` mode (bob.shell), and later the agent tools. Mic-in
+/ speaker-out go through the osenv seam (ONE-B3); STT/TTS stay standalone servers/binaries (whisper POST /
+piper binary) — this module is the client + the round-trip glue, not the servers. No PowerShell, no
+Invoke-BobStream: the `/voice` mode wraps the same agent turn as text, so voice inherits memory + write-back
++ one persona + retry + logging + tools automatically."""
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+import osenv
+
+REPO = Path(__file__).resolve().parent.parent
+
+# voice settings Windows authors in bob.psd1; the neutral Python path has no `voice` section, so these are
+# the fallbacks. Ports resolve through bob_core._port (config/defaults.json ports, NB1) — never re-inlined.
+_DEFAULT_SILENCE_SEC = 1.5
+_DEFAULT_TTS_VOICE = "en_GB-alan-medium"
+
+
+# --- speech-safe text (port of Format-ForSpeech, bob.ps1:129) ------------------------------------
+# Strip markdown/typography before TTS so piper speaks words, not asterisks and backticks. System prompts
+# ask the model to avoid formatting; this is the reliable safety net. Ordered: typographic normalization
+# first, then structural markdown removal, then whitespace cleanup.
+_TYPO = {
+    "—": ", ",   # em dash —
+    "–": " to ", # en dash –
+    "‘": "'", "’": "'",   # single quotes
+    "“": '"', "”": '"',   # double quotes
+    "…": "...", # ellipsis
+    " ": " ",   # non-breaking space
+}
+_MD_SUBS = [
+    (re.compile(r"```[a-zA-Z]*\r?\n?"), ""),   # fenced code blocks — strip the opening fence
+    (re.compile(r"`([^`]+)`"), r"\1"),          # inline code
+    (re.compile(r"\*\*([^*]+)\*\*"), r"\1"),   # **bold**
+    (re.compile(r"\*([^*\n]+)\*"), r"\1"),      # *italic*
+    (re.compile(r"__([^_]+)__"), r"\1"),        # __bold__
+    (re.compile(r"_([^_\n]+)_"), r"\1"),        # _italic_
+    (re.compile(r"(?m)^#{1,6}\s+"), ""),         # headings
+    (re.compile(r"(?m)^[ \t]*[-*+]\s+"), ""),   # unordered bullets
+    (re.compile(r"(?m)^[ \t]*\d+\.\s+"), ""),   # numbered lists (keep the text)
+    (re.compile(r"(?m)^[-*_]{3,}\s*$"), ""),    # horizontal rules
+    (re.compile(r"\[([^\]]+)\]\([^\)]+\)"), r"\1"),  # [link text](url)
+    (re.compile(r"(?m)^>\s?"), ""),              # blockquotes
+]
+
+
+def format_for_speech(text: str) -> str:
+    """Strip markdown/typographic formatting so a TTS engine speaks the words, not the syntax."""
+    t = text or ""
+    for src, dst in _TYPO.items():
+        t = t.replace(src, dst)
+    for pattern, repl in _MD_SUBS:
+        t = pattern.sub(repl, t)
+    t = t.replace("```", "")           # any residual fence markers
+    t = t.replace("|", " ")            # table pipes → space
+    t = re.sub(r"[ \t]{2,}", " ", t)   # collapse runs of spaces/tabs
+    t = re.sub(r"(\r?\n){3,}", "\n\n", t)  # collapse excess blank lines
+    return t.strip()
+
+
+# --- STT: whisper-server client (record via the osenv seam, transcribe via HTTP) -----------------
+
+def stt_port(config: dict) -> int:
+    from bob_core import _port
+    return _port(config, "sttPort")
+
+
+def stt_ready(config: dict) -> bool:
+    """True if the whisper STT port is open (TCP connect; mirrors bob_core.check_litellm)."""
+    import socket
+    try:
+        with socket.create_connection(("localhost", stt_port(config)), timeout=2):
+            return True
+    except OSError:
+        return False
+
+
+def transcribe(wav_path: str, port: int) -> str:
+    """POST a WAV file to whisper-server, return the transcript text. Raises RuntimeError with an
+    actionable message when the server is unreachable (single source for the STT CLI + /voice mode)."""
+    import requests
+
+    url = f"http://localhost:{port}/inference"
+    with open(wav_path, "rb") as f:
+        try:
+            resp = requests.post(
+                url,
+                files={"file": ("audio.wav", f, "audio/wav")},
+                data={"temperature": "0.0", "response_format": "json"},
+                timeout=30,
+            )
+        except requests.exceptions.ConnectionError as e:
+            raise RuntimeError(
+                f"whisper-server not reachable at {url}. Start it with: bob whisper (or bob up)"
+            ) from e
+    resp.raise_for_status()
+    return resp.json().get("text", "").strip()
+
+
+def listen(config: dict, silence_sec: float = None) -> str:
+    """Record the mic until silence (osenv seam), transcribe via whisper-server, return the transcript
+    ('' when nothing was captured). Raises RuntimeError if the audio stack or the server is missing."""
+    voice = config.get("voice", {}) if isinstance(config, dict) else {}
+    secs = silence_sec if silence_sec is not None else float(voice.get("silenceSec", _DEFAULT_SILENCE_SEC))
+    wav_bytes = osenv.record_audio(secs)
+    if not wav_bytes:
+        return ""
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        f.write(wav_bytes)
+        tmp = f.name
+    try:
+        return transcribe(tmp, stt_port(config))
+    finally:
+        Path(tmp).unlink(missing_ok=True)
+
+
+# --- TTS: piper binary (synth to WAV, play through the osenv seam) --------------------------------
+
+def _piper_exe() -> Path:
+    return REPO / "bin" / ("piper.exe" if osenv.is_windows() else "piper")
+
+
+def _voice_model(config: dict) -> Path:
+    voice = config.get("voice", {}) if isinstance(config, dict) else {}
+    name = voice.get("ttsVoice", _DEFAULT_TTS_VOICE)
+    return REPO / "bin" / "voices" / f"{name}.onnx"
+
+
+def speak(text: str, config: dict) -> bool:
+    """Synthesize `text` with piper and play it (osenv.play_audio). Returns True on success; False (with a
+    stderr note) when piper/voice/audio-player is missing — a voice turn must degrade, not crash. Ported
+    from the pwsh `speak` handler (bob.ps1:842): piper reads text on stdin, writes a WAV, we play it."""
+    if not (text or "").strip():
+        return False
+    piper = _piper_exe()
+    voice = _voice_model(config)
+    if not piper.exists():
+        print("piper not found — run: bob setup-voice", file=sys.stderr)
+        return False
+    if not voice.exists():
+        print(f"voice model not found at {voice} — run: bob setup-voice", file=sys.stderr)
+        return False
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        tmp_wav = f.name
+    try:
+        proc = subprocess.run(
+            [str(piper), "--model", str(voice), "--output_file", tmp_wav, "--quiet"],
+            input=text.encode("utf-8"),
+            capture_output=True,
+        )
+        if proc.returncode != 0:
+            print(f"piper failed (exit {proc.returncode}): {proc.stderr.decode(errors='replace')}",
+                  file=sys.stderr)
+            return False
+        if not osenv.play_audio(tmp_wav):
+            print(f"no audio player found — WAV written to {tmp_wav}", file=sys.stderr)
+            return False
+        return True
+    finally:
+        Path(tmp_wav).unlink(missing_ok=True)

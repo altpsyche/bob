@@ -109,6 +109,78 @@ class TestDispatch(unittest.TestCase):
         self.assertIn("Skills", text)
 
 
+class TestVoiceMode(unittest.TestCase):
+    """ONE-B4 — /voice loop glue: mic→STT→_run_turn→TTS, faked end to end. The turn path itself is the
+    same _run_turn the text tests cover; here we prove the round-trip wiring, exit conditions, and edges."""
+
+    def _voice_shell(self, transcripts):
+        """A shell whose bob_voice is stubbed: listen() pops from `transcripts` (a KeyboardInterrupt or
+        RuntimeError value is raised instead of returned), _run_turn echoes, speak records what it spoke."""
+        import bob_voice
+        sh, out = _make_shell()
+        spoken, turns = [], []
+        seq = list(transcripts)
+
+        def fake_listen(config, silence_sec=None):
+            if not seq:
+                raise KeyboardInterrupt      # nothing left → simulate Ctrl-C to leave
+            item = seq.pop(0)
+            if isinstance(item, BaseException):
+                raise item
+            return item
+
+        sh._run_turn = lambda g: (turns.append(g), f"reply to {g}")[1]
+        self._patches = [
+            _patch(bob_voice, "stt_ready", lambda cfg: True),
+            _patch(bob_voice, "listen", fake_listen),
+            _patch(bob_voice, "format_for_speech", lambda s: s),
+            _patch(bob_voice, "speak", lambda s, cfg: (spoken.append(s), True)[1]),
+        ]
+        for p in self._patches:
+            p.start()
+        return sh, out, spoken, turns
+
+    def tearDown(self):
+        for p in getattr(self, "_patches", []):
+            p.stop()
+
+    def test_round_trips_then_exits_on_ctrl_c(self):
+        sh, _out, spoken, turns = self._voice_shell(["hello", "how are you"])
+        sh.dispatch("/voice")                # loop drains the two transcripts, then KeyboardInterrupt
+        self.assertEqual(turns, ["hello", "how are you"])
+        self.assertEqual(spoken, ["reply to hello", "reply to how are you"])
+
+    def test_exit_word_leaves_the_loop(self):
+        sh, _out, spoken, turns = self._voice_shell(["do a thing", "goodbye.", "never reached"])
+        sh.dispatch("/voice")
+        self.assertEqual(turns, ["do a thing"])   # stopped at the exit word; third item untouched
+        self.assertEqual(spoken, ["reply to do a thing"])
+
+    def test_blank_transcript_keeps_listening(self):
+        sh, _out, spoken, turns = self._voice_shell(["", "  ", "real"])
+        sh.dispatch("/voice")
+        self.assertEqual(turns, ["real"])         # empties skipped, no turn/speak for them
+
+    def test_stt_down_prints_hint_and_does_not_loop(self):
+        import bob_voice
+        sh, out = _make_shell()
+        with _patch(bob_voice, "stt_ready", lambda cfg: False):
+            sh.dispatch("/voice")
+        self.assertIn("bob whisper", out.file.getvalue())
+
+    def test_cancelled_turn_speaks_nothing(self):
+        # _run_turn returns None on a cancelled/errored turn → nothing is synthesized for it.
+        sh, _out, spoken, _turns = self._voice_shell(["question"])
+        sh._run_turn = lambda g: None
+        sh.dispatch("/voice")
+        self.assertEqual(spoken, [])
+
+
+def _patch(target, name, value):
+    from unittest import mock
+    return mock.patch.object(target, name, value)
+
+
 class TestRenderLoop(unittest.TestCase):
     def test_streams_and_returns_final(self):
         sh, out = _make_shell()

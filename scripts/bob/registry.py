@@ -10,8 +10,8 @@ catalog. Each entry is {name, group, summary, args, runtime, handler}:
 
 config/verbs.json is *generated from* this registry (verbs_json_dict / write_verbs) and read by the
 shim so the shim and `python -m bob` route from the same data. Phased migration (C1): chat/code/think
-(S2) and describe/screenshot (ONE-B2) are on the loop; voice/listen/speak + recall/orchestration are
-pwsh today and stay so until a later module ports them to Python.
+(S2), describe/screenshot (ONE-B2) and voice/listen/transcribe/speak (ONE-B5) are on the loop;
+recall/orchestration/provisioning are pwsh today and stay so until ONE-C/D port them to Python.
 """
 import json
 import sys
@@ -32,14 +32,14 @@ COMMANDS = [
      "args": "[--pro] [--raw] [--max N] [prompt]", "runtime": "python", "handler": "code"},
     {"name": "think", "group": "Talk", "summary": "Deep-reasoning chat (planner / planner-pro)",
      "args": "[--pro] [--raw] [--max N] [prompt]", "runtime": "python", "handler": "think"},
-    {"name": "voice", "group": "Talk", "summary": "Continuous voice loop: listen -> chat -> speak",
-     "args": "[--pro] [--agent]", "runtime": "pwsh", "handler": None},
+    {"name": "voice", "group": "Talk", "summary": "Spoken conversation: mic -> loop -> speech (on the agent loop)",
+     "args": "[--pro] [--agent]", "runtime": "python", "handler": "voice"},
     {"name": "listen", "group": "Talk", "summary": "Record mic until silence, print transcript",
-     "args": "", "runtime": "pwsh", "handler": None},
+     "args": "", "runtime": "python", "handler": "listen"},
     {"name": "transcribe", "group": "Talk", "summary": "Transcribe an audio file (whisper)",
-     "args": "<file>", "runtime": "pwsh", "handler": None},
+     "args": "<file>", "runtime": "python", "handler": "transcribe"},
     {"name": "speak", "group": "Talk", "summary": "Synthesize text to speech (reads stdin if no arg)",
-     "args": "[text]", "runtime": "pwsh", "handler": None},
+     "args": "[text]", "runtime": "python", "handler": "speak"},
     {"name": "describe", "group": "Talk", "summary": "Describe an image (local Qwen2-VL or --pro)",
      "args": "<image> [--pro] [prompt]", "runtime": "python", "handler": "describe"},
     {"name": "screenshot", "group": "Talk", "summary": "Capture the screen and describe it",

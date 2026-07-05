@@ -51,6 +51,10 @@ from bob.theme import Theme
 
 _SENTINEL = object()
 
+# Spoken words that leave /voice mode (matched after stripping trailing punctuation). Ctrl-C while
+# listening does the same; the pwsh voice loop had no verbal exit, so this is a small UX add.
+_VOICE_EXIT_WORDS = {"exit", "quit", "stop", "goodbye", "bye"}
+
 # Slash-command completion tree (NestedCompleter): each key may map to a sub-map or None.
 _SLASH = {
     "/help": None,
@@ -62,6 +66,7 @@ _SLASH = {
     "/session": {"new": None, "list": None, "resume": None, "show": None},
     "/theme": {"reload": None},
     "/agent": None,
+    "/voice": None,
     "/skill": None,
     "/clear": None,
     "/exit": None,
@@ -473,6 +478,7 @@ class BobShell:
             "/theme": self._cmd_theme,
             "/clear": self._cmd_clear,
             "/agent": self._run_turn,
+            "/voice": self._cmd_voice,
             "/skill": self._cmd_skill,
         }.get(cmd)
         if handler is None:
@@ -490,7 +496,7 @@ class BobShell:
         self.console.print()
         self.console.print(render.skills_view(self.skills, self.theme))
         self.console.print(
-            f"\n[italic {self.theme.muted}]shell · /agent <goal> · /model [role] · /agency [level] · "
+            f"\n[italic {self.theme.muted}]shell · /agent <goal> · /voice · /model [role] · /agency [level] · "
             f"/session [new] · /skill <name> · /theme · /clear · /status · /exit[/]"
         )
 
@@ -686,18 +692,19 @@ class BobShell:
 
     # -- agent turn -----------------------------------------------------------
 
-    def _run_turn(self, goal: str) -> None:
-        """Run one agent turn, streaming its events. Uses the real run_agent_events generator."""
+    def _run_turn(self, goal: str) -> str:
+        """Run one agent turn, streaming its events. Uses the real run_agent_events generator. Returns the
+        final answer string (None if cancelled/errored) so callers like /voice can act on it (TTS)."""
         goal = (goal or "").strip()
         if not goal:
-            return
+            return None
         # Over-budget refusal — mirror the server's _load_session_or_404 402 branch. Guarded on
         # session_id because of lazy creation (no session before the first turn); a no-op unless a
         # positive agent.maxSessionTokens is configured (over_budget is False for a 0 budget).
         if self.sessions is not None and self.session_id and self.sessions.over_budget(self.session_id):
             self.console.print(
                 f"[{self.theme.warn}]session token budget exhausted — /session new to continue[/]")
-            return
+            return None
         from bob_loop import run_agent_events
 
         def factory(cancel, approve):
@@ -715,6 +722,53 @@ class BobShell:
             self.history.append({"role": "user", "content": goal})
             self.history.append({"role": "assistant", "content": result})
             self._persist_turn(goal, result)
+        return result
+
+    def _cmd_voice(self, _arg: str = "") -> None:
+        """/voice — a spoken conversation inside the shell (ONE-B4). Loops mic → STT → agent turn → TTS,
+        wrapping the SAME `_run_turn` as text, so voice inherits memory + write-back + one persona + retry
+        + logging + tools automatically (the whole point of the one-engine unification — no Invoke-BobStream
+        path, no 256-token cap, no separate persona). Each reply streams to the screen and is Ctrl-C
+        cancellable; Ctrl-C while listening — or saying 'exit'/'stop'/'quit'/'goodbye' — leaves voice mode
+        back to the text prompt. Uses the shell's current role: reasoning/verbosity is a `/model` choice,
+        not a per-turn `/no_think` string hack (which would corrupt the persisted turn + memory)."""
+        import bob_voice
+
+        t = self.theme
+        # STT/TTS are standalone servers the user brings up (bob up / bob whisper). Auto-launching them
+        # is a provisioning capability that lands as a tool in ONE-C; here we check + point, not start.
+        if not bob_voice.stt_ready(self.config):
+            self.console.print(
+                f"[{t.warn}]whisper STT not reachable on :{bob_voice.stt_port(self.config)} — start it with[/] "
+                f"[bold]bob whisper[/] [{t.warn}](or[/] [bold]bob up[/][{t.warn}]), then /voice again[/]")
+            return
+        self.console.print(
+            f"[{t.accent}]voice mode[/] [{t.muted}]· speak after 'listening' · say \"exit\" or press Ctrl-C "
+            f"to leave · headphones avoid echo[/]")
+        try:
+            while True:
+                self.console.print(f"[{t.muted}]listening…[/]")
+                try:
+                    transcript = bob_voice.listen(self.config)
+                except KeyboardInterrupt:            # Ctrl-C while recording → leave voice mode
+                    break
+                except RuntimeError as e:            # audio stack / server vanished mid-session
+                    self.console.print(f"[{t.error}]{e}[/]")
+                    break
+                if not transcript.strip():           # silence / empty transcript → keep listening
+                    continue
+                if transcript.strip().lower().rstrip(".!?") in _VOICE_EXIT_WORDS:
+                    break
+                self.console.print(f"[{t.accent}]›[/] {transcript}")
+                # M9 — one failed turn must not abort the whole session; _run_turn already renders its
+                # own errors and returns None on cancel/error, so we just guard the TTS side-effect.
+                result = self._run_turn(transcript)
+                if result:
+                    spoken = bob_voice.format_for_speech(result)
+                    if spoken:
+                        bob_voice.speak(spoken, self.config)
+        finally:
+            self.console.print(f"[{t.muted}]— voice ended[/]")
 
     def _persist_turn(self, goal: str, result: str) -> None:
         """Mirror the server's _record_turn ([bob_agent_server.py]): append the turn to the
@@ -920,3 +974,20 @@ def run(config=None, role=None, no_tools=False) -> int:
         return 0
     _force_utf8()   # before build() creates the rich Console, so it inherits a UTF-8 stdout
     return BobShell.build(config, role=role, no_tools=no_tools).run()
+
+
+def run_voice(config=None, role=None, no_tools=False) -> int:
+    """Entry point for `bob voice` (ONE-B5): launch the shell straight into /voice mode (mic→STT→loop→TTS)
+    instead of the text REPL, then run the session-end write-back on exit — voice sessions get the same
+    memory consolidation as text ones. TTY-gated like run(): a non-TTY invocation prints help."""
+    if not is_interactive():
+        from bob.cli import _print_help
+        _print_help()
+        return 0
+    _force_utf8()
+    shell = BobShell.build(config, role=role, no_tools=no_tools)
+    try:
+        shell._cmd_voice("")
+    finally:
+        shell._on_exit()   # consolidate + close the session, mirroring the REPL exit path
+    return 0

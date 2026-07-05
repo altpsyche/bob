@@ -53,112 +53,6 @@ if (Test-Path $verbsFile) {
   }
 }
 
-function Invoke-BobStream {
-  # Stream a chat completion to stdout. Returns the full assistant text.
-  # -Raw: suppress spinner + ANSI output, return clean text only (used by bob voice).
-  param(
-    [string]$Model,
-    [object[]]$Messages,
-    [int]$MaxTokens = 512,
-    [string]$ApiBase,
-    [switch]$Raw
-  )
-  $curl = Get-CurlExe   # NC5: curl.exe on Windows, curl elsewhere
-  if (-not (Get-Command $curl -ErrorAction SilentlyContinue)) {
-    throw "$curl not found (install curl, or on Windows requires Win10 1803+)"
-  }
-  $body = @{ model=$Model; stream=$true; max_tokens=$MaxTokens; messages=$Messages } |
-          ConvertTo-Json -Depth 8 -Compress
-  # Write body to a temp file — avoids Windows 32 KB command-line limit for large payloads (e.g. base64 images).
-  # Use UTF-8 without BOM — BOM breaks JSON parsers (litellm, llama-server).
-  $bodyTmp = [IO.Path]::GetTempFileName()
-  [IO.File]::WriteAllText($bodyTmp, $body, [System.Text.UTF8Encoding]::new($false))
-  $full = [System.Text.StringBuilder]::new()
-  $spinRs = $null; $spinPs = $null; $spinDone = $false
-  $prevEnc = [Console]::OutputEncoding
-  [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-  try {
-    if (-not $Raw) {
-      $spinRs = [runspacefactory]::CreateRunspace(); $spinRs.Open()
-      $spinPs = [powershell]::Create(); $spinPs.Runspace = $spinRs
-      $spinPs.AddScript({
-        $spin = [char[]]@('|','/','-','\'); $i = 0
-        while ($true) { [Console]::Write("`r  $($spin[$i++ % 4]) ..."); [System.Threading.Thread]::Sleep(120) }
-      }) | Out-Null
-      $spinPs.BeginInvoke() | Out-Null
-    }
-
-    & $curl --no-buffer --silent -X POST "$ApiBase/chat/completions" `
-        -H 'Content-Type: application/json' `
-        -H 'Authorization: Bearer sk-local' `
-        -d "@$bodyTmp" |
-    ForEach-Object {
-      if ($_ -match '^data: (.+)$') {
-        $chunk = $Matches[1]
-        if ($chunk -ne '[DONE]') {
-          try {
-            $t = ($chunk | ConvertFrom-Json).choices[0].delta.content
-            if ($t) {
-              if (-not $Raw -and -not $spinDone) {
-                $spinPs.Stop(); $spinRs.Close()
-                [Console]::Write("`r           `r")
-                $spinDone = $true
-              }
-              if (-not $Raw) { Write-Host -NoNewline $t }
-              [void]$full.Append($t)
-            }
-          } catch {}
-        }
-      }
-    }
-  } catch {
-    Write-Host "Chat failed: $_" -ForegroundColor Red
-    Write-Host "Is endpoint up? bob serve"
-  } finally {
-    if (-not $Raw -and -not $spinDone -and $spinPs) {
-      $spinPs.Stop()
-      if ($spinRs) { $spinRs.Close() }
-      [Console]::Write("`r           `r")
-    }
-    Remove-Item $bodyTmp -ErrorAction SilentlyContinue
-    [Console]::OutputEncoding = $prevEnc
-  }
-  return $full.ToString()
-}
-
-function Format-ForSpeech {
-  # Strip markdown formatting before passing text to a TTS engine.
-  # System prompts are advisory — this is the reliable safety net.
-  param([string]$Text)
-  $t = $Text
-  # Normalize typographic Unicode characters to spoken equivalents.
-  $t = $t.Replace([string][char]0x2014, ', ')   # em dash —
-  $t = $t.Replace([string][char]0x2013, ' to ') # en dash –
-  $t = $t.Replace([string][char]0x2018, "'")    # left single quote
-  $t = $t.Replace([string][char]0x2019, "'")    # right single quote
-  $t = $t.Replace([string][char]0x201C, '"')    # left double quote
-  $t = $t.Replace([string][char]0x201D, '"')    # right double quote
-  $t = $t.Replace([string][char]0x2026, '...')  # ellipsis
-  $t = $t.Replace([string][char]0x00A0, ' ')    # non-breaking space
-  $t = [regex]::Replace($t, '```[a-zA-Z]*\r?\n?', '')   # fenced code blocks — strip fence
-  $t = $t.Replace('```', '')
-  $t = [regex]::Replace($t, '`([^`]+)`', '$1')           # inline code
-  $t = [regex]::Replace($t, '\*\*([^*]+)\*\*', '$1')     # **bold**
-  $t = [regex]::Replace($t, '\*([^*\n]+)\*', '$1')       # *italic*
-  $t = [regex]::Replace($t, '__([^_]+)__', '$1')         # __bold__
-  $t = [regex]::Replace($t, '_([^_\n]+)_', '$1')         # _italic_
-  $t = [regex]::Replace($t, '(?m)^#{1,6}\s+', '')        # headings
-  $t = [regex]::Replace($t, '(?m)^[ \t]*[-*+]\s+', '')   # unordered bullets
-  $t = [regex]::Replace($t, '(?m)^[ \t]*\d+\.\s+', '')   # numbered lists (keep the text)
-  $t = [regex]::Replace($t, '(?m)^[-*_]{3,}\s*$', '')    # horizontal rules
-  $t = [regex]::Replace($t, '\[([^\]]+)\]\([^\)]+\)', '$1')  # [link text](url)
-  $t = [regex]::Replace($t, '(?m)^>\s?', '')             # blockquotes
-  $t = $t.Replace('|', ' ')                              # table pipes → space
-  $t = [regex]::Replace($t, '[ \t]{2,}', ' ')            # collapse multiple spaces
-  $t = [regex]::Replace($t, '(\r?\n){3,}', "`n`n")       # collapse excess blank lines
-  return $t.Trim()
-}
-
 function Show-Check([string]$label, [bool]$ok, [string]$fix = '') {
   $sym   = if ($ok) { [char]0x2713 } else { [char]0x2717 }
   $color = if ($ok) { 'Green' } else { 'Red' }
@@ -536,11 +430,12 @@ switch ($cmd) {
     $m = if ($rest.Count) { & $resolveModel $rest[0] } else { $default }
     & (Get-BinExe 'llama-bench') -m $m -ngl 99 -fa 1 -p 512 -n 128
   }
-  # 'chat'/'code'/'think' (Module S2) and 'describe'/'screenshot' (ONE-B2) — MIGRATED to Python. They
-  # are runtime=python in config/verbs.json, so the front door routes them to `python -m bob` (the
-  # agent loop: chat mode for text, images=[…] + vision role for describe/screenshot) and they never
-  # reach this switch. The old pwsh REPL + System.Drawing vision are retired — one loop, one memory
-  # path. Invoke-BobStream itself stays: the 'voice' loop still uses it until ONE-B4/B5 port it.
+  # 'chat'/'code'/'think' (S2), 'describe'/'screenshot' (ONE-B2) and 'voice'/'listen'/'transcribe'/
+  # 'speak' (ONE-B5) — MIGRATED to Python. They are runtime=python in config/verbs.json, so the front
+  # door routes them to `python -m bob` (the agent loop: chat mode for text, images=[…] + vision role
+  # for describe/screenshot, STT→loop→TTS for /voice) and they never reach this switch. The old pwsh
+  # REPL, System.Drawing vision, the voice loop, and Invoke-BobStream/Format-ForSpeech are all deleted —
+  # one loop, one memory path.
   'stop' {
     $killed = [System.Collections.Generic.List[string]]::new()
 
@@ -820,115 +715,6 @@ N8N_PORT=$($dp.n8nPort ?? (Get-BobPortDefault 'n8nPort'))
   # ── Phase 2: Voice + Vision ─────────────────────────────────────────────────
   'setup-voice' { & "$repo\scripts\setup-voice.ps1" $(if ($rest -contains '-Force') { '-Force' }) }
 
-  'listen' {
-    $bobCfg  = Get-BobConfig
-    $venvPy  = Get-VenvExe -Venv 'venv-litellm' -Exe 'python'
-    $capture = Join-Path $repo 'scripts\bob-voice-capture.py'
-    $env:PYTHONIOENCODING = 'utf-8'
-    & $venvPy $capture --port ($bobCfg.voice.sttPort ?? (Get-BobPortDefault 'sttPort')) --silence-sec ($bobCfg.voice.silenceSec ?? 1.5)
-    $env:PYTHONIOENCODING = $null
-  }
-
-  'transcribe' {
-    if (-not $rest.Count) { Write-Host "usage: bob transcribe <audio-file>"; break }
-    $bobCfg  = Get-BobConfig
-    $venvPy  = Get-VenvExe -Venv 'venv-litellm' -Exe 'python'
-    $capture = Join-Path $repo 'scripts\bob-voice-capture.py'
-    $env:PYTHONIOENCODING = 'utf-8'
-    & $venvPy $capture --file $rest[0] --port ($bobCfg.voice.sttPort ?? (Get-BobPortDefault 'sttPort'))
-    $env:PYTHONIOENCODING = $null
-  }
-
-  'speak' {
-    $bobCfg = Get-BobConfig
-    $voice  = Join-Path $repo "bin\voices\$($bobCfg.voice.ttsVoice ?? 'en_GB-alan-medium').onnx"
-    $piperExe = Get-BinExe 'piper'
-    if (-not (Test-Path $piperExe)) { Write-Host "piper not found — run: bob setup-voice" -ForegroundColor Yellow; break }
-    if (-not (Test-Path $voice))    { Write-Host "Voice model not found at $voice — run: bob setup-voice" -ForegroundColor Yellow; break }
-    $text = if ($rest.Count) { $rest -join ' ' } else { $input | Out-String }
-    if (-not $text -or -not $text.Trim()) { Write-Host "Nothing to speak." -ForegroundColor DarkGray; break }
-    $tmpTxt = [IO.Path]::GetTempFileName()
-    $tmpWav = $tmpTxt + '.wav'
-    try {
-      Set-Content $tmpTxt -Value $text -Encoding utf8 -NoNewline
-      Get-Content $tmpTxt | & $piperExe --model $voice --output_file $tmpWav --quiet 2>&1 | Out-Null
-      if ($LASTEXITCODE -ne 0) { throw "piper exited with code $LASTEXITCODE" }
-      if ((Get-BobOS) -eq 'windows') {
-        (New-Object System.Media.SoundPlayer $tmpWav).PlaySync()
-      } else {
-        # System.Media.SoundPlayer is Windows-only .NET — use a Linux CLI player.
-        $player = @('paplay','aplay','ffplay') | Where-Object { Get-Command $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
-        if (-not $player)              { Write-Host "No audio player found (install pipewire/pulseaudio, alsa-utils, or ffmpeg). WAV: $tmpWav" -ForegroundColor Yellow }
-        elseif ($player -eq 'ffplay')  { & ffplay -nodisp -autoexit -loglevel quiet $tmpWav }
-        else                           { & $player $tmpWav }
-      }
-    } finally {
-      Remove-Item $tmpTxt, $tmpWav -ErrorAction SilentlyContinue
-    }
-  }
-
-  'voice' {
-    $bobCfg    = Get-BobConfig
-    $pro       = $rest -contains '--pro'
-    $useAgent  = $rest -contains '--agent'
-    $rest      = @($rest | Where-Object { $_ -notin @('--pro', '--agent') })
-    $voiceSys  = $bobCfg.voice.systemPrompt ?? $bobCfg.persona.systemPrompt
-    $voiceRole = Get-RoleForTask -Config $bobCfg -Task voice -Pro:$pro
-    $voiceTok  = $bobCfg.voice.maxTokens ?? 256
-    $venvPy     = Get-VenvExe -Venv 'venv-litellm' -Exe 'python'
-    $loopScript = Join-Path $repo 'scripts\bob_loop.py'
-    # Auto-start whisper STT if not reachable
-    $sttPort = $bobCfg.voice.sttPort ?? (Get-BobPortDefault 'sttPort')
-    if (-not (Test-PortInUse -Port $sttPort)) {
-      Write-Host "Starting whisper STT..." -ForegroundColor DarkGray
-      & "$PSScriptRoot\start-whisper.ps1" -NoWindow
-    }
-    $modeLabel = if ($useAgent) { 'agent' } elseif ($pro) { 'pro' } else { 'chat' }
-    Write-Host "Bob voice loop ($modeLabel) — Ctrl+C to exit. Use headphones to avoid echo." -ForegroundColor Cyan
-    if (-not $useAgent) { Write-Host "Model: $voiceRole" -ForegroundColor DarkGray }
-    # Conversation history persists for the duration of the voice session (chat mode only).
-    $messages = @(@{ role = 'system'; content = $voiceSys })
-    try {
-      while ($true) {
-        # M9 — one failed turn (LLM down, STT/TTS error) must not abort the whole session.
-        try {
-        Write-Host "Listening..." -ForegroundColor DarkGray
-        $transcript = & "$PSScriptRoot\bob.ps1" listen
-        if (-not $transcript -or -not $transcript.Trim()) { continue }
-        Write-Host "> $transcript" -ForegroundColor Yellow
-        $agentExitCode = 0
-        if ($useAgent) {
-          $env:PYTHONIOENCODING = 'utf-8'
-          $response = & $venvPy $loopScript $transcript --agency silent 2>$null | Out-String
-          $agentExitCode = $LASTEXITCODE
-          $env:PYTHONIOENCODING = $null
-          $response = $response.Trim()
-        } else {
-          # /no_think: Qwen3 skips reasoning scratchpad — voice needs fast replies.
-          $messages += @{ role = 'user'; content = "$transcript /no_think" }
-          $response = Invoke-BobStream -Model $voiceRole -Messages $messages -MaxTokens $voiceTok -ApiBase $litellmBase -Raw
-          # Strip trailing non-ASCII residue (Qwen3 leaks special-token bytes at end of raw stream).
-          $response = [regex]::Replace($response.Trim(), '[-￿]+$', '')
-        }
-        $response = Format-ForSpeech $response
-        if ($response) {
-          Write-Host "Bob: $response" -ForegroundColor Cyan
-          if (-not $useAgent) { $messages += @{ role = 'assistant'; content = $response } }
-          & "$PSScriptRoot\bob.ps1" speak $response
-        }
-        if ($agentExitCode -eq 42) {
-          Write-Host "Music started. Stopping voice loop." -ForegroundColor DarkGray
-          break
-        }
-        } catch {
-          Write-Host "Voice turn failed: $_  (continuing)" -ForegroundColor Red
-          continue
-        }
-      }
-    } finally {
-      Write-Host "`nVoice loop ended." -ForegroundColor DarkGray
-    }
-  }
   'whisper' {
     $subCmd  = if ($rest.Count -and $rest[0] -in 'stop','start','status') { $rest[0] } else { '' }
     $whisperPidFile = Join-Path $repo 'logs\whisper.pid'

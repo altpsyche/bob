@@ -15,27 +15,17 @@ import tempfile
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
-import requests
-
-import osenv  # ONE-B3 — mic capture lives in the OS seam (single-sourced); this is the STT client
+import osenv       # ONE-B3 — mic capture lives in the OS seam (single-sourced)
+import bob_voice   # ONE-B4 — the STT client (transcribe) is single-sourced in the voice capability core
 
 
 def transcribe(wav_path: str, port: int) -> str:
-    """POST a WAV file to whisper-server, return transcript text."""
-    url = f"http://localhost:{port}/inference"
-    with open(wav_path, 'rb') as f:
-        try:
-            resp = requests.post(
-                url,
-                files={'file': ('audio.wav', f, 'audio/wav')},
-                data={'temperature': '0.0', 'response_format': 'json'},
-                timeout=30,
-            )
-        except requests.exceptions.ConnectionError:
-            print(f"Error: whisper-server not reachable at {url}. Run: bob up (or start-whisper.ps1)", file=sys.stderr)
-            sys.exit(1)
-    resp.raise_for_status()
-    return resp.json().get('text', '').strip()
+    """POST a WAV file to whisper-server, return transcript text (delegates to the shared core)."""
+    try:
+        return bob_voice.transcribe(wav_path, port)
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def main():
