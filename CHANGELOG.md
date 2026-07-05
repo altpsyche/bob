@@ -8,6 +8,22 @@ rebuilds only what changed, verifies, and rolls back on failure.
 
 ## [Unreleased]
 
+### Changed — Module ONE (2→1 harness): PowerShell fully retired
+- **Zero PowerShell.** The whole `scripts/*.ps1` layer is gone — the front door (`bob.ps1`), the seam
+  library (`_models`/`_platform`/`_versions`/`_common`), the generators/lifecycle/provisioning scripts,
+  and the pwsh test harness. `git ls-files '*.ps1'` returns only the sample `plugins/play/invoke.ps1`.
+- **Python cold-start kernel.** `install_prereqs.sh`/`.bat` + `setup.sh`/`.bat` are now thin shell stubs
+  that ensure `python3` and hand off to `python -m bob.kernel` (`scripts/bob/kernel.py` +
+  `install_prereqs.py`), which *imports* the same capability functions the agent and `bob --run` use.
+- **CLI is Python-only.** `config/verbs.json` + the registry routing table + the `runtime` field are
+  removed; `scripts/bob/registry.py` is the single source for dispatch + help. `bob <verb>` still works.
+- **Inference auto-starts on demand** — `bob`, `bob chat`, `bob agent` bring the stack up if it isn't
+  running; `bob up` is now an optional pre-warm.
+- **Broader Linux support:** batched toolchain install (one `sudo` prompt), and **atomic Fedora**
+  (Bazzite/Silverblue via `rpm-ostree`, with a Fedora-distrobox recommendation). No longer Windows-first.
+- Setup flags are now lowercase double-dash (`--skip-models`, `--profile cpu`, `--cpu`, `--launch`); the
+  gates are Python (`scripts/check.py`, `scripts/smoke.py`).
+
 ### Added
 - **zypper / openSUSE support** across the install seam (`$PackageMap` column,
   `Get-LinuxPackageManager`, `Resolve-PackageCmd`) and `install_prereqs.sh`, with an

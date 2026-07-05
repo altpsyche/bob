@@ -1,7 +1,7 @@
 # Bob Agent
 
-**Bob: Your Private AI Assistant for Windows**
-Uses your GPU for local processing, with optional cloud connectivity (DeepSeek, OpenAI-compatible) for advanced capabilities. **local by default, cloud on demand.**
+**Bob: Your Private AI Assistant.**
+Uses your GPU for local processing, with optional cloud connectivity (DeepSeek, OpenAI-compatible) for advanced capabilities. **local by default, cloud on demand.** Runs on Linux (Arch/CachyOS, Fedora, Ubuntu, and atomic Fedora like Bazzite) and Windows.
 
 Bob chats, listens, speaks, sees, and acts as an agent that can search your code, summarise files, draft documents, and schedule tasks on your behalf.
 
@@ -41,7 +41,7 @@ Agent tools (callable by `bob agent` autonomously): memory, web, git, file, shel
 
 ## Hardware
 
-Windows 11 with an NVIDIA RTX 3000 series card or newer. Three VRAM profiles are included:
+Linux or Windows 11 with an NVIDIA RTX 3000 series card or newer (or run the CPU tier with no GPU). VRAM profiles included:
 
 | Profile | Target cards | Model download |
 |---|---|---|
@@ -51,7 +51,7 @@ Windows 11 with an NVIDIA RTX 3000 series card or newer. Three VRAM profiles are
 | `24gb` | RTX 3090, 4090, 4080 (near-lossless quants) | ~42 GB |
 | `32gb` | RTX 5090, A6000, 3090 Ti | ~54 GB |
 
-Setup detects your GPU and selects the best-fit profile automatically. RTX 5000 (Blackwell) requires CUDA 12.8; `install_prereqs.bat` handles version selection. On an RTX 5080 with the default profile: pp512 ~4600 t/s, tg128 ~89 t/s.
+Setup detects your GPU and selects the best-fit profile automatically. RTX 5000 (Blackwell) requires CUDA 12.8+; the prerequisite installer handles version selection. On an RTX 5080 with the default profile: pp512 ~4600 t/s, tg128 ~89 t/s.
 
 ## Supported matrix
 
@@ -75,38 +75,48 @@ block a merge; native-from-source is verified when a release is tagged. See
 
 ## Quick start
 
-Git, Scoop, and PowerShell 7 are required before running these. Everything else installs automatically.
+Only **Git** is required up front. The two entry scripts install the rest of the toolchain (CUDA, Python 3.12, Go, Node.js, cmake) and build everything. Two thin shell stubs hand off to a Python cold-start kernel (`python -m bob.kernel`) — no PowerShell anywhere.
 
 **Step 1: install prerequisites (once per machine)**
 
-```powershell
-git clone --recurse-submodules <your-remote> C:\bob
-cd C:\bob
-.\install_prereqs.bat
+```bash
+git clone --recurse-submodules <your-remote> bob
+cd bob
+./install_prereqs.sh            # Linux;  add --cpu for a GPU-less box
+# Windows:  install_prereqs.bat
 ```
 
-Installs CUDA, Python 3.12, Go, Node.js, cmake, and Docker Desktop. If Docker Desktop was just installed, log out and back in before step 2.
+You're asked for your `sudo` password **once** (Linux). On atomic Fedora (Bazzite/Silverblue) it layers via `rpm-ostree` and points you at a Fedora distrobox — the recommended path there.
 
 **Step 2: build, configure, and start**
 
-```powershell
-.\setup.bat
-bob up
+```bash
+./setup.sh                      # Windows:  setup.bat   ·   GPU-less:  ./setup.sh --cpu
 ```
 
-Builds the inference engine and proxy from source, downloads models, wires VS Code and terminal clients, and starts Docker services. Open a new terminal after setup so the PATH update takes effect. `bob up` starts llama-swap (`:8080`) and the LiteLLM proxy (`:8081`) in the background, plus Open WebUI (`:3000`) if you opted into it at setup (`setup.bat -WithWebui` / `./setup.sh -WithWebui`; it pulls torch/transformers, so it's opt-in). Tail logs with `bob logs`.
+Builds the inference engine and proxy from source, downloads models, wires VS Code and terminal clients, and (if Docker is present) starts the compose services. Open a new terminal afterward so the `~/.local/bin` PATH update takes effect.
 
-**Step 3: register the agent scheduler (once):**
-```powershell
+Then just talk to Bob — **inference auto-starts on demand**, no separate command needed:
+
+```bash
+bob                             # interactive REPL (brings the stack up if it isn't)
+bob chat "hi"                   # one-shot
+bob agent "summarise README.md" # agentic task loop
+```
+
+`bob up` is an optional pre-warm (starts llama-swap `:8080` + the LiteLLM proxy `:8081` in the background; add `--with-services` for Docker, or opt into Open WebUI `:3000` at setup with `./setup.sh --with-webui`). Tail logs with `bob logs`.
+
+**Step 3 (optional): register the agent scheduler**
+```bash
 bob agent install
 ```
-Registers a Windows scheduled task that runs background agent tasks on cron schedules. Optional; skip if you won't use the agent.
+Registers a recurring background-agent runner (Linux cron / Windows Scheduled Task) for scheduled goals. Skip if you won't use it.
 
-Both scripts are safe to re-run if something fails partway through.
+Both scripts are safe to re-run if something fails partway through. `setup` needs **no root** — only `install_prereqs` (system packages) uses sudo, so if your sudo is finicky you can install the toolchain by hand and skip straight to `./setup.sh`.
 
 The server speaks the same chat completions protocol as OpenAI. Any tool already pointed at OpenAI works here unchanged by redirecting its base URL to `http://localhost:8081/v1`.
 
-Flags for `setup.bat`: `-Profile 12gb` (smaller model set), `-SkipModels` (skip downloads), `-Launch` (start the stack when setup finishes).
+Flags for `setup`: `--profile 12gb` (smaller model set), `--skip-models` (skip downloads), `--skip-voice`, `--cpu` (force the no-GPU tier), `--launch` (start the stack when setup finishes).
 
 ## Docs
 

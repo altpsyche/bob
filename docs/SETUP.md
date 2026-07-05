@@ -19,36 +19,40 @@ for exactly what each OS × GPU combination is tested to do. macOS and AMD/ROCm 
 ## Install
 
 Two commands per OS (a possible logout between them on Windows if Docker Desktop was just installed).
-The Windows entry is `.bat`, the Linux entry is `.sh`; both are thin wrappers over the same OS-aware
-`scripts/*.ps1` (PowerShell 7 runs on both). Add `--cpu` to `install_prereqs` on a GPU-less box.
+The entry scripts are thin shell stubs — the Linux `.sh` ensures a system `python3`, the Windows `.bat`
+requires Python — that then hand off to the Python cold-start kernel (`python -m bob.kernel`). **No
+PowerShell.** Add `--cpu` to either command on a GPU-less box.
 
 <table>
-<tr><th>Windows 11 (NVIDIA)</th><th>Linux (glibc; apt/dnf/pacman/zypper)</th></tr>
+<tr><th>Linux (glibc; apt/dnf/pacman/zypper; atomic Fedora via rpm-ostree)</th><th>Windows 11 (NVIDIA)</th></tr>
 <tr><td>
 
-Prereqs you provide first: **Git**, **Scoop** (`irm get.scoop.sh | iex`), **PowerShell 7**
-(`winget install Microsoft.PowerShell`).
-
-```powershell
-git clone --recurse-submodules <your-remote> C:\bob
-cd C:\bob
-.\install_prereqs.bat      # Node, uv, Go, Python 3.12, CUDA, cmake, Docker
-# (log out/in if Docker Desktop was just installed)
-.\setup.bat                # build → venvs → models → wire clients
-bob up
-```
-
-</td><td>
-
-Prereqs you provide first: **git**, **curl**. `install_prereqs.sh` installs **PowerShell 7** and the
-toolchain via your package manager.
+Prereqs you provide first: **git**. (`install_prereqs.sh` ensures `python3` and installs the toolchain
+via your package manager.)
 
 ```bash
 git clone --recurse-submodules <your-remote> ~/bob
 cd ~/bob
-./install_prereqs.sh       # pwsh + compiler, cmake, ninja, go, node, python3 (add --cpu to skip CUDA)
+./install_prereqs.sh       # compiler, cmake, ninja, go, node, python3, CUDA (add --cpu to skip CUDA)
 ./setup.sh                 # build → venvs → models → wire clients
-bob up
+bob                        # inference auto-starts; or `bob chat "hi"`
+```
+
+One `sudo` prompt (Linux). On atomic Fedora (Bazzite/Silverblue) it layers via `rpm-ostree` and
+recommends a Fedora distrobox — see [MANUAL-INSTALL.md](MANUAL-INSTALL.md).
+
+</td><td>
+
+Prereqs you provide first: **Git**, **Python 3.12** (`winget install Python.Python.3.12`), and **VS2022**
+with the *Desktop development with C++* workload (for the CUDA build).
+
+```powershell
+git clone --recurse-submodules <your-remote> C:\bob
+cd C:\bob
+install_prereqs.bat        # Node, uv, Go, CUDA, cmake, Docker
+# (log out/in if Docker Desktop was just installed)
+setup.bat                  # build → venvs → models → wire clients
+bob                        # inference auto-starts
 ```
 
 </td></tr>
@@ -56,34 +60,39 @@ bob up
 
 Both entry scripts print the Bob release they belong to (`VERSION`) at startup, install *from
 [`versions.lock`](../versions.lock)* (pinned + checksum-verified), and are **idempotent**: if something
-fails partway, fix it and re-run; completed steps are skipped. Common flags (same on both, `.bat`/`.sh`):
+fails partway, fix it and re-run; completed steps are skipped. Common flags (same on both):
 
-- `-SkipModels`: build + configure but skip the model downloads
-- `-SkipVoice`: skip the voice + vision step (whisper build + model downloads)
-- `-Profile 12gb` / `-Profile cpu`: pick a model profile before downloading anything
-- `-Launch`: start the stack when setup finishes
+- `--skip-models`: build + configure but skip the model downloads
+- `--skip-voice`: skip the voice + vision step (whisper build + model downloads)
+- `--profile 12gb` / `--profile cpu`: pick a model profile before downloading anything
+- `--cpu`: force the CPU build tier (skip CUDA)
+- `--launch`: start the stack when setup finishes
 
-After setup, open a new terminal to pick up the PATH change, then `bob up`. On a GPU-less box `bob profile
-auto` selects the `cpu` tier automatically. Verify the install with `bob doctor` (see
-[Verifying the install](#verifying-the-install)).
+`setup` needs **no root** — only `install_prereqs` (system packages) uses sudo. After setup, open a new
+terminal to pick up the PATH change, then just run `bob` (inference auto-starts on demand — no separate
+`bob up` needed; `bob up` remains an optional pre-warm). On a GPU-less box `bob profile auto` selects the
+`cpu` tier automatically. Verify with `bob doctor` (see [Verifying the install](#verifying-the-install)).
 
 ## What setup does, step by step
 
-`setup.bat` calls `scripts\setup.ps1`, which runs these steps in order. You can run any of them individually if you need to redo a specific part:
+`setup` runs `python -m bob.kernel setup`, which imports the same capability functions the agent and
+`bob --run` use (one code path, no PowerShell) and runs these steps in order:
 
-0. `.\scripts\diagnose.ps1` prints a machine summary (GPU, VRAM, RAM, CUDA, NUMA topology, mlock privilege, active profile, model files) before anything is installed. Run `bob diagnose` at any time to see the same report.
+0. **Diagnose** — a machine summary (GPU, VRAM, RAM, CUDA, NUMA topology, mlock privilege, active profile, model files) before anything is installed. Run `bob diagnose` at any time to see the same report.
 1. `git submodule update --init --recursive` fetches the llama.cpp and llama-swap source trees.
-2. `.\scripts\build-llama.ps1` compiles llama.cpp (CUDA, or `-Cpu` for the no-GPU tier) and writes the binaries to `bin/`. Skips if the binary already exists; pass `-Force` to rebuild from scratch. Before replacing an existing binary it backs it up as `bin/<name>.bak`. `bob update` generalizes this: it snapshots `bin/` before a rebuild and rolls back automatically if the new build fails to verify (ND3), so you rarely restore by hand.
-3. `.\scripts\build-llama-swap.ps1` compiles the model-swap proxy.
-4. Python virtual environments are created in `tools/venv-aider`, `tools/venv-webui`, `tools/venv-litellm`, and `tools/venv-eval` and their dependencies are installed. These are kept separate on purpose. Their dependency pins conflict and can't be merged into one environment.
-5. `.\scripts\gen-llama-swap.ps1` generates `config/llama-swap.yaml` and `.\scripts\gen-litellm.ps1` generates `config/litellm.yaml`, both from `config/models.psd1`. Neither file should ever be edited by hand; both are regenerated on every `bob serve`.
-6. `.\scripts\fetch-models.ps1` downloads GGUF model files for the active profile.
-7. `.\scripts\setup-clients.ps1` symlinks `config/continue/config.yaml` to `~/.continue/config.yaml` and checks VS Code extension status.
-8. `.\scripts\setup-fabric.ps1` installs the fabric CLI and configures it to use the local endpoint.
-9. `.\scripts\install-cli.ps1` puts the `llm` command on PATH.
-10. **Memory lock:** reads `config/user.psd1` to check if `mlockBig = $true` is set. If it is, runs `scripts\grant-mlock.ps1` automatically (UAC prompt; one-time per machine). If `mlockBig` is not set but ≥ 32 GB RAM is free, prints a tip on how to enable it. Otherwise reports why it was skipped. Open a new terminal after setup completes for the privilege to take effect.
-11. `.\scripts\setup-docker.ps1` pulls and starts the Docker services stack (Langfuse, SearXNG, n8n). Runs automatically if Docker Desktop is installed; skipped gracefully if not.
-12. **Agent scheduler:** `.\scripts\install-cli.ps1` also registers tab completions. After setup, run `bob agent install` once to register the `BobAgent` Windows Scheduled Task (runs background agent goals on cron schedules). This is separate from `setup.bat` because the scheduled task references the final install location. Run `bob agent status` to confirm it's registered.
+2. **Build llama.cpp** (`build.build_llama`) — compiles the CUDA engine, or the CPU tier with `--cpu` / when no CUDA toolkit is found, and writes the binaries to `bin/`. Skips if the binary already exists (`bob build --force` to rebuild). Before replacing a binary it backs it up as `bin/<name>.bak`; `bob update` snapshots `bin/` before a rebuild and rolls back automatically if the new build fails to verify (ND3).
+3. **Build llama-swap** — the model-swap proxy (Go).
+4. **Python venvs** — `tools/venv-aider` and `tools/venv-litellm` (plus `tools/venv-webui` with `--with-webui`) are created via `osenv.new_bob_venv` and their deps installed. Kept separate on purpose — their pins conflict. (`venv-eval` is provisioned lazily by `bob eval`.)
+5. **Generate configs** (`generate.gen_all`) — writes `config/llama-swap.yaml` + `config/litellm.yaml` from `config/models.json`. Never edit them by hand; both are regenerated on every `bob up`/`serve`.
+6. **Fetch models** (`provision.fetch_models`) — downloads the active profile's GGUFs (resume + SHA256-verify vs `versions.lock`).
+7. **Wire clients** — symlinks `config/continue/config.yaml` to `~/.continue/config.yaml` and checks VS Code extension status.
+8. **fabric** — builds the fabric CLI (Go) and points it at the local endpoint.
+9. **Install the `bob` CLI** — symlinks `./bob` into `~/.local/bin` (POSIX) or a `bob.cmd` shim into scoop\shims (Windows).
+10. **Memory lock:** reports the mlock privilege status. On Linux it prints the `ulimit`/`limits.conf` guidance (mlock is an rlimit, not a grantable privilege); on Windows, if `mlockBig` is enabled in `config/user.json` it grants `SeLockMemoryPrivilege` (UAC). Open a new terminal afterward for it to take effect.
+11. **Docker services** — if Docker is present, provisions + starts the compose stack (Langfuse, SearXNG, n8n); skipped gracefully if not.
+12. **Onboarding** — a first-run profile prompt (name / work / optional DeepSeek key) when `config/user.json` has no `bob` section; skipped on a non-interactive run.
+
+After setup, run `bob agent install` once to register the recurring background-agent runner (Linux cron / Windows Scheduled Task) — separate from setup because it references the final install location. `bob agent status` confirms it.
 
 To pin llama.cpp to a specific commit or bump to a newer version, see [MANUAL-INSTALL.md § 4](MANUAL-INSTALL.md#4-build-llamacpp) and [TUNING.md](TUNING.md#bumping-the-llamacpp-submodule).
 
@@ -95,13 +104,13 @@ To pin llama.cpp to a specific commit or bump to a newer version, see [MANUAL-IN
 | **SearXNG** | 8888 | Self-hosted meta-search (queries Google/Bing without sending your searches to the cloud) | Powers Continue.dev `@web`: type `@web <query>` in Continue chat and the model gets live search results |
 | **n8n** | 5678 | Visual workflow automation (like Zapier, local): chains bob calls, webhooks, and APIs | Automate tasks without scripts: summarize PRs on open, generate commit messages, run daily digests |
 
-None are required for core inference. They start automatically at the end of `setup.bat` if Docker Desktop is installed.
+None are required for core inference. They start automatically at the end of `setup` if Docker is present.
 
 ### Installing Docker services
 
-Docker services start automatically at the end of `setup.bat`. No separate step needed.
+Docker services start automatically at the end of `setup` (if Docker is present). No separate step needed.
 
-> **Before `setup.bat` finishes:** Docker Desktop → Settings → General → uncheck
+> **On Windows, before `setup` finishes:** Docker Desktop → Settings → General → uncheck
 > **"Use containerd for pulling and storing images"** → Apply & Restart.
 > If this setting is on, SearXNG fails with `exec /bin/sh: exec format error`. Only needs to be changed once.
 
@@ -118,12 +127,12 @@ URLs after first run:
 
 Day-to-day management: `bob services start|stop|status|logs`.
 
-For a detailed walkthrough of what `setup-docker.ps1` does internally, including troubleshooting, see [MANUAL-INSTALL.md § Docker services](MANUAL-INSTALL.md#12-docker-services).
+For a detailed walkthrough of what the Docker step does internally, including troubleshooting, see [MANUAL-INSTALL.md § Docker services](MANUAL-INSTALL.md#12-docker-services).
 
 ## Verifying the install
 
 ```powershell
-bob up                    # starts llama-swap (:8080) + LiteLLM proxy (:8081)  (+ Open WebUI :3000 if set up with -WithWebui)
+bob up                    # starts llama-swap (:8080) + LiteLLM proxy (:8081)  (+ Open WebUI :3000 if set up with --with-webui)
 bob models                # should list: planner, coder, chat, fim, embed, vision, agent
 bob bench                 # performance check (see expected numbers below)
 bob chat coder "hi"       # end-to-end sanity check (routes via :8081 LiteLLM proxy)
@@ -137,10 +146,10 @@ bob plugins list     # should show: summarise, draft, search, play (built-in plu
 
 **Pro models** (optional): set `DEEPSEEK_API_KEY` and `ZHIPU_API_KEY` environment variables, then run `bob gen`. The pro models (`chat-pro`, `planner-pro`, `coder-pro`) will be available via the LiteLLM proxy at `:8081`. See [USAGE.md § Pro models](USAGE.md#pro-models-api-backed-no-platform-fee).
 
-**Voice and Vision (Phase 2):** included in `setup.bat` automatically (step 11: builds whisper, downloads STT model, piper TTS, and vision mmproj). To skip: `setup.bat -SkipVoice`. See [USAGE.md § Voice](USAGE.md#voice-phase-2) and [USAGE.md § Vision](USAGE.md#vision-phase-2).
+**Voice and Vision (Phase 2):** included in `setup` automatically (step: builds whisper, downloads STT model, piper TTS, and vision mmproj). To skip: `./setup.sh --skip-voice`. See [USAGE.md § Voice](USAGE.md#voice-phase-2) and [USAGE.md § Vision](USAGE.md#vision-phase-2).
 
-**Memory lock** is handled automatically during setup (step 10). If you enable `mlockBig = $true` in `config/user.psd1` after setup, run `bob mlock` to grant `SeLockMemoryPrivilege` and restart your terminal.
+**Memory lock** is handled automatically during setup (step 10). If you enable `mlockBig: true` in `config/user.json` after setup, run `bob mlock` to grant `SeLockMemoryPrivilege` and restart your terminal.
 
 On an RTX 5080 with the 14B Q4 coder model, expected numbers are **pp512 ≈ 4600 t/s, tg128 ≈ 89 t/s**. These confirm the engine is on the fast Blackwell hardware path. Ada and Ampere cards will show lower numbers; what matters is that prefill is not disproportionately slow relative to generation (see [TUNING.md](TUNING.md#verifying-the-fast-path)).
 
-If prefill throughput is around 1000 t/s rather than 4000+, the build is using a slower fallback, most likely because it was compiled against CUDA 13.x or has a stale build cache. Fix this by running `scripts\build-llama.ps1 -Force`, which wipes the build directory and recompiles from scratch. Make sure CUDA 12.8 is the active toolkit when you do.
+If prefill throughput is around 1000 t/s rather than 4000+, the build is using a slower fallback, most likely because it was compiled against CUDA 13.x or has a stale build cache. Fix this by running `bob build --force`, which wipes the build directory and recompiles from scratch. Make sure CUDA 12.8 is the active toolkit when you do.
