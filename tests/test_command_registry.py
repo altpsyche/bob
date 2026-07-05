@@ -2,7 +2,6 @@
 config/verbs.json is generated from. Proves every command declares a valid runtime, python
 commands map to a real handler, and the on-disk verbs.json is in sync with the registry."""
 import json
-import re
 import shutil
 import unittest
 from pathlib import Path
@@ -70,35 +69,21 @@ class TestRegistry(unittest.TestCase):
             shutil.rmtree(stale.parent, ignore_errors=True)
 
 
-class TestSwitchParity(unittest.TestCase):
-    """NE1 — the registry is the true catalog: every top-level verb in the bob.ps1 dispatch switch
-    must be registered (else it would be missing from help/catalog). Hidden entries still count."""
+class TestNoPowerShellFrontDoor(unittest.TestCase):
+    """ONE-E — the PowerShell front door (bob.ps1) and its switch are retired: every verb is Python now,
+    and the registry is the sole catalog (no pwsh dispatch table to keep in parity with)."""
 
-    def _switch_labels(self) -> set:
-        text = (Path(registry.REPO) / "scripts" / "bob.ps1").read_text(encoding="utf-8")
-        region = text[text.index("switch ($cmd)"):]  # main dispatch switch to EOF
-        labels: set = set()
-        for line in region.splitlines():
-            # top-level case headers are 2-space-indented: `  'name' {` (nested switches are deeper)
-            m = re.match(r"^  ('[a-z0-9-]+'(?:\s*,\s*'[a-z0-9-]+')*)\s*\{", line)
-            if m:
-                labels.update(re.findall(r"'([a-z0-9-]+)'", m.group(1)))
-        return labels
+    def test_every_verb_is_python(self):
+        for c in registry.commands():
+            self.assertEqual(c["runtime"], "python", f"{c['name']} is still pwsh — no pwsh verbs remain")
 
-    def test_every_switch_verb_registered(self):
-        reg = {c["name"] for c in registry.commands()}
-        labels = self._switch_labels()
-        self.assertTrue(labels, "no switch labels parsed — regex/anchor drift in bob.ps1")
-        missing = sorted(v for v in labels if v not in reg)
-        self.assertEqual(missing, [], f"bob.ps1 verbs missing from the command registry: {missing}")
-
-    def test_help_is_registry_driven_not_a_here_string(self):
-        # WI-7: `help` is a registered python command (routes to `python -m bob help`), and the old
-        # hand-maintained pwsh here-string catalog is retired from bob.ps1.
+    def test_help_is_registry_driven(self):
         self.assertEqual(registry.by_name()["help"]["runtime"], "python")
         self.assertEqual(registry.by_name()["help"]["handler"], "help")
-        ps1 = (Path(registry.REPO) / "scripts" / "bob.ps1").read_text(encoding="utf-8")
-        self.assertNotIn("personal AI assistant (endpoint", ps1)  # the retired here-string marker
+
+    def test_no_pwsh_scripts_under_scripts(self):
+        # the whole scripts/*.ps1 layer (front door + seams + gate) is gone.
+        self.assertEqual(list((Path(registry.REPO) / "scripts").glob("*.ps1")), [])
 
 
 class TestResolve(unittest.TestCase):

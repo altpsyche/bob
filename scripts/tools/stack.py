@@ -226,7 +226,7 @@ def _start_litellm_bg(config: dict) -> str:
 
     proxy = osenv.venv_exe("venv-litellm", "litellm")
     if not proxy.exists():
-        return "LiteLLM venv not found — proxy skipped (run scripts/bootstrap-litellm.ps1)."
+        return "LiteLLM venv not found — proxy skipped (run: python -m bob.kernel venv litellm)."
     pid = _read_pid("litellm")
     if pid is not None and osenv.pid_alive(pid):
         return f"LiteLLM already running (PID {pid})."
@@ -275,7 +275,7 @@ def _start_piper_bg(config: dict) -> str:
     if not voice_path.exists():
         return f"Voice model not found at {voice_path} — run: bob setup-voice"
     if not py.exists():
-        return "venv-litellm not found — run: scripts/bootstrap-litellm.ps1"
+        return "venv-litellm not found — run: python -m bob.kernel venv litellm"
     pid = _read_pid("piper")
     if pid is not None and osenv.pid_alive(pid):
         return f"piper-server already running (PID {pid})."
@@ -296,7 +296,7 @@ def _start_endpoint_bg(config: dict) -> tuple:
 
     swap = osenv.bin_exe("llama-swap")
     if not swap.exists():
-        return (False, [f"{swap.name} missing — run scripts/build-llama-swap.ps1 or drop the binary in bin/."])
+        return (False, [f"{swap.name} missing — run: python -m bob.kernel build-swap (or drop the binary in bin/)."])
     port = _port(config, "port")
     lines = []
     if osenv.is_port_in_use(port):
@@ -364,7 +364,7 @@ def stack_up(config: dict, open_browser: bool = True, with_services: bool = Fals
             else:
                 lines.append(f"Open WebUI didn't respond — open manually: http://localhost:{webui_port}")
     else:
-        lines.append("open-webui not installed (opt-in) — skipping. (scripts/bootstrap.ps1 -WithWebui)")
+        lines.append("open-webui not installed (opt-in) — skipping. (re-run setup with --with-webui)")
 
     if with_services:
         lines.append(services_control(config, "start"))
@@ -448,7 +448,7 @@ def services_control(config: dict, action: str = "status") -> str:
 
     compose = REPO / "tools" / "compose" / "docker-compose.yml"
     if not shutil.which("docker"):
-        return "Docker not found. Run: scripts/setup-docker.ps1"
+        return "Docker not found. Install docker, then re-run setup (it provisions the compose services)."
     if not compose.exists():
         return f"No compose file at {compose}."
     base = ["docker", "compose", "-f", str(compose)]
@@ -487,7 +487,7 @@ def serve_foreground(config: dict) -> int:
         return 1
     swap = osenv.bin_exe("llama-swap")
     if not swap.exists():
-        print(f"{swap.name} missing — run scripts/build-llama-swap.ps1 or drop the binary in bin/.",
+        print(f"{swap.name} missing — run: python -m bob.kernel build-swap (or drop the binary in bin/).",
               file=sys.stderr)
         return 1
     print(_start_litellm_bg(config), file=sys.stderr)
@@ -512,7 +512,7 @@ def webui_foreground(config: dict) -> int:
 
     webui = osenv.venv_exe("venv-webui", "open-webui")
     if not webui.exists():
-        print("Open WebUI not installed (opt-in). Run: scripts/bootstrap.ps1 -WithWebui", file=sys.stderr)
+        print("Open WebUI not installed (opt-in). Re-run setup with --with-webui", file=sys.stderr)
         return 1
     return subprocess.run([str(webui), "serve", "--port", str(_port(config, "webuiPort"))]).returncode
 

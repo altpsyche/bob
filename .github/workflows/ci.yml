@@ -2,8 +2,8 @@
 # (agent-capability eval) later ADD jobs to this same file — never recreate it.
 #
 # Jobs:
-#   lint           (NDx)  — shellcheck (bootstrap .sh/shim) + PSScriptAnalyzer (scripts/*.ps1). Every PR (GATES).
-#   core-suite     (NB6)  — Python core + check.ps1 gate on Linux + Windows, no GPU. Every PR.
+#   lint           (NDx)  — shellcheck (bootstrap .sh/shim). Every PR (GATES). (ONE-E retired the .ps1 layer.)
+#   core-suite     (NB6)  — Python core + check.py gate on Linux + Windows, no GPU. Every PR.
 #   prereqs-distro (ND2)  — install_prereqs.sh + diagnose across fedora/arch/opensuse containers. NON-GATING
 #                           first (proves the dnf/pacman/zypper package-map cells resolve on real distros).
 #   eval           (O10)  — agent-capability eval (records-based, no live model), both OSes. NON-GATING.
@@ -23,11 +23,10 @@ on:
     tags: ['v*']        # ND2 — release tags additionally trigger the GPU acceptance tier
 
 jobs:
-  # Static analysis of the shell bootstrap (runs on the bare OS, before pwsh) and the pwsh scripts.
-  # shellcheck catches bashisms/quoting/unset-var bugs in the .sh entry points + the `bob` shim;
-  # PSScriptAnalyzer (Error severity only — no style noise) catches real defects in the .ps1 layer.
+  # Static analysis of the shell bootstrap. shellcheck catches bashisms/quoting/unset-var bugs in the
+  # .sh entry points + the `bob` shim. (ONE-E retired the PowerShell layer, so PSScriptAnalyzer is gone.)
   lint:
-    name: lint (shellcheck + PSScriptAnalyzer)
+    name: lint (shellcheck)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,14 +34,6 @@ jobs:
         run: |
           sudo apt-get update -y && sudo apt-get install -y shellcheck
           shellcheck install_prereqs.sh setup.sh bob
-      - name: PSScriptAnalyzer (Error severity) on scripts/
-        shell: pwsh
-        run: |
-          Set-PSRepository PSGallery -InstallationPolicy Trusted
-          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
-          $r = Invoke-ScriptAnalyzer -Path scripts -Recurse -Severity Error
-          if ($r) { $r | Format-Table -AutoSize | Out-String | Write-Host; throw "PSScriptAnalyzer found $($r.Count) error-level issue(s)" }
-          Write-Host "PSScriptAnalyzer: no error-level issues."
 
   core-suite:
     name: core (${{ matrix.os }})
@@ -69,13 +60,10 @@ jobs:
         # (the tests also skip cleanly if these are ever absent, so the suite still passes minimally).
         run: python -m pip install --upgrade pip fastapi uvicorn pydantic httpx requests openai sqlite-utils rich prompt_toolkit pyfiglet pyyaml
 
-      # One gate, both OSes. pwsh is preinstalled on ubuntu-latest and windows-latest; BOB_PYTHON
-      # points check.ps1 at the CI interpreter (there is no venv-litellm here).
-      - name: check.ps1 (py_compile + PS AST parse + unittest core suite)
-        shell: pwsh
-        env:
-          BOB_PYTHON: python
-        run: pwsh -File scripts/check.ps1
+      # One gate, both OSes: py_compile + verbs/lock sync + exec-bits + the unittest core suite. Runs on
+      # the CI interpreter (there is no venv-litellm here); check.py is stdlib-only (ONE-E, no PowerShell).
+      - name: check.py (py_compile + verbs/lock sync + unittest core suite)
+        run: python scripts/check.py
 
   # O10 (contracts C5 + C7) — agent-capability eval on the existing Win+Linux matrix, EVERY PR but
   # NON-GATING (continue-on-error): it reports a deterministic capability score from a records-based run
@@ -175,30 +163,29 @@ jobs:
         shell: pwsh
         run: python -m bob up -NoOpen
 
-      # The shared cross-OS end-to-end gate (promoted from smoke-linux.ps1). -Up also starts the agent
-      # server and tears it down after. A red smoke blocks the PR.
+      # The shared cross-OS end-to-end gate. --up also starts the agent server and tears it down after.
+      # A red smoke blocks the PR. smoke.py is stdlib-only (ONE-E, no PowerShell), runs on any interpreter.
       - name: End-to-end smoke
-        shell: pwsh
-        run: pwsh -File scripts/smoke.ps1 -Up
+        run: python scripts/smoke.py --up
 
       # Surface why the endpoint died (the smoke only says "check: bob logs" — CI has no `bob logs`).
       - name: Dump service logs on failure
         if: failure()
-        shell: pwsh
+        shell: bash
         run: |
-          foreach ($log in 'logs/llama-swap.log','logs/litellm.log') {
-            Write-Host "`n===== $log ====="
-            if (Test-Path $log) { Get-Content $log -Tail 120 } else { Write-Host "(missing)" }
-          }
-          Write-Host "`n===== bin/ ====="
-          Get-ChildItem bin -ErrorAction SilentlyContinue | Format-Table Name, Length -AutoSize
+          for log in logs/llama-swap.log logs/litellm.log; do
+            echo "===== $log ====="
+            if [ -f "$log" ]; then tail -n 120 "$log"; else echo "(missing)"; fi
+          done
+          echo "===== bin/ ====="
+          ls -l bin 2>/dev/null || true
 
   # ND2 (contract C5) — fresh-install prereq matrix across the non-apt distro families, so the
-  # dnf/pacman/zypper columns of $script:PackageMap (and install_prereqs.sh's per-distro pwsh install)
-  # actually EXECUTE in CI instead of rotting untested (core-suite/acceptance-cpu only exercise apt).
-  # Runs the documented one-command Linux entry inside each distro image, then diagnose.ps1 (which exits
-  # non-zero on any real problem — the honest health gate). Checkout stays on the host (the distro images
-  # lack the Node the checkout action needs); the workspace is bind-mounted into the container.
+  # dnf/pacman/zypper columns of osenv.PACKAGE_MAP (and install_prereqs.sh -> the kernel's per-distro
+  # install) actually EXECUTE in CI instead of rotting untested (core-suite/acceptance-cpu only exercise
+  # apt). Runs the documented one-command Linux entry inside each distro image, then `bob diagnose` (which
+  # exits non-zero on any real problem — the honest health gate). Checkout stays on the host (the distro
+  # images lack the Node the checkout action needs); the workspace is bind-mounted into the container.
   #
   # NON-GATING for now (continue-on-error) — like `eval` started: distro package-name drift (esp. the
   # opensuse nodejs-default/npm-default guesses) surfaces here in the log without blocking merges. Flip
@@ -247,5 +234,4 @@ jobs:
           python -m bob up -NoOpen
 
       - name: End-to-end smoke (real inference)
-        shell: pwsh
-        run: pwsh -File scripts/smoke.ps1 -Up
+        run: python scripts/smoke.py --up

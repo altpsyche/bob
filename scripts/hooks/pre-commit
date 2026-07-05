@@ -1,5 +1,9 @@
 #!/bin/sh
-# Bob pre-commit hook (N8) — blocks the commit if py_compile / PowerShell parse / tests fail.
-# Installed into .git/hooks by scripts/install-hooks.ps1 (that dir isn't version-controlled).
+# Bob pre-commit hook (N8) — blocks the commit if py_compile / verbs+lock sync / exec-bits / tests fail.
+# Installed into .git/hooks by scripts/install_hooks.py (that dir isn't version-controlled).
 root=$(git rev-parse --show-toplevel)
-exec pwsh -NoProfile -File "$root/scripts/check.ps1"
+if [ -n "$BOB_PYTHON" ]; then PY="$BOB_PYTHON"
+elif [ -x "$root/tools/venv-litellm/bin/python" ]; then PY="$root/tools/venv-litellm/bin/python"
+else PY="python3"; fi
+export PYTHONPATH="$root/scripts${PYTHONPATH:+:$PYTHONPATH}"
+exec "$PY" "$root/scripts/check.py"

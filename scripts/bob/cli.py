@@ -1,11 +1,9 @@
 """NB4 (contract C1) — `python -m bob` dispatch. Resolves a command path against the registry and
-routes: python commands are handled here; pwsh (orchestration/phased) commands are exec'd through
-`scripts/bob.ps1` when PowerShell is available. Heavy runtime imports are lazy so `bob` help and
-pwsh delegation stay light and dependency-free.
+routes to the matching handler. Every verb is Python now (ONE-E retired the pwsh front door); heavy
+runtime imports are lazy so `bob` help stays light and dependency-free.
 """
 import os
 import runpy
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -37,8 +35,8 @@ def main(argv=None) -> int:
     name, rest = _resolve(argv)
     if name is None:
         # NE2 Decision C — no-arg on an interactive terminal launches the shell; piped/redirected/CI
-        # keeps today's help. (The Windows front door decides the same way in bob.ps1; the POSIX shim
-        # sends the bare `bob` straight here.)
+        # keeps today's help. (Both the POSIX `bob` shim and the Windows bob.cmd send the bare `bob`
+        # straight here.)
         from bob.shell import is_interactive
         if is_interactive():
             return _handle_shell([])
@@ -46,11 +44,6 @@ def main(argv=None) -> int:
         return 0
 
     entry = registry.by_name().get(name)
-    runtime = entry["runtime"] if entry else registry.verbs_json_dict()["default"]
-
-    if runtime == "pwsh":
-        return _exec_pwsh(argv)
-
     handler = _HANDLERS.get(entry["handler"]) if entry else None
     if handler is None:
         print(f"Unknown command: {' '.join(argv)}\n", file=sys.stderr)
@@ -632,7 +625,7 @@ def _handle_aider(rest: list) -> int:
 
     exe = osenv.venv_exe("venv-aider", "aider")
     if not exe.exists():
-        print(f"aider not installed: {exe}  (run scripts/bootstrap.ps1 -WithAider)", file=sys.stderr)
+        print(f"aider not installed: {exe}  (run: python -m bob.kernel venv aider)", file=sys.stderr)
         return 1
     return subprocess.run([str(exe)] + rest).returncode
 
@@ -908,8 +901,8 @@ def _handle_eval(rest: list) -> int:
 
 
 # --- ONE-C Slice 3: health / diagnostics (scripts/tools/health.py) -------------------------------
-# setup(check) + doctor share health_check(); version + diagnose are separate cores. diagnose is the
-# SPLIT port (registry + light discovery); the deep OS discovery stays in scripts/diagnose.ps1 (ONE-D).
+# setup(check) + doctor share health_check(); version + diagnose are separate cores. diagnose does both
+# the registry/light discovery AND the deep OS discovery (CUDA/RAM/NUMA/mlock/package) — all Python now.
 
 def _health_mod():
     tools_dir = str(SCRIPTS / "tools")
@@ -1044,18 +1037,6 @@ _HANDLERS = {
     "diagnose": _handle_diagnose,
     "help": _handle_help,
 }
-
-
-# --- pwsh delegation -----------------------------------------------------------------------------
-
-def _exec_pwsh(argv: list) -> int:
-    pwsh = shutil.which("pwsh") or shutil.which("powershell")
-    if not pwsh:
-        print(f"`bob {' '.join(argv)}` is a PowerShell orchestration command and PowerShell "
-              "(pwsh) is not installed on this system. See docs/PORTABILITY.md.", file=sys.stderr)
-        return 1
-    cmd = [pwsh, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(SCRIPTS / "bob.ps1")] + argv
-    return subprocess.run(cmd).returncode
 
 
 # --- help ----------------------------------------------------------------------------------------
