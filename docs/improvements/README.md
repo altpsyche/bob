@@ -29,6 +29,8 @@ Modules A–N plus the portability→memory track (NB, NC, ND, NE, NE6-MEM, MEM2
 | 19 | **MEM2** — Project scoping + memory quality (MEM-7..11) ✓ implemented | [MODULE-MEM2-scoping-and-quality.md](MODULE-MEM2-scoping-and-quality.md) | — | NE6-MEM |
 | 20 | **O** — Frontier Class (capability) — draft (cleared to start) | [MODULE-O-frontier-class.md](MODULE-O-frontier-class.md) | ~71–96 h | NB, NC, ND, NE, MEM2 |
 | 21 | **P** — Frontier Product (durable autonomy, multimodal, computer-use) — draft | [MODULE-P-frontier-product.md](MODULE-P-frontier-product.md) | ~39–57 h | O |
+| 22 | **S** — Front-Door Unification (text doors on the loop) ✓ Tier-1 done (7388527) | [MODULE-S-front-door-unification.md](MODULE-S-front-door-unification.md) | ~6–9 h | O, NE, MEM2 |
+| 23 | **ONE** — Just `bob` (one word, one harness, one language) — draft (north star) | [MODULE-ONE-bob.md](MODULE-ONE-bob.md) | ONE-B/C/D large | S, P, NB, NC |
 | — | **Architecture Contracts** (cross-module seams — read before building NB–P) | [ARCHITECTURE-CONTRACTS.md](ARCHITECTURE-CONTRACTS.md) | — | — |
 
 **Total estimated effort:** ~56–67 h (A–L) + ~47 h (M) + ~31 h (N) + the post-N roadmap: ~25–34 h (NB)
