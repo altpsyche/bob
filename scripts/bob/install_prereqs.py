@@ -144,16 +144,29 @@ def _layer_atomic(pkgs: list, mgr: str, cpu: bool) -> int:
     return 0
 
 
-def _prime_sudo() -> None:
-    """Ask for the sudo password ONCE, up front, and cache it — so the batched installs below don't
+def _prime_sudo(mgr: str, pkgs: list, cpu: bool) -> None:
+    """Ask for the sudo password ONCE, up front, and cache it — so the batched install below doesn't
     prompt per package, and a wrong password fails fast (not after hammering every install). No-op when
-    already root or sudo is absent (root containers)."""
+    already root or sudo is absent (root containers). On failure, raise with the exact manual command +
+    the fact that `setup` itself needs NO root — so a user whose sudo is finicky (e.g. fingerprint/polkit
+    on a desktop) can install the toolchain by hand and skip straight to the build."""
     if not _sudo():
         return
-    print("  sudo is needed — you'll be asked for your password once.", file=sys.stderr)
-    if subprocess.run(["sudo", "-v"]).returncode != 0:
-        raise RuntimeError("sudo authentication failed. Re-run in a terminal where you can type your "
-                           "password (or configure passwordless sudo), then try again.")
+    print("  sudo is needed to install system packages — you'll be asked for your password once.",
+          file=sys.stderr)
+    if subprocess.run(["sudo", "-v"]).returncode == 0:
+        return
+    spec = osenv._linux_pkg_spec(mgr, pkgs)
+    manual = (("sudo " if spec["Sudo"] else "") + spec["Exe"] + " " + " ".join(spec["Args"])).strip()
+    suffix = " --cpu" if cpu else ""
+    raise RuntimeError(
+        "sudo authentication failed (sudo rejected the password — this is your system's auth, not Bob).\n"
+        "  • Check it's really your sudo password:  sudo -v   (if that also fails, it's a system/config\n"
+        "    thing — on a desktop you may normally auth by fingerprint/polkit, not a typed password).\n"
+        "  • OR skip sudo entirely — `setup` needs NO root. Install the toolchain by hand, then run setup:\n"
+        f"        {manual}\n"
+        f"        ./setup.sh{suffix}\n"
+        "  • OR configure passwordless sudo, then re-run ./install_prereqs.sh.")
 
 
 def _install_linux(cpu: bool) -> int:
@@ -167,7 +180,6 @@ def _install_linux(cpu: bool) -> int:
                            "Install the toolchain manually — see docs/MANUAL-INSTALL.md.")
     atomic = (mgr == "rpm-ostree")
     print(f"=== Linux prerequisites ({mgr}{' — atomic/ostree host' if atomic else ''}) ===", file=sys.stderr)
-    _prime_sudo()
 
     toolchain = ["git", "curl", "toolchain-cc", "make", "cmake", "ninja", "go", "node", "npm",
                  "python", "python-pip", "python-venv"]
@@ -176,6 +188,8 @@ def _install_linux(cpu: bool) -> int:
         name = osenv.resolve_package_name(logical, mgr)
         if name and name not in pkgs:
             pkgs.append(name)  # None => bundled on this manager, skip
+
+    _prime_sudo(mgr, pkgs, cpu)
 
     if atomic:
         return _layer_atomic(pkgs, mgr, cpu)
