@@ -163,5 +163,16 @@ class TestBuildWhisper(unittest.TestCase):
             self.assertIn("already built", build_mod.build_whisper())
 
 
+class TestVoiceSmokeStdlib(unittest.TestCase):
+    def test_multipart_is_stdlib_and_well_formed(self):
+        # the voice smoke posts via stdlib urllib (no requests) so it runs under the bare kernel too.
+        body, ctype = prov._multipart({"temperature": "0.0"}, "probe.wav", b"\x00\x01\x02")
+        self.assertTrue(ctype.startswith("multipart/form-data; boundary=----bob"))
+        self.assertIn(b'name="temperature"', body)
+        self.assertIn(b'filename="probe.wav"', body)
+        self.assertIn(b"\x00\x01\x02", body)
+        self.assertTrue(body.rstrip().endswith(b"--"))
+
+
 if __name__ == "__main__":
     unittest.main()

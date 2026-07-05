@@ -285,13 +285,30 @@ def _silent_wav(path: Path, seconds: int = 2, rate: int = 44100) -> None:
         w.writeframes(b"\x00\x00" * (rate * seconds))
 
 
+def _multipart(fields: dict, filename: str, file_bytes: bytes) -> "tuple[bytes, str]":
+    """Build a multipart/form-data body (one file field 'file' + text fields). Stdlib-only so the voice
+    smoke runs under the bare kernel interpreter (no requests). Returns (body, content_type)."""
+    import os
+    boundary = f"----bob{os.getpid()}"
+    pre = b""
+    for k, v in fields.items():
+        pre += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n").encode()
+    pre += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n"
+            "Content-Type: application/octet-stream\r\n\r\n").encode()
+    body = pre + file_bytes + f"\r\n--{boundary}--\r\n".encode()
+    return body, f"multipart/form-data; boundary={boundary}"
+
+
 def _voice_smoke(stt_port: int) -> str:
-    """Best-effort STT smoke: start whisper, POST a silent WAV, stop. Never fatal (port of step 5)."""
+    """Best-effort STT smoke: start whisper, POST a silent WAV, stop. Never fatal (port of step 5). Stdlib
+    urllib (no requests) so it works both under `bob setup-voice` (venv) and the cold-start kernel (system
+    python3)."""
+    import json as _json
     import os
     import tempfile
     import time
+    import urllib.request
 
-    import requests
     sys.path.insert(0, str(SCRIPTS / "tools"))
     import stack
     wav = Path(tempfile.gettempdir()) / f"bob-stt-probe-{os.getpid()}.wav"
@@ -300,10 +317,13 @@ def _voice_smoke(stt_port: int) -> str:
         stack.configure(_cfg)
         stack.whisper_control("start")
         time.sleep(2)
-        with open(wav, "rb") as f:
-            r = requests.post(f"http://localhost:{stt_port}/inference", files={"file": f},
-                              data={"temperature": "0.0", "response_format": "json"}, timeout=30)
-        return f"  smoke test passed. Transcript of silence: '{r.json().get('text', '')}'"
+        body, ctype = _multipart({"temperature": "0.0", "response_format": "json"},
+                                 wav.name, wav.read_bytes())
+        req = urllib.request.Request(f"http://localhost:{stt_port}/inference", data=body,
+                                     headers={"Content-Type": ctype}, method="POST")
+        with urllib.request.urlopen(req, timeout=30) as r:  # noqa: S310 — localhost only
+            text = _json.loads(r.read().decode("utf-8", "replace")).get("text", "")
+        return f"  smoke test passed. Transcript of silence: '{text}'"
     except Exception as e:  # noqa: BLE001 — smoke is advisory
         return f"  smoke test skipped/failed ({e}) — verify later: bob transcribe <file>"
     finally:

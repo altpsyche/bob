@@ -494,7 +494,7 @@ def setup(skip_models: bool = False, skip_build: bool = False, skip_voice: bool 
         provision.configure(config)
         try:
             print(provision.setup_voice(), file=sys.stderr)
-        except RuntimeError as e:
+        except Exception as e:  # noqa: BLE001 — voice is optional Phase-2; never sink a good build
             print(f"  voice setup failed (non-fatal): {e}", file=sys.stderr)
 
     _step(11, total, "Memory lock (mlock)")
