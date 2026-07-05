@@ -18,6 +18,15 @@ from typing import Optional
 
 REPO = Path(__file__).resolve().parent.parent.parent  # scripts/bob/versions.py -> repo
 LOCK_FILE = REPO / "versions.lock"
+VERSION_FILE = REPO / "VERSION"
+MANIFEST_FILE = REPO / "models" / "manifest.json"
+
+# The submodules ND pins (all four in .gitmodules). Mirrors _versions.ps1 $script:LockSubmodules.
+LOCK_SUBMODULES = ["external/llama.cpp", "external/llama-swap", "external/whisper.cpp", "external/fabric"]
+# Minimum toolchain floors (not the live installed versions). Mirrors $script:LockToolchain.
+LOCK_TOOLCHAIN = {"python": "3.12", "cmake": "3.24", "cuda": "12.0"}
+# Per-venv requirements lock. Mirrors $script:LockRequirements.
+LOCK_REQUIREMENTS = {"venv-litellm": "tools/litellm-requirements.lock"}
 
 
 def load_lock(path: Optional[Path] = None) -> dict:
@@ -89,10 +98,147 @@ def check_reproducibility(repo: Optional[Path] = None, lock: Optional[dict] = No
     return drift
 
 
+# --- writer + sync-gate (ONE-D Slice D2 — ports _versions.ps1 Write-VersionsLock / Test-VersionsLockSync) --
+# GENERATED, NEVER HAND-EDITED: every field derives from an existing single source (git gitlinks +
+# config/models.json + models/manifest.json + the toolchain/requirements constants), so the lock never
+# drifts by hand. Regenerate with `bob lock`; `bob lock --check` (wired into check.ps1 + CI) fails if the
+# on-disk file drifts from those sources.
+
+def bob_version() -> str:
+    """Release identity from the VERSION file ('0.0.0' if absent). Port of Get-BobVersion."""
+    if VERSION_FILE.exists():
+        return VERSION_FILE.read_text(encoding="utf-8").strip()
+    return "0.0.0"
+
+
+def submodule_commits(repo: Optional[Path] = None) -> dict:
+    """Superproject gitlink commit per submodule via `git rev-parse HEAD:<path>` — the real pin, resolvable
+    without the submodule checked out (CI core-suite checks out none). Port of Get-SubmoduleCommits."""
+    repo = repo or REPO
+    out = {}
+    for p in LOCK_SUBMODULES:
+        try:
+            r = subprocess.run(["git", "-C", str(repo), "rev-parse", f"HEAD:{p}"],
+                               capture_output=True, text=True, timeout=10)
+            out[p] = r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+        except (OSError, subprocess.SubprocessError):
+            out[p] = None
+    return out
+
+
+def lock_model_manifest(models_config: Optional[dict] = None, repo: Optional[Path] = None) -> dict:
+    """Union of every gguf across all profiles, keyed by local filename, in (profile-sorted, role-sorted)
+    order with the first occurrence winning. repo/path/revision/sizeGB come from config/models.json; sha256
+    from models/manifest.json when fetched, else the sha already in versions.lock (TOFU-then-lock — the lock
+    is a committed source; the manifest is a gitignored per-fetch capture, absent in CI), else null. Port of
+    Get-LockModelManifest."""
+    import sys as _sys
+    scripts = str(REPO / "scripts")
+    if scripts not in _sys.path:
+        _sys.path.insert(0, scripts)
+    import bob_models
+
+    cfg = models_config if models_config is not None else bob_models.load_models_config()
+    repo = repo or REPO
+    manifest = {}
+    mf = (repo / "models" / "manifest.json")
+    if mf.exists():
+        try:
+            manifest = json.loads(mf.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            manifest = {}
+    locked = {}
+    lf = repo / "versions.lock"
+    if lf.exists():
+        try:
+            locked = (json.loads(lf.read_text(encoding="utf-8")).get("models")) or {}
+        except (OSError, ValueError):
+            locked = {}
+
+    models = {}
+    for prof_name in sorted(cfg.get("profiles", {})):
+        prof = cfg["profiles"][prof_name]
+        for role in sorted(k for k in prof if not k.startswith("_")):
+            m = prof[role]
+            gguf = m.get("gguf")
+            if not gguf or gguf in models:
+                continue
+            man_sha = (manifest.get(gguf) or {}).get("sha256")
+            lock_sha = (locked.get(gguf) or {}).get("sha256")
+            sha = str(man_sha).lower() if man_sha else (str(lock_sha).lower() if lock_sha else None)
+            entry = {
+                "repo": m.get("repo"),
+                "path": m.get("path"),
+                "revision": m.get("revision", "main"),
+                "sha256": sha,
+                "sizeGB": m.get("sizeGB"),
+            }
+            if m.get("mmproj"):
+                entry["mmproj"] = m["mmproj"]
+            models[gguf] = entry
+    return models
+
+
+def build_lock_object(repo: Optional[Path] = None, models_config: Optional[dict] = None) -> dict:
+    """The full lock object, keys in a deterministic order (matches New-VersionsLockObject)."""
+    return {
+        "lockVersion": 1,
+        "release": bob_version(),
+        "submodules": submodule_commits(repo),
+        "toolchain": dict(LOCK_TOOLCHAIN),
+        "requirements": dict(LOCK_REQUIREMENTS),
+        "models": lock_model_manifest(models_config, repo),
+    }
+
+
+def lock_text(repo: Optional[Path] = None, models_config: Optional[dict] = None) -> str:
+    """Canonical serialization used by BOTH the writer and the sync gate (no trailing newline), so a clean
+    regenerate byte-matches the on-disk file. json.dumps(indent=2) matches pwsh ConvertTo-Json's 2-space /
+    'key': value / null / float formatting."""
+    return json.dumps(build_lock_object(repo, models_config), indent=2)
+
+
+def write_lock(path: Optional[Path] = None, repo: Optional[Path] = None) -> Path:
+    """(Re)generate versions.lock from the single sources. Atomic write + trailing newline. Port of
+    Write-VersionsLock."""
+    path = path or LOCK_FILE
+    tmp = path.with_suffix(f".{__import__('os').getpid()}.tmp")
+    tmp.write_text(lock_text(repo) + "\n", encoding="utf-8")
+    tmp.replace(path)
+    return path
+
+
+def check_sync(path: Optional[Path] = None) -> int:
+    """Is the on-disk versions.lock in sync with the sources it is generated from? 0 in sync, 1 stale/missing.
+    Compares canonical text (the only writer uses the same canonical text). Port of Test-VersionsLockSync."""
+    import sys as _sys
+
+    path = path or LOCK_FILE
+    if not path.exists():
+        print(f"versions.lock missing at {path} — run: bob lock", file=_sys.stderr)
+        return 1
+    want = lock_text().strip()
+    have = path.read_text(encoding="utf-8").strip()
+    if want != have:
+        print("versions.lock is STALE (out of sync with submodules/models.json) — run: bob lock",
+              file=_sys.stderr)
+        return 1
+    return 0
+
+
 if __name__ == "__main__":
-    # `python -m bob.versions` — print a short reproducibility summary (read-only).
+    # `python -m bob.versions [--check|--write]`:
+    #   (no arg) print a short reproducibility summary vs the installed state (read-only)
+    #   --check  the ND1 gate — exit 1 if the on-disk lock drifts from its sources (used by check.ps1 + CI)
+    #   --write  regenerate versions.lock from the sources (same as `bob lock`)
     import sys
 
+    if "--check" in sys.argv[1:]:
+        sys.exit(check_sync())
+    if "--write" in sys.argv[1:]:
+        p = write_lock()
+        print(f"wrote {p}")
+        sys.exit(0)
     try:
         lk = load_lock()
     except RuntimeError as e:

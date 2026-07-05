@@ -147,7 +147,7 @@ COMMANDS = [
     {"name": "update", "group": "Config", "summary": "Pull latest llama.cpp and rebuild",
      "args": "", "runtime": "pwsh", "handler": None},
     {"name": "lock", "group": "Config", "summary": "(Re)generate versions.lock from pinned sources (ND1)",
-     "args": "[--check]", "runtime": "pwsh", "handler": None},
+     "args": "[--check]", "runtime": "python", "handler": "lock"},
     {"name": "version", "group": "Config", "summary": "Show binary versions and submodule commits",
      "args": "", "runtime": "python", "handler": "version"},
     {"name": "mlock", "group": "Config", "summary": "Check/grant SeLockMemoryPrivilege (for --mlock)",

@@ -41,8 +41,8 @@ class TestRegistryWiring(unittest.TestCase):
         self.assertIn("fetch", cli._HANDLERS)
 
     def test_tool_registered_and_mutating(self):
-        self.assertEqual(set(prov.DISPATCH), {"fetch_models"})
-        self.assertEqual(prov.MUTATING_TOOLS, {"fetch_models"})
+        self.assertIn("fetch_models", prov.DISPATCH)  # provision.py grows with later ONE-D slices
+        self.assertEqual(prov.MUTATING_TOOLS, {"fetch_models"})  # fetch is the only mutating one
 
 
 class TestResolveFetchSet(unittest.TestCase):

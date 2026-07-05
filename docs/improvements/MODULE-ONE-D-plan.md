@@ -11,7 +11,7 @@ native-first**, C5 CI ownership), [MODULE-ONE-C-plan.md](MODULE-ONE-C-plan.md) (
 per-verb 3-adapter template; the osenv-seam precedent). ONE-C decisions D1–D6 are **settled — do not
 re-litigate.** The new decisions **DD1–DD6 are RESOLVED (2026-07-05, see Part 5):** full Python `build` port ·
 curl-subprocess `fetch` · keep `venv-eval` · `mlock` grant ported CLI-only · minimal-shell-stub → Python
-kernel · ONE-D owns the kernel (D8) as capstone. **Slices D0 + D1 ✅ DONE (suite 723 green); next = D2 (lock).**
+kernel · ONE-D owns the kernel (D8) as capstone. **Slices D0 + D1 + D2 ✅ DONE (suite 735 green); next = D3 (mlock + diagnose-deep).**
 
 ## Goal — and the one distinction that shapes the whole module
 
@@ -243,9 +243,20 @@ capstone once its called-capabilities exist.
   bare python** (curl subprocess, no requests) so the kernel reuses the same fn. `ci.yml`'s `bob.ps1 fetch`
   stays non-regressing — the dispatch prologue routes it to `python -m bob fetch`. Verified live
   (`bob fetch --list` → 16gb profile, 7 models, dedup + mmproj + present-status). tests/test_slice_d1_fetch.py (15).
-- **Slice D2 — `lock` (writer + gate)** *(Part 1a):* `versions.write_lock`/`check_sync` + `bob lock`
-  /`bob lock --check` (+ agent read-only `lock_check`). **Byte-parity vs pwsh.** Rewire `check.ps1` +
-  `ci.yml` to `python -m bob.versions --check`. Delete `_versions.ps1` (nothing else sources it after this).
+- **Slice D2 — `lock` (writer + gate)** ✅ **DONE** (on main; suite 735 green): added the writer + gate to
+  `scripts/bob/versions.py` (the reader already existed) — `bob_version`/`submodule_commits`/
+  `lock_model_manifest` (union of profiles' ggufs, profile-then-role sorted, first-wins, sha from manifest
+  then locked-fallback = TOFU-then-lock)/`build_lock_object`/`lock_text`/`write_lock` (atomic)/`check_sync`.
+  **Proven BYTE-IDENTICAL to the pwsh writer** via a live diff of `python lock_text` vs `pwsh
+  Get-VersionsLockText` under the same manifest state (`json.dumps(indent=2)` matches pwsh ConvertTo-Json's
+  2-space / `key: value` / `null` / float formatting), and both `--check` gates agree. Surfaces: `bob lock`
+  (write, CLI) / `bob lock --check` (gate) via cli._handle_lock; agent **read-only** tool `lock_status`
+  (sync + reproducibility report — the write path is deliberately NOT an agent tool); `python -m bob.versions
+  --check|--write`. Rewired `check.ps1`'s gate from dot-sourcing `_versions.ps1` to `python -m bob.versions
+  --check`. Flipped `lock`→python, regen verbs.json, deleted the bob.ps1 lock case. **`_versions.ps1` is
+  KEPT** (correction to the pre-plan note): `_models.ps1` dot-sources it and `fetch-models.ps1` uses
+  `Get-VersionsLock` — both pre-venv, retire at D8. `ci.yml`'s pwsh `bob lock`/`check.ps1` stay
+  non-regressing. Verified live (`bob lock --check`, `bob --run lock_status`). tests/test_slice_d2_lock.py (12).
 - **Slice D3 — `mlock` + `diagnose` deep** *(privilege + the CUDA/RAM/NUMA seams):* the hard 1b seams
   (`resolve_cuda_root_candidates`/`cuda_toolkit_version`/`best_cuda_root`, `cuda_host_compiler`); `mlock_status`
   (read-only, both OS) + grant (DD4); fold the deep rows into `health.diagnose` (retire `diagnose.ps1`).

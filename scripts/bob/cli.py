@@ -763,6 +763,19 @@ def _handle_fetch(rest: list) -> int:
     return 0
 
 
+def _handle_lock(rest: list) -> int:
+    """bob lock [--check] — regenerate versions.lock from its sources, or (--check) fail if it drifted."""
+    from bob import versions
+    if "--check" in rest:
+        rc = versions.check_sync()
+        if rc == 0:
+            print("versions.lock in sync")
+        return rc
+    path = versions.write_lock()
+    print(f"wrote {path}")
+    return 0
+
+
 def _handle_models(rest: list) -> int:
     print(_models_mod().models_list(_cfg()))
     return 0
@@ -920,6 +933,7 @@ _HANDLERS = {
     "verify-urls": _handle_verify_urls,
     "bench": _handle_bench,
     "fetch": _handle_fetch,           # ONE-D Slice D1 — model downloads (scripts/tools/provision.py)
+    "lock": _handle_lock,             # ONE-D Slice D2 — versions.lock writer + gate (scripts/bob/versions.py)
     "gen": _handle_gen,               # ONE-C Slice 6 — config generators (scripts/tools/generate.py)
     "setup": _handle_setup,           # ONE-C Slice 3 — health / diagnostics (scripts/tools/health.py)
     "doctor": _handle_doctor,

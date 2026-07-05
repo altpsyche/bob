@@ -20,7 +20,7 @@ REPO = Path(__file__).resolve().parent.parent.parent
 SCRIPTS = REPO / "scripts"
 MODELS_DIR = REPO / "models"
 
-MUTATING_TOOLS = {"fetch_models"}
+MUTATING_TOOLS = {"fetch_models"}  # lock_check is read-only; `bob lock` (write) is CLI-only, not a tool
 
 
 def configure(config: dict) -> None:
@@ -222,10 +222,41 @@ def _files_for(m: dict):
         yield m["mmproj"], m["mmproj"], 0.6
 
 
+# --- lock (D2): read-only status for the agent; the write path is CLI-only (bob lock) -------------
+
+def lock_status() -> str:
+    """versions.lock report (read-only): whether it is in sync with its generating sources, plus
+    reproducibility vs the installed state (submodule HEADs + present-model SHAs). Does NOT write.
+    The regeneration path is `bob lock` (CLI/mutating), deliberately not an agent tool."""
+    from bob import versions
+
+    lines = []
+    in_sync = versions.check_sync() == 0
+    lines.append("versions.lock: in sync with sources ✓" if in_sync
+                 else "versions.lock: STALE (out of sync with submodules/models.json) — run: bob lock")
+    try:
+        lock = versions.load_lock()
+    except RuntimeError:
+        return "versions.lock not found — run: bob lock"
+    drift = versions.check_reproducibility(lock=lock)
+    lines.append(f"release {lock.get('release')} — {len(lock.get('submodules') or {})} submodules, "
+                 f"{len(lock.get('models') or {})} models")
+    if drift:
+        for d in drift:
+            lines.append(f"  DRIFT {d['kind']} {d['name']}: locked {d['expected'][:12]} != actual {d['actual'][:12]}")
+    else:
+        lines.append("  reproducible (no drift vs installed state)")
+    return "\n".join(lines)
+
+
 # --- agent tool adapters --------------------------------------------------------------------------
 
 def _fetch_models(profile: str = "", list_only: bool = False) -> str:
     return fetch_models(profile or None, list_only=list_only)
+
+
+def _lock_status() -> str:
+    return lock_status()
 
 
 def test() -> str:
@@ -243,6 +274,12 @@ TOOL_DEFS = [
         "parameters": {"type": "object", "properties": {
             "profile": {"type": "string", "description": "Profile name (default: the active profile)."},
             "list_only": {"type": "boolean", "description": "Dry run — list files + status, download nothing."}}}}},
+    {"type": "function", "function": {
+        "name": "lock_status",
+        "description": ("Report whether versions.lock is in sync with its generating sources and whether the "
+                        "installed state (submodule commits + model checksums) matches the lock. Read-only. "
+                        "Use to answer 'is my install reproducible / pinned?'. Regenerating is `bob lock` (CLI)."),
+        "parameters": {"type": "object", "properties": {}}}},
 ]
 
-DISPATCH = {"fetch_models": _fetch_models}
+DISPATCH = {"fetch_models": _fetch_models, "lock_status": _lock_status}

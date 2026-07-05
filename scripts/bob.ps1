@@ -98,17 +98,11 @@ switch ($cmd) {
     }
     & "$repo\scripts\build-llama.ps1" @bArgs
   }
-  'lock' {
-    # ND1 — (re)generate versions.lock from the single sources (git gitlinks + models.psd1 +
-    # manifest.json + pip freeze). `bob lock --check` is the staleness gate wired into check.ps1.
-    if ($rest -contains '--check') {
-      $rc = Test-VersionsLockSync
-      if ($rc -eq 0) { Write-Host "versions.lock in sync" -ForegroundColor Green }
-      exit $rc
-    }
-    $p = Write-VersionsLock
-    Write-Host "wrote $p" -ForegroundColor Green
-  }
+  # 'lock' -> runtime=python (cli.py _handle_lock over scripts/bob/versions.py write_lock/check_sync —
+  # BYTE-IDENTICAL to the pwsh writer; check.ps1's gate now calls `python -m bob.versions --check`).
+  # Routed by the dispatch prologue before this switch. _versions.ps1's Write-VersionsLock/Get-VersionsLock
+  # are KEPT (fetch-models.ps1 + _models.ps1 pre-venv still use them); they retire in ONE-D Slice D8.
+  # (ONE-D Slice D2)
   'update' {
     # ND3 — release-aware, cross-platform update with rollback. Moves the working tree to a target
     # release (default: fast-forward the current branch; `--tag <ref>` for a specific release), syncs
