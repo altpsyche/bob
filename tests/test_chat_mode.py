@@ -99,6 +99,10 @@ class TestChatHandler(unittest.TestCase):
         self._orig_run_agent = bob_loop.run_agent
         self._orig_load = bob_core.load_config
         bob_core.load_config = lambda: _common.fake_config()
+        # _chat now auto-starts inference (_ensure_endpoint) — neutralize it so the routing tests don't
+        # probe/launch the real stack (which would regenerate configs + contaminate other tests).
+        self._orig_ensure = self.cli._ensure_endpoint
+        self.cli._ensure_endpoint = lambda config: None
         self.captured = {}
 
         def fake_run_agent(goal, config, role=None, agency=None, stream=False,
@@ -112,6 +116,7 @@ class TestChatHandler(unittest.TestCase):
     def tearDown(self):
         bob_loop.run_agent = self._orig_run_agent
         bob_core.load_config = self._orig_load
+        self.cli._ensure_endpoint = self._orig_ensure
 
     def test_oneshot_chat_routes_chat_role_no_tools(self):
         self.cli._chat("chat", ["hello", "world"])

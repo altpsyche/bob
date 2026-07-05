@@ -107,6 +107,7 @@ def _handle_agent_run(rest: list) -> int:
         return 1
     import bob_loop  # lazy: pulls in openai etc.
 
+    _ensure_endpoint(_cfg())  # auto-start inference so `bob agent <goal>` needs no prior `bob up`
     sys.argv = ["bob-agent"] + rest
     bob_loop.main()  # may sys.exit(42) on --exit-on-tool; that propagates as intended
     return 0
@@ -334,6 +335,7 @@ def _chat(task: str, rest: list) -> int:
     if sys_prompt:
         config = {**config, "persona": {**config.get("persona", {}), "systemPrompt": sys_prompt}}
 
+    _ensure_endpoint(config)  # auto-start the stack so a bare `bob`/`bob chat` needs no prior `bob up`
     if not prompt:
         # Interactive: the NE shell in chat mode (preset role, tools off) — inherits persisted
         # sessions, MEM-3/autoRecall/consolidate, rich streaming, and approval.
@@ -647,6 +649,28 @@ def _cfg():
     return load_config()
 
 
+def _ensure_endpoint(config) -> None:
+    """Auto-start inference on demand: if the LiteLLM proxy (what the loop talks to) isn't reachable,
+    bring the stack up in the background — so `bob`, `bob chat`, and `bob agent` just work without a
+    separate `bob up`. No-op when it's already up. Best-effort: a launch failure prints a hint, not a
+    crash (the turn will then surface the real connection error)."""
+    import urllib.error
+    import urllib.request
+
+    from bob_core import _port
+    port = _port(config, "litellmPort")
+    try:
+        urllib.request.urlopen(f"http://localhost:{port}/v1/models", timeout=2)  # noqa: S310 — localhost
+        return
+    except (urllib.error.URLError, OSError):
+        pass
+    print("Starting local inference (first run loads the model — a few seconds)…", file=sys.stderr)
+    try:
+        _stack().stack_up(config, open_browser=False)
+    except Exception as e:  # noqa: BLE001 — advisory; the turn reports the real error if this didn't help
+        print(f"(couldn't auto-start inference: {e} — try `bob up`)", file=sys.stderr)
+
+
 def _handle_up(rest: list) -> int:
     """bob up [-NoOpen] [-WithServices] — background bring-up (endpoint + proxy + WebUI)."""
     rest = list(rest)
@@ -949,9 +973,12 @@ def _handle_gen(rest: list) -> int:
 
 def _handle_shell(rest: list) -> int:
     """bob shell — the interactive REPL/TUI (NE2). Behind an isatty gate: a non-TTY invocation prints
-    help instead, so scripts/CI never block on a prompt."""
-    from bob.shell import run
+    help instead, so scripts/CI never block on a prompt. Auto-starts inference so the bare `bob` front
+    door 'just works' with no prior `bob up`."""
+    from bob.shell import is_interactive, run
 
+    if is_interactive():
+        _ensure_endpoint(_cfg())  # only auto-start for a real interactive session (piped -> just help)
     return run()
 
 

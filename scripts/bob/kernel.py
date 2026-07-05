@@ -294,12 +294,19 @@ def onboard() -> None:
     bob("Got a DeepSeek API key? Enables cloud-quality answers when you want them. (Enter to skip)")
     api_key = input("> ").strip()
 
-    # Save the profile to SQLite via the same fn the memory tool uses (no pwsh wrapper).
-    try:
-        import bob_memory
-        bob_memory.cmd_init_profile(name=user_name, work=user_work, db_path=osenv.data_dir() / "bob.db")
-    except Exception as e:  # noqa: BLE001 — profile persistence is best-effort
-        print(f"Could not save profile to memory DB: {e}", file=sys.stderr)
+    # Save the profile to SQLite. Memory needs venv-only deps (sqlite-utils + requests), but onboarding
+    # runs under the *system* python (the kernel) — so shell out to the venv-litellm interpreter, which
+    # has them (mirrors how the loop's memory tool runs). Best-effort: a failure just skips persistence.
+    venv_py = osenv.venv_exe("venv-litellm", "python")
+    if Path(venv_py).exists():
+        db = osenv.data_dir() / "bob.db"
+        rc = subprocess.run([str(venv_py), str(_SCRIPTS / "bob_memory.py"), "--db", str(db),
+                             "init-profile", "--name", user_name, "--work", user_work]).returncode
+        if rc != 0:
+            print("  (couldn't save the profile to memory — run `bob memory init-profile` later.)",
+                  file=sys.stderr)
+    else:
+        print("  (venv-litellm not built yet — run `bob memory init-profile` after setup.)", file=sys.stderr)
 
     user_cfg = REPO / "config" / "user.json"
     try:
