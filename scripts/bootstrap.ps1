@@ -113,9 +113,14 @@ if ($py) {
     if (-not (Test-Path $venv)) { & $py -m venv $venv }
     if (-not (Test-Path $venvPy)) { throw "venv creation failed for $($t.n) — $venvPy not found" }
     & $venvPy -m pip install --upgrade pip
-    # prefer the pinned .lock (reproducible); fall back to the loose .txt on a first-ever run
+    # The committed .lock files are Windows `pip freeze` snapshots (they pin pywin32 / win32_setctime),
+    # so they only resolve on Windows. Use the pinned lock on Windows for reproducibility; on Linux/macOS
+    # use the platform-agnostic top-level .txt and let pip resolve per-platform. (A Linux lock could be
+    # frozen post-install for reproducibility — ND follow-up.)
     $lock = Join-Path $repo "tools\$($t.base).lock"
-    $req  = if (Test-Path $lock) { $lock } else { Join-Path $repo "tools\$($t.base).txt" }
+    $txt  = Join-Path $repo "tools\$($t.base).txt"
+    $req  = if (((Get-BobOS) -eq 'windows') -and (Test-Path $lock)) { $lock } else { $txt }
+    Write-Host "  installing $($t.n) from $(Split-Path $req -Leaf)" -ForegroundColor DarkGray
     & $venvPy -m pip install -r $req
     if ($LASTEXITCODE -ne 0) { throw "pip install failed for $($t.n) — re-run scripts\bootstrap.ps1 to retry" }
   }
