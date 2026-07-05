@@ -536,11 +536,11 @@ switch ($cmd) {
     $m = if ($rest.Count) { & $resolveModel $rest[0] } else { $default }
     & (Get-BinExe 'llama-bench') -m $m -ngl 99 -fa 1 -p 512 -n 128
   }
-  # 'chat' / 'code' / 'think' — MIGRATED to Python (Module S2). They are runtime=python in
-  # config/verbs.json, so the front door routes `bob chat|code|think` to `python -m bob` (the agent
-  # loop in chat mode: no tools, routed role; the interactive REPL is the NE shell in chat mode) and
-  # never reaches this switch. The old pwsh REPL is retired here — one streaming impl, one memory
-  # path. Invoke-BobStream itself stays: voice/describe/speak still use it until Module P3 ports them.
+  # 'chat'/'code'/'think' (Module S2) and 'describe'/'screenshot' (ONE-B2) — MIGRATED to Python. They
+  # are runtime=python in config/verbs.json, so the front door routes them to `python -m bob` (the
+  # agent loop: chat mode for text, images=[…] + vision role for describe/screenshot) and they never
+  # reach this switch. The old pwsh REPL + System.Drawing vision are retired — one loop, one memory
+  # path. Invoke-BobStream itself stays: the 'voice' loop still uses it until ONE-B4/B5 port it.
   'stop' {
     $killed = [System.Collections.Generic.List[string]]::new()
 
@@ -864,92 +864,6 @@ N8N_PORT=$($dp.n8nPort ?? (Get-BobPortDefault 'n8nPort'))
       }
     } finally {
       Remove-Item $tmpTxt, $tmpWav -ErrorAction SilentlyContinue
-    }
-  }
-
-  'describe' {
-    $pro  = $rest -contains '--pro'
-    $rest = @($rest | Where-Object { $_ -ne '--pro' })
-    if (-not $rest.Count) { Write-Host "usage: bob describe <image> [--pro] [prompt]"; break }
-    $imagePath = $rest[0]
-    if (-not (Test-Path $imagePath)) { Write-Host "File not found: $imagePath" -ForegroundColor Red; break }
-    $bobCfg   = Get-BobConfig
-    $prompt   = if ($rest.Count -gt 1) { $rest[1..($rest.Count-1)] -join ' ' } else { 'Describe this image.' }
-    # Resize image to max 1024px on longest edge — large screenshots exceed context limits. System.Drawing
-    # is Windows-only .NET, so this runs on Windows only; on Linux the image is sent as-is (the vision
-    # model tolerates larger inputs). Full cross-platform resize + in-loop vision lands in P3.
-    $resizedTmp = $null
-    if ((Get-BobOS) -eq 'windows') {
-      Add-Type -AssemblyName System.Drawing
-      $srcBmp  = [Drawing.Bitmap]::new($imagePath)
-      $maxDim  = 1024
-      $scale   = [Math]::Min($maxDim / $srcBmp.Width, $maxDim / $srcBmp.Height)
-      $scale   = [Math]::Min($scale, 1.0)   # never upscale
-      $w = [int]($srcBmp.Width  * $scale)
-      $h = [int]($srcBmp.Height * $scale)
-      if ($scale -lt 1.0) {
-        $dstBmp = [Drawing.Bitmap]::new($w, $h)
-        $g = [Drawing.Graphics]::FromImage($dstBmp)
-        $g.InterpolationMode = [Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-        $g.DrawImage($srcBmp, 0, 0, $w, $h)
-        $g.Dispose(); $srcBmp.Dispose()
-        $resizedTmp = [IO.Path]::GetTempFileName() + '.png'
-        $dstBmp.Save($resizedTmp, [Drawing.Imaging.ImageFormat]::Png)
-        $dstBmp.Dispose()
-        $imagePath = $resizedTmp
-      } else {
-        $srcBmp.Dispose()
-      }
-    }
-    try {
-      $b64  = [Convert]::ToBase64String([IO.File]::ReadAllBytes($imagePath))
-      $ext  = [IO.Path]::GetExtension($imagePath).TrimStart('.').ToLower()
-      $mime = if ($ext -eq 'jpg') { 'jpeg' } else { $ext }
-      $messages = @(@{
-        role    = 'user'
-        content = @(
-          @{ type = 'image_url'; image_url = @{ url = "data:image/$mime;base64,$b64" } },
-          @{ type = 'text';      text      = $prompt }
-        )
-      })
-      $vRole = Get-RoleForTask -Config $bobCfg -Task vision -Pro:$pro
-      Invoke-BobStream -Model $vRole -Messages $messages -MaxTokens ($d.maxTokens ?? 512) -ApiBase $litellmBase | Out-Null
-      Write-Host ""
-    } catch {
-      # M9 — don't let an LLM/stream failure abort with a raw error; print and return.
-      Write-Host "describe failed: $_" -ForegroundColor Red
-    } finally {
-      if ($resizedTmp) { Remove-Item $resizedTmp -ErrorAction SilentlyContinue }
-    }
-  }
-
-  'screenshot' {
-    $tmp = [IO.Path]::GetTempFileName() + '.png'
-    if ((Get-BobOS) -eq 'windows') {
-      Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-      $screen = [Windows.Forms.Screen]::PrimaryScreen.Bounds
-      $bmp    = [Drawing.Bitmap]::new($screen.Width, $screen.Height)
-      $g      = [Drawing.Graphics]::FromImage($bmp)
-      $g.CopyFromScreen($screen.Location, [Drawing.Point]::Empty, $screen.Size)
-      $bmp.Save($tmp, [Drawing.Imaging.ImageFormat]::Png)
-      $g.Dispose(); $bmp.Dispose()
-    } else {
-      # Linux capture — Wayland (grim) or X11 (spectacle / scrot / imagemagick import).
-      $cap = @('grim','spectacle','scrot','import') | Where-Object { Get-Command $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
-      if (-not $cap) { Write-Host "No screenshot tool found (install grim, spectacle, scrot, or imagemagick), or pass an image to 'bob describe'." -ForegroundColor Yellow; break }
-      switch ($cap) {
-        'grim'      { & grim $tmp }
-        'spectacle' { & spectacle -b -n -o $tmp }
-        'scrot'     { & scrot $tmp }
-        'import'    { & import -window root $tmp }
-      }
-      if (-not (Test-Path $tmp) -or (Get-Item $tmp).Length -eq 0) { Write-Host "Screenshot capture failed via $cap." -ForegroundColor Red; break }
-    }
-    try {
-      $descArgs = @('describe', $tmp) + $rest
-      & "$PSScriptRoot\bob.ps1" @descArgs
-    } finally {
-      Remove-Item $tmp -ErrorAction SilentlyContinue
     }
   }
 

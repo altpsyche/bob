@@ -9,8 +9,9 @@ catalog. Each entry is {name, group, summary, args, runtime, handler}:
   handler  cli.py handler key for python commands (None for pwsh)
 
 config/verbs.json is *generated from* this registry (verbs_json_dict / write_verbs) and read by the
-shim so the shim and `python -m bob` route from the same data. Phased migration (C1): chat/voice/
-describe/recall are pwsh today and stay so until a later module ports them to Python.
+shim so the shim and `python -m bob` route from the same data. Phased migration (C1): chat/code/think
+(S2) and describe/screenshot (ONE-B2) are on the loop; voice/listen/speak + recall/orchestration are
+pwsh today and stay so until a later module ports them to Python.
 """
 import json
 import sys
@@ -40,9 +41,9 @@ COMMANDS = [
     {"name": "speak", "group": "Talk", "summary": "Synthesize text to speech (reads stdin if no arg)",
      "args": "[text]", "runtime": "pwsh", "handler": None},
     {"name": "describe", "group": "Talk", "summary": "Describe an image (local Qwen2-VL or --pro)",
-     "args": "<image> [--pro] [prompt]", "runtime": "pwsh", "handler": None},
+     "args": "<image> [--pro] [prompt]", "runtime": "python", "handler": "describe"},
     {"name": "screenshot", "group": "Talk", "summary": "Capture the screen and describe it",
-     "args": "[--pro] [prompt]", "runtime": "pwsh", "handler": None},
+     "args": "[--pro] [prompt]", "runtime": "python", "handler": "screenshot"},
 
     # --- Act: agent + automation + capability inspection --------------------------------------
     {"name": "agent", "group": "Act", "summary": "Run the agent loop on a one-shot goal",

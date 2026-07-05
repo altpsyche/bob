@@ -223,6 +223,67 @@ def _handle_think(rest: list) -> int:
     return _chat("think", rest)
 
 
+def _describe(image: str, rest: list) -> int:
+    """ONE-B2 — `bob describe <image> [--pro] [prompt]` on the agent loop: resize (cross-platform) →
+    one-shot vision turn via run_agent(images=[…]). Replaces the pwsh handler + Invoke-BobStream +
+    System.Drawing. Role is pinned to vision (so the loop uses it verbatim, no auto-route needed)."""
+    from bob_core import get_role, load_config
+    import bob_loop
+    import bob_vision
+
+    rest = list(rest)
+    pro = "--pro" in rest
+    rest = [t for t in rest if t != "--pro"]
+    if not os.path.exists(image):
+        print(f"File not found: {image}", file=sys.stderr)
+        return 1
+    prompt = " ".join(rest) if rest else "Describe this image."
+    config = load_config()
+    role = get_role(config, "vision", pro=pro)
+    prepared = bob_vision.resize_image(image)
+    try:
+        bob_loop.run_agent(prompt, config, role=role, agency="silent",
+                           stream=True, no_tools=True, images=[prepared])
+    finally:
+        if prepared != image:
+            try:
+                os.remove(prepared)
+            except OSError:
+                pass
+    return 0
+
+
+def _handle_describe(rest: list) -> int:
+    rest = list(rest)
+    positional = [t for t in rest if t != "--pro"]
+    if not positional:
+        print("usage: bob describe <image> [--pro] [prompt]", file=sys.stderr)
+        return 1
+    image = positional[0]
+    rest_wo_image = list(rest)
+    rest_wo_image.remove(image)   # drop the image path; _describe keeps --pro + prompt tokens
+    return _describe(image, rest_wo_image)
+
+
+def _handle_screenshot(rest: list) -> int:
+    """ONE-B2 — `bob screenshot [--pro] [prompt]`: capture the screen (cross-platform), then describe
+    it through the loop. Replaces the pwsh handler + System.Windows.Forms capture."""
+    import bob_vision
+
+    try:
+        shot = bob_vision.capture_screen()
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    try:
+        return _describe(shot, rest)
+    finally:
+        try:
+            os.remove(shot)
+        except OSError:
+            pass
+
+
 def _handle_shell(rest: list) -> int:
     """bob shell — the interactive REPL/TUI (NE2). Behind an isatty gate: a non-TTY invocation prints
     help instead, so scripts/CI never block on a prompt."""
@@ -261,6 +322,8 @@ _HANDLERS = {
     "chat": _handle_chat,     # S2 — unified text conversation onto the loop
     "code": _handle_code,
     "think": _handle_think,
+    "describe": _handle_describe,     # ONE-B2 — vision doors on the loop
+    "screenshot": _handle_screenshot,
     "help": _handle_help,
 }
 
