@@ -1002,6 +1002,56 @@ def assert_cuda_host_compiler_ok(nvcc, host_cxx=None) -> None:
         raise RuntimeError(f"CUDA host-compiler check failed: {hint}")
 
 
+# --- build toolchain flags + cmake provisioning (ONE-D §1b — used by build) ------------------------
+
+def resolve_build_cmake_flags(cpu: bool = False, arch: int = 0, os: str = None) -> dict:
+    """PURE. {'Cuda', 'Generator', 'StageDlls'} for a build. CPU => CUDA off + no staging (both OSes);
+    GPU => CUDA on, Windows uses the VS generator + stages CUDA DLLs, Linux uses Ninja (rpath/ldconfig,
+    no staging). Port of Resolve-BuildCmakeFlags."""
+    os = os or os_name()
+    gen = "Visual Studio 17 2022" if os == "windows" else "Ninja"
+    if cpu:
+        return {"Cuda": False, "Generator": gen, "StageDlls": False}
+    return {"Cuda": True, "Generator": gen, "StageDlls": os == "windows"}
+
+
+def linux_cmake3(repo, pinned_version: str = "3.31.7") -> str:
+    """A cmake < 4.0 path (llama.cpp/whisper.cpp reject 4.x's policy changes). System cmake if it is 3.x,
+    else download + cache the pinned Kitware build into tools/ (rolling distros ship only 4.x). urllib, not
+    requests, so it works pre-venv in the kernel. Port of Get-LinuxCmake3. Raises on download failure."""
+    import re
+    import tempfile
+    import urllib.request
+
+    sys_cmake = shutil.which("cmake")
+    if sys_cmake:
+        try:
+            out = subprocess.run(["cmake", "--version"], capture_output=True, text=True, timeout=10)
+            m = re.search(r"(\d+)\.(\d+)\.(\d+)", out.stdout)
+            if m and (int(m.group(1)), int(m.group(2))) < (4, 0):
+                return sys_cmake
+            if m:
+                print(f"  system cmake is {m.group(0)} (4.x) — llama.cpp/whisper.cpp need 3.x.", file=sys.stderr)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    machine = platform.machine() or "x86_64"
+    stem = f"cmake-{pinned_version}-linux-{machine}"
+    tools = Path(repo) / "tools"
+    exe = tools / stem / "bin" / "cmake"
+    if not exe.exists():
+        url = f"https://github.com/Kitware/CMake/releases/download/v{pinned_version}/{stem}.tar.gz"
+        tmp = Path(tempfile.gettempdir()) / f"{stem}.tar.gz"
+        print(f"  fetching pinned cmake {pinned_version} ({machine}) from Kitware...", file=sys.stderr)
+        urllib.request.urlretrieve(url, tmp)  # noqa: S310 — fixed Kitware https URL
+        tools.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["tar", "-xzf", str(tmp), "-C", str(tools)], check=True)
+        tmp.unlink(missing_ok=True)
+    if not exe.exists():
+        raise RuntimeError(f"failed to provision cmake {pinned_version} (expected {exe}). "
+                           "Install a cmake 3.x manually and re-run.")
+    return str(exe)
+
+
 # --- mlock privilege (ONE-D §1b, DD4 — read-only status is a tool; grant is CLI-only) -------------
 
 def mlock_status() -> dict:

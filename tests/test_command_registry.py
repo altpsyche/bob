@@ -36,7 +36,12 @@ class TestRegistry(unittest.TestCase):
         self.assertEqual(rt["doctor"], "python")
         self.assertEqual(rt["diagnose"], "python")
         self.assertEqual(rt["version"], "python")
-        self.assertEqual(rt["build"], "pwsh")        # build/update/mlock stay pwsh through ONE-D (D2)
+        self.assertEqual(rt["build"], "python")      # ONE-D Slice D5 — native build ported (build.py)
+        self.assertEqual(rt["fetch"], "python")      # ONE-D Slice D1 (provision.py)
+        self.assertEqual(rt["lock"], "python")       # ONE-D Slice D2 (versions.py)
+        self.assertEqual(rt["mlock"], "python")      # ONE-D Slice D3 (osenv)
+        self.assertEqual(rt["eval"], "python")       # ONE-D Slice D4 (models.py)
+        self.assertEqual(rt["update"], "pwsh")       # update still pwsh — ONE-D Slice D6 (next)
         self.assertEqual(rt["status"], "python")     # ONE-C — loaded-models status (stack.py)
         self.assertEqual(rt["chat"], "python")      # S2 — chat/code/think ported onto the agent loop
         self.assertEqual(rt["code"], "python")

@@ -743,6 +743,43 @@ def _models_mod():
     return models_mod
 
 
+def _build_mod():
+    tools_dir = str(SCRIPTS / "tools")
+    if tools_dir not in sys.path:
+        sys.path.insert(0, tools_dir)
+    import build as build_mod
+    build_mod.configure(_cfg())
+    return build_mod
+
+
+def _handle_build(rest: list) -> int:
+    """bob build [--cpu] [--force] — (re)build llama.cpp. Auto-selects the CPU tier when no GPU (DD1)."""
+    import osenv
+    rest = list(rest)
+    force = "--force" in rest
+    cpu = "--cpu" in rest or osenv.gpu_info() is None
+    if cpu and "--cpu" not in rest:
+        print("No GPU detected — building the CPU-only tier. Use 'bob build --cpu' to force, or install "
+              "CUDA for a GPU build.", file=sys.stderr)
+    try:
+        print(_build_mod().build_llama(cpu=cpu, force=force))
+    except RuntimeError as e:
+        print(f"build failed: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _handle_fabric_setup(rest: list) -> int:
+    """bob fabric-setup [--force] — build fabric (Go) + wire ~/.config/fabric."""
+    force = any(f in rest for f in ("--force", "-Force"))
+    try:
+        print(_build_mod().setup_fabric(force=force))
+    except RuntimeError as e:
+        print(f"fabric-setup failed: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def _provision_mod():
     tools_dir = str(SCRIPTS / "tools")
     if tools_dir not in sys.path:
@@ -965,6 +1002,8 @@ _HANDLERS = {
     "verify-urls": _handle_verify_urls,
     "bench": _handle_bench,
     "eval": _handle_eval,             # ONE-D Slice D4 — lm-eval quality benchmark (scripts/tools/models.py)
+    "build": _handle_build,           # ONE-D Slice D5 — native llama.cpp build (scripts/tools/build.py)
+    "fabric-setup": _handle_fabric_setup,
     "fetch": _handle_fetch,           # ONE-D Slice D1 — model downloads (scripts/tools/provision.py)
     "lock": _handle_lock,             # ONE-D Slice D2 — versions.lock writer + gate (scripts/bob/versions.py)
     "mlock": _handle_mlock,           # ONE-D Slice D3 — mlock privilege status/grant (osenv)

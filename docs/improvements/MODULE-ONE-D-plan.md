@@ -11,7 +11,7 @@ native-first**, C5 CI ownership), [MODULE-ONE-C-plan.md](MODULE-ONE-C-plan.md) (
 per-verb 3-adapter template; the osenv-seam precedent). ONE-C decisions D1–D6 are **settled — do not
 re-litigate.** The new decisions **DD1–DD6 are RESOLVED (2026-07-05, see Part 5):** full Python `build` port ·
 curl-subprocess `fetch` · keep `venv-eval` · `mlock` grant ported CLI-only · minimal-shell-stub → Python
-kernel · ONE-D owns the kernel (D8) as capstone. **Slices D0–D4 ✅ DONE (suite 766 green); next = D5 (build — the big native port).**
+kernel · ONE-D owns the kernel (D8) as capstone. **Slices D0–D5 ✅ DONE (suite 780 green); next = D6 (update).**
 
 ## Goal — and the one distinction that shapes the whole module
 
@@ -279,10 +279,19 @@ capstone once its called-capabilities exist.
   `eval.ps1`** (fully replaced — nothing else called it). `bootstrap-eval.ps1` (the venv-eval creator) is
   KEPT until D8 (pre-venv). Not runnable live here (no venv-eval/endpoint); tests cover arg-building +
   every guard path. tests/test_slice_d4_eval.py (10); test_slice4 eval-stays-pwsh assertion flipped.
-- **Slice D5 — `build` + `build-llama-swap` + `fabric-setup`** *(the native toolchain; DD1):*
-  `build.py` — `build_llama(cpu, arch, force)` (cmake orchestration over the 1b build seams; cmake/nvcc/go
-  stay subprocess as they always were), `build_llama_swap()`, `setup_fabric()`. `bin/` swap + verify.
-  `build`/`fabric-setup` verbs → python (CLI). Non-gating (GPU release tier only per C7), so low merge risk.
+- **Slice D5 — `build` + `build-llama-swap` + `fabric-setup`** ✅ **DONE** (on main; suite 780 green):
+  DD1 full native port. Added the last build seams to osenv (`resolve_build_cmake_flags`, `linux_cmake3`
+  via urllib — kernel-safe). `scripts/tools/build.py`: `build_llama(cpu, arch, force, cuda_root)` (cmake
+  orchestration over the §1b seams — gpu_arch/best_cuda_root/cuda_host_compiler/assert_cuda_host_compiler_ok;
+  4 configure branches win/linux × CUDA/CPU; atomic bin/ swap; Windows DLL staging), `build_llama_swap()`
+  (Go), `setup_fabric()` (Go build + ~/.config/fabric .env + patterns symlink). cmake/nvcc/go stay
+  subprocess. **CLI-only** (`bob build [--cpu] [--force]` auto-selects CPU when no GPU; `bob fabric-setup
+  [--force]`) — empty `TOOL_DEFS`/`DISPATCH` (not agent tools); import-clean for the kernel. Flipped
+  `build`/`fabric-setup`→python, regen verbs.json, deleted the bob.ps1 cases. **build-llama.ps1 /
+  build-llama-swap.ps1 / setup-fabric.ps1 KEPT** (pre-venv bootstrap.ps1 + ci.yml call them; retire at D8).
+  Verified live: `bob build` short-circuits on the built binary; the CUDA arg-construction + atomic swap are
+  exercised by a fake-`_run` test (Blackwell sm_120 → -DCMAKE_CUDA_ARCHITECTURES=120 + nvcc + host-compiler
+  flags). tests/test_slice_d5_build.py (14); build-stays-pwsh spot-check flipped.
 - **Slice D6 — `update`** *(orchestration over D2+D5):* git sync + submodule + venv reinstall + conditional
   rebuild w/ `backup/restore_build_output` rollback + relock + doctor. `update` verb → python.
 - **Slice D7 — post-venv onboarding capabilities:** `setup-voice` (whisper/piper provision, reuses D1 DL +

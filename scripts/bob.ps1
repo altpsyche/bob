@@ -85,19 +85,10 @@ switch ($cmd) {
   # one loop, one memory path.
   # 'stop' -> runtime=python (cli.py _handle_stop over scripts/tools/stack.py:stack_stop); routed by
   # the dispatch prologue before this switch. Case deleted. (ONE-C Slice 2)
-  'build' {
-    # NC3/NC8 — (re)build llama.cpp. Auto-selects the CPU tier when no GPU is present (or with --cpu);
-    # otherwise a CUDA build for the detected arch. Cross-platform via build-llama.ps1's seam.
-    $cpu   = ($rest -contains '--cpu') -or (-not (Get-GpuInfo))
-    $force = $rest -contains '--force'
-    $bArgs = @{}
-    if ($cpu)   { $bArgs['Cpu'] = $true }
-    if ($force) { $bArgs['Force'] = $true }
-    if ($cpu -and -not ($rest -contains '--cpu')) {
-      Write-Host "No GPU detected — building the CPU-only tier. Use 'bob build --cpu' to force, or install CUDA for a GPU build." -ForegroundColor Yellow
-    }
-    & "$repo\scripts\build-llama.ps1" @bArgs
-  }
+  # 'build' -> runtime=python (cli.py _handle_build over scripts/tools/build.py:build_llama — DD1 FULL
+  # native port; auto-selects the CPU tier when no GPU via osenv.gpu_info). Routed by the dispatch
+  # prologue before this switch. build-llama.ps1 is KEPT: the pre-venv bootstrap.ps1 + ci.yml still call
+  # it directly and can't depend on the venv; retires at D8. (ONE-D Slice D5)
   # 'lock' -> runtime=python (cli.py _handle_lock over scripts/bob/versions.py write_lock/check_sync —
   # BYTE-IDENTICAL to the pwsh writer; check.ps1's gate now calls `python -m bob.versions --check`).
   # Routed by the dispatch prologue before this switch. _versions.ps1's Write-VersionsLock/Get-VersionsLock
@@ -182,7 +173,9 @@ switch ($cmd) {
   # ulimit/limits.conf guidance on Linux). Routed by the dispatch prologue before this switch.
   # grant-mlock.ps1 is KEPT: the pre-venv diagnose.ps1/setup.ps1 still call `-Check`; retires at D8.
   # (ONE-D Slice D3)
-  'fabric-setup' { & "$repo\scripts\setup-fabric.ps1" }
+  # 'fabric-setup' -> runtime=python (cli.py _handle_fabric_setup over scripts/tools/build.py:setup_fabric
+  # — Go build + ~/.config/fabric .env + patterns symlink). Routed by the dispatch prologue. setup-fabric.ps1
+  # is KEPT: pre-venv bootstrap.ps1/setup.ps1 still call it; retires at D8. (ONE-D Slice D5)
   # 'fabric' -> runtime=python (cli.py _handle_fabric); routed by the dispatch prologue. (ONE-C Slice 1)
   # 'litellm' and 'services' -> runtime=python (cli.py handlers over scripts/tools/stack.py); routed
   # by the dispatch prologue before this switch. Cases deleted. (ONE-C Slice 2)
