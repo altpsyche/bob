@@ -743,6 +743,26 @@ def _models_mod():
     return models_mod
 
 
+def _provision_mod():
+    tools_dir = str(SCRIPTS / "tools")
+    if tools_dir not in sys.path:
+        sys.path.insert(0, tools_dir)
+    import provision
+    return provision
+
+
+def _handle_fetch(rest: list) -> int:
+    """bob fetch [--list] [profile] — download the profile's models (resume + SHA256-verify + manifest)."""
+    rest = list(rest)
+    list_only = "--list" in rest
+    positional = [a for a in rest if a != "--list"]
+    profile = positional[0] if positional else None
+    mod = _provision_mod()
+    mod.configure(_cfg())
+    print(mod.fetch_models(profile, list_only=list_only))
+    return 0
+
+
 def _handle_models(rest: list) -> int:
     print(_models_mod().models_list(_cfg()))
     return 0
@@ -899,6 +919,7 @@ _HANDLERS = {
     "profile": _handle_profile,
     "verify-urls": _handle_verify_urls,
     "bench": _handle_bench,
+    "fetch": _handle_fetch,           # ONE-D Slice D1 — model downloads (scripts/tools/provision.py)
     "gen": _handle_gen,               # ONE-C Slice 6 — config generators (scripts/tools/generate.py)
     "setup": _handle_setup,           # ONE-C Slice 3 — health / diagnostics (scripts/tools/health.py)
     "doctor": _handle_doctor,

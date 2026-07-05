@@ -69,13 +69,11 @@ switch ($cmd) {
   # scripts STAY: the pre-venv cold-start/bootstrap path (bootstrap.ps1/start.ps1/setup-clients.ps1)
   # still calls them directly and can't depend on the venv; they retire in ONE-D with that path.
   # (ONE-C Slice 6)
-  'fetch'  {                                                   # download models for a profile
-    $fa = @{}
-    if ($rest -contains '--list') { $fa['ListOnly'] = $true }
-    $prof = @($rest | Where-Object { $_ -ne '--list' })
-    if ($prof.Count) { $fa['Profile'] = $prof[0] }
-    & "$repo\scripts\fetch-models.ps1" @fa
-  }
+  # 'fetch' -> runtime=python (cli.py _handle_fetch over scripts/tools/provision.py:fetch_models — curl
+  # resume + SHA256-verify vs versions.lock + manifest). Routed by the dispatch prologue before this
+  # switch. fetch-models.ps1 is KEPT: the pre-venv cold-start path (bootstrap.ps1) still calls it and
+  # can't depend on the venv; it retires in ONE-D Slice D8 when the kernel calls provision.fetch_models.
+  # (ONE-D Slice D1)
   # 'profiles', 'profile', and 'bench' -> runtime=python (cli.py handlers over scripts/tools/models.py:
   # profiles_list/profile_switch/bench); routed by the dispatch prologue before this switch. profile
   # switch writes data/active-profile.json (D4) + regenerates configs best-effort. (ONE-C Slice 4)

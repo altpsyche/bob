@@ -48,7 +48,7 @@
     "setup-voice": "pwsh",
     "fabric-setup": "pwsh",
     "gen": "python",
-    "fetch": "pwsh",
+    "fetch": "python",
     "models": "python",
     "show": "python",
     "profile": "python",

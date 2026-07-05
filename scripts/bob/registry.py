@@ -133,7 +133,7 @@ COMMANDS = [
     {"name": "gen", "group": "Config", "summary": "Regenerate runtime configs from models.json",
      "args": "[profile]", "runtime": "python", "handler": "gen"},
     {"name": "fetch", "group": "Config", "summary": "Download models for a profile",
-     "args": "[--list] [profile]", "runtime": "pwsh", "handler": None},
+     "args": "[--list] [profile]", "runtime": "python", "handler": "fetch"},
     {"name": "models", "group": "Config", "summary": "List models with backing names and state",
      "args": "", "runtime": "python", "handler": "models"},
     {"name": "show", "group": "Config", "summary": "Model info: file, VRAM, SHA256, disk status",

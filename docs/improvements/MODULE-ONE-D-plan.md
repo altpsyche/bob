@@ -11,7 +11,7 @@ native-first**, C5 CI ownership), [MODULE-ONE-C-plan.md](MODULE-ONE-C-plan.md) (
 per-verb 3-adapter template; the osenv-seam precedent). ONE-C decisions D1–D6 are **settled — do not
 re-litigate.** The new decisions **DD1–DD6 are RESOLVED (2026-07-05, see Part 5):** full Python `build` port ·
 curl-subprocess `fetch` · keep `venv-eval` · `mlock` grant ported CLI-only · minimal-shell-stub → Python
-kernel · ONE-D owns the kernel (D8) as capstone. **Slice D0 ✅ DONE (suite 708 green); next = D1 (fetch).**
+kernel · ONE-D owns the kernel (D8) as capstone. **Slices D0 + D1 ✅ DONE (suite 723 green); next = D2 (lock).**
 
 ## Goal — and the one distinction that shapes the whole module
 
@@ -232,11 +232,17 @@ capstone once its called-capabilities exist.
   `bob doctor`. tests/test_osenv.py (+18: TestGpuSeams/TestRamAndNuma/TestLinuxDistroSeams/
   TestBuildOutputRollback), test_slice3_health TestHealthCheckWiredRows (rewrote the stale degradation
   class, +2 net). Unblocks diagnose-deep (D3) + build (D5).
-- **Slice D1 — `fetch`** *(the template; recommended first real port):* `scripts/tools/provision.py`
-  (D6 functional grouping — the ONE-D module for download/provision capabilities) `fetch_models(profile,
-  list_only)` — resumable DL (DD2), `versions.verify_model` (exists), manifest writer (atomic), mmproj,
-  disk pre-check. Agent tool + `bob fetch` + `--run`. Flip registry→python, regen verbs.json, delete the
-  `fetch` bob.ps1 case, rewire `ci.yml`'s `bob.ps1 fetch`. Import-clean under bare python (kernel will call it).
+- **Slice D1 — `fetch`** ✅ **DONE** (on main; suite 723 green): `scripts/tools/provision.py` (D6 — the
+  ONE-D download/provision module) `fetch_models(profile, list_only)` — curl-subprocess resumable DL (DD2:
+  `-C -` + `--fail-with-body`, curl-22 poison-prefix deletion, other-exit partial kept), SHA256-verify vs
+  versions.lock (pinned mismatch → delete + raise; unpinned → TOFU warn) reusing `bob.versions.sha256_file`,
+  atomic manifest writer, mmproj rides the model's revision, gguf dedup, advisory disk pre-check. Agent tool
+  `fetch_models` (mutating) + `bob fetch [--list] [profile]` + `bob --run fetch_models`. Flipped
+  registry→python, regen verbs.json, deleted the `fetch` bob.ps1 case (fetch-models.ps1 KEPT — bootstrap.ps1
+  pre-venv still calls it; retires at D8 when the kernel calls provision.fetch_models). **Import-clean under
+  bare python** (curl subprocess, no requests) so the kernel reuses the same fn. `ci.yml`'s `bob.ps1 fetch`
+  stays non-regressing — the dispatch prologue routes it to `python -m bob fetch`. Verified live
+  (`bob fetch --list` → 16gb profile, 7 models, dedup + mmproj + present-status). tests/test_slice_d1_fetch.py (15).
 - **Slice D2 — `lock` (writer + gate)** *(Part 1a):* `versions.write_lock`/`check_sync` + `bob lock`
   /`bob lock --check` (+ agent read-only `lock_check`). **Byte-parity vs pwsh.** Rewire `check.ps1` +
   `ci.yml` to `python -m bob.versions --check`. Delete `_versions.ps1` (nothing else sources it after this).
