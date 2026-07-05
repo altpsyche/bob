@@ -23,7 +23,7 @@ The Windows entry is `.bat`, the Linux entry is `.sh` — both are thin wrappers
 `scripts/*.ps1` (PowerShell 7 runs on both). Add `--cpu` to `install_prereqs` on a GPU-less box.
 
 <table>
-<tr><th>Windows 11 (NVIDIA)</th><th>Linux (glibc; apt/dnf/pacman)</th></tr>
+<tr><th>Windows 11 (NVIDIA)</th><th>Linux (glibc; apt/dnf/pacman/zypper)</th></tr>
 <tr><td>
 
 Prereqs you provide first: **Git**, **Scoop** (`irm get.scoop.sh | iex`), **PowerShell 7**
@@ -123,7 +123,7 @@ For a detailed walkthrough of what `setup-docker.ps1` does internally, including
 ## Verifying the install
 
 ```powershell
-bob up                    # starts llama-swap (:8080) + LiteLLM proxy (:8081) + Open WebUI (:3000)
+bob up                    # starts llama-swap (:8080) + LiteLLM proxy (:8081)  (+ Open WebUI :3000 if set up with -WithWebui)
 bob models                # should list: planner, coder, chat, fim, embed, vision, agent
 bob bench                 # performance check (see expected numbers below)
 bob chat coder "hi"       # end-to-end sanity check (routes via :8081 LiteLLM proxy)

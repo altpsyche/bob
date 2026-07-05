@@ -6,6 +6,34 @@ All notable changes to Bob are recorded here. The format follows
 `bob version` reports the running release; `bob update` moves between releases lockfile-to-lockfile,
 rebuilds only what changed, verifies, and rolls back on failure.
 
+## [Unreleased]
+
+### Added
+- **zypper / openSUSE support** across the install seam (`$PackageMap` column,
+  `Get-LinuxPackageManager`, `Resolve-PackageCmd`) and `install_prereqs.sh`, with an
+  `opensuse/tumbleweed` cell in the new CI distro matrix.
+- **`-WithWebui`** on `setup`/`bootstrap`: Open WebUI (torch/transformers, multi-GB) is now
+  **opt-in** rather than installed by default. `venv-eval` is likewise lazy (first `bob eval` /
+  `bootstrap-eval.ps1`).
+- **CI**: a `lint` gate (shellcheck + PSScriptAnalyzer) and a non-gating `prereqs-distro` matrix
+  (fedora/arch/opensuse) that runs the documented Linux entry + `diagnose` in each distro container.
+- Distro-agnostic **pwsh tarball fallback** in `install_prereqs.sh` (covers Arch without an AUR
+  helper and openSUSE, where Microsoft's RHEL rpm has an unsatisfiable `openssl-libs` dep).
+- `New-BobVenv` / `Get-BobVenvPython` seam helpers (one venv-build path), `Install-Package -DryRun`,
+  and `Invoke-Ensure`/`Assert-LastExit` honest-failure helpers.
+
+### Fixed
+- `bob tools`/`agent`/`clip` were dead on Linux — backslash script paths reached the native Python
+  interpreter (now `Join-Path`); same class fixed in `bootstrap-eval.ps1` (pip) and plugin invoke.
+- `setup-docker.ps1` install + daemon-start were Windows-only; now branch to the package-manager seam
+  + `systemctl` on Linux, and gate `docker info` on its exit code (not stdout).
+- `Get-NumaNodeCount` always returned 1 (`return if …`); `bob diagnose` mis-reported CUDA
+  (missed `/opt/cuda` + `cuda-*` dirs), mlock (Windows-only privilege claimed granted on Linux), and
+  NUMA on Linux — and now exits non-zero on any failed check (brew-doctor style).
+- `bob stop` orphaned worker grandchildren on Linux (now process-group kill); whisper STT bound to
+  `0.0.0.0` (now loopback); cron registered without a daemon guard; nvcc host-compiler now fails early
+  with an actionable message; model fetch discards poisoned `.part` files and verifies mmproj.
+
 ## [0.1.0] — 2026-07-02
 
 First versioned release: Bob reliably installs and runs on **Windows and Linux** (NVIDIA/CUDA, or a

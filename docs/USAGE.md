@@ -10,7 +10,7 @@ This document covers day-to-day use: starting and stopping the server, what each
 .\scripts\setup-clients.ps1
 ```
 
-Run this once per machine. It links the VS Code Continue config and the aider config from the repo into your home directory, so both tools work without any in-app configuration. Open WebUI is wired automatically when you start the stack. If you don't have symlink privileges, the script copies the files instead; re-run it after editing the repo configs to sync the copies.
+Run this once per machine. It links the VS Code Continue config and the aider config from the repo into your home directory, so both tools work without any in-app configuration. Open WebUI is opt-in (install it with `setup … -WithWebui`); when present, it's wired automatically as the stack starts. If you don't have symlink privileges, the script copies the files instead; re-run it after editing the repo configs to sync the copies.
 
 ## The `bob` command
 

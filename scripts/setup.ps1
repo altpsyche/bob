@@ -7,7 +7,8 @@
 #   .\scripts\setup.ps1 -SkipModels -SkipBuild # skip models + binary compilation (venvs + config only)
 #   .\scripts\setup.ps1 -Profile 12gb          # smaller models for ~12GB VRAM (see config/models.psd1)
 #   .\scripts\setup.ps1 -Launch                # start the stack (up.ps1) when finished
-param([switch]$SkipModels, [switch]$SkipBuild, [switch]$SkipVoice, [switch]$Launch, [string]$Profile)
+#   .\scripts\setup.ps1 -WithWebui             # also install Open WebUI (opt-in; torch/transformers, multi-GB)
+param([switch]$SkipModels, [switch]$SkipBuild, [switch]$SkipVoice, [switch]$Launch, [string]$Profile, [switch]$WithWebui)
 $ErrorActionPreference = "Stop"
 $repo = Split-Path $PSScriptRoot -Parent
 . "$PSScriptRoot\_models.ps1"
@@ -134,6 +135,7 @@ $ba = @{}
 if ($SkipModels) { $ba['SkipModels'] = $true }
 if ($SkipBuild)  { $ba['SkipBuild']  = $true }
 if ($Profile)    { $ba['Profile']    = $Profile }
+if ($WithWebui)  { $ba['WithWebui']  = $true }   # opt-in Open WebUI (torch/transformers, multi-GB)
 & "$PSScriptRoot\bootstrap.ps1" @ba
 
 Step "Wire clients (Continue + aider)"
