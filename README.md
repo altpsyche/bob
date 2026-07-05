@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="bob.png" alt="Bob" width="480">
+</p>
+
 # Bob Agent
 
 **Bob: Your Private AI Assistant.**
