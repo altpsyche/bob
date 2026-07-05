@@ -168,8 +168,10 @@ tools** vs `bob chat` — all because it runs the pwsh path, not the loop.
 **Progress:** ONE-B1 ✓ (`dd464ee`, `0a80286`) — `images` param on the loop + tool-result image contract,
 via the shared `_image_content_block` encoder. ONE-B2 ✓ (`996d399`) — `describe`/`screenshot` on the loop
 (`scripts/bob_vision.py` capture+resize; `cli._handle_describe`/`_handle_screenshot`; flipped to python in
-verbs.json; ~90 lines of Windows-only pwsh .NET deleted). 13 tests. **Remaining: B3 (audio seam), B4
-(`/voice` shell mode), B5 (delete `Invoke-BobStream` + the pwsh voice loop).**
+verbs.json; ~90 lines of Windows-only pwsh .NET deleted). ONE-B3 ✓ (`479e7c1`) — audio seam in
+`osenv.py` (`play_audio` + `record_audio`, lazy sounddevice); `bob-voice-capture.py` now single-sources
+capture through it. 18 tests. **Remaining: B4 (`/voice` shell mode wrapping `_run_turn` with STT→loop→TTS),
+B5 (delete `Invoke-BobStream` + the pwsh voice loop).**
 
 - **B1. Multimodal-in-loop** ✓ *(critical path — done).* `run_agent_events`/`run_agent` gained an
   `images: list = None` param (chosen over overloading `goal` to keep `goal` a `str` — recall/recitation/
@@ -184,10 +186,11 @@ verbs.json; ~90 lines of Windows-only pwsh .NET deleted). 13 tests. **Remaining:
   grim/spectacle/scrot/import on Linux); `cli._handle_describe`/`_handle_screenshot` run one-shot vision
   turns via `run_agent(images=[…], role=vision)`. Flipped to `python` in the registry/verbs.json; the pwsh
   case blocks (System.Drawing + System.Windows.Forms) are deleted.
-- **B3. Audio I/O seam** in [osenv.py](../../scripts/osenv.py) (mic-in / speaker-out) — wraps the existing
-  cross-platform `sounddevice` capture ([bob-voice-capture.py:22](../../scripts/bob-voice-capture.py)) and
-  replaces the inline pwsh `SoundPlayer`/`paplay` playback. STT/TTS stay standalone servers; the seam gives
-  the loop a handle to them.
+- **B3. Audio I/O seam** ✓ *(done).* [osenv.py](../../scripts/osenv.py) gained `play_audio` (winsound /
+  afplay / paplay|aplay|ffplay, replacing the inline pwsh `SoundPlayer`/`paplay` branch) and `record_audio`
+  (16 kHz mono RMS-silence capture; sounddevice/numpy lazy). `bob-voice-capture.py` now single-sources
+  capture through the seam. STT/TTS remain standalone servers (whisper POST / piper binary) — the seam owns
+  only the raw mic-in / speaker-out that the /voice mode composes with them.
 - **B4. `/voice` shell mode** in [shell.py](../../scripts/bob/shell.py): add to `_SLASH`
   ([:55](../../scripts/bob/shell.py)) and wrap `_run_turn` ([:689](../../scripts/bob/shell.py)) with
   STT→loop→TTS, streamed + cancellable. Preserve the pwsh watch-list: spoken-prompt formatting
