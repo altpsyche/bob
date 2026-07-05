@@ -63,7 +63,7 @@ Legend: **✅ gated** = proven every PR by CI on hosted runners · **🟡 suppor
 | OS | CPU tier (no GPU, tiny model — wiring/correctness only) | NVIDIA GPU (CUDA, real inference) |
 |---|---|---|
 | **Windows 11** | ✅ gated (`acceptance-cpu`, every PR) | 🟡 supported — day-to-day driver; native-from-source CUDA build proven in the release-tag `acceptance-gpu` tier |
-| **Linux** (glibc; apt/dnf/pacman) | ✅ gated (`acceptance-cpu`, every PR) | 🟡 supported — provisioner shipped (NC); native CUDA proven in the release-tag `acceptance-gpu` tier |
+| **Linux** (glibc; apt/dnf/pacman/zypper) | ✅ gated (`acceptance-cpu`, every PR) | 🟡 supported — provisioner shipped (NC); native CUDA proven in the release-tag `acceptance-gpu` tier |
 | **macOS** | ❌ not yet | ❌ not yet |
 | **AMD / ROCm** | ❌ not yet | ❌ not yet |
 
@@ -94,7 +94,7 @@ Installs CUDA, Python 3.12, Go, Node.js, cmake, and Docker Desktop. If Docker De
 bob up
 ```
 
-Builds the inference engine and proxy from source, downloads models, wires VS Code and terminal clients, and starts Docker services. Open a new terminal after setup so the PATH update takes effect. `bob up` starts llama-swap (`:8080`), the LiteLLM proxy (`:8081`), and Open WebUI (`:3000`) in the background. Tail logs with `bob logs`.
+Builds the inference engine and proxy from source, downloads models, wires VS Code and terminal clients, and starts Docker services. Open a new terminal after setup so the PATH update takes effect. `bob up` starts llama-swap (`:8080`) and the LiteLLM proxy (`:8081`) in the background — plus Open WebUI (`:3000`) if you opted into it at setup (`setup.bat -WithWebui` / `./setup.sh -WithWebui`; it pulls torch/transformers, so it's opt-in). Tail logs with `bob logs`.
 
 **Step 3: register the agent scheduler (once):**
 ```powershell

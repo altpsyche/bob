@@ -20,7 +20,7 @@ Bob's orchestration runs on Linux under PowerShell 7 (`pwsh`). Two thin bootstra
 
 ```bash
 # 1. Prerequisites: installs pwsh, then the toolchain (compiler, cmake, ninja, go, node, python3)
-#    via apt/dnf/pacman. Add --cpu to skip the CUDA toolkit (CPU-only tier).
+#    via apt/dnf/pacman/zypper. Add --cpu to skip the CUDA toolkit (CPU-only tier).
 ./install_prereqs.sh            # GPU box (expects NVIDIA driver + CUDA toolkit)
 ./install_prereqs.sh --cpu      # no GPU / CI runner
 
@@ -39,7 +39,7 @@ What differs from Windows (all behind [`scripts/_platform.ps1`](../scripts/_plat
 
 | Concern | Windows | Linux |
 |---|---|---|
-| Package install | winget / scoop | apt / dnf / pacman (`Install-Package`) |
+| Package install | winget / scoop | apt / dnf / pacman / zypper (`Install-Package`) |
 | Compiler / generator | MSVC + Visual Studio cmake | gcc/g++ + Ninja |
 | CUDA toolkit | `C:\Program Files\NVIDIA…` | `/usr/local/cuda*` (`Get-CudaRoot`) |
 | Services | hidden background process | `nohup` + pidfile (`Start-BobBackgroundProcess`) |
@@ -421,7 +421,11 @@ tools\venv-litellm\Scripts\python.exe -m pip install --upgrade pip
 tools\venv-litellm\Scripts\python.exe -m pip install -r tools\litellm-requirements.txt
 ```
 
-### 6.4 Eval venv
+### 6.4 Eval venv (optional — benchmarking only)
+
+`venv-eval` (lm-eval + transformers) is **not** built by setup; it's provisioned on demand by the
+first `bob eval` run, or explicitly with `pwsh scripts/bootstrap-eval.ps1` (both go through the shared
+`New-BobVenv` helper, so you don't hand-roll the paths). To build it manually anyway:
 
 ```powershell
 & $py -m venv tools\venv-eval
@@ -429,7 +433,8 @@ tools\venv-eval\Scripts\python.exe -m pip install --upgrade pip
 tools\venv-eval\Scripts\python.exe -m pip install -r tools\eval-requirements.txt
 ```
 
-Each venv install takes 2–10 minutes. The webui venv is the largest (~1 GB).
+Each venv install takes 2–10 minutes. `venv-webui` (Open WebUI) is the largest (torch/transformers,
+multi-GB) and is **opt-in** — build it via `setup … -WithWebui` or `pwsh scripts/bootstrap.ps1 -WithWebui`.
 
 ---
 
