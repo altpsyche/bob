@@ -68,6 +68,8 @@ _SLASH = {
     "/agent": None,
     "/voice": None,
     "/skill": None,
+    "/stop": None,
+    "/logs": None,
     "/clear": None,
     "/exit": None,
     "/quit": None,
@@ -480,6 +482,8 @@ class BobShell:
             "/agent": self._run_turn,
             "/voice": self._cmd_voice,
             "/skill": self._cmd_skill,
+            "/stop": self._cmd_stop,
+            "/logs": self._cmd_logs,
         }.get(cmd)
         if handler is None:
             self.console.print(f"[yellow]Unknown command: {cmd}[/]  (try /help)")
@@ -489,15 +493,41 @@ class BobShell:
 
     # -- slash commands -------------------------------------------------------
 
+    # Slash-command reference for the shell. This is the TUI's OWN surface — what you can DO from inside
+    # `bob`. It is deliberately NOT the CLI verb catalog (`bob help`): the shell is the home base, and the
+    # CLI verbs are the scripting / outside-terminal surface. The footer points at each other.
+    _SLASH_HELP = [
+        ("(type a message)", "chat with Bob, or describe a task to run"),
+        ("/agent <goal>", "run the agent loop on a one-shot goal"),
+        ("/voice", "spoken conversation (mic → loop → speech)"),
+        ("/model [role]", "show or switch the role (chat, coder, planner, …)"),
+        ("/agency [level]", "tool-approval mode: show | confirm | silent"),
+        ("/session [new|list|resume <id>|show]", "persisted conversation history"),
+        ("/skill [name]", "list or run a skill"),
+        ("/tools", "list the agent's tools"),
+        ("/skills", "list available skills"),
+        ("/status", "endpoint + session status"),
+        ("/stop", "stop local inference (frees VRAM)"),
+        ("/logs", "recent inference-server log"),
+        ("/theme [reload]", "reload the colour theme"),
+        ("/clear", "clear the screen"),
+        ("/help", "this reference"),
+        ("/exit", "leave the shell"),
+    ]
+
     def _cmd_help(self, _arg: str = "") -> None:
-        from bob import render
-        self.console.print(render.commands_view(self.theme))
-        self.console.print(render.tools_view(self.tools, self.theme))
-        self.console.print()
-        self.console.print(render.skills_view(self.skills, self.theme))
+        from rich.table import Table
+        t = self.theme
+        tbl = Table(show_header=False, box=None, pad_edge=False)
+        tbl.add_column(style=t.accent, no_wrap=True)
+        tbl.add_column(style=t.muted)
+        for cmd, desc in self._SLASH_HELP:
+            tbl.add_row(cmd, desc)
+        self.console.print(tbl)
         self.console.print(
-            f"\n[italic {self.theme.muted}]shell · /agent <goal> · /voice · /model [role] · /agency [level] · "
-            f"/session [new] · /skill <name> · /theme · /clear · /status · /exit[/]"
+            f"\n[italic {self.theme.muted}]This is the shell. For scripting / outside the terminal "
+            f"(one-shots, Open WebUI, editors, API), run [bold]bob help[/] · [bold]/tools[/] · "
+            f"[bold]/skills[/] for full lists[/]"
         )
 
     def _cmd_tools(self, _arg: str = "") -> None:
@@ -525,6 +555,18 @@ class BobShell:
         tbl.add_row("endpoint",
                     f"[{t.success}]ready[/]" if reachable else f"[{t.error}]DOWN[/] — run: bob up")
         self.console.print(tbl)
+
+    def _cmd_stop(self, _arg: str = "") -> None:
+        """/stop — tear down local inference (frees VRAM) without leaving the shell. Auto-start brings
+        it back on your next turn."""
+        import stack   # scripts/tools is on sys.path (module top)
+        self.console.print(stack.stack_stop(self.config))
+
+    def _cmd_logs(self, arg: str = "") -> None:
+        """/logs [N] — a bounded tail of the inference-server log (no follow; the shell owns the TTY)."""
+        import stack
+        n = int(arg) if arg.strip().isdigit() else 40
+        self.console.print(stack.stack_logs(self.config, n))
 
     def _cmd_model(self, arg: str) -> None:
         if not arg:

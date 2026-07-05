@@ -327,12 +327,21 @@ def _start_endpoint_bg(config: dict) -> tuple:
         pidfile=_pidfile("llama-swap"), log_path=_logfile("llama-swap"),
         env={"LLAMA_LOCAL_ROOT": str(REPO).replace("\\", "/")})
     lines.append(f"Endpoint: http://localhost:{port}/v1 (PID {pid})")
-    lines.append(_start_litellm_bg(config))
+    litellm_line = _start_litellm_bg(config)
+    lines.append(litellm_line)
+    # The loop/clients call the LiteLLM proxy, not llama-swap directly — so gate "ready" on :8081 too,
+    # unless the proxy was skipped (no venv). LiteLLM/uvicorn boots seconds after launch; without this
+    # stack_up returns while the proxy is still cold and the caller's first turn races it. TCP connect
+    # (is_port_in_use), not an HTTP GET, because LiteLLM answers /v1/models with 401 when up.
+    litellm_port = _port(config, "litellmPort")
+    litellm_expected = "skipped" not in litellm_line
     if config.get("voice", {}).get("enabled"):
         lines.append(_start_whisper_bg(config))
 
     def ready():
-        return osenv.pid_alive(pid) and _http_ok(f"http://localhost:{port}/v1/models", timeout=2)
+        if not (osenv.pid_alive(pid) and _http_ok(f"http://localhost:{port}/v1/models", timeout=2)):
+            return False
+        return osenv.is_port_in_use(litellm_port) if litellm_expected else True
 
     ok = _poll(ready, timeout=60, interval=0.3)
     lines.append("Endpoint ready." if ok else "Endpoint did not respond in 60s — check: bob logs")
