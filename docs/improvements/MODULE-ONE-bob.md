@@ -165,11 +165,11 @@ callers today are `voice` ([:995](../../scripts/bob.ps1)) and `describe`/`screen
 **no memory recall, no write-back, a different persona, a hard 256-token cap, no retry, no logging, and no
 tools** vs `bob chat` — all because it runs the pwsh path, not the loop.
 
-**Progress:** ONE-B1 ✓ landed (commits `dd464ee`, `0a80286`) — `run_agent_events`/`run_agent` accept an
-`images` param (goal turn → OpenAI content-block list; vision auto-routing) and the tool-result image
-contract (`{"__images__":[...],"text":...}` → threaded into the next turn + vision reroute), via the shared
-`_image_content_block` encoder. 4 loop tests. Remaining: B2 (wire describe/screenshot), B3 (audio seam),
-B4 (`/voice`), B5 (delete `Invoke-BobStream`).
+**Progress:** ONE-B1 ✓ (`dd464ee`, `0a80286`) — `images` param on the loop + tool-result image contract,
+via the shared `_image_content_block` encoder. ONE-B2 ✓ (`996d399`) — `describe`/`screenshot` on the loop
+(`scripts/bob_vision.py` capture+resize; `cli._handle_describe`/`_handle_screenshot`; flipped to python in
+verbs.json; ~90 lines of Windows-only pwsh .NET deleted). 13 tests. **Remaining: B3 (audio seam), B4
+(`/voice` shell mode), B5 (delete `Invoke-BobStream` + the pwsh voice loop).**
 
 - **B1. Multimodal-in-loop** ✓ *(critical path — done).* `run_agent_events`/`run_agent` gained an
   `images: list = None` param (chosen over overloading `goal` to keep `goal` a `str` — recall/recitation/
@@ -179,8 +179,11 @@ B4 (`/voice`), B5 (delete `Invoke-BobStream`).
   (`{"__images__":[...],"text":...}`) threads a tool-returned image into the next model turn
   ([:1421-1426](../../scripts/bob_loop.py) is JSON-string-only today). Grep confirms zero `image_url`
   handling in the loop today — this is greenfield.
-- **B2. Port `describe`/`screenshot`** into Python capability functions calling the loop; port the 1024px
-  resize cross-platform (closes the Linux gap noted at [bob.ps1:879-880](../../scripts/bob.ps1)).
+- **B2. Port `describe`/`screenshot`** ✓ *(done).* `scripts/bob_vision.py` holds the one capability core
+  (`resize_image` — Pillow when present, else send as-is; `capture_screen` — Pillow ImageGrab on Win/mac,
+  grim/spectacle/scrot/import on Linux); `cli._handle_describe`/`_handle_screenshot` run one-shot vision
+  turns via `run_agent(images=[…], role=vision)`. Flipped to `python` in the registry/verbs.json; the pwsh
+  case blocks (System.Drawing + System.Windows.Forms) are deleted.
 - **B3. Audio I/O seam** in [osenv.py](../../scripts/osenv.py) (mic-in / speaker-out) — wraps the existing
   cross-platform `sounddevice` capture ([bob-voice-capture.py:22](../../scripts/bob-voice-capture.py)) and
   replaces the inline pwsh `SoundPlayer`/`paplay` playback. STT/TTS stay standalone servers; the seam gives
