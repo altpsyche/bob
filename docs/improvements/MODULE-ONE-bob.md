@@ -265,6 +265,11 @@ spoken conversation runs inside `bob`. Needs a live vision model + audio devices
 
 ## ONE-C — Capabilities-as-tools + the deterministic invoker
 
+> **Detailed, scoped execution plan: [MODULE-ONE-C-plan.md](MODULE-ONE-C-plan.md).** It carries the full
+> 45-verb inventory (disposition/placement/risk), the osenv seam-gap table, the `models.psd1`→`models.json`
+> gating prerequisite, the scheduling seam, a dependency-ordered slice sequence, and 6 open decisions (D1–D6)
+> to confirm before coding. Start there.
+
 Establish the architectural invariant for the 40 orchestration/provisioning verbs. Each currently-pwsh
 handler becomes **one Python capability function** (Layer 1 `scripts/tools/<name>.py` or Layer 2
 `plugins/<name>/`, per [CLAUDE.md](../../.claude/CLAUDE.md)'s placement rule). Each is exposed:
