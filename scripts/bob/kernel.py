@@ -55,7 +55,7 @@ def _step(current: int, total: int, name: str, hint: str = "") -> None:
 # --- bootstrap (port of bootstrap.ps1) -----------------------------------------------------------
 
 def bootstrap(skip_models: bool = False, skip_build: bool = False, profile: str = None,
-              with_webui: bool = False) -> None:
+              with_webui: bool = False, cpu: bool = False) -> None:
     """Submodules -> build engine + proxy + fabric -> Python venvs -> gen configs -> fetch models.
     Re-runnable; heavy steps skippable. Imports the ported capability fns (no pwsh). Port of bootstrap.ps1."""
     _tools_on_path()
@@ -108,13 +108,15 @@ def bootstrap(skip_models: bool = False, skip_build: bool = False, profile: str 
     # Build engine + proxy + fabric.
     build.configure(config)
     if not skip_build:
-        if cuda_root:
+        if cuda_root and not cpu:
             label = f"{gpu['Gen']} sm_{gpu['CudaArch']}" if gpu else "sm_120 (default)"
             print(f"\n=== Build llama.cpp ({label}) ===", file=sys.stderr)
             build.build_llama(arch=(gpu["CudaArch"] if gpu else 0))
         else:
-            # NC8 — no CUDA toolkit: build the CPU-only tier so a GPU-less box still gets a working engine.
-            print("\n=== Build llama.cpp (CPU-only — no CUDA toolkit found) ===", file=sys.stderr)
+            # CPU tier: either forced (--cpu) or NC8 (no CUDA toolkit) — so a GPU-less box (or a user
+            # who asked for it) still gets a working, if slower, llama-server.
+            why = "--cpu requested" if cpu else "no CUDA toolkit found"
+            print(f"\n=== Build llama.cpp (CPU-only — {why}) ===", file=sys.stderr)
             build.build_llama(cpu=True)
 
         print("\n=== Build llama-swap ===", file=sys.stderr)
@@ -393,7 +395,7 @@ def setup_docker() -> None:
 # --- setup (port of setup.ps1 — the 12-step orchestrator) ----------------------------------------
 
 def setup(skip_models: bool = False, skip_build: bool = False, skip_voice: bool = False,
-          launch: bool = False, profile: str = None, with_webui: bool = False) -> int:
+          launch: bool = False, profile: str = None, with_webui: bool = False, cpu: bool = False) -> int:
     """The fresh-machine orchestrator. Idempotent; safe to re-run. Prerequisites must be installed first
     via `python3 -m bob.kernel prereqs`. Port of setup.ps1."""
     _tools_on_path()
@@ -461,7 +463,7 @@ def setup(skip_models: bool = False, skip_build: bool = False, skip_voice: bool 
         print("  (Windows: winget/VS-bundled cmake handled by install_prereqs)", file=sys.stderr)
 
     _step(6, total, "Bootstrap: submodules -> build -> venvs+tools -> models", "first build takes 5-15 min")
-    bootstrap(skip_models=skip_models, skip_build=skip_build, profile=profile, with_webui=with_webui)
+    bootstrap(skip_models=skip_models, skip_build=skip_build, profile=profile, with_webui=with_webui, cpu=cpu)
 
     _step(7, total, "Wire clients (Continue + aider)")
     try:
@@ -585,6 +587,7 @@ def main(argv=None) -> int:
         s.add_argument("--skip-voice", action="store_true")
         s.add_argument("--launch", action="store_true")
         s.add_argument("--with-webui", action="store_true")
+        s.add_argument("--cpu", action="store_true", help="force the CPU build tier (skip CUDA)")
         s.add_argument("--profile", default=None)
 
     sv = sub.add_parser("venv", help="create tools/venv-<name> (litellm|aider|eval|webui)")
@@ -600,10 +603,10 @@ def main(argv=None) -> int:
         if args.cmd == "setup":
             return setup(skip_models=args.skip_models, skip_build=args.skip_build,
                          skip_voice=args.skip_voice, launch=args.launch, profile=args.profile,
-                         with_webui=args.with_webui)
+                         with_webui=args.with_webui, cpu=args.cpu)
         if args.cmd == "bootstrap":
             bootstrap(skip_models=args.skip_models, skip_build=args.skip_build, profile=args.profile,
-                      with_webui=args.with_webui)
+                      with_webui=args.with_webui, cpu=args.cpu)
             return 0
         if args.cmd == "venv":
             for n in args.names:
