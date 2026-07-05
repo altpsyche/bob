@@ -17,6 +17,7 @@ while [ -h "$SELF" ]; do
     *)  SELF="$(dirname -- "$SELF")/$_link" ;;
   esac
 done
+# shellcheck disable=SC1007  # `CDPATH= cd` deliberately clears CDPATH for this one command (not an assign)
 REPO="$(CDPATH= cd -- "$(dirname -- "$SELF")" && pwd)"
 # $BOB_REPO overrides for the copy-install case: symlink-resolution above only finds the repo when the
 # on-PATH `bob` is a SYMLINK (how install-cli.ps1 sets it up). If someone COPIED this shim onto PATH,
