@@ -13,9 +13,9 @@ Because all clients point at a single OpenAI-compatible endpoint, the stack is l
 
 ## Engine won't build
 
-The build script (`scripts/build-llama.ps1`) detects your GPU and CUDA version automatically and should work on RTX 3000, 4000, and 5000 series cards, on both Windows and Linux (via the `_platform.ps1` seam — Visual Studio + CUDA DLLs on Windows, Ninja + `.so` on Linux). If the build fails anyway, the options below are ordered from least to most disruptive.
+The build script (`scripts/build-llama.ps1`) detects your GPU and CUDA version automatically and should work on RTX 3000, 4000, and 5000 series cards, on both Windows and Linux (via the `_platform.ps1` seam: Visual Studio + CUDA DLLs on Windows, Ninja + `.so` on Linux). If the build fails anyway, the options below are ordered from least to most disruptive.
 
-**No GPU?** Build the CPU tier: `bob build --cpu` (auto-selected when no GPU is detected) produces a `-DGGML_CUDA=OFF` engine, and `bob profile auto` switches to the tiny `cpu` profile. It's for correctness/wiring and CI, not performance — see [PORTABILITY.md](PORTABILITY.md).
+**No GPU?** Build the CPU tier: `bob build --cpu` (auto-selected when no GPU is detected) produces a `-DGGML_CUDA=OFF` engine, and `bob profile auto` switches to the tiny `cpu` profile. It's for correctness/wiring and CI, not performance. See [PORTABILITY.md](PORTABILITY.md).
 
 **Prebuilt llama.cpp binary:** Download `*-bin-win-cuda-12.4-x64.zip` from the [llama.cpp releases page](https://github.com/ggml-org/llama.cpp/releases), or install with `scoop install llama.cpp-cu124`. Extract the binaries to `bin/` and also copy the matching CUDA DLLs into `bin/` (the build script copies these automatically, but the prebuilt zip does not include them). This works on all supported GPU generations. On Blackwell it's slightly slower than a CUDA 12.8 source build; on Ada and Ampere the difference is negligible.
 
@@ -23,7 +23,7 @@ The build script (`scripts/build-llama.ps1`) detects your GPU and CUDA version a
 
 ## No Go compiler for llama-swap
 
-Download the release binary for your OS from the [llama-swap releases page](https://github.com/mostlygeek/llama-swap/releases) — `llama-swap.exe` on Windows, the Linux binary as `llama-swap` — and place it in `bin/`. Skip `build-llama-swap.ps1`.
+Download the release binary for your OS from the [llama-swap releases page](https://github.com/mostlygeek/llama-swap/releases) (`llama-swap.exe` on Windows, the Linux binary as `llama-swap`) and place it in `bin/`. Skip `build-llama-swap.ps1`.
 
 ## Open WebUI won't install
 

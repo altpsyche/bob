@@ -1,14 +1,14 @@
 # Memory & Sessions
 
 Bob remembers what matters across sessions. Facts you state, preferences you express, and the
-projects you work on are extracted, stored, ranked, and fed back into future conversations — locally,
+projects you work on are extracted, stored, ranked, and fed back into future conversations, locally,
 with zero extra VRAM.
 
 This page is the reference for the memory engine, persisted sessions, per-project memory, the
 `bob memory` CLI, the agent tools, and every `memory.*` config key.
 
 - **Store:** SQLite (`data/bob.db`) + BGE-M3 embeddings (the `embed` model, already pinned at
-  `:8081` — memory costs 0 extra VRAM and one embed call per store/recall).
+  `:8081`; memory costs 0 extra VRAM and one embed call per store/recall).
 - **Local always:** even when `bob chat --pro` routes answers to the cloud, recall and embedding stay
   on BGE-M3 at `:8081`. Memory never leaves the machine.
 - **On by default:** `memory.enabled = true`. Turn it off in `config/bob.psd1` (`memory = @{ enabled = $false }`).
@@ -24,7 +24,7 @@ bob memory list                               # browse what Bob knows
 bob memory status                             # DB path, size, counts by type
 ```
 
-Inside the `bob` shell, memory works automatically — durable facts you share are consolidated when a
+Inside the `bob` shell, memory works automatically: durable facts you share are consolidated when a
 session ends, and your stable profile is injected at the next session's start. No meta-commands
 needed (see [Sessions](#sessions)).
 
@@ -55,19 +55,19 @@ Recall is **not** plain semantic search. Each candidate is scored:
 score = wSemantic·cosine + wRecency·decay + wType·typeWeight + wUsage·usage + wSalience·salience
 ```
 
-- **cosine** — BGE-M3 semantic similarity to the query.
-- **decay** — `exp(-age / halfLife[type])`, where age is measured from the **more recent** of
+- **cosine**: BGE-M3 semantic similarity to the query.
+- **decay**: `exp(-age / halfLife[type])`, where age is measured from the **more recent** of
   `created_at` / `last_used`, so a fact you keep hitting stops decaying.
-- **typeWeight** — the per-type weight above.
-- **usage** — how often the fact has been recalled (capped).
-- **salience** — importance, see below.
+- **typeWeight**: the per-type weight above.
+- **usage**: how often the fact has been recalled (capped).
+- **salience**: importance, see below.
 
 All weights are tunable (`memory.ranking.*`). Only results at or above `memory.recallThreshold` are
 returned, top `memory.recallK` first.
 
 ### Importance & salience
 
-When consolidation extracts a fact, the model rates its **importance 1–10** (mundane → core
+When consolidation extracts a fact, the model rates its **importance 1 to 10** (mundane → core
 identity). That becomes `salience = importance/10`, a live ranking term (`wSalience`). A profile fact
 rated ≥ 9 is **auto-pinned**.
 
@@ -94,7 +94,7 @@ is never silently dropped even if the summarizer fails).
 ### Dedup & third-person normalization
 
 On store, content is normalized to third person ("I prefer X" → "User prefers X") so recalled notes
-never read as Bob's own identity, then deduped — exact (content hash) and near (cosine ≥
+never read as Bob's own identity, then deduped: exact (content hash) and near (cosine ≥
 `memory.dedupThreshold`), scoped to the same owner/type.
 
 ### Provenance
@@ -114,10 +114,10 @@ profile/preference identity are never pruned.
 
 ### Scoping
 
-- **Owner** — every row belongs to an `owner_id`. On the single-user machine that's
+- **Owner**: every row belongs to an `owner_id`. On the single-user machine that's
   `agent.defaultOwner` (`local`); the [agent HTTP server](AGENT-SERVER.md) maps each Bearer token to
   an owner, and a recall only sees its owner's rows. `bob memory list/export/forget` take `--owner`.
-- **Project** — see below.
+- **Project**: see below.
 
 ### Per-project scoping
 
@@ -145,16 +145,16 @@ session triggers memory consolidation.
 
 **Lifecycle of a fact:**
 
-1. **Session start** (empty history, root run) — your stable **profile** block is injected once, plus
+1. **Session start** (empty history, root run): your stable **profile** block is injected once, plus
    any project [`BOB.md`](#project-instruction-files) for the repo you're in.
-2. **During the session** — if `memory.autoRecall = true` (off by default), the top few relevant
+2. **During the session**: if `memory.autoRecall = true` (off by default), the top few relevant
    memories are recalled and injected **every turn**. The agent can also call the `memory_recall` /
    `memory_store` tools on demand.
-3. **Session end** (`/exit`, `/session new`, `/session resume`, or the server deleting a session) —
+3. **Session end** (`/exit`, `/session new`, `/session resume`, or the server deleting a session):
    turns are **consolidated** into durable typed facts (gated on `memory.autoConsolidate`).
 
 Injected memory (profile + autoRecall + `BOB.md`) is fit into `memory.maxInjectedTokens` before it
-goes into the system prompt, trimming autoRecall first, then profile, then `BOB.md` — so injected
+goes into the system prompt, trimming autoRecall first, then profile, then `BOB.md`, so injected
 memory can't overflow the context window.
 
 ---
@@ -162,14 +162,14 @@ memory can't overflow the context window.
 ## Project instruction files
 
 Alongside the learned DB facts, Bob reads **human-curated, git-committable** instruction files for
-the repo you launch it in — the analogue of a project README for the agent. They're concatenated
+the repo you launch it in: the analogue of a project README for the agent. They're concatenated
 broad → specific at session start (capped at `memory.bobMdMaxTokens`), gated on
 `memory.projectFiles`:
 
-1. `~/.bob/BOB.md` — applies to all your projects
-2. `<repo>/AGENTS.md` — cross-tool agent-instructions standard, if present
+1. `~/.bob/BOB.md`: applies to all your projects
+2. `<repo>/AGENTS.md`: cross-tool agent-instructions standard, if present
 3. `<repo>/.bob/BOB.md`
-4. `<repo>/BOB.md` — most specific, read last
+4. `<repo>/BOB.md`: most specific, read last
 
 Use these for durable, reviewable project rules ("use pnpm, not npm"); use the DB for facts Bob
 learns on its own.
@@ -207,8 +207,8 @@ Types for `--type`: `profile`, `preference`, `project`, `fact`, `episodic`.
 
 When `memory.enabled`, two tools are available to the agent loop (and over MCP):
 
-- **`memory_recall`** — recall the user's saved notes when the current request needs them.
-- **`memory_store`** — save a note about the user for future sessions.
+- **`memory_recall`**: recall the user's saved notes when the current request needs them.
+- **`memory_store`**: save a note about the user for future sessions.
 
 Both operate only on the local `bob.db` via the embed server, scoped to the run's owner (and project
 scope). See [SECURITY.md](SECURITY.md).
@@ -222,7 +222,7 @@ All keys live in `config/defaults.json` under `runtime.memory` and can be overri
 
 | Key | Default | Effect |
 |-----|---------|--------|
-| `enabled` | `true` | Master switch — the CLI, tools, injection, and consolidation. |
+| `enabled` | `true` | Master switch: the CLI, tools, injection, and consolidation. |
 | `autoRecall` | `false` | Recall + inject relevant memories **every turn** (heavier). Off = the agent recalls only via the `memory_recall` tool when needed. |
 | `injectProfileAtStart` | `true` | Inject the stable profile block once at session start. |
 | `profileMaxTokens` | `200` | Cap on the profile block. |
@@ -232,11 +232,11 @@ All keys live in `config/defaults.json` under `runtime.memory` and can be overri
 | `recallK` | `5` | Max results returned by a recall. |
 | `recallThreshold` | `0.35` | Minimum blended score to return. |
 | `dedupThreshold` | `0.92` | Cosine at/above which a new store is treated as a duplicate. |
-| `ranking.wSemantic` | `1.0` | Weight — semantic similarity. |
-| `ranking.wRecency` | `0.3` | Weight — recency decay. |
-| `ranking.wType` | `0.2` | Weight — per-type importance. |
-| `ranking.wUsage` | `0.1` | Weight — recall frequency. |
-| `ranking.wSalience` | `0.3` | Weight — importance/salience. |
+| `ranking.wSemantic` | `1.0` | Weight: semantic similarity. |
+| `ranking.wRecency` | `0.3` | Weight: recency decay. |
+| `ranking.wType` | `0.2` | Weight: per-type importance. |
+| `ranking.wUsage` | `0.1` | Weight: recall frequency. |
+| `ranking.wSalience` | `0.3` | Weight: importance/salience. |
 | `ranking.halfLifeDays` | see [Typed memory](#typed-memory) | Per-type recency half-lives. |
 | `typeWeights` | see table | Per-type rank weights. |
 | `maxSummaryTokens` | `512` | Token budget for the consolidation/summary LLM call. Must clear the reasoning budget of a reasoning model (a tight cap yields an empty completion). |
@@ -254,9 +254,9 @@ All keys live in `config/defaults.json` under `runtime.memory` and can be overri
 
 ## Storage & privacy
 
-- `data/bob.db` — the memory store (SQLite, gitignored). Schema is versioned; `bob memory migrate`
+- `data/bob.db`: the memory store (SQLite, gitignored). Schema is versioned; `bob memory migrate`
   applies additive migrations in place (a legacy DB is upgraded automatically on first open).
-- `data/sessions.db` — persisted shell/server session transcripts (`agent.sessionDbPath`).
+- `data/sessions.db`: persisted shell/server session transcripts (`agent.sessionDbPath`).
 - Nothing is sent to the cloud for memory: BGE-M3 runs locally. `--pro` only affects the chat
   response, never recall or embedding.
 - To wipe: `bob memory clear --yes` (memories) or delete `data/bob.db` (rebuilt empty on next use).

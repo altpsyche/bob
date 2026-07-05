@@ -2,7 +2,7 @@
 
 This is a hands-on tour of every feature in the stack, structured as a typical working session. Follow it end-to-end the first time to see everything in action. After that, jump to any section as a quick reference.
 
-**Prerequisites:** `install_prereqs.bat` + `setup.bat` (Windows) or `./install_prereqs.sh` + `./setup.sh` (Linux) have been run and completed successfully. You have an open terminal. Bob runs cross-platform under PowerShell 7 — see [PORTABILITY.md](PORTABILITY.md).
+**Prerequisites:** `install_prereqs.bat` + `setup.bat` (Windows) or `./install_prereqs.sh` + `./setup.sh` (Linux) have been run and completed successfully. You have an open terminal. Bob runs cross-platform under PowerShell 7; see [PORTABILITY.md](PORTABILITY.md).
 
 ---
 
@@ -55,9 +55,9 @@ bob status
 
 You should see seven models listed: `planner`, `coder`, `chat`, `fim`, `embed`, `vision`, `agent`. None are loaded into VRAM yet; they load on first use and stay there until idle. `fim` (autocomplete) and `embed` (search indexing) are pinned and never unload.
 
-> **Pro models:** If you've set `DEEPSEEK_API_KEY` and `ZHIPU_API_KEY`, three additional models are available via the LiteLLM proxy at `:8081`: `chat-pro`, `planner-pro`, `coder-pro`. These route directly to DeepSeek and Zhipu APIs — no local GPU required, no platform fee. See [USAGE.md § Pro models](USAGE.md#pro-models-api-backed-no-platform-fee).
+> **Pro models:** If you've set `DEEPSEEK_API_KEY` and `ZHIPU_API_KEY`, three additional models are available via the LiteLLM proxy at `:8081`: `chat-pro`, `planner-pro`, `coder-pro`. These route directly to DeepSeek and Zhipu APIs: no local GPU required, no platform fee. See [USAGE.md § Pro models](USAGE.md#pro-models-api-backed-no-platform-fee).
 
-> **Tip:** To start everything (including Docker services) automatically at every login: on Windows create a Task Scheduler task set to "At log on"; on Linux add a user systemd unit or a `@reboot` cron entry — both running:
+> **Tip:** To start everything (including Docker services) automatically at every login: on Windows create a Task Scheduler task set to "At log on"; on Linux add a user systemd unit or a `@reboot` cron entry, both running:
 > `pwsh -File <repo>/scripts/up.ps1 -NoOpen`
 
 ### Start Docker services
@@ -116,7 +116,7 @@ bob code --pro      # coder-pro: DeepSeek V4 via API
 
 ### One-shot from the terminal
 
-No REPL — just pipe a question and get an answer:
+No REPL, just pipe a question and get an answer:
 
 ```powershell
 bob chat "what is the difference between a mutex and a semaphore?"
@@ -127,20 +127,20 @@ bob chat --pro "explain CAP theorem with a concrete example"
 
 ### Memory
 
-Bob remembers across sessions — on by default (SQLite + BGE-M3, 0 extra VRAM). Store and query
+Bob remembers across sessions, on by default (SQLite + BGE-M3, 0 extra VRAM). Store and query
 explicitly:
 
 ```powershell
 bob remember "working on a Unreal 5.4 game engine plugin called BobBot"
 bob remember "prefer explicit error messages over silent failures"
-bob recall "current project"   # blended-rank search — prints matching memories
+bob recall "current project"   # blended-rank search; prints matching memories
 bob memory list                # browse what Bob knows (typed: profile/preference/project/fact/…)
 ```
 
 But mostly you don't manage it by hand. Open the `bob` shell and just talk:
 
 ```
-bob                                    # the shell — persisted sessions
+bob                                    # the shell, persisted sessions
 > I just switched the plugin over to Unreal 5.5
   Bob: Noted...
 > /exit                                # leaving consolidates the session into memory
@@ -153,7 +153,7 @@ session taught Bob with `bob memory forget --session <id>`.
 
 Curate directly when you want to: `bob memory pin <id>` (protect a fact), `bob memory edit <id>
 "..."`, `bob memory show <id>` (see which session taught it). For **per-repo, git-committable** rules,
-drop a `BOB.md` in the project root — Bob reads it at session start.
+drop a `BOB.md` in the project root. Bob reads it at session start.
 
 Full reference: [MEMORY.md](MEMORY.md). Disable memory with `memory = @{ enabled = $false }` in
 `config/bob.psd1`.
@@ -425,13 +425,13 @@ A ready-to-import workflow is at `tools/n8n-workflows/daily-research-digest.json
 1. Open http://localhost:5678 → top-right menu (≡) → **Import from file**
 2. Select `tools/n8n-workflows/daily-research-digest.json`
 3. Open the workflow → click the **Config** node → set:
-   - `discord_url` — your Discord webhook URL (Server Settings > Integrations > Webhooks > New Webhook > Copy URL)
-   - `rss_feed_url` — feed to monitor (default: Hacker News front page)
-   - `keywords_csv` — optional topic filter, comma-separated (empty = all articles)
-   - `model` — which local model to use (`chat` is the default)
+   - `discord_url`: your Discord webhook URL (Server Settings > Integrations > Webhooks > New Webhook > Copy URL)
+   - `rss_feed_url`: feed to monitor (default: Hacker News front page)
+   - `keywords_csv`: optional topic filter, comma-separated (empty = all articles)
+   - `model`: which local model to use (`chat` is the default)
 4. Click **Save** → toggle the workflow **Active**
 
-**On-demand research mode** — POST a topic to get a one-off digest without waiting for the schedule:
+**On-demand research mode**: POST a topic to get a one-off digest without waiting for the schedule:
 ```powershell
 Invoke-RestMethod -Method POST `
   -Uri "http://localhost:5678/webhook/research-digest" `
@@ -513,7 +513,7 @@ bob litellm -NoWindow
 bob litellm status    # confirm it's running
 ```
 
-> `config/litellm.yaml` is generated automatically — do not edit it directly. Use `user.psd1` + `bob gen` to make any persistent changes.
+> `config/litellm.yaml` is generated automatically; do not edit it directly. Use `user.psd1` + `bob gen` to make any persistent changes.
 
 **Step 4: Confirm clients use :8081:**
 
@@ -569,7 +569,7 @@ bob voice --agent      # routes each voice turn through the full agent tool loop
 
 Bob listens for speech, transcribes it, sends the text to the chat model, then reads the response aloud. The energy gate in `bob-voice-capture.py` swallows silent moments so near-silence doesn't produce empty transcripts.
 
-The voice loop uses a dedicated system prompt (`voice.systemPrompt` in `config/bob.psd1`) that instructs the model to reply in plain spoken sentences — no asterisks, no bullet points, no markdown. A `Format-ForSpeech` sanitizer also strips any remaining markdown symbols before the text reaches piper, so Bob never reads `**bold**` or `- item` aloud.
+The voice loop uses a dedicated system prompt (`voice.systemPrompt` in `config/bob.psd1`) that instructs the model to reply in plain spoken sentences: no asterisks, no bullet points, no markdown. A `Format-ForSpeech` sanitizer also strips any remaining markdown symbols before the text reaches piper, so Bob never reads `**bold**` or `- item` aloud.
 
 **Tips:**
 - Use headphones to stop the mic from picking up the speaker.
@@ -610,15 +610,15 @@ bob screenshot --pro "Explain the code on screen in detail"
 
 Images are sent as `image_url` data URIs in the OpenAI chat completions format. They route through LiteLLM → llama-swap → a dedicated llama-server instance with `--mmproj` for the vision encoder. Flash attention is automatically disabled for the vision model (flash-attn is incompatible with multimodal projection in the current llama.cpp build; `gen-llama-swap.ps1` handles this transparently).
 
-`--pro` skips llama-swap entirely and routes directly to the DeepSeek API via the `vision-pro` LiteLLM entry. No separate key needed — it uses `DEEPSEEK_API_KEY`.
+`--pro` skips llama-swap entirely and routes directly to the DeepSeek API via the `vision-pro` LiteLLM entry. No separate key needed; it uses `DEEPSEEK_API_KEY`.
 
 ---
 
 ## Feature 12: Bob Agent (Local Tool Use)
 
-**What it is:** An autonomous agent loop that uses Hermes 3 (8B) locally. You give it a goal; it decides which tools to call, executes them, and iterates until it has a final answer. Everything — the reasoning, the tool calls, the results — stays on your machine.
+**What it is:** An autonomous agent loop that uses Hermes 3 (8B) locally. You give it a goal; it decides which tools to call, executes them, and iterates until it has a final answer. Everything (the reasoning, the tool calls, the results) stays on your machine.
 
-**Prerequisites:** `bob up` is running. The `agent` model (Hermes 3) is included in the 16 GB profile — it loaded on first use. Run `bob doctor` to verify everything is wired.
+**Prerequisites:** `bob up` is running. The `agent` model (Hermes 3) is included in the 16 GB profile; it loaded on first use. Run `bob doctor` to verify everything is wired.
 
 ### Try it: one-shot goals
 
@@ -652,7 +652,7 @@ The agent calls `git_log` and `git_diff` in the same step, then synthesises the 
 bob agent "search for the latest llama.cpp release and summarise what changed"
 ```
 
-The agent calls `web_search` (via SearXNG — no cloud, no tracking), fetches the top result with `web_fetch`, then summarises.
+The agent calls `web_search` (via SearXNG, no cloud, no tracking), fetches the top result with `web_fetch`, then summarises.
 
 > SearXNG must be running: `bob services start`
 
@@ -680,7 +680,7 @@ bob agent schedule add morning-summary --cron "0 9 * * *" --goal "check git log 
 bob agent schedule list
 ```
 
-The recurring `BobAgent` task (registered with `bob agent install` — a Windows Scheduled Task, or a cron entry on Linux) runs every minute and fires any due entries. Results are stored in `data/schedules.json`. The scheduler always runs in `silent` mode — no terminal output.
+The recurring `BobAgent` task (registered with `bob agent install`: a Windows Scheduled Task, or a cron entry on Linux) runs every minute and fires any due entries. Results are stored in `data/schedules.json`. The scheduler always runs in `silent` mode, with no terminal output.
 
 ### Save a web page to memory
 
@@ -688,15 +688,15 @@ The recurring `BobAgent` task (registered with `bob agent install` — a Windows
 bob clip https://news.ycombinator.com/item?id=12345678
 ```
 
-Fetches the page, strips HTML, summarises in 3–5 sentences, prints the summary, and stores `url: summary` to Bob's memory DB. Not an agent loop — one LLM call, very fast.
+Fetches the page, strips HTML, summarises in 3 to 5 sentences, prints the summary, and stores `url: summary` to Bob's memory DB. Not an agent loop; one LLM call, very fast.
 
 ### Serve via HTTP (for n8n and Open WebUI)
 
 ```powershell
-bob agent serve     # starts FastAPI on 127.0.0.1:8084 — keep this terminal open
+bob agent serve     # starts FastAPI on 127.0.0.1:8084; keep this terminal open
 ```
 
-Exposes the agent loop as REST + SSE. Every endpoint except `/health` requires a Bearer token — the litellm key (`sk-local` by default) or any entry in `agent.apiTokens`:
+Exposes the agent loop as REST + SSE. Every endpoint except `/health` requires a Bearer token: the litellm key (`sk-local` by default) or any entry in `agent.apiTokens`:
 
 ```
 POST http://localhost:8084/v1/agent/completions
@@ -705,11 +705,11 @@ Body:   {"goal": "what is the git status?"}
 Returns: {"result": "...", "session_id": null, "error": null}
 ```
 
-For token-by-token streaming, POST the same body to `/v1/agent/completions/stream` (Server-Sent Events; the run cancels within ~1s if you disconnect). For a multi-turn conversation, create a session with `POST /v1/sessions` and pass its `session_id` on each call. Each token maps to an owner, and **sessions are owner-scoped** — a token can only see sessions its own owner created (another owner's `session_id` returns 404). Give distinct callers distinct `@{ token; owner }` entries in `agent.apiTokens`. Full endpoint contract + event schema: [AGENT-SERVER.md](AGENT-SERVER.md); security model + `0.0.0.0` checklist: [SECURITY.md](SECURITY.md).
+For token-by-token streaming, POST the same body to `/v1/agent/completions/stream` (Server-Sent Events; the run cancels within ~1s if you disconnect). For a multi-turn conversation, create a session with `POST /v1/sessions` and pass its `session_id` on each call. Each token maps to an owner, and **sessions are owner-scoped**: a token can only see sessions its own owner created (another owner's `session_id` returns 404). Give distinct callers distinct `@{ token; owner }` entries in `agent.apiTokens`. Full endpoint contract + event schema: [AGENT-SERVER.md](AGENT-SERVER.md); security model + `0.0.0.0` checklist: [SECURITY.md](SECURITY.md).
 
-Wire into n8n with an HTTP Request node: URL `http://host.docker.internal:8084/v1/agent/completions`, method POST, header `Authorization: Bearer sk-local`, body `{"goal": "{{ $json.goal }}"}`. Bind address and port are `agent.serveHost` / `agent.agentPort` in `config/bob.psd1` (loopback by default; set `serveHost = '0.0.0.0'` to expose on the LAN — keep `allowPrivateFetch = $false`).
+Wire into n8n with an HTTP Request node: URL `http://host.docker.internal:8084/v1/agent/completions`, method POST, header `Authorization: Bearer sk-local`, body `{"goal": "{{ $json.goal }}"}`. Bind address and port are `agent.serveHost` / `agent.agentPort` in `config/bob.psd1` (loopback by default; set `serveHost = '0.0.0.0'` to expose on the LAN; keep `allowPrivateFetch = $false`).
 
-> **Note:** Selecting the `agent` model directly in Open WebUI runs raw Hermes 3 inference without tool injection — `<tool_call>` blocks appear as plain text. Use `bob agent serve` for full tool use from WebUI via a custom function or n8n workflow.
+> **Note:** Selecting the `agent` model directly in Open WebUI runs raw Hermes 3 inference without tool injection; `<tool_call>` blocks appear as plain text. Use `bob agent serve` for full tool use from WebUI via a custom function or n8n workflow.
 
 ### Check agent health
 
@@ -718,7 +718,7 @@ bob setup check     # dependency + registration checks
 bob doctor          # the above + runtime: endpoint reachable, GPU/VRAM, writable dirs, config.json parses
 ```
 
-`bob setup check` prints ✓ or ✗ for each agent dependency (venv, Python packages, model file, tool loading, services, scheduled task) with the exact fix command for anything that fails. `bob doctor` is the superset — run it first when something's off.
+`bob setup check` prints yes or no for each agent dependency (venv, Python packages, model file, tool loading, services, scheduled task) with the exact fix command for anything that fails. `bob doctor` is the superset; run it first when something's off.
 
 ---
 
@@ -760,7 +760,7 @@ bob draft "let the team know the prod deploy is done, ask them to monitor errors
 bob draft "write a short bio for my GitHub profile"
 ```
 
-Output is clean and paste-ready — no "Here is a draft:" wrapper.
+Output is clean and paste-ready, with no "Here is a draft:" wrapper.
 
 ### bob search
 
@@ -770,7 +770,7 @@ bob search "TODO"
 bob search "error handling" --path src/
 bob search "config loading" --ext .py
 
-# Skip LLM — just show raw grep results
+# Skip LLM, just show raw grep results
 bob search "litellm" --raw
 ```
 
@@ -965,7 +965,7 @@ If this was your first read-through, here's a short sequence that touches every 
 
 1. `bob up`: start the stack
 2. `bob diagnose`: confirm GPU, CUDA, and model files are all healthy
-3. `bob chat`: open the interactive REPL — type a question, get a streaming answer, empty line to exit
+3. `bob chat`: open the interactive REPL, type a question, get a streaming answer, empty line to exit
 4. `bob think "design a plugin architecture for a game engine"`: one-shot with the planner
 5. `bob remember "working on X project"` then `bob recall "current project"`: test memory store/search
 6. Open http://localhost:3000: chat with Open WebUI, try `/no_think` on a simple question
@@ -978,16 +978,16 @@ If this was your first read-through, here's a short sequence that touches every 
 13. Open http://localhost:8888: do a search, set it as a browser shortcut
 14. Open http://localhost:5678: create a webhook workflow that calls the LLM
 15. Enable Langfuse tracing: set `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY` env vars + `langfuseEnabled = $true` in `user.psd1` + `bob gen && bob litellm`, make a request, open http://localhost:3001 and look at the trace
-16. `bob setup-voice` then `bob speak "Hello"`: test TTS — you should hear a response
-17. `bob listen`: say a few words into the mic — the transcript should print
+16. `bob setup-voice` then `bob speak "Hello"`: test TTS; you should hear a response
+17. `bob listen`: say a few words into the mic; the transcript should print
 18. `bob voice`: run one full loop (speak a question, hear the answer back), then Ctrl+C
 19. `bob piper`: start the piper HTTP server on `:8083` (used by Open WebUI for browser TTS)
 20. `bob describe C:\Windows\Web\Wallpaper\Windows\img0.jpg`: describe the default Windows wallpaper using the vision model
 21. `bob screenshot "What is on my screen?"`: take a live screenshot and describe it
-22. `bob agent "what is the git status of this repo?"`: run your first agent goal — watch it call git_status and reason about the result
+22. `bob agent "what is the git status of this repo?"`: run your first agent goal, watch it call git_status and reason about the result
 23. `bob agent --agency confirm "check the last 3 commits and summarise them"`: try confirm mode to supervise tool calls
 24. `bob clip https://news.ycombinator.com`: clip a page to memory (fetch → summarise → store)
-25. `bob doctor`: full pre-flight — verify agent deps + runtime (endpoint, GPU, writable dirs, config) are green
+25. `bob doctor`: full pre-flight: verify agent deps + runtime (endpoint, GPU, writable dirs, config) are green
 26. `bob plugins list`: see the four built-in plugins (summarise, draft, search, play)
 27. `cat docs/USAGE.md | bob summarise --length short`: summarise a large file in 2-3 sentences
 28. `bob draft "apologise for missing the deadline, new date Thursday" --type email`: draft a paste-ready email

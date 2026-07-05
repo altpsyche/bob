@@ -1,7 +1,7 @@
 # Bob Agent
 
 **Bob: Your Private AI Assistant for Windows**
-Leverages your GPU for local processing, with optional cloud connectivity (DeepSeek, OpenAI-compatible) for advanced capabilities. **local by default, cloud on demand.**
+Uses your GPU for local processing, with optional cloud connectivity (DeepSeek, OpenAI-compatible) for advanced capabilities. **local by default, cloud on demand.**
 
 Bob chats, listens, speaks, sees, and acts as an agent that can search your code, summarise files, draft documents, and schedule tasks on your behalf.
 
@@ -37,7 +37,7 @@ Agent tools (callable by `bob agent` autonomously): memory, web, git, file, shel
 | SearXNG `:8888` | Private web search, powers Continue's `@web` and the agent |
 | Langfuse `:3001` | LLM observability: traces, latency, token counts |
 | API `:8081/v1` | OpenAI-compatible inference endpoint, drop-in for any existing tool |
-| Agent API `:8084` | `bob agent serve` — REST + SSE agent loop with per-client Bearer auth and owner-scoped sessions (loopback by default) |
+| Agent API `:8084` | `bob agent serve`: REST + SSE agent loop with per-client Bearer auth and owner-scoped sessions (loopback by default) |
 
 ## Hardware
 
@@ -56,16 +56,16 @@ Setup detects your GPU and selects the best-fit profile automatically. RTX 5000 
 ## Supported matrix
 
 What is actually tested, versus what is expected to work but is not in the per-PR gate. Kept honest by
-the ND2 CI acceptance matrix — no "works everywhere" claims.
+the ND2 CI acceptance matrix. No "works everywhere" claims.
 
-Legend: **✅ gated** = proven every PR by CI on hosted runners · **🟡 supported** = shipped and used, exercised by the release-tag GPU tier (not per-PR) · **❌ not yet** = unsupported.
+Legend: **gated** means proven every PR by CI on hosted runners. **supported** means shipped and used, exercised by the release-tag GPU tier (not per-PR). **not yet** means unsupported.
 
-| OS | CPU tier (no GPU, tiny model — wiring/correctness only) | NVIDIA GPU (CUDA, real inference) |
+| OS | CPU tier (no GPU, tiny model: wiring/correctness only) | NVIDIA GPU (CUDA, real inference) |
 |---|---|---|
-| **Windows 11** | ✅ gated (`acceptance-cpu`, every PR) | 🟡 supported — day-to-day driver; native-from-source CUDA build proven in the release-tag `acceptance-gpu` tier |
-| **Linux** (glibc; apt/dnf/pacman/zypper) | ✅ gated (`acceptance-cpu`, every PR) | 🟡 supported — provisioner shipped (NC); native CUDA proven in the release-tag `acceptance-gpu` tier |
-| **macOS** | ❌ not yet | ❌ not yet |
-| **AMD / ROCm** | ❌ not yet | ❌ not yet |
+| **Windows 11** | gated (`acceptance-cpu`, every PR) | supported: day-to-day driver; native-from-source CUDA build proven in the release-tag `acceptance-gpu` tier |
+| **Linux** (glibc; apt/dnf/pacman/zypper) | gated (`acceptance-cpu`, every PR) | supported: provisioner shipped (NC); native CUDA proven in the release-tag `acceptance-gpu` tier |
+| **macOS** | not yet | not yet |
+| **AMD / ROCm** | not yet | not yet |
 
 The GPU rows use the VRAM profiles above (`16gb` default down to `8gb`, up to `32gb`); the CPU tier is a
 single tiny model (`bob profile cpu`) that proves the provision → serve → agent-loop path without a GPU.
@@ -94,7 +94,7 @@ Installs CUDA, Python 3.12, Go, Node.js, cmake, and Docker Desktop. If Docker De
 bob up
 ```
 
-Builds the inference engine and proxy from source, downloads models, wires VS Code and terminal clients, and starts Docker services. Open a new terminal after setup so the PATH update takes effect. `bob up` starts llama-swap (`:8080`) and the LiteLLM proxy (`:8081`) in the background — plus Open WebUI (`:3000`) if you opted into it at setup (`setup.bat -WithWebui` / `./setup.sh -WithWebui`; it pulls torch/transformers, so it's opt-in). Tail logs with `bob logs`.
+Builds the inference engine and proxy from source, downloads models, wires VS Code and terminal clients, and starts Docker services. Open a new terminal after setup so the PATH update takes effect. `bob up` starts llama-swap (`:8080`) and the LiteLLM proxy (`:8081`) in the background, plus Open WebUI (`:3000`) if you opted into it at setup (`setup.bat -WithWebui` / `./setup.sh -WithWebui`; it pulls torch/transformers, so it's opt-in). Tail logs with `bob logs`.
 
 **Step 3: register the agent scheduler (once):**
 ```powershell
@@ -116,7 +116,7 @@ Flags for `setup.bat`: `-Profile 12gb` (smaller model set), `-SkipModels` (skip 
 
 [USAGE](docs/USAGE.md): full command reference, API details, agent system, client configuration, Docker services, customization.
 
-[MEMORY](docs/MEMORY.md): the memory engine + persisted sessions — typed/owner/project-scoped store, blended recall, conflict-aware consolidation, `BOB.md` project files, the `bob memory` CLI, and every `memory.*` config key.
+[MEMORY](docs/MEMORY.md): the memory engine + persisted sessions: typed/owner/project-scoped store, blended recall, conflict-aware consolidation, `BOB.md` project files, the `bob memory` CLI, and every `memory.*` config key.
 
 [MANUAL-INSTALL.md](docs/MANUAL-INSTALL.md): step-by-step for advanced users with exact cmake flags, venv creation, and Docker wiring.
 
