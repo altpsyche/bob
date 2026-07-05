@@ -42,22 +42,10 @@ def _model_path(gguf: str) -> Path:
 
 
 def gpu_vram_gb():
-    """Total VRAM of GPU 0 in whole GB via nvidia-smi, or None (no GPU / nvidia-smi absent). Port of
-    Get-GpuVramGB."""
-    import shutil
-    import subprocess
-
-    if not shutil.which("nvidia-smi"):
-        return None
-    try:
-        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
-                             capture_output=True, text=True, timeout=10)
-        first = out.stdout.strip().splitlines()[0].strip() if out.stdout.strip() else ""
-        if first.isdigit():
-            return round(int(first) / 1024)
-    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
-        pass
-    return None
+    """Total VRAM of GPU 0 in whole GB, or None (no GPU / nvidia-smi absent). Delegates to the single
+    source osenv.gpu_vram_gb (ONE-D consolidated the former per-module copies)."""
+    import osenv
+    return osenv.gpu_vram_gb()
 
 
 def suggested_profile(vram_gb=None, config=None):

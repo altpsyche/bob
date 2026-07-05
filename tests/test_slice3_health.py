@@ -2,9 +2,10 @@
 port probes, HTTP, subprocess (binary --version / git / package import), and the tool-registry build are
 all mocked, so nothing hits the network, a GPU, real ports, or the real toolchain.
 
-Two Slice-3 scope decisions are asserted here: diagnose is the SPLIT port (light discovery only, deep OS
-discovery stays pwsh -> ONE-D), and the two cross-slice health_check rows (BobAgent task = Slice 5,
-versions.lock = ONE-D) degrade to a neutral 'pending' row instead of failing."""
+Slice-3 scope: diagnose is the SPLIT port (light discovery only, deep OS discovery stays pwsh -> ONE-D).
+ONE-D Slice D0 wired the two formerly-degraded health_check rows to their real readers — the BobAgent
+task row reads osenv.agent_task_status(), the versions.lock row reads bob.versions — asserted in
+TestHealthCheckWiredRows (not-registered / missing-lock stay informational, never a failure)."""
 import sys
 import unittest
 from pathlib import Path
@@ -124,36 +125,59 @@ class TestDiagnoseSplit(unittest.TestCase):
         self.assertIn("ONE-D", out)
 
 
-class TestHealthCheckDegradation(unittest.TestCase):
-    """setup(check)/doctor: the two cross-slice rows degrade to 'pending', not failure."""
+class TestHealthCheckWiredRows(unittest.TestCase):
+    """ONE-D Slice D0: the scheduler + reproducibility rows are wired to the real readers
+    (osenv.agent_task_status, bob.versions). Not-registered / missing-lock are informational
+    ('○'), never a failure ('✗')."""
 
-    def _run(self, doctor):
+    def _run(self, doctor, task_status=None, lock=None, drift=None, lock_error=None):
         import requests
+        task_status = task_status or {"registered": False, "state": None, "next_run": None}
+        lock = lock if lock is not None else {"release": "1.2.3",
+                                              "submodules": {"a": "x", "b": "y"},
+                                              "models": {"m.gguf": {}}}
+
+        def _load_lock(*a, **k):
+            if lock_error:
+                raise lock_error
+            return lock
+
         with mock.patch.object(health_mod, "_has_module", return_value=True), \
              mock.patch.object(health_mod, "_tool_load_errors", return_value=[]), \
              mock.patch("osenv.is_port_in_use", return_value=False), \
+             mock.patch("osenv.agent_task_status", return_value=task_status), \
              mock.patch("requests.get", side_effect=requests.RequestException("down")), \
-             mock.patch("bob_models.profile_roles", return_value={"agent": {"gguf": "x.gguf"}}):
+             mock.patch("bob_models.profile_roles", return_value={"agent": {"gguf": "x.gguf"}}), \
+             mock.patch("bob.versions.load_lock", side_effect=_load_lock), \
+             mock.patch("bob.versions.check_reproducibility", return_value=(drift or [])):
             return health_mod.health_check(CFG, doctor=doctor)
 
-    def test_setup_check_has_pending_scheduler_row(self):
+    def test_setup_check_scheduler_row_not_registered(self):
         out = self._run(doctor=False)
         self.assertIn("Bob agent setup check", out)
-        self.assertIn("○  BobAgent task registered  (pending Slice 5", out)
-        # setup(check) must NOT include the runtime section
-        self.assertNotIn("── runtime ──", out)
+        self.assertIn("○  BobAgent task not registered", out)
+        self.assertNotIn("── runtime ──", out)  # setup(check) has no runtime section
 
-    def test_doctor_adds_runtime_and_pending_reproducibility(self):
-        out = self._run(doctor=True)
-        self.assertIn("Bob doctor — full pre-flight", out)
-        self.assertIn("── runtime ──", out)
-        self.assertIn("○  versions.lock reproducibility  (pending ONE-D", out)
+    def test_scheduler_row_registered(self):
+        out = self._run(doctor=False,
+                        task_status={"registered": True, "state": "Ready", "next_run": "2026-07-06 09:00"})
+        self.assertIn("✓  BobAgent task registered (Ready, next 2026-07-06 09:00)", out)
 
-    def test_pending_rows_are_not_failures(self):
-        # A pending row uses the hollow marker, never the failure cross.
+    def test_doctor_reproducibility_clean(self):
         out = self._run(doctor=True)
+        self.assertIn("── reproducibility ──", out)
+        self.assertIn("✓  versions.lock reproducible (release 1.2.3, 2 submodules, 1 models)", out)
+
+    def test_doctor_reproducibility_drift_fails(self):
+        drift = [{"kind": "submodule", "name": "external/llama.cpp",
+                  "expected": "abcdef123456", "actual": "999999999999"}]
+        out = self._run(doctor=True, drift=drift)
+        self.assertIn("✗  submodule external/llama.cpp: locked abcdef123456 != actual 999999999999", out)
+
+    def test_doctor_missing_lock_is_pending_not_failure(self):
+        out = self._run(doctor=True, lock_error=RuntimeError("versions.lock not found"))
         for line in out.splitlines():
-            if "BobAgent task" in line or "versions.lock reproducibility" in line:
+            if "versions.lock reproducibility" in line:
                 self.assertIn("○", line)
                 self.assertNotIn("✗", line)
 

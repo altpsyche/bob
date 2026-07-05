@@ -400,5 +400,147 @@ class TestOpenUrl(_ForceOSMixin, unittest.TestCase):
             self.assertFalse(osenv.open_url("http://x"))
 
 
+def _smi(stdout):
+    r = mock.Mock()
+    r.stdout = stdout
+    r.stderr = ""
+    r.returncode = 0
+    return r
+
+
+class TestGpuSeams(unittest.TestCase):
+    """ONE-D §1b — gpu_vram_gb / gpu_arch / gpu_info consolidated into osenv (were duped in health/models)."""
+
+    def test_vram_parses_and_rounds(self):
+        with mock.patch("osenv.shutil.which", return_value="/usr/bin/nvidia-smi"), \
+             mock.patch("osenv.subprocess.run", return_value=_smi("16384\n")):
+            self.assertEqual(osenv.gpu_vram_gb(), 16)
+
+    def test_vram_none_without_nvidia_smi(self):
+        with mock.patch("osenv.shutil.which", return_value=None):
+            self.assertIsNone(osenv.gpu_vram_gb())
+
+    def test_arch_blackwell(self):
+        with mock.patch("osenv.shutil.which", return_value="/usr/bin/nvidia-smi"), \
+             mock.patch("osenv.subprocess.run", return_value=_smi("12.0\n")):
+            g = osenv.gpu_arch()
+            self.assertEqual(g["CudaArch"], 120)
+            self.assertEqual(g["Gen"], "Blackwell")
+            self.assertEqual(g["MinCudaMajor"], 12)
+
+    def test_arch_ada(self):
+        with mock.patch("osenv.shutil.which", return_value="/usr/bin/nvidia-smi"), \
+             mock.patch("osenv.subprocess.run", return_value=_smi("8.9\n")):
+            self.assertEqual(osenv.gpu_arch()["Gen"], "Ada Lovelace")
+
+    def test_arch_unparseable_is_none(self):
+        with mock.patch("osenv.shutil.which", return_value="/usr/bin/nvidia-smi"), \
+             mock.patch("osenv.subprocess.run", return_value=_smi("weird\n")):
+            self.assertIsNone(osenv.gpu_arch())
+
+    def test_info_composes_or_none(self):
+        with mock.patch("osenv.gpu_arch", return_value={"CudaArch": 89, "Gen": "Ada Lovelace", "MinCudaMajor": 11}), \
+             mock.patch("osenv.gpu_vram_gb", return_value=24):
+            self.assertEqual(osenv.gpu_info(), {"VramGB": 24, "CudaArch": 89, "Gen": "Ada Lovelace", "MinCudaMajor": 11})
+        with mock.patch("osenv.gpu_arch", return_value=None):
+            self.assertIsNone(osenv.gpu_info())
+
+
+class TestRamAndNuma(unittest.TestCase):
+    def test_system_ram_from_proc_meminfo(self):
+        meminfo = "MemTotal:       32000000 kB\nMemFree: 1 kB\nMemAvailable:   16000000 kB\n"
+        with mock.patch("osenv.os_name", return_value="linux"), \
+             mock.patch("osenv.Path.read_text", return_value=meminfo):
+            r = osenv.system_ram_gb()
+            self.assertEqual(r["TotalGB"], round(32000000 / (1024 ** 2)))
+            self.assertEqual(r["FreeGB"], round(16000000 / (1024 ** 2)))
+
+    def test_system_ram_none_when_no_memtotal(self):
+        with mock.patch("osenv.os_name", return_value="linux"), \
+             mock.patch("osenv.Path.read_text", return_value="Bogus: 1 kB\n"):
+            self.assertIsNone(osenv.system_ram_gb())
+
+    def test_numa_counts_sys_nodes(self):
+        fake = [Path("/sys/devices/system/node/node0"), Path("/sys/devices/system/node/node1"),
+                Path("/sys/devices/system/node/cpu")]
+        with mock.patch("osenv.os_name", return_value="linux"), \
+             mock.patch("osenv.Path.iterdir", return_value=fake):
+            self.assertEqual(osenv.numa_node_count(), 2)
+
+    def test_numa_falls_back_to_one(self):
+        with mock.patch("osenv.os_name", return_value="linux"), \
+             mock.patch("osenv.Path.iterdir", side_effect=OSError):
+            self.assertEqual(osenv.numa_node_count(), 1)
+
+
+class TestLinuxDistroSeams(_ForceOSMixin, unittest.TestCase):
+    def test_package_manager_normalizes_apt(self):
+        self._force("linux")
+        with mock.patch("osenv.shutil.which", side_effect=lambda c: "/usr/bin/apt-get" if c == "apt-get" else None):
+            self.assertEqual(osenv.linux_package_manager(), "apt")
+
+    def test_package_manager_pacman(self):
+        self._force("linux")
+        with mock.patch("osenv.shutil.which", side_effect=lambda c: "/usr/bin/pacman" if c == "pacman" else None):
+            self.assertEqual(osenv.linux_package_manager(), "pacman")
+
+    def test_package_manager_none_on_windows(self):
+        self._force("windows")
+        self.assertIsNone(osenv.linux_package_manager())
+
+    def test_os_family_id_like_derivative(self):
+        # CachyOS -> arch via ID_LIKE
+        with tempfile.NamedTemporaryFile("w", suffix=".os-release", delete=False) as f:
+            f.write('ID=cachyos\nID_LIKE=arch\nVERSION_ID=1\n')
+            path = f.name
+        try:
+            self.assertEqual(osenv.linux_os_family(path), "arch")
+        finally:
+            os.unlink(path)
+
+    def test_os_family_debian_base(self):
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write('ID=ubuntu\nID_LIKE=debian\n')
+            path = f.name
+        try:
+            self.assertEqual(osenv.linux_os_family(path), "debian")
+        finally:
+            os.unlink(path)
+
+    def test_os_family_missing_file_is_none(self):
+        self.assertIsNone(osenv.linux_os_family("/nonexistent/os-release"))
+
+
+class TestBuildOutputRollback(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def test_backup_restore_dir_roundtrip(self):
+        d = self.tmp / "bin"
+        d.mkdir()
+        (d / "llama-server").write_text("v1")
+        bak = osenv.backup_build_output(d)
+        self.assertEqual(bak, Path(f"{d}.bak"))
+        (d / "llama-server").write_text("v2-broken")  # simulate a bad rebuild
+        self.assertTrue(osenv.restore_build_output(d))
+        self.assertEqual((d / "llama-server").read_text(), "v1")
+        self.assertFalse(bak.exists())  # move consumed it
+
+    def test_backup_none_when_absent(self):
+        self.assertIsNone(osenv.backup_build_output(self.tmp / "missing"))
+
+    def test_restore_false_when_no_backup(self):
+        self.assertFalse(osenv.restore_build_output(self.tmp / "bin"))
+
+    def test_remove_backup_discards(self):
+        d = self.tmp / "bin"
+        d.mkdir()
+        bak = osenv.backup_build_output(d)
+        self.assertTrue(bak.exists())
+        osenv.remove_build_output_backup(d)
+        self.assertFalse(bak.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

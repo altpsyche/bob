@@ -608,3 +608,215 @@ def agent_task_status(task_name: str = "BobAgent") -> dict:
         return {"registered": False, "state": None, "next_run": None}
     line = next((ln for ln in _crontab_lines() if ln.rstrip().endswith(f"# {task_name}")), None)
     return {"registered": bool(line), "state": "Ready" if line else None, "next_run": None}
+
+
+# --- hardware + build-time discovery (ONE-D §1b) -------------------------------------------------
+# The build-time / deep-OS-discovery family. GPU probes are pure nvidia-smi (no OS branch); RAM/NUMA
+# and the package-manager helpers fork by OS. Consolidated here so tools/health.py + tools/models.py
+# (which each carried a copy of gpu_arch / gpu_vram_gb) delegate to one source.
+
+def gpu_vram_gb():
+    """Total VRAM of GPU 0 in whole GB via nvidia-smi, or None (no GPU / nvidia-smi absent). Port of
+    _models.ps1 Get-GpuVramGB. Cross-platform — pure nvidia-smi, no OS branch."""
+    if not shutil.which("nvidia-smi"):
+        return None
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, timeout=10)
+        first = out.stdout.strip().splitlines()[0].strip() if out.stdout.strip() else ""
+        if first.isdigit():
+            return round(int(first) / 1024)
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        pass
+    return None
+
+
+def gpu_arch():
+    """{'CudaArch': int, 'Gen': str, 'MinCudaMajor': int} for GPU 0, or None. Port of _models.ps1
+    Get-GpuArch — nvidia-smi compute_cap ('8.9'->89, '12.0'->120) mapped to a generation name.
+    Cross-platform — pure nvidia-smi, no OS branch."""
+    if not shutil.which("nvidia-smi"):
+        return None
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
+                             capture_output=True, text=True, timeout=10)
+        cap = out.stdout.strip().splitlines()[0].strip() if out.stdout.strip() else ""
+        parts = cap.split(".")
+        if len(parts) != 2 or not all(p.isdigit() for p in parts):
+            return None
+        arch = int(parts[0]) * 10 + int(parts[1])  # "8.9" -> 89, "12.0" -> 120
+        if arch >= 120:
+            gen = "Blackwell"
+        elif arch >= 89:
+            gen = "Ada Lovelace"
+        elif arch >= 80:
+            gen = "Ampere"
+        elif arch >= 75:
+            gen = "Turing"
+        else:
+            gen = f"sm_{arch}"
+        return {"CudaArch": arch, "Gen": gen, "MinCudaMajor": 12 if arch >= 120 else 11}
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        return None
+
+
+def gpu_info():
+    """Unified GPU probe → {'VramGB', 'CudaArch', 'Gen', 'MinCudaMajor'} for GPU 0, or None. Port of
+    _platform.ps1 Get-GpuInfo (composes gpu_arch + gpu_vram_gb; None when no NVIDIA GPU)."""
+    arch = gpu_arch()
+    if not arch:
+        return None
+    return {"VramGB": gpu_vram_gb(), **arch}
+
+
+def system_ram_gb():
+    """Physical RAM {'TotalGB': int, 'FreeGB': int|None} or None on failure. Port of _platform.ps1
+    Get-SystemRamGB — Windows via GlobalMemoryStatusEx (ctypes, pwsh-free), Linux via /proc/meminfo
+    (MemTotal / MemAvailable, kB -> GB)."""
+    if os_name() == "windows":  # pragma: no cover — exercised only on Windows
+        import ctypes
+
+        class _MemStatusEx(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+        try:
+            stat = _MemStatusEx()
+            stat.dwLength = ctypes.sizeof(_MemStatusEx)
+            if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+                return None
+            return {"TotalGB": round(stat.ullTotalPhys / (1024 ** 3)),
+                    "FreeGB": round(stat.ullAvailPhys / (1024 ** 3))}
+        except (OSError, AttributeError):
+            return None
+    try:
+        lines = Path("/proc/meminfo").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    mi = {}
+    for line in lines:
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] in ("MemTotal:", "MemAvailable:"):
+            try:
+                mi[parts[0].rstrip(":")] = int(parts[1])  # kB
+            except ValueError:
+                pass
+    if "MemTotal" not in mi:
+        return None
+    avail = mi.get("MemAvailable")
+    return {"TotalGB": round(mi["MemTotal"] / (1024 ** 2)),                 # kB / 1024^2 = GB
+            "FreeGB": round(avail / (1024 ** 2)) if avail is not None else None}
+
+
+def numa_node_count() -> int:
+    """Number of NUMA nodes (>= 1, falls back to 1). Port of _models.ps1 Get-NumaNodeCount — Windows via
+    GetNumaHighestNodeNumber (ctypes), Linux counts /sys/devices/system/node/node*."""
+    try:
+        if os_name() == "windows":  # pragma: no cover — exercised only on Windows
+            import ctypes
+            n = ctypes.c_ulong(0)
+            if ctypes.windll.kernel32.GetNumaHighestNodeNumber(ctypes.byref(n)):
+                return int(n.value) + 1
+            return 1
+        import re
+        node_dir = Path("/sys/devices/system/node")
+        nodes = [p for p in node_dir.iterdir() if re.match(r"^node\d+$", p.name)]
+        return len(nodes) if nodes else 1
+    except (OSError, AttributeError):
+        return 1
+
+
+_LINUX_PKG_MANAGERS = (("apt-get", "apt"), ("dnf", "dnf"), ("pacman", "pacman"), ("zypper", "zypper"))
+
+
+def linux_package_manager():
+    """Normalized Linux package-manager name (apt/dnf/pacman/zypper) for the first one on PATH, or None.
+    Port of _platform.ps1 Get-LinuxPackageManager. None on non-Linux."""
+    if os_name() != "linux":
+        return None
+    for cmd, name in _LINUX_PKG_MANAGERS:
+        if shutil.which(cmd):
+            return name
+    return None
+
+
+def linux_os_family(os_release_path: str = "/etc/os-release"):
+    """Distro family ('debian'|'rhel'|'arch'|'suse'|<ID>|None) from /etc/os-release. Port of _platform.ps1
+    Get-LinuxOsFamily — reads ID then ID_LIKE so derivatives resolve to their base (CachyOS/Manjaro->arch,
+    Mint/Pop->debian, Rocky/Alma->rhel)."""
+    import re
+
+    p = Path(os_release_path)
+    if not p.exists():
+        return None
+    kv = {}
+    try:
+        for line in p.read_text(encoding="utf-8").splitlines():
+            m = re.match(r'^\s*(ID|ID_LIKE|VERSION_ID)\s*=\s*"?([^"]*)"?\s*$', line)
+            if m:
+                kv[m.group(1)] = m.group(2)
+    except OSError:
+        return None
+    tokens = [kv.get("ID", "")] + (kv.get("ID_LIKE", "") or "").split()
+    for t in tokens:
+        if re.match(r"^(debian|ubuntu)$", t):
+            return "debian"
+        if re.match(r"^(rhel|fedora|centos)$", t):
+            return "rhel"
+        if t == "arch":
+            return "arch"
+        if re.match(r"^(suse|opensuse.*|sles)$", t):
+            return "suse"
+    return kv.get("ID") or None
+
+
+# --- build-output rollback (ND3 update; ONE-D §1b) -----------------------------------------------
+# Cross-platform snapshot/restore of a build-output dir (bin/), used by `update` to roll back a failed
+# rebuild. Operate on any path — no .exe assumptions.
+
+def backup_build_output(path):
+    """Snapshot <path> to <path>.bak (clearing any stale .bak first). Returns the .bak Path, or None if
+    <path> doesn't exist (a fresh build — nothing to protect). Port of _platform.ps1 Backup-BuildOutput."""
+    src = Path(path)
+    bak = Path(f"{src}.bak")
+    if bak.exists():
+        _rm_rf(bak)
+    if not src.exists():
+        return None
+    if src.is_dir():
+        shutil.copytree(src, bak)
+    else:
+        shutil.copy2(src, bak)
+    return bak
+
+
+def restore_build_output(path, bak_path=None) -> bool:
+    """Roll <path> back to the snapshot from backup_build_output. Returns True if a restore happened.
+    Port of _platform.ps1 Restore-BuildOutput."""
+    src = Path(path)
+    bak = Path(bak_path) if bak_path else Path(f"{src}.bak")
+    if not bak.exists():
+        return False
+    if src.exists():
+        _rm_rf(src)
+    shutil.move(str(bak), str(src))
+    return True
+
+
+def remove_build_output_backup(path, bak_path=None) -> None:
+    """Discard the snapshot after a verified-successful update. Port of Remove-BuildOutputBackup."""
+    bak = Path(bak_path) if bak_path else Path(f"{path}.bak")
+    if bak.exists():
+        _rm_rf(bak)
+
+
+def _rm_rf(p: Path) -> None:
+    if p.is_dir() and not p.is_symlink():
+        shutil.rmtree(p, ignore_errors=True)
+    else:
+        try:
+            p.unlink()
+        except OSError:
+            pass

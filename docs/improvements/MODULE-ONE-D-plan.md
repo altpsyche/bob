@@ -11,7 +11,7 @@ native-first**, C5 CI ownership), [MODULE-ONE-C-plan.md](MODULE-ONE-C-plan.md) (
 per-verb 3-adapter template; the osenv-seam precedent). ONE-C decisions D1–D6 are **settled — do not
 re-litigate.** The new decisions **DD1–DD6 are RESOLVED (2026-07-05, see Part 5):** full Python `build` port ·
 curl-subprocess `fetch` · keep `venv-eval` · `mlock` grant ported CLI-only · minimal-shell-stub → Python
-kernel · ONE-D owns the kernel (D8) as capstone. **Cleared to start coding at Slice D0.**
+kernel · ONE-D owns the kernel (D8) as capstone. **Slice D0 ✅ DONE (suite 708 green); next = D1 (fetch).**
 
 ## Goal — and the one distinction that shapes the whole module
 
@@ -220,11 +220,18 @@ logic into `install_prereqs.py` behind the 1b package seams. That keeps exactly 
 Ordered by dependency and value. Capabilities first (agent-facing, low-risk, no kernel); the kernel is the
 capstone once its called-capabilities exist.
 
-- **Slice D0 — degraded-row wire-ups + 1b easy seams** *(no verb ports; tiny):* wire health.py's two
-  `○ pending` rows to the existing readers (`versions.check_reproducibility`, `osenv.agent_task_status`);
-  add the *easy* 1b seams (`gpu_arch`/`gpu_vram_gb`/`gpu_info` — **consolidate the two dups into osenv**,
-  `system_ram_gb`, `numa_node_count`, `linux_package_manager`/`linux_os_family`, `backup/restore_build_output`).
-  Unblocks diagnose-deep + build.
+- **Slice D0 — degraded-row wire-ups + 1b easy seams** ✅ **DONE** (on main; suite 708 green): wired
+  health.py's two `○ pending` rows to the existing readers — the BobAgent scheduled-task row →
+  `osenv.agent_task_status()` (registered → `✓` with state/next-run; not-registered → informational `○`,
+  never `✗`), doctor's reproducibility row → `bob.versions.check_reproducibility()`/`load_lock()` (clean →
+  `✓ release/N submodules/N models`; drift → `✗` per row with fix; missing lock → informational `○`). Added
+  the easy 1b osenv seams: `gpu_vram_gb`/`gpu_arch`/`gpu_info` (**consolidated the two dups** — health.py +
+  models.py now delegate, keeping their module-level names so existing test patches hold), `system_ram_gb`
+  (ctypes `GlobalMemoryStatusEx` on Windows, `/proc/meminfo` on Linux), `numa_node_count`,
+  `linux_package_manager`/`linux_os_family`, `backup/restore/remove_build_output`. Verified live via
+  `bob doctor`. tests/test_osenv.py (+18: TestGpuSeams/TestRamAndNuma/TestLinuxDistroSeams/
+  TestBuildOutputRollback), test_slice3_health TestHealthCheckWiredRows (rewrote the stale degradation
+  class, +2 net). Unblocks diagnose-deep (D3) + build (D5).
 - **Slice D1 — `fetch`** *(the template; recommended first real port):* `scripts/tools/provision.py`
   (D6 functional grouping — the ONE-D module for download/provision capabilities) `fetch_models(profile,
   list_only)` — resumable DL (DD2), `versions.verify_model` (exists), manifest writer (atomic), mmproj,

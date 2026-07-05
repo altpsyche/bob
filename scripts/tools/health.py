@@ -15,10 +15,10 @@ that scripts/diagnose.ps1 also does stays in PowerShell and ports to Python in O
 build/update, where the build-time seams (CUDA/cmake/package/NUMA) naturally land. scripts/diagnose.ps1
 is kept on disk (setup.bat/setup.sh still call it during first-run).
 
-DEGRADE GRACEFULLY (per the Slice 3 scope decision): two health_check rows depend on not-yet-ported
-slices — the BobAgent scheduled-task check (the scheduler quartet = Slice 5) and doctor's versions.lock
-reproducibility section (ONE-D). Both report a neutral 'pending' row (not a failure) and wire to the real
-readers when those slices land."""
+ONE-D Slice D0 wired the two rows that used to degrade: the BobAgent scheduled-task check now reads
+osenv.agent_task_status() (Slice 5's scheduler quartet), and doctor's versions.lock reproducibility
+section now reads bob.versions.check_reproducibility() (the reader already existed). A missing lock or
+an unregistered task is reported as informational (both are opt-in), not a failure."""
 import sys
 from pathlib import Path
 
@@ -42,34 +42,10 @@ def configure(config: dict) -> None:
 # --- discovery helpers ----------------------------------------------------------------------------
 
 def gpu_arch():
-    """{'CudaArch': int, 'Gen': str, 'MinCudaMajor': int} for GPU 0, or None. Port of Get-GpuArch —
-    nvidia-smi compute_cap ('8.9' -> 89, '12.0' -> 120) mapped to a generation name."""
-    import shutil
-    import subprocess
-
-    if not shutil.which("nvidia-smi"):
-        return None
-    try:
-        out = subprocess.run(["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
-                             capture_output=True, text=True, timeout=10)
-        cap = (out.stdout.strip().splitlines()[0].strip() if out.stdout.strip() else "")
-        parts = cap.split(".")
-        if len(parts) != 2 or not all(p.isdigit() for p in parts):
-            return None
-        arch = int(parts[0]) * 10 + int(parts[1])  # "8.9" -> 89, "12.0" -> 120
-        if arch >= 120:
-            gen = "Blackwell"
-        elif arch >= 89:
-            gen = "Ada Lovelace"
-        elif arch >= 80:
-            gen = "Ampere"
-        elif arch >= 75:
-            gen = "Turing"
-        else:
-            gen = f"sm_{arch}"
-        return {"CudaArch": arch, "Gen": gen, "MinCudaMajor": 12 if arch >= 120 else 11}
-    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
-        return None
+    """{'CudaArch': int, 'Gen': str, 'MinCudaMajor': int} for GPU 0, or None. Delegates to the single
+    source osenv.gpu_arch (ONE-D consolidated the former per-module copies)."""
+    import osenv
+    return osenv.gpu_arch()
 
 
 def _venv_python() -> Path:
@@ -166,8 +142,15 @@ def health_check(config: dict, doctor: bool = False) -> str:
     litellm_port = _port(config, "litellmPort")
     check(f"LiteLLM proxy (:{litellm_port})", osenv.is_port_in_use(litellm_port), "bob litellm")
 
-    # BobAgent scheduled task — the scheduler quartet ports in Slice 5; degrade gracefully.
-    pending("BobAgent task registered", "pending Slice 5 — scheduling")
+    # BobAgent scheduled task — the every-minute OS task (osenv scheduler quartet, Slice 5). Not-registered
+    # is informational (scheduling is opt-in), so report state without failing the check.
+    task = osenv.agent_task_status()
+    if task.get("registered"):
+        state = task.get("state") or "registered"
+        nxt = f", next {task['next_run']}" if task.get("next_run") else ""
+        check(f"BobAgent task registered ({state}{nxt})", True)
+    else:
+        pending("BobAgent task not registered", "optional — bob agent install to enable scheduling")
 
     # Agent model downloaded
     try:
@@ -234,9 +217,29 @@ def health_check(config: dict, doctor: bool = False) -> str:
             pass
         check("data/config.json parses", parse_ok, "run any bob command to regenerate")
 
-        # Reproducibility (versions.lock, ND1) — the Test-BobReproducibility reader ports in ONE-D.
+        # Reproducibility (versions.lock, ND1) — compare the lock to the installed state via the Python
+        # reader (bob.versions.check_reproducibility). A missing lock is a pending (it is generated), not
+        # a failure; any drift row fails with a fix hint.
         lines.append("  ── reproducibility ──")
-        pending("versions.lock reproducibility", "pending ONE-D — lock verify")
+        try:
+            from bob.versions import check_reproducibility, load_lock
+            lock = load_lock()
+            drift = check_reproducibility(lock=lock)
+            if not drift:
+                n_sub = len(lock.get("submodules") or {})
+                n_mod = len(lock.get("models") or {})
+                check(f"versions.lock reproducible (release {lock.get('release')}, "
+                      f"{n_sub} submodules, {n_mod} models)", True)
+            else:
+                for item in drift:
+                    fix = ("git submodule update --init, or bob lock if intentional"
+                           if item["kind"] == "submodule" else "re-fetch (bob fetch), or bob lock if the pin moved")
+                    check(f"{item['kind']} {item['name']}: locked {item['expected'][:12]} "
+                          f"!= actual {item['actual'][:12]}", False, fix)
+        except RuntimeError:
+            pending("versions.lock reproducibility", "versions.lock missing — run: bob lock")
+        except Exception as e:  # reader import/parse failure must not crash doctor
+            pending("versions.lock reproducibility", f"check unavailable ({e})")
 
     lines.append("")
     return "\n".join(lines)
