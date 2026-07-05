@@ -4,9 +4,11 @@
 Called by bob.ps1 agent case and bob-agent.ps1 scheduler.
 All config is read from data/config.json (written by Get-BobConfig in _models.ps1).
 """
+import base64
 import hashlib
 import json
 import logging
+import mimetypes
 import os
 import re
 import signal
@@ -46,6 +48,20 @@ def _message_tokens(m: dict) -> int:
     for tc in (m.get("tool_calls") or []):
         total += _estimate_tokens(json.dumps(tc))
     return total
+
+
+def _image_content_block(src: str) -> dict:
+    """ONE-B1 — normalize one image source into an OpenAI `image_url` content block. Accepts a
+    `data:` / `http(s)://` URL (passed through unchanged) or a local file path (read + base64 → a
+    `data:` URI). Single home for image encoding so the goal-level path, the (future) tool-result
+    path, and the describe/screenshot doors all emit byte-identical blocks (DRY)."""
+    if src.startswith(("data:", "http://", "https://")):
+        url = src
+    else:
+        data = Path(src).read_bytes()
+        mime = mimetypes.guess_type(src)[0] or "image/png"
+        url = f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+    return {"type": "image_url", "image_url": {"url": url}}
 
 
 def _is_transient(e) -> bool:
@@ -1023,6 +1039,7 @@ def run_agent_events(
     trace_parent=None,
     no_tools: bool = False,
     max_tokens: int = None,
+    images: list = None,
 ):
     """Generator core of the agent loop (M15). Yields event dicts:
         {"type": "token",             "text": str}                          # final-answer deltas (stream=True)
@@ -1043,10 +1060,14 @@ def run_agent_events(
     on a TTY, and the NE2 shell will pass one that drives the TUI. `call_id` correlates
     tool_call↔approval_required↔tool_result (forward-compat for O2 parallel tools)."""
     from bob_core import (MEMORY_CONTEXT_FRAME, _port, budget_injection, check_litellm,
-                          get_llm_client, memory_profile_block, memory_recall, project_memory_block)
+                          get_llm_client, get_role, memory_profile_block, memory_recall,
+                          project_memory_block)
 
     agent_cfg = config.get("agent", {})
     effective_role = role or config.get("routing", {}).get("agentRole", "chat")
+    # ONE-B1 — an image-bearing turn routes to the vision role unless the caller pinned a role.
+    if images and role is None:
+        effective_role = get_role(config, "vision")
     effective_agency = agency or agent_cfg.get("agency", "show")
     max_steps = int(agent_cfg.get("maxSteps", 10))
     max_hist = int(agent_cfg.get("maxHistoryMsgs", 40))
@@ -1209,7 +1230,13 @@ def run_agent_events(
         messages.extend(history)
     # O13 — keep a reference to the goal message so truncate_history can pin it (by identity) into the
     # stable prefix when stable_prefix is on; a plain user turn otherwise.
-    goal_msg = {"role": "user", "content": goal}
+    # ONE-B1 — with images attached, the user turn is an OpenAI content-block list ([text, image_url…]);
+    # with none it stays a plain string (byte-identical to pre-ONE-B1). `goal` itself stays a str, so
+    # recall / recitation / logging are untouched.
+    goal_content = goal
+    if images:
+        goal_content = [{"type": "text", "text": goal}] + [_image_content_block(s) for s in images]
+    goal_msg = {"role": "user", "content": goal_content}
     messages.append(goal_msg)
 
     client = get_llm_client(config)
@@ -1221,7 +1248,7 @@ def run_agent_events(
 
     log.info(
         f"[{rid}] start role={effective_role} agency={effective_agency} "
-        f"tools={len(tool_schemas)} stream={stream} goal={goal[:200]!r}"
+        f"tools={len(tool_schemas)} stream={stream} imgs={len(images or [])} goal={goal[:200]!r}"
     )
 
     # OpenAI-mode tool payload, computed once (constant across steps): compacted past compact_after
@@ -1460,6 +1487,7 @@ def run_agent(
     scope: str = None,
     no_tools: bool = False,
     max_tokens: int = None,
+    images: list = None,
 ) -> tuple[str | None, bool]:
     """Blocking wrapper over run_agent_events for the CLI: prints tool previews to stderr,
     streams/echoes the final answer to stdout, and returns (result, exit_requested).
@@ -1476,7 +1504,7 @@ def run_agent(
         goal, config, role=role, agency=agency,
         exit_on_tools=exit_on_tools, registry=registry, stream=stream, history=history,
         cancel=cancel, run_id=run_id, approve=approve, owner=owner, agent_depth=agent_depth,
-        scope=scope, no_tools=no_tools, max_tokens=max_tokens,
+        scope=scope, no_tools=no_tools, max_tokens=max_tokens, images=images,
     ):
         t = ev["type"]
         if t == "token":

@@ -304,6 +304,72 @@ class TestAgentLoop(unittest.TestCase):
         self.assertEqual(roles, ["system", "user", "assistant", "user"])
         self.assertEqual(captured["messages"][-1]["content"], "now")
 
+    def test_image_goal_builds_blocks_and_routes_to_vision(self):
+        # ONE-B1 — an image-bearing turn becomes an OpenAI content-block list and auto-routes to
+        # the vision role when the caller pins no role.
+        captured = {}
+
+        class Recorder:
+            def __init__(self):
+                self.chat = type("C", (), {"completions": self})()
+
+            def create(self, model, messages, tools, stream, timeout):
+                captured["model"] = model
+                captured["messages"] = messages
+                return iter([SimpleNamespace(choices=[SimpleNamespace(
+                    delta=SimpleNamespace(content="a cat", tool_calls=None))])])
+
+        bob_core.get_llm_client = lambda config=None: Recorder()
+        img = "data:image/png;base64,iVBORw0KGgo="
+        events = list(bob_loop.run_agent_events(
+            "what is this?", self.cfg, agency="silent",
+            registry=_common.FakeRegistry(), images=[img], no_tools=True))
+        self.assertEqual(captured["model"], "vision")   # auto-routed via get_role(config, "vision")
+        content = captured["messages"][-1]["content"]
+        self.assertIsInstance(content, list)
+        self.assertEqual(content[0], {"type": "text", "text": "what is this?"})
+        self.assertEqual(content[1], {"type": "image_url", "image_url": {"url": img}})
+        self.assertEqual(events[-1]["result"], "a cat")
+
+    def test_no_images_keeps_plain_string_content(self):
+        # Byte-identical when images is None: the user turn is a plain string, not a block list.
+        captured = {}
+
+        class Recorder:
+            def __init__(self):
+                self.chat = type("C", (), {"completions": self})()
+
+            def create(self, model, messages, tools, stream, timeout):
+                captured["model"] = model
+                captured["messages"] = messages
+                return iter([SimpleNamespace(choices=[SimpleNamespace(
+                    delta=SimpleNamespace(content="ok", tool_calls=None))])])
+
+        bob_core.get_llm_client = lambda config=None: Recorder()
+        list(bob_loop.run_agent_events("plain", self.cfg, agency="silent",
+                                       registry=_common.FakeRegistry(), no_tools=True))
+        self.assertEqual(captured["messages"][-1]["content"], "plain")
+        self.assertNotEqual(captured["model"], "vision")   # no image → no vision autoroute
+
+    def test_explicit_role_overrides_vision_autoroute(self):
+        # A caller that pins a role keeps it even with an image attached (caller override).
+        captured = {}
+
+        class Recorder:
+            def __init__(self):
+                self.chat = type("C", (), {"completions": self})()
+
+            def create(self, model, messages, tools, stream, timeout):
+                captured["model"] = model
+                return iter([SimpleNamespace(choices=[SimpleNamespace(
+                    delta=SimpleNamespace(content="ok", tool_calls=None))])])
+
+        bob_core.get_llm_client = lambda config=None: Recorder()
+        list(bob_loop.run_agent_events(
+            "hi", self.cfg, role="chat", agency="silent", registry=_common.FakeRegistry(),
+            images=["data:image/png;base64,AA=="], no_tools=True))
+        self.assertEqual(captured["model"], "chat")
+
 
 class TestApproval(unittest.TestCase):
     """NE0 — event-driven approval: the loop asks approve() before a gated tool and fails closed
