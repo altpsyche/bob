@@ -65,6 +65,8 @@ if ($flags.Cuda) {
   # Windows / when the default is fine.
   $cudaHostCxx = if ($os -ne 'windows') { Get-CudaHostCompiler } else { $null }
   if ($cudaHostCxx) { Write-Host "CUDA host g++: $cudaHostCxx" -ForegroundColor DarkGray }
+  # Fail early (with an actionable message) if nvcc won't accept that host compiler — before the long build.
+  if ($os -ne 'windows') { Assert-CudaHostCompilerOk -Nvcc (Join-Path (Join-Path $CudaRoot 'bin') (Get-BobExeName 'nvcc')) -HostCxx $cudaHostCxx }
 
   if ($os -eq 'windows') {
     # Set env vars the VS build system uses to locate the toolkit (winget installs don't always set these).
@@ -194,6 +196,7 @@ try {
   $svr = Join-Path $bin $exeName
   if (Test-Path $svr) { Move-Item $svr "$svr.bak" -Force }
   Copy-Item (Join-Path $tmp "*") $bin -Force
+  Remove-Item "$svr.bak" -Force -ErrorAction SilentlyContinue   # swap succeeded — don't leave a stale .bak in bin/
 } catch {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
   throw

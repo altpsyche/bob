@@ -133,12 +133,14 @@ try {
   Assert "linux launch = nohup pwsh"   ($l.Exe -eq 'nohup' -and -not $l.Hidden -and $l.Args[0] -eq 'pwsh')
 
   # ------------------------------------------------------------------------
-  Write-Host "`n[8] Resolve-PackageCmd — winget vs apt/dnf/pacman" -ForegroundColor Cyan
+  Write-Host "`n[8] Resolve-PackageCmd — winget vs apt/dnf/pacman/zypper" -ForegroundColor Cyan
   # ------------------------------------------------------------------------
   Assert "win uses winget"       ((Resolve-PackageCmd -Package git -Os windows).Exe -eq 'winget')
   Assert "linux apt uses apt-get" ((Resolve-PackageCmd -Package git -Os linux -Manager apt).Exe -eq 'apt-get')
   Assert "linux dnf uses dnf"     ((Resolve-PackageCmd -Package git -Os linux -Manager dnf).Exe -eq 'dnf')
   Assert "linux pacman uses -S"   ((Resolve-PackageCmd -Package git -Os linux -Manager pacman).Args -contains '-S')
+  Assert "linux zypper uses zypper" ((Resolve-PackageCmd -Package git -Os linux -Manager zypper).Exe -eq 'zypper')
+  Assert "zypper is non-interactive" ((Resolve-PackageCmd -Package git -Os linux -Manager zypper).Args -contains '--non-interactive')
   Assert "linux install needs sudo" ((Resolve-PackageCmd -Package git -Os linux -Manager apt).Sudo)
 
   # ------------------------------------------------------------------------
@@ -154,8 +156,40 @@ try {
   Assert "make apt is bundled(null)"    ($null -eq (Resolve-PackageName -Logical make -Manager apt))
   Assert "make dnf=make"                ((Resolve-PackageName -Logical make -Manager dnf) -eq 'make')
   Assert "pip pacman is bundled(null)"  ($null -eq (Resolve-PackageName -Logical python-pip -Manager pacman))
+  Assert "cc zypper=gcc-c++"       ((Resolve-PackageName -Logical toolchain-cc -Manager zypper) -eq 'gcc-c++')
+  Assert "cron zypper=cronie"      ((Resolve-PackageName -Logical cron -Manager zypper) -eq 'cronie')
+  Assert "venv zypper is bundled(null)" ($null -eq (Resolve-PackageName -Logical python-venv -Manager zypper))
   Assert "unknown logical throws"  $(try { $null = Resolve-PackageName -Logical nope -Manager apt;  $false } catch { $true })
   Assert "unknown manager throws"  $(try { $null = Resolve-PackageName -Logical git  -Manager brew; $false } catch { $true })
+
+  # Exhaustive: EVERY logical package resolves (or is a documented $null/bundled) for EVERY manager —
+  # the guard that a new $PackageMap row or a new manager column can't silently omit a cell. This is
+  # what makes adding the zypper column safe (the opensuse CI cell then proves the names are real).
+  $managers = @('apt','dnf','pacman','zypper')
+  $logicals = @('git','curl','toolchain-cc','make','cmake','ninja','go','node','npm','python','python-pip','python-venv','cron','cuda','docker')
+  $mapOk = $true
+  foreach ($lg in $logicals) {
+    foreach ($mg in $managers) {
+      try { $null = Resolve-PackageName -Logical $lg -Manager $mg }   # $null (bundled) is fine; a THROW is a gap
+      catch { $mapOk = $false; Write-Host "        gap: $lg / $mg — $_" -ForegroundColor DarkRed }
+    }
+  }
+  Assert "every logical resolves for every manager (no map gaps)" $mapOk
+
+  # ------------------------------------------------------------------------
+  Write-Host "`n[8d] Install-Package -DryRun — resolves + returns spec without executing" -ForegroundColor Cyan
+  # ------------------------------------------------------------------------
+  # Only meaningful where Install-Package can auto-detect a manager (real Linux with apt/dnf/pacman/zypper,
+  # or Windows/winget). Skip when neither is present (e.g. a Linux CI image with no package manager).
+  $canResolve = ((Get-BobOS) -eq 'windows') -or [bool](Get-LinuxPackageManager)
+  if ($canResolve) {
+    try {
+      $spec = Install-Package -Package 'git' -DryRun 2>$null    # 'git' is in every column; never executed
+      Assert "dry-run returns a spec with an Exe (no install)" ($spec -and $spec.Exe)
+    } catch { Assert "dry-run returns a spec with an Exe (no install)" $false "$_" }
+  } else {
+    Write-Host "  skip  no package manager detected on this host" -ForegroundColor DarkGray
+  }
 
   # ------------------------------------------------------------------------
   Write-Host "`n[8c] Get-LinuxOsFamily — ID/ID_LIKE -> family" -ForegroundColor Cyan

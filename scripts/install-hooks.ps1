@@ -2,6 +2,7 @@
 # N8 — install Bob's versioned git hooks into .git/hooks (which git does not track).
 # Run once per clone:  pwsh -File scripts\install-hooks.ps1
 $repo = Split-Path $PSScriptRoot -Parent
+. "$PSScriptRoot\_platform.ps1"   # NC1 seam: Get-BobOS (honors BOB_FORCE_OS)
 # Build paths component-by-component so they resolve on every OS (backslash literals break on Linux/macOS).
 $src = Join-Path $repo 'scripts' 'hooks' 'pre-commit'
 $hooksDir = Join-Path $repo '.git' 'hooks'
@@ -12,6 +13,6 @@ if (-not (Test-Path $hooksDir)) {
 $dest = Join-Path $hooksDir 'pre-commit'
 Copy-Item $src $dest -Force
 # Ensure the installed hook is executable (git ignores a non-executable hook on Linux/macOS).
-if ($IsLinux -or $IsMacOS) { & chmod +x $dest }
+if ((Get-BobOS) -ne 'windows') { & chmod +x $dest }
 Write-Host "Installed pre-commit hook -> $dest" -ForegroundColor Green
 Write-Host "It runs scripts/check.ps1 (py_compile + PowerShell parse + unittest) and blocks on failure." -ForegroundColor DarkGray

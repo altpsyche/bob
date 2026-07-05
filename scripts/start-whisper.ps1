@@ -12,7 +12,7 @@ $sttPort = $bobCfg.voice.sttPort ?? (Get-BobPortDefault 'sttPort')
 $mdl     = Join-Path $repo "models\whisper\ggml-$($bobCfg.voice.sttModel ?? 'small').bin"
 
 if (-not (Test-Path $exe)) {
-    throw "whisper-server.exe not found — run: bob setup-voice"
+    throw "whisper-server binary not found ($exe) — run: bob setup-voice"
 }
 if (-not (Test-Path $mdl)) {
     throw "Whisper model not found at $mdl — run: bob setup-voice"
@@ -31,7 +31,7 @@ if ($NoWindow) {
     $logsDir = Join-Path $repo 'logs'
     if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory $logsDir | Out-Null }
     $logFile = Join-Path $logsDir 'whisper.log'
-    $cmd = "& '$exe' --model '$mdl' --port $sttPort --host 0.0.0.0 2>&1 | Tee-Object -FilePath '$logFile'"
+    $cmd = "& '$exe' --model '$mdl' --port $sttPort --host 127.0.0.1 2>&1 | Tee-Object -FilePath '$logFile'"
     $launchPid = Start-BobBackgroundProcess -ArgList @("-NonInteractive", "-Command", $cmd) -PidFile $pidFile
     Write-Host "whisper-server: http://localhost:$sttPort   (PID $launchPid)" -ForegroundColor Green
     Write-Host "Logs: logs/whisper.log   Stop: bob whisper stop" -ForegroundColor DarkGray
@@ -52,5 +52,5 @@ if ($NoWindow) {
     else { Write-Host ""; Write-Warning "whisper-server may not be ready yet on port $sttPort — check logs/whisper.log" }
 } else {
     Write-Host "whisper-server starting on http://localhost:$sttPort (Ctrl+C to stop)" -ForegroundColor Cyan
-    & $exe --model $mdl --port $sttPort --host 0.0.0.0
+    & $exe --model $mdl --port $sttPort --host 127.0.0.1
 }

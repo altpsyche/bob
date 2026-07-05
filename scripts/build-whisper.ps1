@@ -80,6 +80,8 @@ try {
                 $cudaArgs += "-DCMAKE_CUDA_COMPILER=$(Join-Path (Join-Path $CudaRoot 'bin') (Get-BobExeName 'nvcc'))"
                 $hostCxx = Get-CudaHostCompiler
                 if ($hostCxx) { $cudaArgs += "-DCMAKE_CUDA_HOST_COMPILER=$hostCxx"; Write-Host "CUDA host g++: $hostCxx" -ForegroundColor DarkGray }
+                # Fail early with an actionable message if nvcc won't accept the host compiler (too-new g++).
+                Assert-CudaHostCompilerOk -Nvcc (Join-Path (Join-Path $CudaRoot 'bin') (Get-BobExeName 'nvcc')) -HostCxx $hostCxx
             } else { $env:CUDA_PATH = $CudaRoot }
             Write-Host "Building whisper.cpp (CUDA sm_$arch)..." -ForegroundColor Cyan
         } else {
@@ -141,6 +143,7 @@ try {
             } else { throw }
         }
     }
+    Remove-Item "$serverExe.bak" -Force -ErrorAction SilentlyContinue   # swap succeeded — clean the stale .bak
 } catch {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
     throw

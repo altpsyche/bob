@@ -19,7 +19,7 @@ if (-not (Test-Path $src)) {
   throw "llama-swap submodule not found at $src. Run: git submodule update --init --recursive"
 }
 if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
-  throw "Go not found. Install Go (scoop install go / your package manager), or download the llama-swap release binary into $bin"
+  throw "Go not found. Install Go (via your package manager — e.g. pacman -S go / apt install golang-go / dnf install golang; scoop install go on Windows), or download the llama-swap release binary into $bin"
 }
 
 New-Item -ItemType Directory -Force -Path $bin | Out-Null

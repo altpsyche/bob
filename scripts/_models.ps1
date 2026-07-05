@@ -355,11 +355,15 @@ function Get-NumaNodeCount {
   try {
     if ((Get-BobOS) -eq 'windows') {
       $nodes = @(Get-CimInstance -ClassName Win32_NumaNode -ErrorAction Stop)
-      return if ($nodes.Count -gt 0) { $nodes.Count } else { 1 }
+      # `return if (...) {...}` is invalid (return treats `if` as a command) and was silently caught by
+      # the catch below, so this ALWAYS returned 1. Assign first, then return.
+      $n = if ($nodes.Count -gt 0) { $nodes.Count } else { 1 }
+      return $n
     }
     $nodes = @(Get-ChildItem -Path '/sys/devices/system/node' -Directory -ErrorAction Stop |
                Where-Object { $_.Name -match '^node\d+$' })
-    return if ($nodes.Count -gt 0) { $nodes.Count } else { 1 }
+    $n = if ($nodes.Count -gt 0) { $nodes.Count } else { 1 }
+    return $n
   } catch { return 1 }
 }
 

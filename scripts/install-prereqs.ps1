@@ -93,7 +93,7 @@ function Install-LinuxCuda {
 function Install-LinuxPrereqs {
     param([switch]$Cpu)
     $mgr = Get-LinuxPackageManager
-    if (-not $mgr) { throw "No supported package manager (apt/dnf/pacman) found. Install the toolchain manually — see docs/MANUAL-INSTALL.md." }
+    if (-not $mgr) { throw "No supported package manager (apt/dnf/pacman/zypper) found. Install the toolchain manually — see docs/MANUAL-INSTALL.md." }
     Write-Host "=== Linux prerequisites ($mgr) ===" -ForegroundColor Cyan
 
     # Toolchain by LOGICAL name — Resolve-PackageName (_platform.ps1) maps each to this distro's concrete
@@ -145,9 +145,14 @@ function Install-LinuxPrereqs {
         Write-Host "  install $cronPkg (cron scheduler for 'bob agent install') ..." -ForegroundColor DarkGray
         try { Install-Package -Package $cronPkg } catch { Write-Warning "  $cronPkg failed: $_ (optional — needed only for scheduled agents)" }
     }
-    # Enable the daemon so scheduled jobs actually fire (systemd only; best-effort). Service name == pkg.
+    # Enable the daemon so scheduled jobs actually fire (systemd only; best-effort). The service name
+    # is NOT always the package name (Fedora ships pkg 'cronie' but the unit is 'crond') — try the
+    # known unit names and stop at the first that enables.
     if ((Have 'crontab') -and (Have 'systemctl')) {
-        try { & sudo systemctl enable --now $cronPkg 2>$null } catch {}
+        foreach ($svc in @($cronPkg, 'cronie', 'crond', 'cron') | Select-Object -Unique) {
+            try { & sudo systemctl enable --now $svc 2>$null } catch {}
+            if ($LASTEXITCODE -eq 0) { break }
+        }
     }
 
     # Docker is optional (compose services); already cross-platform where present.

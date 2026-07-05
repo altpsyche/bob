@@ -19,14 +19,13 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $repo   = Split-Path $PSScriptRoot -Parent
-$lmEval = if ($IsWindows) { Join-Path $repo 'tools\venv-eval\Scripts\lm_eval.exe' }
-          else            { Join-Path $repo 'tools/venv-eval/bin/lm_eval' }   # OS-aware venv layout
+. "$PSScriptRoot\_models.ps1"   # NC1 seam first: Get-VenvExe (OS-aware venv layout), honors BOB_FORCE_OS
+$lmEval = Get-VenvExe -Venv 'venv-eval' -Exe 'lm_eval'
 
 if (-not (Test-Path $lmEval)) {
     throw "lm-eval not installed. Run: .\scripts\bootstrap-eval.ps1"
 }
 
-. "$PSScriptRoot\_models.ps1"
 $cfg  = Get-ModelsConfig
 $port = $cfg.defaults.port ?? (Get-BobPortDefault 'port')
 
