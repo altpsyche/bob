@@ -1,9 +1,25 @@
 # POST-ONE-2 — Lifecycle DRY + UX coherence
 
-> **THE SCOPED PLAN is at the top (below). The original planning prompt follows it, kept verbatim as
-> the handoff context.** The plan was produced after verifying every lead in the prompt against the
-> repo (plus parallel deep-dives on config-resolution and the kernel), and after a scope confirmation
-> with the user.
+> **STATUS: ✅ COMPLETE — all 9 slices landed (S1–S9), suite 869 green.** See the commit list below.
+> THE SCOPED PLAN is at the top; the original planning prompt follows it, kept verbatim as the handoff
+> context. The plan was produced after verifying every lead in the prompt against the repo (plus
+> parallel deep-dives on config-resolution and the kernel), and after a scope confirmation with the user.
+
+## Landed (2026-07-07) — all on `main`, unpushed
+
+- **S1** `c6a4239` — one deep-merge + one user-overlay loader; killed stale pwsh prose.
+- **S2** `0ac6a54` — one llama-swap launch spec for foreground + background.
+- **S3** `5ee2274` — one `service_control` core off a daemon table (folds the litellm/whisper/piper
+  triples; generated tool defs + CLI handlers; fixed a latent provision.py STT-smoke bug).
+- **S4** `8c74057` — actionable dashboard: start hint per down line, URL per up line.
+- **S5** `f879314` — cockpit controls `/up`, `/restart`, `/webui`.
+- **S6** `68caf59` — rich cockpit dashboard (`/services` + `/status`) off one `service_snapshot`.
+- **S7** `b7f2703` — toggle services in place (`/services start|stop [name]`) + re-render feedback.
+- **S8** `d46f316` — one `ensure_deps` seam (inference + stt) for command dependencies.
+- **S9** `03656c2` — retired the dead Windows config fork (one resolve path, all OSes; bob.psd1 gone).
+
+Deferred (unchanged): voice robustness (adaptive RMS + mic self-test) and onboarding-reach — both
+box-dependent, neither a DRY issue. GPU/mic/TTY cockpit round-trips are best verified on the user's box.
 
 ## Scope confirmation (from the user)
 
