@@ -102,22 +102,33 @@ def transcribe(wav_path: str, port: int) -> str:
     return resp.json().get("text", "").strip()
 
 
-def listen(config: dict, silence_sec: float = None) -> str:
-    """Record the mic until silence (osenv seam), transcribe via whisper-server, return the transcript
-    ('' when nothing was captured). Raises RuntimeError if the audio stack or the server is missing."""
+def record(config: dict, silence_sec: float = None) -> bytes:
+    """Record the mic until silence (osenv seam); returns WAV bytes (b'' if nothing was captured). Split
+    from listen() so callers (the /voice loop) can show a 'transcribing…' phase between record and STT."""
     voice = config.get("voice", {}) if isinstance(config, dict) else {}
     secs = (silence_sec if silence_sec is not None
             else float(voice.get("silenceSec", _VOICE_DEFAULTS.get("silenceSec", 1.5))))
-    wav_bytes = osenv.record_audio(secs)
+    return osenv.record_audio(secs)
+
+
+def transcribe_bytes(wav_bytes: bytes, port: int) -> str:
+    """Transcribe raw WAV bytes via whisper-server ('' if empty). The temp-file seam shared by listen()
+    and the /voice loop, so both handle STT identically."""
     if not wav_bytes:
         return ""
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
         f.write(wav_bytes)
         tmp = f.name
     try:
-        return transcribe(tmp, stt_port(config))
+        return transcribe(tmp, port)
     finally:
         Path(tmp).unlink(missing_ok=True)
+
+
+def listen(config: dict, silence_sec: float = None) -> str:
+    """Record the mic until silence (osenv seam), transcribe via whisper-server, return the transcript
+    ('' when nothing was captured). Raises RuntimeError if the audio stack or the server is missing."""
+    return transcribe_bytes(record(config, silence_sec), stt_port(config))
 
 
 # --- TTS: piper binary (synth to WAV, play through the osenv seam) --------------------------------

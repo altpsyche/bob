@@ -114,25 +114,30 @@ class TestVoiceMode(unittest.TestCase):
     same _run_turn the text tests cover; here we prove the round-trip wiring, exit conditions, and edges."""
 
     def _voice_shell(self, transcripts):
-        """A shell whose bob_voice is stubbed: listen() pops from `transcripts` (a KeyboardInterrupt or
-        RuntimeError value is raised instead of returned), _run_turn echoes, speak records what it spoke."""
+        """A shell whose bob_voice is stubbed on the record→transcribe seam: record() yields a WAV for
+        each item and transcribe_bytes() returns the scripted transcript (a KeyboardInterrupt/RuntimeError
+        value is raised instead), _run_turn echoes, speak records what it spoke."""
         import bob_voice
         sh, out = _make_shell()
         spoken, turns = [], []
         seq = list(transcripts)
 
-        def fake_listen(config, silence_sec=None):
+        def fake_record(config, silence_sec=None):
             if not seq:
                 raise KeyboardInterrupt      # nothing left → simulate Ctrl-C to leave
-            item = seq.pop(0)
-            if isinstance(item, BaseException):
-                raise item
-            return item
+            if isinstance(seq[0], BaseException):
+                raise seq.pop(0)
+            return b"WAV"                     # non-empty → proceeds to transcribe
+
+        def fake_transcribe(wav, port):
+            return seq.pop(0)                 # the scripted transcript for this capture
 
         sh._run_turn = lambda g: (turns.append(g), f"reply to {g}")[1]
         self._patches = [
             _patch(bob_voice, "stt_ready", lambda cfg: True),
-            _patch(bob_voice, "listen", fake_listen),
+            _patch(bob_voice, "stt_port", lambda cfg: 8082),
+            _patch(bob_voice, "record", fake_record),
+            _patch(bob_voice, "transcribe_bytes", fake_transcribe),
             _patch(bob_voice, "format_for_speech", lambda s: s),
             _patch(bob_voice, "speak", lambda s, cfg: (spoken.append(s), True)[1]),
         ]
@@ -173,7 +178,7 @@ class TestVoiceMode(unittest.TestCase):
         with _patch(bob_voice, "stt_ready", lambda cfg: next(ready)), \
              _patch(osenv, "is_port_in_use", lambda p, *a, **k: False), \
              _patch(stack, "service_control", lambda cfg, name, action="start": started.append(action) or "ok"), \
-             _patch(bob_voice, "listen", lambda cfg, silence_sec=None: (_ for _ in ()).throw(KeyboardInterrupt())):
+             _patch(bob_voice, "record", lambda cfg, silence_sec=None: (_ for _ in ()).throw(KeyboardInterrupt())):
             sh.dispatch("/voice")
         self.assertEqual(started, ["start"])           # ensure_deps(stt=True) brought STT up
         self.assertNotIn("bob whisper", out.file.getvalue())

@@ -920,33 +920,53 @@ class BobShell:
         self.console.print(
             f"[{t.accent}]voice mode[/] [{t.muted}]· speak after 'listening' · say \"exit\" or press Ctrl-C "
             f"to leave · headphones avoid echo[/]")
+        stt_port = bob_voice.stt_port(self.config)
         try:
             while True:
-                self.console.print(f"[{t.muted}]listening…[/]")
+                # Phase feedback so the wait never reads as a hang: record → transcribe → think → speak,
+                # each announced. (Recording blocks until you pause ~1.5s; then STT + the model run.)
+                self.console.print(f"[{t.accent}]🎙 listening…[/] [{t.muted}](speak, then pause — "
+                                   f"Ctrl-C or say \"exit\" to leave)[/]")
                 try:
-                    transcript = bob_voice.listen(self.config)
+                    wav = bob_voice.record(self.config)
                 except KeyboardInterrupt:            # Ctrl-C while recording → leave voice mode
                     break
-                except RuntimeError as e:            # audio stack / server vanished mid-session
+                except RuntimeError as e:            # audio stack vanished mid-session
                     self.console.print(f"[{t.error}]{e}[/]")
                     break
-                if not transcript.strip():           # nothing captured → nudge (mic?) and keep listening
+                if not wav:                          # nothing captured → nudge (mic?) and keep listening
                     self.console.print(
                         f"[{t.muted}]…didn't catch anything — speak a bit louder, check your mic "
                         f"input device/volume, or Ctrl-C to exit[/]")
+                    continue
+                try:
+                    with self._phase("transcribing…"):
+                        transcript = bob_voice.transcribe_bytes(wav, stt_port)
+                except RuntimeError as e:            # whisper server vanished mid-session
+                    self.console.print(f"[{t.error}]{e}[/]")
+                    break
+                if not transcript.strip():
+                    self.console.print(f"[{t.muted}]…couldn't make out any words — try again, or Ctrl-C[/]")
                     continue
                 if transcript.strip().lower().rstrip(".!?") in _VOICE_EXIT_WORDS:
                     break
                 self.console.print(f"[{t.accent}]›[/] {transcript}")
                 # M9 — one failed turn must not abort the whole session; _run_turn already renders its
-                # own errors and returns None on cancel/error, so we just guard the TTS side-effect.
+                # own errors (incl. a 'thinking' spinner) and returns None on cancel/error, so we just
+                # guard the TTS side-effect.
                 result = self._run_turn(transcript)
                 if result:
                     spoken = bob_voice.format_for_speech(result)
                     if spoken:
-                        bob_voice.speak(spoken, self.config)
+                        with self._phase("🔊 speaking…"):
+                            bob_voice.speak(spoken, self.config)
         finally:
             self.console.print(f"[{t.muted}]— voice ended[/]")
+
+    def _phase(self, label: str):
+        """A short-lived status spinner for a voice phase (transcribing / speaking). Falls back to a
+        plain print on a non-terminal console (tests) so nothing hangs waiting on a spinner."""
+        return self.console.status(f"[{self.theme.muted}]{label}[/]", spinner=self.theme.spinner)
 
     def _persist_turn(self, goal: str, result: str) -> None:
         """Mirror the server's _record_turn ([bob_agent_server.py]): append the turn to the
