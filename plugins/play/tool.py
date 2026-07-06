@@ -2,9 +2,9 @@
 
 Voice-safe: fire-and-forget, no confirmation prompt, no blocking.
 
-YouTube path: searches SearXNG for a direct youtube.com/watch URL and opens
-it — video starts playing immediately. Falls back to YouTube Music search page
-if SearXNG is unavailable.
+YouTube path: resolves a direct youtube.com/watch URL so the video plays
+immediately, most-robust first: SearXNG (if up) -> yt-dlp (if installed) ->
+a fragile HTML scrape -> the YouTube Music search page as a last resort.
 
 Spotify path: opens spotify:search: URI (Spotify handles playback).
 """
@@ -70,9 +70,51 @@ def _find_youtube_url(query: str) -> str | None:
     return None
 
 
+def _ytdlp_bin() -> str | None:
+    """A yt-dlp binary if one is available: PATH first, then a repo-staged bin/yt-dlp (osenv.bin_exe).
+    Preferred over the HTML scrape because it resolves a search to a video id through a maintained API,
+    not markup that can change out from under us."""
+    import shutil
+    exe = shutil.which("yt-dlp")
+    if exe:
+        return exe
+    try:
+        import osenv
+        staged = osenv.bin_exe("yt-dlp")
+        if staged.exists():
+            return str(staged)
+    except Exception:
+        pass
+    return None
+
+
+def _ytdlp_search(query: str) -> str | None:
+    """Stable resolver (preferred when yt-dlp is present): ask yt-dlp for the first search hit's id
+    without downloading. No SearXNG, no API key, no HTML scraping. None if yt-dlp is absent/fails."""
+    exe = _ytdlp_bin()
+    if not exe:
+        return None
+    try:
+        import re
+        import subprocess
+        r = subprocess.run(
+            [exe, "--no-warnings", "--flat-playlist", "--print", "id", f"ytsearch1:{query}"],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+        for line in r.stdout.splitlines():
+            line = line.strip()
+            if re.fullmatch(r"[A-Za-z0-9_-]{11}", line):
+                return f"https://www.youtube.com/watch?v={line}"
+    except Exception as e:
+        print(f"[play] yt-dlp lookup failed: {e}", file=sys.stderr)
+    return None
+
+
 def _youtube_first_video(query: str) -> str | None:
-    """Docker-free direct lookup: fetch YouTube's results page and pull the first videoId from the
-    embedded JSON. No SearXNG, no API key — so direct-play works even without Docker installed."""
+    """Last-resort docker-free lookup: fetch YouTube's results page and pull the first videoId from the
+    embedded JSON. No SearXNG, no API key. FRAGILE by nature -- it depends on YouTube's page markup, so
+    a layout change can silently stop it matching; that's why _ytdlp_search is preferred when yt-dlp is
+    available, and why the search-page fallback below always exists as a backstop."""
     try:
         import re
         import requests
@@ -83,7 +125,7 @@ def _youtube_first_video(query: str) -> str | None:
             timeout=8,
         )
         r.raise_for_status()
-        m = re.search(r'"videoId":"([A-Za-z0-9_-]{11})"', r.text)
+        m = re.search(r'"videoId":"([A-Za-z0-9_-]{11})"', r.text)   # markup dependency (see docstring)
         if m:
             return f"https://www.youtube.com/watch?v={m.group(1)}"
     except Exception as e:
@@ -122,9 +164,9 @@ def _music_play(query: str, platform: str = "auto") -> str:
         return _launch(f"spotify:search:{q}", f"Opening Spotify: {query}")
 
     if platform in ("youtube", "auto") and not (platform == "auto" and _spotify_installed()):
-        # Resolve a direct watch URL so the video plays immediately: SearXNG if it's up, else a
-        # docker-free scrape of YouTube's results page.
-        url = _find_youtube_url(query) or _youtube_first_video(query)
+        # Resolve a direct watch URL so the video plays immediately, most-robust first: SearXNG if it's
+        # up, then yt-dlp if it's installed (stable API), then the fragile HTML scrape as a backstop.
+        url = _find_youtube_url(query) or _ytdlp_search(query) or _youtube_first_video(query)
         if url:
             return _launch(url, f"Playing on YouTube: {query}")
         # Couldn't resolve a video: open the search page.

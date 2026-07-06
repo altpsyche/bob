@@ -16,6 +16,11 @@ import requests  # noqa: E402
 class TestPlay(unittest.TestCase):
     def setUp(self):
         tool.configure({})
+        # Default: no yt-dlp on the box, so the scrape/fallback paths are exercised deterministically
+        # regardless of whether the test host happens to have yt-dlp installed (keeps tests hermetic).
+        self._ytdlp = mock.patch.object(tool, "_ytdlp_bin", return_value=None)
+        self._ytdlp.start()
+        self.addCleanup(self._ytdlp.stop)
 
     def _resp(self, text):
         r = mock.Mock()
@@ -41,6 +46,31 @@ class TestPlay(unittest.TestCase):
         with mock.patch.object(osenv, "is_port_in_use", return_value=False), \
              mock.patch.object(osenv, "open_url", lambda u: opened.append(u) or True), \
              mock.patch.object(requests, "get", return_value=self._resp('"videoId":"abc123DEF45"')):
+            out = tool._music_play("Arctic Monkeys", "youtube")
+        self.assertIn("Playing on YouTube", out)
+        self.assertTrue(opened and "watch?v=abc123DEF45" in opened[0])
+
+    def test_ytdlp_search_resolves_watch_url(self):
+        # The preferred, stable resolver: yt-dlp prints the first search hit's id (no HTML scraping).
+        with mock.patch.object(tool, "_ytdlp_bin", return_value="yt-dlp"), \
+             mock.patch("subprocess.run",
+                        return_value=mock.Mock(stdout="abc123DEF45\n", returncode=0)):
+            url = tool._ytdlp_search("Arctic Monkeys")
+        self.assertEqual(url, "https://www.youtube.com/watch?v=abc123DEF45")
+
+    def test_ytdlp_absent_returns_none(self):
+        with mock.patch.object(tool, "_ytdlp_bin", return_value=None):
+            self.assertIsNone(tool._ytdlp_search("q"))
+
+    def test_music_play_prefers_ytdlp_over_scrape(self):
+        # When yt-dlp resolves, the fragile HTML scrape (requests.get) must NOT be reached.
+        opened = []
+        with mock.patch.object(osenv, "is_port_in_use", return_value=False), \
+             mock.patch.object(osenv, "open_url", lambda u: opened.append(u) or True), \
+             mock.patch.object(tool, "_ytdlp_bin", return_value="yt-dlp"), \
+             mock.patch("subprocess.run",
+                        return_value=mock.Mock(stdout="abc123DEF45\n", returncode=0)), \
+             mock.patch.object(requests, "get", side_effect=AssertionError("scrape must not run")):
             out = tool._music_play("Arctic Monkeys", "youtube")
         self.assertIn("Playing on YouTube", out)
         self.assertTrue(opened and "watch?v=abc123DEF45" in opened[0])
