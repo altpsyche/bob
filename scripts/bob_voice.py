@@ -108,7 +108,8 @@ def record(config: dict, silence_sec: float = None) -> bytes:
     voice = config.get("voice", {}) if isinstance(config, dict) else {}
     secs = (silence_sec if silence_sec is not None
             else float(voice.get("silenceSec", _VOICE_DEFAULTS.get("silenceSec", 1.5))))
-    return osenv.record_audio(secs)
+    rms_floor = int(voice.get("rmsSilence", _VOICE_DEFAULTS.get("rmsSilence", 200)))
+    return osenv.record_audio(secs, rms_silence=rms_floor)
 
 
 def transcribe_bytes(wav_bytes: bytes, port: int) -> str:
