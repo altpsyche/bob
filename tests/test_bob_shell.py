@@ -194,6 +194,33 @@ class TestVoiceMode(unittest.TestCase):
             sh.dispatch("/voice")
         self.assertIn("bob setup-voice", out.file.getvalue())   # honest next step when it can't start
 
+    def test_ctrl_c_during_speak_leaves_without_crashing(self):
+        # Regression: Ctrl-C while TTS audio plays raised KeyboardInterrupt out of subprocess.run and
+        # crashed the whole shell. It must be caught: stop audio, leave voice mode, no traceback.
+        import bob_voice
+        sh, out = _make_shell()
+        turns = []
+        sh._run_turn = lambda g: (turns.append(g), "a reply")[1]
+        seq = ["play something"]
+
+        def fake_record(config, silence_sec=None):
+            if not seq:
+                raise KeyboardInterrupt
+            return b"WAV"
+
+        def boom_speak(s, cfg):
+            raise KeyboardInterrupt      # simulate Ctrl-C during playback
+
+        with _patch(bob_voice, "stt_ready", lambda c: True), \
+             _patch(bob_voice, "stt_port", lambda c: 8082), \
+             _patch(bob_voice, "record", fake_record), \
+             _patch(bob_voice, "transcribe_bytes", lambda wav, port: seq.pop(0)), \
+             _patch(bob_voice, "format_for_speech", lambda s: s), \
+             _patch(bob_voice, "speak", boom_speak):
+            sh.dispatch("/voice")        # must NOT raise
+        self.assertEqual(turns, ["play something"])
+        self.assertIn("voice ended", out.file.getvalue())
+
     def test_cancelled_turn_speaks_nothing(self):
         # _run_turn returns None on a cancelled/errored turn → nothing is synthesized for it.
         sh, _out, spoken, _turns = self._voice_shell(["question"])

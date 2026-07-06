@@ -449,12 +449,17 @@ class BobShell:
             try:
                 with patch_stdout():
                     line = session.prompt(message)
-            except KeyboardInterrupt:      # Ctrl-C at an empty prompt — clear the line, stay in the shell
+            except KeyboardInterrupt:      # Ctrl-C at an empty prompt: clear the line, stay in the shell
                 continue
-            except EOFError:               # Ctrl-D — leave cleanly
+            except EOFError:               # Ctrl-D: leave cleanly
                 break
-            if not self.dispatch(line):
-                break
+            # A command that does blocking work (voice playback, /up, …) must never crash the shell on
+            # Ctrl-C — catch it here so any interrupted command just returns to the prompt.
+            try:
+                if not self.dispatch(line):
+                    break
+            except KeyboardInterrupt:
+                self.console.print(f"[{self.theme.muted}]cancelled[/]")
         self._on_exit()
         return 0
 
@@ -958,8 +963,11 @@ class BobShell:
                 if result:
                     spoken = bob_voice.format_for_speech(result)
                     if spoken:
-                        with self._phase("speaking…"):
-                            bob_voice.speak(spoken, self.config)
+                        try:
+                            with self._phase("speaking…"):
+                                bob_voice.speak(spoken, self.config)
+                        except KeyboardInterrupt:     # Ctrl-C during playback → stop audio, leave voice
+                            break
         finally:
             self.console.print(f"[{t.muted}]voice ended[/]")
 
