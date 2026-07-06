@@ -88,6 +88,23 @@ class TestStatus(unittest.TestCase):
         self.assertRegex(out, r"down\s+webui\s+:3000")    # webui down
 
 
+class TestServiceRegistry(unittest.TestCase):
+    """SERVICES is the ONE source of truth — the name-kill list, the ps list, and the health table are
+    all derived from it, not maintained as separate copies."""
+
+    def test_derived_lists_come_from_registry(self):
+        self.assertEqual(stack._NAME_KILL,
+                         [p for s in stack.SERVICES for p in s.get("procnames", ())])
+        self.assertEqual(stack._PS_SERVICES,
+                         [s["name"] for s in stack.SERVICES if s.get("pidfile")])
+
+    def test_health_lists_every_registered_service(self):
+        with mock.patch.object(osenv, "is_port_in_use", return_value=False):
+            out = "\n".join(stack._service_health_lines(CFG))
+        for s in stack.SERVICES:
+            self.assertIn(s.get("label", s["name"]), out)   # every service shows up in the dashboard
+
+
 class TestWebuiForeground(unittest.TestCase):
     """`bob webui` must not crash on a bind error when WebUI is already up (e.g. from `bob up`)."""
 

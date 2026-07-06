@@ -21,13 +21,44 @@ _cfg: dict = {}
 REPO = Path(__file__).resolve().parent.parent.parent
 SCRIPTS = REPO / "scripts"
 
-# PID/log convention: logs/<svc>.{pid,log}. C++ daemons are killed by NAME (they survive stale pidfiles);
-# python-hosted services (litellm/piper/open-webui) are killed by pidfile + child-reaping tree kill.
-# Reaped by process name so they die even when the pidfile is stale/missing. open-webui belongs here
-# too: it's launched detached and a prior `bob stop` unlinks its pidfile, so without a name-kill a
-# reparented WebUI keeps holding :3000 and no later stop can find it (POSIX pkill -f matches its cmdline).
-_NAME_KILL = ["llama-swap", "llama-server", "whisper-server", "open-webui"]
-_PS_SERVICES = ["llama-swap", "litellm", "open-webui", "whisper", "piper"]
+# THE single source of truth for every service Bob manages. Each op — status/health, `ps`, stop,
+# name-kill, the grouped dashboard — reads from THIS list instead of its own hardcoded copy (there used
+# to be five). One entry per service:
+#   name      pidfile key + display name (logs/<name>.{pid,log})
+#   port      config port key (bob_core._port)
+#   group     dashboard grouping
+#   desc      one-line description
+#   pidfile   True if it's a Bob-launched daemon tracked by logs/<name>.pid (→ appears in `ps`, stopped
+#             by pidfile tree-kill)
+#   procnames process names for the pkill fallback — reaped by name so they die even with a stale/missing
+#             pidfile (empty = pidfile-only teardown). open-webui is here: it's detached and a prior stop
+#             unlinks its pidfile, so a name-kill is the only thing that can still find a reparented WebUI.
+#   docker    True if it's a docker-compose service (stopped via `docker compose down`, no pidfile)
+#   core      True if it's part of core inference (what ensure_inference starts)
+SERVICES = [
+    {"name": "llama-swap", "label": "endpoint", "port": "port", "group": "Inference", "pidfile": True,
+     "procnames": ("llama-swap", "llama-server"), "core": True, "desc": "llama.cpp via llama-swap"},
+    {"name": "litellm",    "label": "api", "port": "litellmPort", "group": "Inference", "pidfile": True,
+     "procnames": (), "core": True, "desc": "OpenAI-compatible proxy — point any client here"},
+    {"name": "whisper",    "port": "sttPort",     "group": "Voice", "pidfile": True,
+     "procnames": ("whisper-server",), "desc": "speech-to-text"},
+    {"name": "piper",      "port": "ttsPort",     "group": "Voice", "pidfile": True,
+     "procnames": (), "desc": "text-to-speech server (optional; voice also works without it)"},
+    {"name": "open-webui", "label": "webui", "port": "webuiPort", "group": "Web & automation", "pidfile": True,
+     "procnames": ("open-webui",), "desc": "Open WebUI — browser chat"},
+    {"name": "searxng",    "port": "searxngPort", "group": "Web & automation", "docker": True,
+     "desc": "private web search"},
+    {"name": "n8n",        "port": "n8nPort",     "group": "Web & automation", "docker": True,
+     "desc": "workflow automation"},
+    {"name": "langfuse",   "port": "langfusePort", "group": "Web & automation", "docker": True,
+     "desc": "tracing / observability"},
+    {"name": "agent-api",  "port": "agentPort",   "group": "Agent",
+     "desc": "bob agent serve — REST/SSE"},
+]
+
+# Derived views — kept as module constants so callers/tests read one canonical list, never a fresh copy.
+_NAME_KILL = [p for s in SERVICES for p in s.get("procnames", ())]
+_PS_SERVICES = [s["name"] for s in SERVICES if s.get("pidfile")]
 
 
 def configure(config: dict) -> None:
@@ -134,42 +165,21 @@ def stack_ps(config: dict) -> str:
     return "\n".join(lines)
 
 
-# Every service Bob can run, grouped, for the one-glance system view (`bob status` / TUI /status).
-# (name, port-config-key, one-line description). piper's :8083 server is optional — CLI/voice TTS uses
-# the piper binary directly — so it's labelled as such rather than implying voice is broken when down.
-_SERVICE_HEALTH = [
-    ("Inference", [
-        ("endpoint", "port", "llama.cpp via llama-swap"),
-        ("api", "litellmPort", "OpenAI-compatible proxy — point any client here"),
-    ]),
-    ("Voice", [
-        ("whisper", "sttPort", "speech-to-text"),
-        ("piper", "ttsPort", "text-to-speech server (optional; voice also works without it)"),
-    ]),
-    ("Web & automation", [
-        ("webui", "webuiPort", "Open WebUI — browser chat"),
-        ("searxng", "searxngPort", "private web search"),
-        ("n8n", "n8nPort", "workflow automation"),
-        ("langfuse", "langfusePort", "tracing / observability"),
-    ]),
-    ("Agent", [
-        ("agent-api", "agentPort", "bob agent serve — REST/SSE"),
-    ]),
-]
-
-
 def _service_health_lines(config: dict) -> list:
     """One-glance up/down for EVERY component (inference, voice, web/automation, agent), always shown —
-    so `bob status` answers 'is SearXNG / n8n / WebUI actually running?' in one place."""
+    so `bob status` answers 'is SearXNG / n8n / WebUI actually running?' in one place. Iterates the single
+    SERVICES registry (already ordered by group); piper is labelled optional (CLI/voice TTS uses the
+    binary directly, so a down :8083 server doesn't mean voice is broken)."""
     osenv = _osenv()
     from bob_core import _port
-    out = ["", "Services"]
-    for group, svcs in _SERVICE_HEALTH:
-        out.append(f"  {group}:")
-        for name, key, desc in svcs:
-            p = _port(config, key)
-            mark = "UP  " if osenv.is_port_in_use(p) else "down"
-            out.append(f"    {mark}  {name:<10} :{str(p):<5}  {desc}")
+    out, seen_group = ["", "Services"], None
+    for s in SERVICES:
+        if s["group"] != seen_group:
+            out.append(f"  {s['group']}:")
+            seen_group = s["group"]
+        p = _port(config, s["port"])
+        mark = "UP  " if osenv.is_port_in_use(p) else "down"
+        out.append(f"    {mark}  {s.get('label', s['name']):<10} :{str(p):<5}  {s['desc']}")
     return out
 
 
@@ -232,27 +242,25 @@ def stack_logs(config: dict, lines: int = 50) -> str:
 # --- teardown -------------------------------------------------------------------------------------
 
 def stack_stop(config: dict) -> str:
-    """Canonical teardown (port of the `stop` case): name-kill the C++ daemons, tree-kill the python
-    services by pidfile, clean stale pidfiles, and `docker compose down` if services are up."""
+    """Canonical teardown: name-kill the daemons that carry process names (survive stale pidfiles),
+    tree-kill every pidfile-tracked service and clean its pidfile, then `docker compose down`. All three
+    read the one SERVICES registry — no hardcoded per-service lists."""
     osenv = _osenv()
     killed = []
 
-    # 1) C++ binaries by process name (survive stale pidfiles).
+    # 1) By process name (survives a stale/missing pidfile). _NAME_KILL is derived from SERVICES.
     killed += osenv.stop_processes_by_name(_NAME_KILL)
 
-    # 2) Python-hosted services via pidfile + child-reaping tree kill.
-    for svc in ("litellm", "piper", "open-webui"):
+    # 2) Every pidfile-tracked service: child-reaping tree kill (a no-op if step 1 already got it),
+    #    then drop the pidfile. One loop over the registry replaces the old two hardcoded lists.
+    for svc in _PS_SERVICES:
         pid = _read_pid(svc)
         if pid is not None and osenv.pid_alive(pid):
             osenv.stop_process_tree(pid)
             killed.append(svc)
         _pidfile(svc).unlink(missing_ok=True)
 
-    # 3) Clean remaining pidfiles.
-    for svc in ("llama-swap", "whisper"):
-        _pidfile(svc).unlink(missing_ok=True)
-
-    # 4) Docker services.
+    # 3) Docker services.
     compose = REPO / "tools" / "compose" / "docker-compose.yml"
     if shutil.which("docker") and compose.exists():
         running = subprocess.run(["docker", "compose", "-f", str(compose), "ps", "-q"],
