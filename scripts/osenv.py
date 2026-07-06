@@ -509,6 +509,24 @@ def home_config_dir(app: str) -> Path:
     return Path(base) / app
 
 
+# --- docker (optional, for the compose services) -------------------------------------------------
+
+
+def docker_present() -> bool:
+    """True if a `docker` CLI is on PATH. The compose services (SearXNG / n8n / langfuse) need it."""
+    return bool(shutil.which("docker"))
+
+
+def docker_install_hint() -> str:
+    """OS-appropriate one-liner for installing Docker (shown by status/doctor when it's absent)."""
+    name = os_name()
+    if name == "macos":
+        return "install Docker Desktop, then re-run bob setup"
+    if name == "windows":
+        return "install Docker Desktop (WSL2 backend), then re-run bob setup"
+    return "install your distro's docker package (with the compose plugin), then re-run bob setup"
+
+
 # --- open a URL (ONE-C §1b) ----------------------------------------------------------------------
 
 

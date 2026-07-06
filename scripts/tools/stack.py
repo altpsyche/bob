@@ -178,14 +178,19 @@ def service_snapshot(config: dict) -> list:
     name / label / group / port / up / url / hint / desc."""
     osenv = _osenv()
     from bob_core import _port
+    docker_ok = osenv.docker_present()   # checked once; docker services can't run at all without it
     rows = []
     for s in SERVICES:
         p = _port(config, s["port"])
+        is_docker = bool(s.get("docker"))
         rows.append({
             "name": s["name"], "label": s.get("label", s["name"]), "group": s["group"],
             "port": p, "up": osenv.is_port_in_use(p), "url": f"http://localhost:{p}",
             "hint": s.get("hint", "bob up"), "desc": s["desc"],
-            "core": bool(s.get("core")), "docker": bool(s.get("docker")),
+            "core": bool(s.get("core")), "docker": is_docker,
+            # A docker service on a box with no docker isn't "down" (startable) -- it's unavailable
+            # until docker is installed. Surfacing that stops the misleading "start: bob services".
+            "unavailable": is_docker and not docker_ok,
         })
     return rows
 
@@ -195,14 +200,20 @@ def _service_health_lines(config: dict) -> list:
     so `bob status` answers 'is SearXNG / n8n / WebUI actually running?' in one place. Renders the one
     service_snapshot; piper is labelled optional (CLI/voice TTS uses the binary directly, so a down
     :8083 server doesn't mean voice is broken)."""
+    osenv = _osenv()
     out, seen_group = ["", "Services"], None
     for r in service_snapshot(config):
         if r["group"] != seen_group:
             out.append(f"  {r['group']}:")
             seen_group = r["group"]
-        mark = "UP  " if r["up"] else "down"
-        # Actionable: a running service shows its URL (to open); a down one shows how to start it.
-        detail = r["url"] if r["up"] else f"→ start: {r['hint']}"
+        # Actionable: a running service shows its URL (to open); a down one shows how to start it; a
+        # docker service on a box with no docker is n/a with the reason + install hint.
+        if r.get("unavailable"):
+            mark, detail = "n/a ", f"needs Docker: {osenv.docker_install_hint()}"
+        elif r["up"]:
+            mark, detail = "UP  ", r["url"]
+        else:
+            mark, detail = "down", f"→ start: {r['hint']}"
         out.append(f"    {mark}  {r['label']:<10} :{str(r['port']):<5}  {detail:<26}  {r['desc']}")
     return out
 

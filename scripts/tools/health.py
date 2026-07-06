@@ -136,16 +136,23 @@ def health_check(config: dict, doctor: bool = False) -> str:
     import shutil as _sh
     check("fabric on PATH", bool(_sh.which("fabric")), "bob fabric-setup")
 
+    # SearXNG / n8n run as docker compose services. On a box with no docker they can't start at all,
+    # so report the real reason (needs Docker + install hint) instead of a misleading "bob services
+    # start" that would just fail. Docker present -> the normal reachability checks.
     searx_port = _port(config, "searxngPort")
-    check(f"SearXNG reachable (:{searx_port})", osenv.is_port_in_use(searx_port), "bob services start")
-
     n8n_port = _port(config, "n8nPort")
-    n8n_ok = False
-    try:
-        n8n_ok = requests.get(f"http://localhost:{n8n_port}", timeout=8).status_code < 500
-    except requests.RequestException:
-        pass
-    check(f"n8n reachable (:{n8n_port})", n8n_ok, "bob services start")
+    if not osenv.docker_present():
+        pending("Docker (for SearXNG / n8n / langfuse)", f"not installed — {osenv.docker_install_hint()}")
+        pending(f"SearXNG (:{searx_port})", "unavailable (needs Docker, not installed)")
+        pending(f"n8n (:{n8n_port})", "unavailable (needs Docker, not installed)")
+    else:
+        check(f"SearXNG reachable (:{searx_port})", osenv.is_port_in_use(searx_port), "bob services start")
+        n8n_ok = False
+        try:
+            n8n_ok = requests.get(f"http://localhost:{n8n_port}", timeout=8).status_code < 500
+        except requests.RequestException:
+            pass
+        check(f"n8n reachable (:{n8n_port})", n8n_ok, "bob services start")
 
     litellm_port = _port(config, "litellmPort")
     check(f"LiteLLM proxy (:{litellm_port})", osenv.is_port_in_use(litellm_port), "bob litellm")

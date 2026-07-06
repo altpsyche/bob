@@ -192,6 +192,33 @@ class TestHealthCheckWiredRows(unittest.TestCase):
                 self.assertIn("○", line)
                 self.assertNotIn("✗", line)
 
+    def test_doctor_reports_docker_absent_for_compose_services(self):
+        # #5a — docker missing: the compose services (SearXNG/n8n) are reported unavailable with the
+        # real reason + install hint, not a misleading "bob services start" that would just fail.
+        out = self._docker(present=False)
+        self.assertIn("not installed", out)
+        self.assertIn("SearXNG (:8888)", out)
+        self.assertIn("unavailable (needs Docker, not installed)", out)
+        self.assertNotIn("SearXNG reachable", out)   # the reachability check is skipped when no docker
+
+    def test_doctor_checks_reachability_when_docker_present(self):
+        out = self._docker(present=True)
+        self.assertIn("SearXNG reachable (:8888)", out)   # normal reachability check restored
+        self.assertNotIn("needs Docker", out)
+
+    def _docker(self, present):
+        import requests
+        with mock.patch.object(health_mod, "_has_module", return_value=True), \
+             mock.patch.object(health_mod, "_tool_load_errors", return_value=[]), \
+             mock.patch("osenv.docker_present", return_value=present), \
+             mock.patch("osenv.is_port_in_use", return_value=False), \
+             mock.patch("osenv.agent_task_status", return_value={"registered": False}), \
+             mock.patch("requests.get", side_effect=requests.RequestException("down")), \
+             mock.patch("bob_models.profile_roles", return_value={"agent": {"gguf": "x.gguf"}}), \
+             mock.patch("bob.versions.load_lock", return_value={"release": "1", "submodules": {}, "models": {}}), \
+             mock.patch("bob.versions.check_reproducibility", return_value=[]):
+            return health_mod.health_check(CFG, doctor=True)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -76,6 +76,7 @@ class TestStatus(unittest.TestCase):
 
     def test_endpoint_up_marks_loaded_and_shows_full_service_table(self):
         with mock.patch.object(stack, "_http_json", return_value={"data": [{"id": "planner"}]}), \
+             mock.patch.object(osenv, "docker_present", return_value=True), \
              mock.patch.object(osenv, "is_port_in_use", side_effect=lambda p, *a, **k: p in (8082, 8888)):
             out = stack.stack_status(CFG)
         self.assertIn("[running]", out)
@@ -110,14 +111,31 @@ class TestServiceRegistry(unittest.TestCase):
 
     def test_down_lines_show_start_hint_up_lines_show_url(self):
         # S4 — actionable: down services show how to start them; up services show their URL.
-        with mock.patch.object(osenv, "is_port_in_use", return_value=False):
+        # docker present so the compose services render as startable (the n/a path is tested below).
+        with mock.patch.object(osenv, "docker_present", return_value=True), \
+             mock.patch.object(osenv, "is_port_in_use", return_value=False):
             down = "\n".join(stack._service_health_lines(CFG))
         self.assertIn("→ start: bob services start", down)   # e.g. searxng/n8n/langfuse when down
         self.assertIn("→ start: bob whisper start", down)
-        with mock.patch.object(osenv, "is_port_in_use", return_value=True):
+        with mock.patch.object(osenv, "docker_present", return_value=True), \
+             mock.patch.object(osenv, "is_port_in_use", return_value=True):
             up = "\n".join(stack._service_health_lines(CFG))
         self.assertIn("http://localhost:8081", up)           # litellm URL shown when up
         self.assertNotIn("→ start:", up)
+
+    def test_docker_services_show_unavailable_without_docker(self):
+        # #5a — on a box with no docker, the compose services (searxng/n8n/langfuse) can't start at
+        # all: report them as n/a with the reason + install hint, NOT a misleading "start:" line.
+        with mock.patch.object(osenv, "docker_present", return_value=False), \
+             mock.patch.object(osenv, "is_port_in_use", return_value=False):
+            out = "\n".join(stack._service_health_lines(CFG))
+            snap = {r["name"]: r for r in stack.service_snapshot(CFG)}
+        self.assertIn("n/a", out)
+        self.assertIn("needs Docker", out)
+        # non-docker down services still show their normal start hint (only docker ones go n/a)
+        self.assertIn("→ start: bob whisper start", out)
+        self.assertTrue(snap["searxng"]["unavailable"])     # docker service -> unavailable
+        self.assertFalse(snap["whisper"]["unavailable"])    # non-docker service -> not affected
 
 
 class TestWebuiForeground(unittest.TestCase):

@@ -433,6 +433,22 @@ class TestOpenUrl(_ForceOSMixin, unittest.TestCase):
             self.assertFalse(osenv.open_url("http://x"))
 
 
+class TestDockerSeam(_ForceOSMixin, unittest.TestCase):
+    """#5a — docker presence + an OS-appropriate install hint for the status/doctor 'needs Docker' signal."""
+
+    def test_present_tracks_which(self):
+        with mock.patch("osenv.shutil.which", return_value="/usr/bin/docker"):
+            self.assertTrue(osenv.docker_present())
+        with mock.patch("osenv.shutil.which", return_value=None):
+            self.assertFalse(osenv.docker_present())
+
+    def test_install_hint_is_os_specific(self):
+        self._force("macos")
+        self.assertIn("Docker Desktop", osenv.docker_install_hint())
+        self._force("linux")
+        self.assertIn("docker package", osenv.docker_install_hint())
+
+
 def _smi(stdout):
     r = mock.Mock()
     r.stdout = stdout
