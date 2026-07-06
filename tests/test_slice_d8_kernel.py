@@ -186,6 +186,52 @@ class TestKernelArgvNormalize(unittest.TestCase):
         self.assertEqual(kernel._normalize_argv(["venv", "litellm"]), ["venv", "litellm"])
 
 
+class TestOfferOnboard(unittest.TestCase):
+    """#6 — onboarding reach: a fresh interactive `bob` offers to seed a profile (not only setup).
+    No-op when a profile exists, on a non-TTY, or once declined; a 'yes' runs the same onboard()."""
+
+    def _offer(self, *, tty=True, needs=True, declined=False, answer="y"):
+        calls = {}
+        with mock.patch.object(kernel.sys.stdin, "isatty", return_value=tty), \
+             mock.patch.object(kernel, "_needs_onboard", return_value=needs), \
+             mock.patch.object(kernel, "_onboard_declined", return_value=declined), \
+             mock.patch.object(kernel, "_record_onboard_declined",
+                               side_effect=lambda: calls.__setitem__("declined", True)), \
+             mock.patch.object(kernel, "onboard",
+                               side_effect=lambda: calls.__setitem__("onboarded", True)), \
+             mock.patch("builtins.input", return_value=answer):
+            kernel.offer_onboard()
+        return calls
+
+    def test_yes_runs_onboard(self):
+        self.assertTrue(self._offer(answer="y").get("onboarded"))
+
+    def test_empty_answer_defaults_to_yes(self):
+        self.assertTrue(self._offer(answer="").get("onboarded"))
+
+    def test_no_records_declined_and_skips_onboard(self):
+        calls = self._offer(answer="n")
+        self.assertTrue(calls.get("declined"))
+        self.assertNotIn("onboarded", calls)
+
+    def test_noop_when_profile_exists(self):
+        self.assertEqual(self._offer(needs=False), {})   # never prompts, never onboards
+
+    def test_noop_when_already_declined(self):
+        self.assertEqual(self._offer(declined=True), {})
+
+    def test_noop_on_non_tty(self):
+        self.assertEqual(self._offer(tty=False), {})
+
+    def test_declined_marker_round_trips_in_user_json(self):
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(kernel, "REPO", Path(d)):
+                (Path(d) / "config").mkdir()
+                self.assertFalse(kernel._onboard_declined())
+                kernel._record_onboard_declined()
+                self.assertTrue(kernel._onboard_declined())
+
+
 class TestKernelDispatch(unittest.TestCase):
     def test_venv_subcommand_creates_named_venv(self):
         with mock.patch.object(kernel, "make_venv", return_value="/tools/venv-litellm/bin/python") as mv:

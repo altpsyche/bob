@@ -976,6 +976,8 @@ def _handle_shell(rest: list) -> int:
     from bob.shell import is_interactive, run
 
     if is_interactive():
+        from bob.kernel import offer_onboard
+        offer_onboard()          # fresh interactive bob offers to seed a profile (not only `bob setup`)
         _ensure_endpoint(_cfg())  # only auto-start for a real interactive session (piped -> just help)
     return run()
 

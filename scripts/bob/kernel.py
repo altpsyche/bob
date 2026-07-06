@@ -295,6 +295,52 @@ def _needs_onboard() -> bool:
     return (not marked) or (not _has_profile_rows())
 
 
+def _onboard_declined() -> bool:
+    """True if the user has already declined the shell's onboarding offer (config bob.onboardDeclined),
+    so a bare `bob` never re-nags. Setup's own onboarding is unaffected."""
+    import json
+    user_cfg = REPO / "config" / "user.json"
+    if not user_cfg.exists():
+        return False
+    try:
+        cfg = json.loads(user_cfg.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return bool(isinstance(cfg, dict) and cfg.get("bob", {}).get("onboardDeclined"))
+
+
+def _record_onboard_declined() -> None:
+    import json
+    user_cfg = REPO / "config" / "user.json"
+    try:
+        cfg = json.loads(user_cfg.read_text(encoding="utf-8")) if user_cfg.exists() else {}
+        if not isinstance(cfg, dict):
+            cfg = {}
+    except (OSError, ValueError):
+        cfg = {}
+    cfg.setdefault("bob", {})["onboardDeclined"] = True
+    user_cfg.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+
+
+def offer_onboard() -> None:
+    """Onboarding reach: on a fresh INTERACTIVE `bob` (the shell front door, not just `bob setup`),
+    offer to seed a profile so Bob knows the user from the very first chat. No-op when a profile
+    already exists, on a non-TTY, or after the user declined once (recorded so we never nag again).
+    A 'yes' runs the same onboard() that setup uses; the seeded profile is injected on the next chat."""
+    if not sys.stdin.isatty() or not _needs_onboard() or _onboard_declined():
+        return
+    print("Bob: I don't know you yet. Want to set up your profile now? [Y/n]")
+    try:
+        ans = input("> ").strip().lower()
+    except EOFError:
+        return
+    if ans in ("", "y", "yes"):
+        onboard()
+    else:
+        _record_onboard_declined()
+        print("Bob: no problem. Run `bob memory init-profile` anytime to set it up.", file=sys.stderr)
+
+
 def onboard() -> None:
     """First-run onboarding: name, work context, optional DeepSeek key -> SQLite profile + config/user.json.
     Interactive — SKIPS cleanly on a non-TTY (CI/piped) so the kernel never hangs. Port of onboard.ps1."""
