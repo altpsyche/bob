@@ -9,11 +9,12 @@ import requests
 _cfg: dict = {}
 _searxng_url: str = ""
 _allow_private_fetch: bool = False  # M9 — gate SSRF-prone fetches behind an explicit flag
+_web_search_fallback: bool = True   # #5b — degrade to a direct provider when SearXNG is unreachable
 _MAX_REDIRECTS = 5  # NE0 — cap manual redirect following so each hop can be re-validated
 
 
 def configure(config: dict) -> None:
-    global _cfg, _searxng_url, _allow_private_fetch
+    global _cfg, _searxng_url, _allow_private_fetch, _web_search_fallback
     _cfg = config
     import sys
     from pathlib import Path
@@ -23,6 +24,7 @@ def configure(config: dict) -> None:
     from bob_core import _port  # N7 — single source of truth for ports
     _searxng_url = f"http://localhost:{_port(config, 'searxngPort')}/search"
     _allow_private_fetch = bool(config.get("agent", {}).get("allowPrivateFetch", False))
+    _web_search_fallback = bool(config.get("agent", {}).get("webSearchFallback", True))
 
 
 def _is_blocked_host(host: str) -> bool:
@@ -62,27 +64,66 @@ def _ensure_searxng() -> str:
         return str(e)
 
 
-def _web_search(query: str, num_results: int = 5) -> str:
-    if not _searxng_url:
-        return "web_search not configured (SearXNG URL missing)"
-    reason = _ensure_searxng()          # on-demand start (no-op if already up or auto-start off)
+def _ddg_search(query: str, num_results: int) -> str | None:
+    """Fallback web search via the DuckDuckGo HTML endpoint — no SearXNG, no Docker, no API key. So
+    search degrades gracefully on a box without Docker instead of just failing. Best-effort HTML parse
+    of a public endpoint; returns None on any error / no results so the caller can fall through."""
+    from html import unescape
+    from urllib.parse import parse_qs, unquote
     try:
-        r = requests.get(
-            _searxng_url,
-            params={"q": query, "format": "json", "pageno": 1},
+        r = requests.post(
+            "https://html.duckduckgo.com/html/",
+            data={"q": query},
+            headers={"User-Agent": "Mozilla/5.0"},
             timeout=10,
         )
         r.raise_for_status()
-        results = r.json().get("results", [])[:num_results]
-    except Exception as e:
-        hint = reason or "start it with: bob services start (or /services start searxng)"
-        return f"web_search unavailable. SearXNG isn't reachable: {hint}"
-    if not results:
-        return "(no results)"
-    return "\n\n".join(
-        f"- {x['title']}\n  {x['url']}\n  {x.get('content', '')[:200]}"
-        for x in results
-    )
+    except Exception:
+        return None
+    titles = re.findall(r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', r.text, re.S)
+    snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', r.text, re.S)
+
+    def _clean(html_text: str) -> str:
+        return unescape(re.sub(r"<[^>]+>", "", html_text)).strip()
+
+    rows = []
+    for i, (href, title) in enumerate(titles[:num_results]):
+        # DDG wraps result links as //duckduckgo.com/l/?uddg=<encoded-target> — decode to the real URL.
+        if "uddg=" in href:
+            href = unquote(parse_qs(urlparse(href).query).get("uddg", [href])[0])
+        snippet = _clean(snippets[i]) if i < len(snippets) else ""
+        rows.append(f"- {_clean(title)}\n  {href}\n  {snippet[:200]}")
+    if not rows:
+        return None
+    return "(via DuckDuckGo; SearXNG unavailable)\n\n" + "\n\n".join(rows)
+
+
+def _web_search(query: str, num_results: int = 5) -> str:
+    reason = _ensure_searxng() if _searxng_url else "SearXNG URL missing"
+    if _searxng_url:
+        try:
+            r = requests.get(
+                _searxng_url,
+                params={"q": query, "format": "json", "pageno": 1},
+                timeout=10,
+            )
+            r.raise_for_status()
+            results = r.json().get("results", [])[:num_results]
+            if results:
+                return "\n\n".join(
+                    f"- {x['title']}\n  {x['url']}\n  {x.get('content', '')[:200]}"
+                    for x in results
+                )
+            return "(no results)"
+        except Exception:
+            pass                            # SearXNG unreachable — try the fallback below
+    # SearXNG isn't reachable (commonly: no Docker). Degrade to a direct provider if allowed.
+    if _web_search_fallback:
+        fb = _ddg_search(query, num_results)
+        if fb:
+            return fb
+    hint = reason or "start it with: bob services start (or /services start searxng)"
+    return f"web_search unavailable. SearXNG isn't reachable: {hint}"
 
 
 def _web_fetch(url: str) -> str:
@@ -138,7 +179,7 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "Search the web via SearXNG (private, local search engine)",
+            "description": "Search the web via SearXNG (private, local); falls back to a direct provider when SearXNG is unavailable",
             "parameters": {
                 "type": "object",
                 "properties": {
