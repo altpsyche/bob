@@ -45,9 +45,26 @@ def _is_blocked_host(host: str) -> bool:
     return False
 
 
+def _ensure_searxng() -> None:
+    """On-demand: bring SearXNG up if it's down and auto-start is enabled (agent.autoStartSearxng,
+    default on). Best-effort — a failure just leaves the request to hit the existing fallback."""
+    if not _cfg.get("agent", {}).get("autoStartSearxng", True):
+        return
+    try:
+        import osenv
+        from bob_core import _port
+        if osenv.is_port_in_use(_port(_cfg, "searxngPort")):
+            return                      # already up — no docker call
+        import stack                    # scripts/tools is on sys.path (tool loader)
+        stack.ensure_searxng(_cfg)
+    except Exception:                   # noqa: BLE001 — advisory; fall through to the normal request
+        pass
+
+
 def _web_search(query: str, num_results: int = 5) -> str:
     if not _searxng_url:
         return "web_search not configured (SearXNG URL missing)"
+    _ensure_searxng()                   # on-demand start (no-op if already up or auto-start off)
     try:
         r = requests.get(
             _searxng_url,

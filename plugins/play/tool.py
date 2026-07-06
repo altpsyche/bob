@@ -19,9 +19,10 @@ _cfg: dict = {}
 def configure(config: dict) -> None:
     global _cfg
     _cfg = config
-    scripts_dir = str(Path(__file__).parent.parent.parent / "scripts")
-    if scripts_dir not in sys.path:
-        sys.path.insert(0, scripts_dir)  # N7 — allow bob_core._port import
+    root = Path(__file__).parent.parent.parent
+    for p in (root / "scripts", root / "scripts" / "tools"):   # bob_core._port + stack.ensure_searxng
+        if str(p) not in sys.path:
+            sys.path.insert(0, str(p))
 
 
 # ---------------------------------------------------------------------------
@@ -44,8 +45,25 @@ def _spotify_installed() -> bool:
     return any(p.exists() for p in candidates)
 
 
+def _ensure_searxng() -> None:
+    """On-demand: start SearXNG if down and auto-start is enabled (agent.autoStartSearxng, default on),
+    so a direct-play lookup works without the user starting services first. Best-effort."""
+    if not _cfg.get("agent", {}).get("autoStartSearxng", True):
+        return
+    try:
+        import osenv
+        from bob_core import _port
+        if osenv.is_port_in_use(_port(_cfg, "searxngPort")):
+            return
+        import stack
+        stack.ensure_searxng(_cfg)
+    except Exception:  # noqa: BLE001 — advisory; the search-page fallback still applies
+        pass
+
+
 def _find_youtube_url(query: str) -> str | None:
-    """Ask SearXNG for the first youtube.com/watch result for query."""
+    """Ask SearXNG for the first youtube.com/watch result for query (starting it on demand)."""
+    _ensure_searxng()
     try:
         import requests
         from bob_core import _port  # N7 — single source of truth for ports

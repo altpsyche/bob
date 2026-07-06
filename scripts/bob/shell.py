@@ -649,7 +649,7 @@ class BobShell:
         if canonical in daemons:
             return stack.service_control(self.config, canonical, action)
         if canonical in docker:
-            return stack.services_control(self.config, action)    # compose toggles the group
+            return stack.services_control(self.config, action, service=canonical)  # just this container
         return (f"'{canonical}' can't be toggled individually here. Use "
                 f"/up, /restart, /stop (inference/WebUI), or `bob agent serve` (agent-api).")
 

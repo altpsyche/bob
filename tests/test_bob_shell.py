@@ -303,15 +303,16 @@ class TestCockpit(unittest.TestCase):
             sh.dispatch("/services stop")
         self.assertEqual(calls, ["stop"])
 
-    def test_services_docker_name_toggles_group(self):
+    def test_services_docker_name_toggles_single_container(self):
         import osenv
         import stack
         sh, _ = _make_shell()
         calls = []
         with _patch(osenv, "is_port_in_use", lambda p, *a, **k: False), \
-             _patch(stack, "services_control", lambda cfg, action: calls.append(action) or "ok"):
+             _patch(stack, "services_control",
+                    lambda cfg, action, service=None: calls.append((action, service)) or "ok"):
             sh.dispatch("/services start searxng")
-        self.assertEqual(calls, ["start"])
+        self.assertEqual(calls, [("start", "searxng")])   # just this container, not the whole group
 
     def test_services_toggle_rerenders_dashboard(self):
         import osenv

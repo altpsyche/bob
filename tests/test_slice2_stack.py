@@ -210,6 +210,56 @@ class TestEnsureDeps(unittest.TestCase):
         sc.assert_not_called()
 
 
+class TestSearxngOnDemand(unittest.TestCase):
+    """On-demand SearXNG: bring up JUST the container when a tool needs it (web_search / music_play)."""
+
+    def test_noop_when_already_up(self):
+        with mock.patch.object(osenv, "is_port_in_use", return_value=True), \
+             mock.patch.object(stack.subprocess, "run") as run:
+            ok, msg = stack.ensure_searxng(CFG)
+        self.assertTrue(ok)
+        run.assert_not_called()                     # already reachable — no docker call
+        self.assertIn("already running", msg)
+
+    def test_starts_single_container_and_waits(self):
+        seq = iter([False, True])                    # down at check, up after start (via _poll)
+        with mock.patch.object(osenv, "is_port_in_use", side_effect=lambda p, *a, **k: next(seq)), \
+             mock.patch.object(stack, "_compose_base", return_value=(["docker", "compose", "-f", "x"], "")), \
+             mock.patch.object(stack, "_write_compose_env"), \
+             mock.patch.object(stack.subprocess, "run",
+                               return_value=mock.Mock(returncode=0, stdout="", stderr="")) as run:
+            ok, _msg = stack.ensure_searxng(CFG)
+        self.assertTrue(ok)
+        argv = run.call_args[0][0]
+        self.assertEqual(argv[-3:], ["up", "-d", "searxng"])   # single service, not the whole group
+
+    def test_graceful_when_no_docker(self):
+        with mock.patch.object(osenv, "is_port_in_use", return_value=False), \
+             mock.patch.object(stack, "_compose_base", return_value=(None, "Docker not found.")):
+            ok, msg = stack.ensure_searxng(CFG)
+        self.assertFalse(ok)
+        self.assertIn("Docker not found", msg)
+
+    def test_services_control_scopes_to_one_service(self):
+        with mock.patch.object(stack, "_compose_base", return_value=(["docker", "compose", "-f", "x"], "")), \
+             mock.patch.object(stack, "_write_compose_env"), \
+             mock.patch.object(stack.subprocess, "run",
+                               return_value=mock.Mock(returncode=0, stdout="ok", stderr="")) as run:
+            stack.services_control(CFG, "start", service="searxng")
+            start_argv = run.call_args[0][0]
+            stack.services_control(CFG, "stop", service="searxng")
+            stop_argv = run.call_args[0][0]
+        self.assertIn("searxng", start_argv)
+        self.assertEqual(stop_argv[-2:], ["stop", "searxng"])   # stop one, not `down` the group
+
+    def test_ensure_deps_search_composes_ensure_searxng(self):
+        with mock.patch.object(stack, "ensure_searxng", return_value=(True, "up")) as es:
+            ok, lines = stack.ensure_deps(CFG, search=True)
+        es.assert_called_once()
+        self.assertTrue(ok)
+        self.assertIn("up", lines)
+
+
 class TestStop(unittest.TestCase):
     def setUp(self):
         self.logs = Path(tempfile.mkdtemp(prefix="bob-logs-"))

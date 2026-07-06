@@ -448,11 +448,12 @@ def ensure_inference(config: dict) -> tuple:
     return _start_endpoint_bg(config)
 
 
-def ensure_deps(config: dict, inference: bool = False, stt: bool = False) -> tuple:
+def ensure_deps(config: dict, inference: bool = False, stt: bool = False, search: bool = False) -> tuple:
     """The ONE 'bring up exactly the services this command needs' seam. inference → core LLM
     (ensure_inference, the shell/chat/agent auto-start); stt → the whisper STT server (the /voice
-    preflight). Returns (all_ok, status-lines). Idempotent: each need no-ops when its service is
-    already reachable, so callers can invoke it unconditionally."""
+    preflight); search → the SearXNG container (web_search / music_play). Returns (all_ok,
+    status-lines). Idempotent: each need no-ops when its service is already reachable, so callers can
+    invoke it unconditionally."""
     from bob_core import _port
     osenv = _osenv()
     ok, lines = True, []
@@ -466,6 +467,10 @@ def ensure_deps(config: dict, inference: bool = False, stt: bool = False) -> tup
         else:
             lines.append(service_control(config, "whisper", "start"))
             ok = ok and osenv.is_port_in_use(_port(config, "sttPort"))
+    if search:
+        s_ok, s_msg = ensure_searxng(config)
+        ok = ok and s_ok
+        lines.append(s_msg)
     return ok, lines
 
 
@@ -591,35 +596,72 @@ def service_control(config: dict, name: str, action: str = "start") -> str:
     return d["start"](config)
 
 
-def services_control(config: dict, action: str = "status") -> str:
-    """Docker compose lifecycle (langfuse/searxng/n8n). Optional — needs docker + the compose file."""
-    from bob_core import _port
-
+def _compose_base(config: dict) -> tuple:
+    """(base_cmd, '') for `docker compose -f <file>`, or (None, message) if docker/compose is
+    unavailable. Shared by services_control + ensure_searxng."""
     compose = REPO / "tools" / "compose" / "docker-compose.yml"
     if not shutil.which("docker"):
-        return "Docker not found. Install docker, then re-run setup (it provisions the compose services)."
+        return None, "Docker not found. Install docker, then re-run setup (it provisions the compose services)."
     if not compose.exists():
-        return f"No compose file at {compose}."
-    base = ["docker", "compose", "-f", str(compose)]
+        return None, f"No compose file at {compose}."
+    return ["docker", "compose", "-f", str(compose)], ""
+
+
+def _write_compose_env(config: dict) -> None:
+    """Write tools/compose/.env with the resolved ports (compose reads it for up)."""
+    from bob_core import _port
+    (REPO / "tools" / "compose" / ".env").write_text(
+        f"REPO_PATH={REPO}\n"
+        f"LANGFUSE_PORT={_port(config, 'langfusePort')}\n"
+        f"SEARXNG_PORT={_port(config, 'searxngPort')}\n"
+        f"N8N_PORT={_port(config, 'n8nPort')}\n", encoding="utf-8")
+
+
+def services_control(config: dict, action: str = "status", service: str = None) -> str:
+    """Docker compose lifecycle (langfuse/searxng/n8n). Optional — needs docker + the compose file.
+    `service` scopes start/stop/logs to ONE container (e.g. just searxng) instead of the whole group."""
+    base, err = _compose_base(config)
+    if err:
+        return err
+    only = [service] if service else []
     if action == "start":
-        env_file = REPO / "tools" / "compose" / ".env"
-        env_file.write_text(
-            f"REPO_PATH={REPO}\n"
-            f"LANGFUSE_PORT={_port(config, 'langfusePort')}\n"
-            f"SEARXNG_PORT={_port(config, 'searxngPort')}\n"
-            f"N8N_PORT={_port(config, 'n8nPort')}\n", encoding="utf-8")
-        r = subprocess.run(base + ["up", "-d"], check=False, capture_output=True, text=True)
-        return "Services started.\n" + (r.stderr or r.stdout).strip()
+        _write_compose_env(config)
+        r = subprocess.run(base + ["up", "-d"] + only, check=False, capture_output=True, text=True)
+        label = f"{service} started" if service else "Services started"
+        return f"{label}.\n" + (r.stderr or r.stdout).strip()
     if action == "stop":
-        subprocess.run(base + ["down"], check=False, capture_output=True)
-        return "Services stopped."
+        # `stop <svc>` for one container; `down` tears the whole group down.
+        subprocess.run(base + (["stop", service] if service else ["down"]), check=False, capture_output=True)
+        return f"{service} stopped." if service else "Services stopped."
     if action == "status":
-        r = subprocess.run(base + ["ps"], check=False, capture_output=True, text=True)
+        r = subprocess.run(base + ["ps"] + only, check=False, capture_output=True, text=True)
         return r.stdout.strip() or "No services running."
     if action == "logs":
-        r = subprocess.run(base + ["logs", "--tail=50"], check=False, capture_output=True, text=True)
+        r = subprocess.run(base + ["logs", "--tail=50"] + only, check=False, capture_output=True, text=True)
         return r.stdout.strip()
     return "Usage: bob services start|stop|status|logs"
+
+
+def ensure_searxng(config: dict) -> tuple:
+    """On-demand: bring up JUST the SearXNG container (not the whole compose group) if it isn't already
+    listening, then wait until :searxngPort answers. The single 'make private web search reachable' op,
+    used by web_search + music_play. Best-effort: returns (False, msg) when docker/compose is
+    unavailable so callers fall back gracefully. No-op (already reachable) short-circuits fast."""
+    from bob_core import _port
+    osenv = _osenv()
+    port = _port(config, "searxngPort")
+    if osenv.is_port_in_use(port):
+        return True, "SearXNG already running."
+    base, err = _compose_base(config)
+    if err:
+        return False, err
+    _write_compose_env(config)
+    r = subprocess.run(base + ["up", "-d", "searxng"], check=False, capture_output=True, text=True)
+    if r.returncode != 0:
+        return False, "SearXNG failed to start:\n" + (r.stderr or r.stdout).strip()
+    ready = _poll(lambda: osenv.is_port_in_use(port), timeout=40, interval=0.5)
+    return ready, (f"SearXNG ready on :{port}." if ready
+                   else f"SearXNG starting on :{port} (still warming up; retry shortly).")
 
 
 # --- foreground (CLI-only) launchers --------------------------------------------------------------

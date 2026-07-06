@@ -102,6 +102,7 @@
       "llmRetries": 2,
       "llmRetryBackoffSec": 2.0,
       "allowPrivateFetch": false,
+      "autoStartSearxng": true,
       "disabledTools": [],
       "allowedReadPaths": [],
       "allowedWritePaths": [],
