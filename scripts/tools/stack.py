@@ -23,7 +23,10 @@ SCRIPTS = REPO / "scripts"
 
 # PID/log convention: logs/<svc>.{pid,log}. C++ daemons are killed by NAME (they survive stale pidfiles);
 # python-hosted services (litellm/piper/open-webui) are killed by pidfile + child-reaping tree kill.
-_NAME_KILL = ["llama-swap", "llama-server", "whisper-server"]
+# Reaped by process name so they die even when the pidfile is stale/missing. open-webui belongs here
+# too: it's launched detached and a prior `bob stop` unlinks its pidfile, so without a name-kill a
+# reparented WebUI keeps holding :3000 and no later stop can find it (POSIX pkill -f matches its cmdline).
+_NAME_KILL = ["llama-swap", "llama-server", "whisper-server", "open-webui"]
 _PS_SERVICES = ["llama-swap", "litellm", "open-webui", "whisper", "piper"]
 
 

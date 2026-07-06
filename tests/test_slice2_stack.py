@@ -140,6 +140,17 @@ class TestStop(unittest.TestCase):
             out = stack.stack_stop(CFG)
         self.assertEqual(out, "Nothing was running.")
 
+    def test_open_webui_reaped_by_name_without_pidfile(self):
+        # Regression: WebUI must be name-killed even with NO open-webui.pid (a prior stop unlinks it),
+        # else a reparented WebUI keeps holding :3000 and no later `bob stop` can find it.
+        self.assertIn("open-webui", stack._NAME_KILL)
+        with mock.patch.object(osenv, "stop_processes_by_name", return_value=["open-webui"]) as sk, \
+             mock.patch.object(osenv, "pid_alive", return_value=False), \
+             mock.patch.object(stack.shutil, "which", return_value=None):
+            out = stack.stack_stop(CFG)   # no open-webui.pid on disk
+        sk.assert_called_once_with(stack._NAME_KILL)
+        self.assertIn("open-webui", out)
+
 
 class TestLogs(unittest.TestCase):
     def setUp(self):
