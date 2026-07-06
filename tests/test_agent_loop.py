@@ -33,6 +33,39 @@ class TestAgentLoop(unittest.TestCase):
         self.assertEqual(events[1]["result"], "echoed hi")
         self.assertEqual(events[-1]["result"], "All done.")
 
+    def test_repeated_identical_call_is_blocked_then_forces_answer(self):
+        # Loop-pathology guard: a model that fixates on one tool with identical args must not spin
+        # forever (the /voice memory_recall recursion). It runs dup_limit times, then repeats are
+        # blocked and the model is forced to answer.
+        self.cfg["agent"]["maxDuplicateToolCalls"] = 2
+        dup = '<tool_call>{"name": "echo", "arguments": {"x": "hi"}}</tool_call>'
+        bob_core.get_llm_client = lambda config=None: _common.scripted_client([dup])  # always the same call
+        reg = _common.FakeRegistry({"echo": "echoed hi"})
+        events = list(bob_loop.run_agent_events("go", self.cfg, agency="silent", registry=reg))
+        final = [e for e in events if e["type"] == "final"][-1]
+        self.assertEqual(final["reason"], "forced_answer")           # terminated, not max_steps
+        self.assertEqual(reg.dispatched.count("echo"), 2)           # ran twice, then blocked
+        blocked = [e for e in events
+                   if e["type"] == "tool_result" and "blocked" in e["result"].lower()]
+        self.assertTrue(blocked)                                    # further repeats surfaced as blocked
+
+    def test_distinct_calls_are_not_blocked(self):
+        # The guard must only catch IDENTICAL repeats — distinct calls (even same tool, different args)
+        # run normally.
+        self.cfg["agent"]["maxDuplicateToolCalls"] = 2
+        turns = [
+            '<tool_call>{"name": "echo", "arguments": {"x": "a"}}</tool_call>',
+            '<tool_call>{"name": "echo", "arguments": {"x": "b"}}</tool_call>',
+            "done",
+        ]
+        bob_core.get_llm_client = lambda config=None: _common.scripted_client(turns)
+        reg = _common.FakeRegistry({"echo": "echoed"})
+        events = list(bob_loop.run_agent_events("go", self.cfg, agency="silent", registry=reg))
+        final = [e for e in events if e["type"] == "final"][-1]
+        self.assertEqual(final["reason"], "answer")
+        self.assertEqual(final["result"], "done")
+        self.assertEqual(reg.dispatched.count("echo"), 2)          # both distinct calls ran
+
     def test_run_agent_wrapper_returns_result(self):
         bob_core.get_llm_client = lambda config=None: _common.scripted_client(["Just answer."])
         result, exit_req = bob_loop.run_agent("q", self.cfg, agency="silent",

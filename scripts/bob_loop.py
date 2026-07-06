@@ -423,8 +423,26 @@ def _parallel_eligible(name: str, registry, ctx, agency: str) -> bool:
     return True
 
 
+def _call_sig(tc) -> str:
+    """Normalized signature of a tool call (name + canonical args) for duplicate detection — so
+    identical calls are recognised regardless of key order / whitespace in the arguments JSON."""
+    raw = tc.function.arguments or ""
+    try:
+        args = json.dumps(json.loads(raw), sort_keys=True, separators=(",", ":"))
+    except Exception:  # noqa: BLE001 — malformed args: compare the raw text
+        args = raw.strip()
+    return f"{tc.function.name}:{args}"
+
+
+_BLOCKED_DUP_MSG = ("(Repeated call blocked — you already ran this exact tool call earlier in this "
+                    "turn and it returned the same result. Do NOT call it again; use what you have "
+                    "and give your final answer now.)")
+_STUCK_ANSWER_MSG = ("I got stuck repeating the same lookup and couldn't make progress. Could you "
+                     "rephrase or give me a bit more detail?")
+
+
 def _run_tool_calls(tool_calls, call_ids, *, registry, run_ctx, agency, approve, log, rid,
-                    cancel, exit_on_tools, max_parallel):
+                    cancel, exit_on_tools, max_parallel, call_counts=None, dup_limit=0):
     """Dispatch a step's tool calls, yielding tool_call-result / approval events and RETURNING an
     ordered result list (via StopIteration.value). O2: when maxParallelTools>1, side-effect-free
     'allow' calls run concurrently in a bounded ThreadPoolExecutor while mutating / ask / deny /
@@ -435,9 +453,16 @@ def _run_tool_calls(tool_calls, call_ids, *, registry, run_ctx, agency, approve,
     Returns dict(results=[(tc, cid, result), ...], exit_requested, tools_run, tokens_est, cancelled).
     On cancel it stops before dispatching the next call, abandons not-yet-started futures (a running
     tool can't be preempted), and sets cancelled=True for the caller to end the run."""
-    out = {"results": [], "exit_requested": False, "tools_run": 0, "tokens_est": 0, "cancelled": False}
+    out = {"results": [], "exit_requested": False, "tools_run": 0, "tokens_est": 0, "cancelled": False,
+           "blocked": 0}
+    call_counts = call_counts if call_counts is not None else {}
     cap = _parallel_cap(max_parallel)
-    eligible = ([_parallel_eligible(tc.function.name, registry, run_ctx, agency) for tc in tool_calls]
+    # Duplicate guard: a call whose signature has already run dup_limit times this run is BLOCKED —
+    # short-circuited with a nudge instead of re-dispatched — so a model fixating on one tool can't
+    # spin forever. Computed from the pre-step counts (identical calls WITHIN one step still run).
+    blocked = [dup_limit > 0 and call_counts.get(_call_sig(tc), 0) >= dup_limit for tc in tool_calls]
+    eligible = ([(not blocked[i]) and _parallel_eligible(tc.function.name, registry, run_ctx, agency)
+                 for i, tc in enumerate(tool_calls)]
                 if cap > 1 else [False] * len(tool_calls))
 
     ex = None
@@ -454,6 +479,15 @@ def _run_tool_calls(tool_calls, call_ids, *, registry, run_ctx, agency, approve,
             if cancel.cancelled():
                 out["cancelled"] = True
                 break
+            if blocked[i]:
+                log.info(f"[{rid}] tool {tc.function.name} BLOCKED (repeat >= {dup_limit}) (call_id={cid})")
+                out["blocked"] += 1
+                out["tools_run"] += 1
+                out["results"].append((tc, cid, _BLOCKED_DUP_MSG))
+                yield {"type": "tool_result", "call_id": cid, "name": tc.function.name,
+                       "result": _BLOCKED_DUP_MSG}
+                continue
+            call_counts[_call_sig(tc)] = call_counts.get(_call_sig(tc), 0) + 1
             if tc.function.name in exit_on_tools:
                 out["exit_requested"] = True
             if i in futs:
@@ -473,6 +507,8 @@ def _run_tool_calls(tool_calls, call_ids, *, registry, run_ctx, agency, approve,
     finally:
         if ex is not None:
             ex.shutdown(wait=False, cancel_futures=True)
+    # The whole step was repeats (no fresh dispatch) — the caller uses this to force a final answer.
+    out["fully_blocked"] = bool(tool_calls) and out["blocked"] == len(tool_calls)
     return out
 
 
@@ -1091,6 +1127,10 @@ def run_agent_events(
         effective_role = get_role(config, "vision")
     effective_agency = agency or agent_cfg.get("agency", "show")
     max_steps = int(agent_cfg.get("maxSteps", 10))
+    # Loop-pathology guard: a (small) model can fixate on one tool and call it with identical args
+    # forever (e.g. memory_recall over and over) without ever answering. Allow a signature to run this
+    # many times, then BLOCK further identical calls; 0 disables the guard.
+    dup_limit = int(agent_cfg.get("maxDuplicateToolCalls", 2))
     max_hist = int(agent_cfg.get("maxHistoryMsgs", 40))
     # O3 — context compaction. Default 'truncate' == pre-O3 drop-oldest (byte-identical); 'summarize'
     # replaces the dropped span with one compact note via summarize_turns (opt-in — it calls the LLM).
@@ -1315,6 +1355,8 @@ def run_agent_events(
             log.info(f"[{rid}] plan injected ({len(plan_text)}c)")
 
     verified = False   # O4 — verify pass runs at most once per run (bounded)
+    call_counts: dict = {}   # loop-guard: tool-call signature -> times dispatched this run
+    force_answer = False      # set after a fully-repeated step: next turn must answer, not call tools
     prev_sigint = _install_interrupt_handler(cancel)
     try:
         for step in range(max_steps):
@@ -1443,6 +1485,15 @@ def run_agent_events(
                        "exit_requested": exit_requested, "reason": "answer"}
                 return
 
+            # Loop-guard: the previous step was nothing but repeated calls and we told the model to
+            # stop. It emitted tool calls anyway — take its content as the answer instead of spinning.
+            if force_answer:
+                final = (_strip_tool_calls(content) if hermes_mode else content).strip() or _STUCK_ANSWER_MSG
+                log.warning(f"[{rid}] forcing answer after repeated tool calls")
+                yield {"type": "final", "result": final,
+                       "exit_requested": exit_requested, "reason": "forced_answer"}
+                return
+
             call_ids = [_call_id(tc, step, idx) for idx, tc in enumerate(tool_calls)]
             for tc, cid in zip(tool_calls, call_ids):
                 yield {"type": "tool_call", "call_id": cid,
@@ -1456,7 +1507,8 @@ def run_agent_events(
             step = yield from _run_tool_calls(
                 tool_calls, call_ids, registry=registry, run_ctx=run_ctx,
                 agency=effective_agency, approve=approve, log=log, rid=rid, cancel=cancel,
-                exit_on_tools=exit_on_tools, max_parallel=max_parallel_tools)
+                exit_on_tools=exit_on_tools, max_parallel=max_parallel_tools,
+                call_counts=call_counts, dup_limit=dup_limit)
             tools_run += step["tools_run"]
             tokens_est += step["tokens_est"]
             if step["exit_requested"]:
@@ -1493,6 +1545,15 @@ def run_agent_events(
                                  "content": [{"type": "text", "text": "[image(s) returned by the tool above]"}]
                                             + [_image_content_block(s) for s in step_images]})
                 log.info(f"[{rid}] tool returned {len(step_images)} image(s); routing to vision={effective_role}")
+
+            # Loop-guard: this step was ENTIRELY repeated calls (all blocked). Tell the model to stop
+            # calling tools and answer; the force_answer latch makes the next turn finalize regardless.
+            if step.get("fully_blocked"):
+                log.warning(f"[{rid}] all tool calls were repeats (step {steps_done}) — forcing an answer")
+                messages.append({"role": "user", "content":
+                    "You are repeating identical tool calls that add no new information. Do NOT call any "
+                    "tool now — answer me directly using what you already have."})
+                force_answer = True
 
         log.warning(f"[{rid}] stopped after {max_steps} steps without a final answer")
         print(f"Agent stopped after {max_steps} steps without a final answer.", file=sys.stderr)
