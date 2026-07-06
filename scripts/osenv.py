@@ -226,11 +226,16 @@ def _pcm_to_wav(pcm_bytes: bytes) -> bytes:
     return buf.getvalue()
 
 
-def record_audio(silence_sec: float = 1.5, rms_silence: int = 200) -> bytes:
+def record_audio(silence_sec: float = 1.5, rms_silence: int = 200,
+                 max_wait_sec: float = 10.0, max_record_sec: float = 30.0) -> bytes:
     """Record the mic until `silence_sec` of continuous silence; return 16 kHz mono WAV bytes (b'' if
     nothing was captured). Discards leading silence so recording starts when speech does. Cross-platform
     via sounddevice (PortAudio). Raises RuntimeError if the audio stack isn't installed — single source
-    of the RMS-silence capture used by `bob listen`/`transcribe` and the /voice mode."""
+    of the RMS-silence capture used by `bob listen`/`transcribe` and the /voice mode.
+
+    Two guards keep it from hanging forever (the "I speak and nothing happens" bug): if no speech clears
+    the RMS threshold within `max_wait_sec` (wrong/quiet input device, low gain) it returns b'' instead
+    of looping forever, and once speaking it stops after `max_record_sec` even if silence never lands."""
     try:
         import numpy as np
         import sounddevice as sd
@@ -238,11 +243,14 @@ def record_audio(silence_sec: float = 1.5, rms_silence: int = 200) -> bytes:
         raise RuntimeError("mic capture needs sounddevice + numpy (pip install sounddevice numpy)") from e
     chunk_secs = 0.1
     silence_chunks = int(silence_sec / chunk_secs)
+    max_wait_chunks = int(max_wait_sec / chunk_secs)      # bail if speech never starts
+    max_record_chunks = int(max_record_sec / chunk_secs)  # hard cap on a single utterance
     chunk_samples = int(_AUDIO_SAMPLE_RATE * chunk_secs)
-    frames, consecutive_silence, started = [], 0, False
+    frames, consecutive_silence, started, elapsed = [], 0, False, 0
     with sd.InputStream(samplerate=_AUDIO_SAMPLE_RATE, channels=_AUDIO_CHANNELS, dtype="int16") as stream:
         while True:
             data, _ = stream.read(chunk_samples)
+            elapsed += 1
             rms = np.sqrt(np.mean(data.astype(np.float32) ** 2))
             if rms > rms_silence:
                 started, consecutive_silence = True, 0
@@ -252,6 +260,10 @@ def record_audio(silence_sec: float = 1.5, rms_silence: int = 200) -> bytes:
                 frames.append(data.copy())
                 if consecutive_silence >= silence_chunks:
                     break
+            if not started and elapsed >= max_wait_chunks:
+                return b""                    # no speech detected in max_wait — don't hang
+            if started and elapsed >= max_record_chunks:
+                break                         # utterance ran past the cap — stop
     if not frames:
         return b""
     return _pcm_to_wav(np.concatenate(frames, axis=0).tobytes())

@@ -142,6 +142,39 @@ class TestAudioSeam(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 osenv.record_audio(0.1)
 
+    def test_record_audio_no_speech_returns_instead_of_hanging(self):
+        # The "I speak and nothing happens" bug: a silent/too-quiet input must NOT loop forever.
+        import numpy as np
+
+        class _Silent:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self, n): return np.zeros((n, 1), dtype="int16"), None
+
+        fake_sd = types.SimpleNamespace(InputStream=lambda **k: _Silent())
+        with mock.patch.dict(sys.modules, {"sounddevice": fake_sd}):
+            out = osenv.record_audio(silence_sec=0.1, max_wait_sec=0.3)   # 3 silent chunks -> bail
+        self.assertEqual(out, b"")
+
+    def test_record_audio_captures_then_stops_on_silence(self):
+        import numpy as np
+        n = int(osenv._AUDIO_SAMPLE_RATE * 0.1)
+        loud = np.full((n, 1), 5000, dtype="int16")
+        quiet = np.zeros((n, 1), dtype="int16")
+        seq = {"i": 0}
+
+        class _Seq:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self, _n):
+                i = seq["i"]; seq["i"] += 1
+                return (loud if i < 2 else quiet), None   # 2 loud chunks, then silence
+
+        fake_sd = types.SimpleNamespace(InputStream=lambda **k: _Seq())
+        with mock.patch.dict(sys.modules, {"sounddevice": fake_sd}):
+            out = osenv.record_audio(silence_sec=0.2, max_wait_sec=5.0)
+        self.assertTrue(out.startswith(b"RIFF"))          # a WAV was produced from the captured speech
+
     def test_pcm_to_wav_produces_valid_wav(self):
         wav = osenv._pcm_to_wav(b"\x00\x00\x01\x00")
         self.assertTrue(wav.startswith(b"RIFF"))

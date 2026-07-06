@@ -805,7 +805,10 @@ class BobShell:
                 except RuntimeError as e:            # audio stack / server vanished mid-session
                     self.console.print(f"[{t.error}]{e}[/]")
                     break
-                if not transcript.strip():           # silence / empty transcript → keep listening
+                if not transcript.strip():           # nothing captured → nudge (mic?) and keep listening
+                    self.console.print(
+                        f"[{t.muted}]…didn't catch anything — speak a bit louder, check your mic "
+                        f"input device/volume, or Ctrl-C to exit[/]")
                     continue
                 if transcript.strip().lower().rstrip(".!?") in _VOICE_EXIT_WORDS:
                     break
