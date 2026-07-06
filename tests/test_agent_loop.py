@@ -66,6 +66,29 @@ class TestAgentLoop(unittest.TestCase):
         self.assertEqual(final["result"], "done")
         self.assertEqual(reg.dispatched.count("echo"), 2)          # both distinct calls ran
 
+    def test_hermes_tool_call_without_closing_tag_still_executes(self):
+        # Small models sometimes emit <tool_call>{...} but drop the </tool_call>; the call must still
+        # run (not leak as raw text in the answer).
+        turns = [
+            '<tool_call>{"name": "echo", "arguments": {"x": "hi"}}',   # no closing tag
+            "done",
+        ]
+        bob_core.get_llm_client = lambda config=None: _common.scripted_client(turns)
+        reg = _common.FakeRegistry({"echo": "echoed"})
+        events = list(bob_loop.run_agent_events("go", self.cfg, agency="silent", registry=reg))
+        self.assertEqual(reg.dispatched, ["echo"])                     # executed, not shown as text
+        self.assertIn("tool_call", [e["type"] for e in events])
+        self.assertEqual([e for e in events if e["type"] == "final"][-1]["result"], "done")
+
+    def test_parser_recovers_unclosed_tool_call_but_not_bare_mentions(self):
+        calls = bob_loop._parse_hermes_tool_calls('<tool_call>{"name":"m","arguments":{"a":1}}')
+        self.assertIsNotNone(calls)                                    # unclosed JSON call recovered
+        self.assertEqual(calls[0].function.name, "m")
+        # a bare literal mention (no JSON after the tag) is NOT a tool call, and survives stripping
+        self.assertIsNone(bob_loop._parse_hermes_tool_calls("use the <tool_call> syntax"))
+        self.assertEqual(bob_loop._strip_tool_calls("use the <tool_call> syntax"),
+                         "use the <tool_call> syntax")
+
     def test_run_agent_wrapper_returns_result(self):
         bob_core.get_llm_client = lambda config=None: _common.scripted_client(["Just answer."])
         result, exit_req = bob_loop.run_agent("q", self.cfg, agency="silent",

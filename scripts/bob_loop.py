@@ -122,13 +122,55 @@ def _sleep_cancellable(seconds: float, cancel=None, tick: float = 0.25) -> None:
         time.sleep(min(tick, remaining))
 
 
+def _first_json_object(s: str) -> str | None:
+    """Return the first balanced {...} JSON object at the start of `s` (ignoring leading space), or None.
+    Brace-counts with string/escape awareness so a small model that omits the closing </tool_call> tag
+    still yields a parseable object."""
+    s = s.lstrip()
+    if not s.startswith("{"):
+        return None
+    depth, in_str, esc = 0, False, False
+    for i, ch in enumerate(s):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return s[: i + 1]
+    return None
+
+
+def _unclosed_tool_call_blocks(content: str) -> list:
+    """Fallback when no well-formed <tool_call>…</tool_call> pairs exist: small models often emit the
+    opening tag and the JSON but drop the closing tag. Take the JSON object after each opening tag."""
+    out = []
+    for part in content.split(_TOOL_OPEN)[1:]:
+        obj = _first_json_object(part.split("</tool_call>")[0])
+        if obj:
+            out.append(obj)
+    return out
+
+
 def _parse_hermes_tool_calls(content: str) -> list | None:
     """Parse <tool_call> blocks from Hermes-format content.
     Handles both JSON-inside and XML-sub-element variants.
+    Tolerates a missing closing </tool_call> tag (common with small models), so the call is executed
+    instead of leaking as raw text in the answer.
     Malformed JSON blocks are returned as __parse_error__ calls so the LLM
     can see the failure and self-correct, rather than being silently dropped.
     """
     blocks = re.findall(r"<tool_call>(.*?)</tool_call>", content, re.DOTALL)
+    if not blocks and _TOOL_OPEN in content:
+        blocks = _unclosed_tool_call_blocks(content)   # missing close tag → recover the JSON object
     if not blocks:
         return None
     calls = []
@@ -200,6 +242,9 @@ def _parse_hermes_tool_calls(content: str) -> list | None:
 
 
 def _strip_tool_calls(content: str) -> str:
+    # Only paired tags are stripped; a real unclosed <tool_call>{json} is routed to the tool path by
+    # _parse_hermes_tool_calls (so it never reaches here as an answer), while a bare literal mention of
+    # "<tool_call>" in a genuine answer must survive intact.
     return re.sub(r"<tool_call>.*?</tool_call>", "", content, flags=re.DOTALL).strip()
 
 
