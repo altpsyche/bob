@@ -1,5 +1,5 @@
 {
-  "_comment": "NB1 (contract C2) — the single neutral source of truth for shared constants. Read by both PowerShell (ConvertFrom-Json in scripts/_models.ps1) and Python (json.load in scripts/bob_core.py), and it exists before the venv so bootstrap can use it. Never re-inline a port number or role literal elsewhere. 'ports' + 'roleTable' are shared by both languages; 'runtime' is the neutral runtime-config default layer the Python resolver (scripts/bob_config.py, NB2) merges — PowerShell ignores it (Windows authors config/bob.psd1). NB7 later unifies authoring so this duplication with bob.psd1's committed defaults goes away.",
+  "_comment": "NB1 (contract C2) — the single neutral source of truth for shared constants. Read by Python (json.load in scripts/bob_core.py); it exists before the venv so bootstrap can use it. Never re-inline a port number or role literal elsewhere. 'ports' + 'roleTable' are the shared constants; 'runtime' is the neutral runtime-config default layer the Python resolver (scripts/bob_config.py, NB2) merges. Per-machine overrides live in config/user.json (deep-merged). The PowerShell reader and config/bob.psd1 are retired (MODULE ONE) — this is now the sole authoring source.",
 
   "ports": {
     "port": 8080,

@@ -1,5 +1,5 @@
 {
-  "_doc": "Copy this file to config/user.json (gitignored) to override defaults per-machine. Deep-merged over config/models.json (defaults/profiles/prompts/peers) and over config/defaults.json.runtime + bob.psd1 (the 'bob' section). Re-run `bob gen` after editing; changes take effect on next `bob serve`. See config/models.json's defaults block for every tunable knob (ngl, kvQuantK/V, batch, ubatch, parallel, noMmap, mlockBig, numa, ...); full prose lives in config/models.psd1's git history.",
+  "_doc": "Copy this file to config/user.json (gitignored) to override defaults per-machine. Deep-merged over config/models.json (defaults/profiles/prompts/peers) and over config/defaults.json.runtime. Re-run `bob gen` after editing; changes take effect on next `bob serve`. See config/models.json's defaults block for every tunable knob (ngl, kvQuantK/V, batch, ubatch, parallel, noMmap, mlockBig, numa, ...).",
 
   "defaults": {
     "_example_ngl": 80,

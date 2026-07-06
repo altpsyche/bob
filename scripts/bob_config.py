@@ -2,14 +2,12 @@
 `config.json` shape from the neutral sources (config/defaults.json + an optional neutral user
 override) WITHOUT PowerShell, so the agent runtime can boot on any OS.
 
-This is deliberately NOT a re-implementation of the PowerShell `Get-BobConfig` merge — it produces
-only the ~15 keys the Python core actually reads (C2): port, litellmPort, agentPort, searxngPort,
-litellmKey, routing.*, persona.systemPrompt, agent.*, memory.*, vision.*, voice.*. It never reproduces
-provisioner keys (profiles, peers, model file paths, build flags, toastAppId). Parity is "the
-runtime receives every runtime key it needs, correctly" — not byte-identity with the PS merge.
+It produces only the ~15 keys the Python core actually reads (C2): port, litellmPort, agentPort,
+searxngPort, litellmKey, routing.*, persona.systemPrompt, agent.*, memory.*, vision.*, voice.*. It
+never reproduces provisioner keys (profiles, peers, model file paths, build flags).
 
-On Windows nothing uses this: Get-BobConfig writes the full data/config.json and load_config reads
-it. The resolver is only the fallback when PowerShell isn't in the loop (bob_core.load_config).
+This is now the ONE config resolve path on every OS — bob_core.load_config calls it unconditionally
+(the PowerShell Get-BobConfig/data/config.json path is retired, MODULE ONE).
 """
 import copy
 import json
@@ -78,7 +76,7 @@ def _load_toml(path: Path) -> dict:
 
 def resolve_runtime_config(user_path: Optional[Path] = None) -> dict:
     """Build the runtime-subset config from config/defaults.json + an optional neutral user
-    override. Returns a dict shaped like the runtime keys of data/config.json."""
+    override (config/user.json). Returns the runtime config the core reads."""
     defaults = load_defaults()
     ports = defaults["ports"]
     runtime = defaults.get("runtime", {})

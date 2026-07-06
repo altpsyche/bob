@@ -38,6 +38,13 @@ class TestConfigStaleness(unittest.TestCase):
         # Even if REPO/data/config.json exists on this box, the POSIX path ignores it and resolves.
         self.assertEqual(bob_core.load_config().get("_sentinel"), "resolved")
 
+    def test_windows_also_resolves_no_data_config_fork(self):
+        # S9 — the dead Windows data/config.json fork is gone: load_config resolves in Python on EVERY
+        # OS (Get-BobConfig is retired, so nothing writes data/config.json anywhere).
+        os.environ["BOB_FORCE_OS"] = "windows"
+        self.bob_config.resolve_runtime_config = lambda user_path=None: {"_sentinel": "resolved"}
+        self.assertEqual(bob_core.load_config().get("_sentinel"), "resolved")
+
     def test_persona_guidance_reaches_runtime(self):
         # Regression: the durable-identity guidance in defaults.json must actually reach the loop's
         # system prompt (it was shadowed by the stale data/config.json).

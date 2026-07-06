@@ -85,20 +85,15 @@ def get_role(config: dict, task: str = "chat", pro: bool = False) -> str:
 
 
 def load_config() -> dict:
-    """Load merged bob config.
+    """Resolve the merged runtime config in Python from the neutral sources — on EVERY OS.
 
-    On Windows `Get-BobConfig` (PowerShell) writes the full data/config.json and this reads it,
-    unchanged. Everywhere else NOTHING writes it (the PowerShell front door is retired), so a
-    data/config.json present on a POSIX box is a STALE PowerShell-era artifact — reading it would
-    silently freeze every config/defaults.json change (persona, memory, …) at whatever PS last wrote.
-    So off Windows we always resolve the runtime config in Python from the neutral sources
-    (config/defaults.json + config/user.json, the documented override); data/config.json is ignored.
-    NB2 (contract C2): the runtime never *requires* `bob gen`.
+    The PowerShell front door is fully retired (MODULE ONE), so `Get-BobConfig` no longer exists and
+    nothing writes data/config.json anywhere. Config now resolves the same way on every platform:
+    config/defaults.json + config/user.json (the documented override), via bob_config. A stale
+    data/config.json from the PS era is deliberately IGNORED — reading it would silently freeze every
+    defaults.json change (persona, memory, …) at whatever PS last wrote. NB2 (contract C2): the runtime
+    never *requires* `bob gen`.
     """
-    import osenv
-    path = REPO / "data" / "config.json"
-    if path.exists() and osenv.is_windows():
-        return json.loads(path.read_text(encoding="utf-8"))
     import bob_config  # local import: avoids a cycle (bob_config imports bob_core)
 
     return bob_config.resolve_runtime_config()

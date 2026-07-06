@@ -1,11 +1,10 @@
 """ND1 (contract C2) — versions.lock reader/validator for the Python side.
 
-versions.lock is a GENERATED neutral JSON lock (see scripts/_versions.ps1 `Write-VersionsLock` /
-`bob lock`) pinning submodule commits, per-venv requirements, minimum toolchain versions, and the
-model manifest (repo -> revision -> sha256, incl. the NC8 CPU-tier GGUF). It is generated from
-existing single sources (git gitlinks + models.psd1 + manifest.json + pip freeze) — the pwsh side
-owns generation because models.psd1 is PowerShell-only; Python only READS it, to verify model
-checksums on fetch and to report reproducibility.
+versions.lock is a GENERATED neutral JSON lock (`bob lock`, scripts/bob/versions.py) pinning submodule
+commits, per-venv requirements, minimum toolchain versions, and the model manifest (repo -> revision
+-> sha256, incl. the NC8 CPU-tier GGUF). It is generated from existing single sources (git gitlinks +
+config/models.json + manifest.json + pip freeze); the lock is READ to verify model checksums on fetch
+and to report reproducibility.
 
 Mirrors bob_core.load_defaults(): fail loud with a clear message if the lock is missing rather than
 resolving to None.

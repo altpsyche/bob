@@ -8,8 +8,8 @@ _allowed_write: list = []
 
 # N9 / NB3 (C3) — secrets denylist: refuse these even when they fall inside an allowedReadPaths
 # root (which defaults to the repo root, and so would otherwise expose the litellm key / api
-# tokens in data/config.json, the resolved secrets file, the session/memory stores, config .psd1
-# files, logs, and .env files). NB3 makes it OS-aware + data-dir-relative.
+# tokens in data/config.json, the resolved secrets file, the session/memory stores, logs, and .env
+# files). NB3 makes it OS-aware + data-dir-relative.
 _DENY_BASENAMES = {"config.json", "secrets.json"}  # carry litellmKey / apiTokens / provider keys
 _DENY_SUFFIXES = (".psd1", ".db")   # bob.psd1/user.psd1 config; *.db session/memory stores
 
