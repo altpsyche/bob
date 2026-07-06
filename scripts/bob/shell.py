@@ -597,8 +597,40 @@ class BobShell:
 
     def _cmd_services(self, arg: str = "") -> None:
         """/services — the cockpit dashboard (every service, up/down). /services start|stop [name]
-        toggles one; with no name, the Docker services (SearXNG/n8n/Langfuse) as a group."""
-        self._render_dashboard()
+        toggles one; with no name, the Docker services (SearXNG/n8n/Langfuse) as a group. After a
+        toggle the dashboard re-renders, so the changed row flips colour — the visual-feedback loop."""
+        parts = arg.split()
+        if not parts:
+            self._render_dashboard()
+            return
+        action = parts[0].lower()
+        if action not in ("start", "stop"):
+            self.console.print("[yellow]usage: /services [start|stop [name]][/]  (no name = Docker group)")
+            return
+        name = parts[1].lower() if len(parts) > 1 else None
+        self.console.print(self._toggle_service(action, name))
+        self._render_dashboard()      # visual feedback — the toggled row flips ●
+
+    def _toggle_service(self, action: str, name) -> str:
+        """Route a /services toggle to the right lifecycle op, derived from the SERVICES registry (no
+        hardcoded service sets): daemons → service_control; Docker (or no name) → the compose group;
+        core inference / WebUI / agent-api aren't single-service toggles here (dedicated commands)."""
+        import stack
+        by = {s["name"]: s for s in stack.SERVICES}
+        label_to_name = {s.get("label", s["name"]): s["name"] for s in stack.SERVICES}
+        docker = {s["name"] for s in stack.SERVICES if s.get("docker")}
+        daemons = set(stack._DAEMON_CONTROL)
+        if name is None:
+            return stack.services_control(self.config, action)    # Docker group (the default target)
+        canonical = name if name in by else label_to_name.get(name)
+        if canonical is None:
+            return f"unknown service '{name}' — see /services"
+        if canonical in daemons:
+            return stack.service_control(self.config, canonical, action)
+        if canonical in docker:
+            return stack.services_control(self.config, action)    # compose toggles the group
+        return (f"'{canonical}' can't be toggled individually here — use "
+                f"/up · /restart · /stop (inference/WebUI), or `bob agent serve` (agent-api).")
 
     def _cmd_up(self, arg: str = "") -> None:
         """/up [--with-services] [--no-open] — bring the stack up in the background (endpoint + proxy +
@@ -609,11 +641,13 @@ class BobShell:
         open_browser = "--no-open" not in toks
         self.console.print(stack.stack_up(self.config, open_browser=open_browser,
                                           with_services=with_services))
+        self._render_dashboard()      # visual feedback — the rows that came up flip green
 
     def _cmd_restart(self, _arg: str = "") -> None:
         """/restart — bounce the inference endpoint + proxy (+ WebUI) and wait for ready."""
         import stack
         self.console.print(stack.stack_restart(self.config))
+        self._render_dashboard()
 
     def _cmd_webui(self, _arg: str = "") -> None:
         """/webui — open the Open WebUI browser tab if it's running; else point at how to start it.
@@ -635,6 +669,7 @@ class BobShell:
         it back on your next turn."""
         import stack   # scripts/tools is on sys.path (module top)
         self.console.print(stack.stack_stop(self.config))
+        self._render_dashboard()      # visual feedback — everything flips to down (VRAM freed)
 
     def _cmd_logs(self, arg: str = "") -> None:
         """/logs [N] — a bounded tail of the inference-server log (no follow; the shell owns the TTY)."""

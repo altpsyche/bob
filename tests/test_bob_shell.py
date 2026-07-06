@@ -203,30 +203,95 @@ class TestCockpit(unittest.TestCase):
     to the one stack.* core so you never drop to raw `bob` verbs to manage the system."""
 
     def test_up_routes_to_stack_up(self):
+        import osenv
         import stack
         sh, out = _make_shell()
         calls = {}
-        with _patch(stack, "stack_up", lambda cfg, open_browser=True, with_services=False:
+        with _patch(osenv, "is_port_in_use", lambda p, *a, **k: False), \
+             _patch(stack, "stack_up", lambda cfg, open_browser=True, with_services=False:
                     calls.update(ob=open_browser, ws=with_services) or "brought up"):
             sh.dispatch("/up")
         self.assertEqual((calls["ob"], calls["ws"]), (True, False))
         self.assertIn("brought up", out.file.getvalue())
 
     def test_up_flags_parsed(self):
+        import osenv
         import stack
         sh, _ = _make_shell()
         calls = {}
-        with _patch(stack, "stack_up", lambda cfg, open_browser=True, with_services=False:
+        with _patch(osenv, "is_port_in_use", lambda p, *a, **k: False), \
+             _patch(stack, "stack_up", lambda cfg, open_browser=True, with_services=False:
                     calls.update(ob=open_browser, ws=with_services) or "x"):
             sh.dispatch("/up --with-services --no-open")
         self.assertEqual((calls["ob"], calls["ws"]), (False, True))
 
     def test_restart_routes_to_stack_restart(self):
+        import osenv
         import stack
         sh, out = _make_shell()
-        with _patch(stack, "stack_restart", lambda cfg: "restarted"):
+        with _patch(osenv, "is_port_in_use", lambda p, *a, **k: False), \
+             _patch(stack, "stack_restart", lambda cfg: "restarted"):
             sh.dispatch("/restart")
         self.assertIn("restarted", out.file.getvalue())
+
+    def test_services_start_daemon_routes_to_service_control(self):
+        import osenv
+        import stack
+        sh, _ = _make_shell()
+        calls = []
+        with _patch(osenv, "is_port_in_use", lambda p, *a, **k: False), \
+             _patch(stack, "service_control",
+                    lambda cfg, name, action="start": calls.append((name, action)) or "ok"):
+            sh.dispatch("/services start whisper")
+        self.assertEqual(calls, [("whisper", "start")])
+
+    def test_services_start_by_label_resolves_to_daemon(self):
+        # the dashboard shows litellm as "api" — a toggle by the visible label must resolve.
+        import osenv
+        import stack
+        sh, _ = _make_shell()
+        calls = []
+        with _patch(osenv, "is_port_in_use", lambda p, *a, **k: False), \
+             _patch(stack, "service_control",
+                    lambda cfg, name, action="start": calls.append((name, action)) or "ok"):
+            sh.dispatch("/services stop api")
+        self.assertEqual(calls, [("litellm", "stop")])
+
+    def test_services_no_name_toggles_docker_group(self):
+        import osenv
+        import stack
+        sh, _ = _make_shell()
+        calls = []
+        with _patch(osenv, "is_port_in_use", lambda p, *a, **k: False), \
+             _patch(stack, "services_control", lambda cfg, action: calls.append(action) or "ok"):
+            sh.dispatch("/services stop")
+        self.assertEqual(calls, ["stop"])
+
+    def test_services_docker_name_toggles_group(self):
+        import osenv
+        import stack
+        sh, _ = _make_shell()
+        calls = []
+        with _patch(osenv, "is_port_in_use", lambda p, *a, **k: False), \
+             _patch(stack, "services_control", lambda cfg, action: calls.append(action) or "ok"):
+            sh.dispatch("/services start searxng")
+        self.assertEqual(calls, ["start"])
+
+    def test_services_toggle_rerenders_dashboard(self):
+        import osenv
+        import stack
+        sh, out = _make_shell()
+        with _patch(osenv, "is_port_in_use", lambda p, *a, **k: False), \
+             _patch(stack, "service_control", lambda cfg, name, action="start": "ok"):
+            sh.dispatch("/services start piper")
+        self.assertIn("searxng", out.file.getvalue())    # the dashboard re-rendered after the toggle
+
+    def test_services_unknown_name_reports(self):
+        import osenv
+        sh, out = _make_shell()
+        with _patch(osenv, "is_port_in_use", lambda p, *a, **k: False):
+            sh.dispatch("/services start bogus")
+        self.assertIn("unknown service", out.file.getvalue())
 
     def test_webui_opens_when_running(self):
         import osenv
