@@ -161,12 +161,29 @@ class TestVoiceMode(unittest.TestCase):
         sh.dispatch("/voice")
         self.assertEqual(turns, ["real"])         # empties skipped, no turn/speak for them
 
-    def test_stt_down_prints_hint_and_does_not_loop(self):
+    def test_stt_down_autostarts_whisper(self):
+        # New behavior: /voice auto-starts whisper (like chat's auto-start) instead of telling the user
+        # to run `bob whisper`. Here the start "succeeds" (stt_ready flips True), so the loop proceeds.
         import bob_voice
+        import stack
         sh, out = _make_shell()
-        with _patch(bob_voice, "stt_ready", lambda cfg: False):
+        ready = iter([False, True])          # down at preflight, up after whisper_control
+        started = []
+        with _patch(bob_voice, "stt_ready", lambda cfg: next(ready)), \
+             _patch(stack, "whisper_control", lambda cfg, action="start": started.append(action) or "ok"), \
+             _patch(bob_voice, "listen", lambda cfg, silence_sec=None: (_ for _ in ()).throw(KeyboardInterrupt())):
             sh.dispatch("/voice")
-        self.assertIn("bob whisper", out.file.getvalue())
+        self.assertEqual(started, ["start"])           # it tried to bring STT up itself
+        self.assertNotIn("bob whisper", out.file.getvalue())
+
+    def test_stt_still_down_after_autostart_points_to_setup(self):
+        import bob_voice
+        import stack
+        sh, out = _make_shell()
+        with _patch(bob_voice, "stt_ready", lambda cfg: False), \
+             _patch(stack, "whisper_control", lambda cfg, action="start": "ok"):
+            sh.dispatch("/voice")
+        self.assertIn("bob setup-voice", out.file.getvalue())   # honest next step when it can't start
 
     def test_cancelled_turn_speaks_nothing(self):
         # _run_turn returns None on a cancelled/errored turn → nothing is synthesized for it.

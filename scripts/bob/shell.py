@@ -777,13 +777,21 @@ class BobShell:
         import bob_voice
 
         t = self.theme
-        # STT/TTS are standalone servers the user brings up (bob up / bob whisper). Auto-launching them
-        # is a provisioning capability that lands as a tool in ONE-C; here we check + point, not start.
+        # Auto-ensure speech-to-text, consistent with chat's auto-start — voice should "just work", not
+        # make you go run `bob whisper` first. TTS uses the piper binary directly (no server), and speak()
+        # points at `bob setup-voice` itself if the binary/voice model are missing.
         if not bob_voice.stt_ready(self.config):
-            self.console.print(
-                f"[{t.warn}]whisper STT not reachable on :{bob_voice.stt_port(self.config)} — start it with[/] "
-                f"[bold]bob whisper[/] [{t.warn}](or[/] [bold]bob up[/][{t.warn}]), then /voice again[/]")
-            return
+            self.console.print(f"[{t.muted}]starting whisper (speech-to-text)…[/]")
+            import stack
+            try:
+                stack.whisper_control(self.config, action="start")   # idempotent; waits for :8082 readiness
+            except Exception as e:  # noqa: BLE001 — advisory; the readiness re-check below decides
+                self.console.print(f"[{t.warn}]{e}[/]")
+            if not bob_voice.stt_ready(self.config):
+                self.console.print(
+                    f"[{t.warn}]whisper STT unreachable on :{bob_voice.stt_port(self.config)} — "
+                    f"run [bold]bob setup-voice[/] to build it, then /voice again.[/]")
+                return
         self.console.print(
             f"[{t.accent}]voice mode[/] [{t.muted}]· speak after 'listening' · say \"exit\" or press Ctrl-C "
             f"to leave · headphones avoid echo[/]")

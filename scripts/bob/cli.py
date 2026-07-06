@@ -428,12 +428,15 @@ def _handle_voice(rest: list) -> int:
     runs on the one engine and inherits memory + write-back + one persona + retry + logging + tools.
     Default is a plain chat-role conversation (no tools); --agent keeps the full agent toolset; --pro
     uses the pro voice model."""
-    from bob.shell import run_voice
+    from bob.shell import is_interactive, run_voice
     from bob_core import get_role, load_config
 
     rest = list(rest)
     pro = "--pro" in rest
     config = load_config()
+    if is_interactive():
+        _ensure_endpoint(config)   # voice turns hit the LLM — auto-start inference, like `bob chat` does
+                                   # (whisper STT is auto-started in the shell's /voice preflight)
     if "--agent" in rest:
         return run_voice(config=config)                     # agent role + tools (shell default)
     return run_voice(config=config, role=get_role(config, "voice", pro=pro), no_tools=True)
