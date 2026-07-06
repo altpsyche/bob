@@ -198,6 +198,54 @@ def _patch(target, name, value):
     return mock.patch.object(target, name, value)
 
 
+class TestCockpit(unittest.TestCase):
+    """S5 — lifecycle controls from inside the shell (the cockpit): /up, /restart, /webui, all routed
+    to the one stack.* core so you never drop to raw `bob` verbs to manage the system."""
+
+    def test_up_routes_to_stack_up(self):
+        import stack
+        sh, out = _make_shell()
+        calls = {}
+        with _patch(stack, "stack_up", lambda cfg, open_browser=True, with_services=False:
+                    calls.update(ob=open_browser, ws=with_services) or "brought up"):
+            sh.dispatch("/up")
+        self.assertEqual((calls["ob"], calls["ws"]), (True, False))
+        self.assertIn("brought up", out.file.getvalue())
+
+    def test_up_flags_parsed(self):
+        import stack
+        sh, _ = _make_shell()
+        calls = {}
+        with _patch(stack, "stack_up", lambda cfg, open_browser=True, with_services=False:
+                    calls.update(ob=open_browser, ws=with_services) or "x"):
+            sh.dispatch("/up --with-services --no-open")
+        self.assertEqual((calls["ob"], calls["ws"]), (False, True))
+
+    def test_restart_routes_to_stack_restart(self):
+        import stack
+        sh, out = _make_shell()
+        with _patch(stack, "stack_restart", lambda cfg: "restarted"):
+            sh.dispatch("/restart")
+        self.assertIn("restarted", out.file.getvalue())
+
+    def test_webui_opens_when_running(self):
+        import osenv
+        sh, _ = _make_shell()
+        opened = []
+        with _patch(osenv, "is_port_in_use", lambda p, *a, **k: True), \
+             _patch(osenv, "open_url", lambda u: opened.append(u)):
+            sh.dispatch("/webui")
+        self.assertEqual(len(opened), 1)
+
+    def test_webui_advises_when_down(self):
+        import osenv
+        sh, out = _make_shell()
+        with _patch(osenv, "is_port_in_use", lambda p, *a, **k: False), \
+             _patch(osenv, "open_url", lambda u: None):
+            sh.dispatch("/webui")
+        self.assertIn("/up", out.file.getvalue())        # honest next step, no inline foreground block
+
+
 class TestRenderLoop(unittest.TestCase):
     def test_streams_and_returns_final(self):
         sh, out = _make_shell()

@@ -68,6 +68,9 @@ _SLASH = {
     "/agent": None,
     "/voice": None,
     "/skill": None,
+    "/up": None,
+    "/restart": None,
+    "/webui": None,
     "/stop": None,
     "/logs": None,
     "/clear": None,
@@ -482,6 +485,9 @@ class BobShell:
             "/agent": self._run_turn,
             "/voice": self._cmd_voice,
             "/skill": self._cmd_skill,
+            "/up": self._cmd_up,
+            "/restart": self._cmd_restart,
+            "/webui": self._cmd_webui,
             "/stop": self._cmd_stop,
             "/logs": self._cmd_logs,
         }.get(cmd)
@@ -506,7 +512,10 @@ class BobShell:
         ("/skill [name]", "list or run a skill"),
         ("/tools", "list the agent's tools"),
         ("/skills", "list available skills"),
-        ("/status", "endpoint + session status"),
+        ("/status", "system dashboard — every service, up/down"),
+        ("/up [--with-services]", "start the stack in the background (endpoint + proxy + WebUI)"),
+        ("/restart", "restart the inference endpoint"),
+        ("/webui", "open the Open WebUI browser tab"),
         ("/stop", "stop local inference (frees VRAM)"),
         ("/logs", "recent inference-server log"),
         ("/theme [reload]", "reload the colour theme"),
@@ -560,6 +569,36 @@ class BobShell:
         import stack
         for line in stack._service_health_lines(self.config):
             self.console.print(f"[{t.muted}]{line}[/]" if line else "")
+
+    def _cmd_up(self, arg: str = "") -> None:
+        """/up [--with-services] [--no-open] — bring the stack up in the background (endpoint + proxy +
+        WebUI) without leaving the shell. The cockpit: manage the system from here, not raw `bob` verbs."""
+        import stack
+        toks = arg.split()
+        with_services = "--with-services" in toks or "services" in toks
+        open_browser = "--no-open" not in toks
+        self.console.print(stack.stack_up(self.config, open_browser=open_browser,
+                                          with_services=with_services))
+
+    def _cmd_restart(self, _arg: str = "") -> None:
+        """/restart — bounce the inference endpoint + proxy (+ WebUI) and wait for ready."""
+        import stack
+        self.console.print(stack.stack_restart(self.config))
+
+    def _cmd_webui(self, _arg: str = "") -> None:
+        """/webui — open the Open WebUI browser tab if it's running; else point at how to start it.
+        (The foreground `bob webui` blocks a terminal, so the shell never launches it inline — /up or
+        /services start webui bring it up in the background.)"""
+        import osenv
+        import stack   # noqa: F401 — keeps scripts/tools import parity with the other cockpit cmds
+        from bob_core import _port
+        port = _port(self.config, "webuiPort")
+        if osenv.is_port_in_use(port):
+            osenv.open_url(f"http://localhost:{port}")
+            self.console.print(f"[{self.theme.muted}]opening http://localhost:{port}[/]")
+        else:
+            self.console.print("Open WebUI isn't running — [bold]/up[/] starts it in the background "
+                               "(or [bold]/services start webui[/]).")
 
     def _cmd_stop(self, _arg: str = "") -> None:
         """/stop — tear down local inference (frees VRAM) without leaving the shell. Auto-start brings
