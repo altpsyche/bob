@@ -134,43 +134,80 @@ def stack_ps(config: dict) -> str:
     return "\n".join(lines)
 
 
+# Every service Bob can run, grouped, for the one-glance system view (`bob status` / TUI /status).
+# (name, port-config-key, one-line description). piper's :8083 server is optional — CLI/voice TTS uses
+# the piper binary directly — so it's labelled as such rather than implying voice is broken when down.
+_SERVICE_HEALTH = [
+    ("Inference", [
+        ("endpoint", "port", "llama.cpp via llama-swap"),
+        ("api", "litellmPort", "OpenAI-compatible proxy — point any client here"),
+    ]),
+    ("Voice", [
+        ("whisper", "sttPort", "speech-to-text"),
+        ("piper", "ttsPort", "text-to-speech server (optional; voice also works without it)"),
+    ]),
+    ("Web & automation", [
+        ("webui", "webuiPort", "Open WebUI — browser chat"),
+        ("searxng", "searxngPort", "private web search"),
+        ("n8n", "n8nPort", "workflow automation"),
+        ("langfuse", "langfusePort", "tracing / observability"),
+    ]),
+    ("Agent", [
+        ("agent-api", "agentPort", "bob agent serve — REST/SSE"),
+    ]),
+]
+
+
+def _service_health_lines(config: dict) -> list:
+    """One-glance up/down for EVERY component (inference, voice, web/automation, agent), always shown —
+    so `bob status` answers 'is SearXNG / n8n / WebUI actually running?' in one place."""
+    osenv = _osenv()
+    from bob_core import _port
+    out = ["", "Services"]
+    for group, svcs in _SERVICE_HEALTH:
+        out.append(f"  {group}:")
+        for name, key, desc in svcs:
+            p = _port(config, key)
+            mark = "UP  " if osenv.is_port_in_use(p) else "down"
+            out.append(f"    {mark}  {name:<10} :{str(p):<5}  {desc}")
+    return out
+
+
 def stack_status(config: dict) -> str:
-    """Loaded models + VRAM state (queries /v1/models) plus whisper/piper port probes. Port of the
-    `status` case. Read-only; bails with a hint if the endpoint isn't running (needs the registry, which
-    it reads via bob_models — ONE-C Slice 4 made that Python-native)."""
+    """The system dashboard: loaded models + VRAM (when the endpoint is up) AND a full up/down table for
+    every service (inference / voice / web+automation / agent) — shown even when the endpoint is down, so
+    the ops surface reads as one system, not a scatter of separate daemons."""
     import bob_models
     from bob_core import _port
 
-    osenv = _osenv()
     port = _port(config, "port")
     base = f"http://localhost:{port}/v1"
     try:
         data = _http_json(f"{base}/models", timeout=3)
     except (OSError, ValueError):
-        return "Endpoint not running. Start with: bob serve"
-    loaded = {m.get("id") for m in data.get("data", [])}
+        data = None
 
-    mcfg = bob_models.load_models_config()
-    profile = bob_models.resolve_profile_name(config=mcfg)
-    roles = bob_models.profile_roles(profile, mcfg)
-    ordered = [r for r in _ROLE_ORDER if r in roles] + sorted(r for r in roles if r not in _ROLE_ORDER)
+    if data is None:
+        lines = ["", f"Endpoint: {base}  [down]   start it: bob serve  (or bob up)"]
+    else:
+        loaded = {m.get("id") for m in data.get("data", [])}
+        mcfg = bob_models.load_models_config()
+        profile = bob_models.resolve_profile_name(config=mcfg)
+        roles = bob_models.profile_roles(profile, mcfg)
+        ordered = [r for r in _ROLE_ORDER if r in roles] + sorted(r for r in roles if r not in _ROLE_ORDER)
+        lines = ["", f"Endpoint: {base}  [running]", f"Profile:  {profile}", "",
+                 f"{'Role':<10} {'Model':<36} {'VRAM':<9} {'State'}", "-" * 70]
+        for role in ordered:
+            spec = roles[role]
+            label = f"{spec.get('gguf', '').replace('.gguf', '')} ({spec.get('sizeGB', '?')} GB)"
+            is_loaded = role in loaded
+            pinned = spec.get("pinned")
+            state = ("loaded (pinned)" if pinned and is_loaded else "loading..." if pinned
+                     else "loaded" if is_loaded else "unloaded")
+            vram = f"{spec.get('sizeGB', '?')} GB" if is_loaded else "--"
+            lines.append(f"{role:<10} {label:<36} {vram:<9} {state}")
 
-    lines = ["", f"Endpoint: {base}  [running]", f"Profile:  {profile}", "",
-             f"{'Role':<10} {'Model':<36} {'VRAM':<9} {'State'}", "-" * 70]
-    for role in ordered:
-        spec = roles[role]
-        label = f"{spec.get('gguf', '').replace('.gguf', '')} ({spec.get('sizeGB', '?')} GB)"
-        is_loaded = role in loaded
-        pinned = spec.get("pinned")
-        state = ("loaded (pinned)" if pinned and is_loaded else "loading..." if pinned
-                 else "loaded" if is_loaded else "unloaded")
-        vram = f"{spec.get('sizeGB', '?')} GB" if is_loaded else "--"
-        lines.append(f"{role:<10} {label:<36} {vram:<9} {state}")
-    for name, key in (("whisper", "sttPort"), ("piper", "ttsPort")):
-        p = _port(config, key)
-        up = osenv.is_port_in_use(p)
-        lbl = "(stt server)" if name == "whisper" else "(tts server)"
-        lines.append(f"  {name:<10} {lbl:<36} {('UP (port ' + str(p) + ')') if up else ('down (port ' + str(p) + ')')}")
+    lines += _service_health_lines(config)
     lines.append("")
     return "\n".join(lines)
 

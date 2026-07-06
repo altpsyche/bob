@@ -555,6 +555,11 @@ class BobShell:
         tbl.add_row("endpoint",
                     f"[{t.success}]ready[/]" if reachable else f"[{t.error}]DOWN[/] — run: bob up")
         self.console.print(tbl)
+        # The whole system in one glance — so services (WebUI, SearXNG, n8n, Langfuse, …) aren't a
+        # separate mystery from the assistant. Same up/down table as `bob status`.
+        import stack
+        for line in stack._service_health_lines(self.config):
+            self.console.print(f"[{t.muted}]{line}[/]" if line else "")
 
     def _cmd_stop(self, _arg: str = "") -> None:
         """/stop — tear down local inference (frees VRAM) without leaving the shell. Auto-start brings

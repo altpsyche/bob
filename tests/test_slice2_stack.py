@@ -63,21 +63,29 @@ class TestPs(unittest.TestCase):
 
 
 class TestStatus(unittest.TestCase):
-    def test_endpoint_down_bails(self):
-        # stack orchestration polls via stdlib urllib now (no requests dep) — mock the _http_json helper.
-        with mock.patch.object(stack, "_http_json", side_effect=OSError("down")):
-            self.assertEqual(stack.stack_status(CFG), "Endpoint not running. Start with: bob serve")
+    def test_endpoint_down_still_shows_services(self):
+        # Regression: status must NOT bail when inference is down — the whole point is to see the rest
+        # (SearXNG/n8n/WebUI) in one place. Endpoint reads [down] but the Services table still renders.
+        with mock.patch.object(stack, "_http_json", side_effect=OSError("down")), \
+             mock.patch.object(osenv, "is_port_in_use", return_value=False):
+            out = stack.stack_status(CFG)
+        self.assertIn("[down]", out)
+        self.assertIn("Services", out)
+        for svc in ("endpoint", "whisper", "webui", "searxng", "n8n", "langfuse", "agent-api"):
+            self.assertIn(svc, out)
 
-    def test_endpoint_up_marks_loaded_and_probes_voice(self):
+    def test_endpoint_up_marks_loaded_and_shows_full_service_table(self):
         with mock.patch.object(stack, "_http_json", return_value={"data": [{"id": "planner"}]}), \
-             mock.patch.object(osenv, "is_port_in_use", side_effect=lambda p, *a, **k: p == 8082):
+             mock.patch.object(osenv, "is_port_in_use", side_effect=lambda p, *a, **k: p in (8082, 8888)):
             out = stack.stack_status(CFG)
         self.assertIn("[running]", out)
         self.assertRegex(out, r"planner\s+.*\bloaded\b")
         self.assertRegex(out, r"coder\s+.*\bunloaded\b")
-        self.assertIn("whisper", out)
-        self.assertIn("UP (port 8082)", out)     # stt up
-        self.assertIn("down (port 8083)", out)   # tts down
+        # Full system view: every component is listed, with per-port up/down.
+        self.assertRegex(out, r"UP\s+whisper\s+:8082")    # stt up
+        self.assertRegex(out, r"UP\s+searxng\s+:8888")    # searxng up
+        self.assertRegex(out, r"down\s+n8n\s+:5678")      # n8n down
+        self.assertRegex(out, r"down\s+webui\s+:3000")    # webui down
 
 
 class TestWebuiForeground(unittest.TestCase):
