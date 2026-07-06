@@ -348,8 +348,10 @@ def _start_piper_bg(config: dict) -> str:
 
 
 def _start_endpoint_bg(config: dict) -> tuple:
-    """Launch llama-swap detached (+ litellm, + whisper if voice.enabled), poll /v1/models. Returns
-    (ok, list-of-status-lines)."""
+    """Launch the CORE inference pair — llama-swap + LiteLLM — detached, then poll until the proxy the
+    loop/clients actually call is reachable. Returns (ok, status-lines). CORE ONLY: whisper/WebUI/Docker
+    are NOT started here — that's the caller's (stack_up's) concern, so 'start inference' means exactly
+    one thing in exactly one place. Idempotent: a llama-swap already on :port short-circuits."""
     osenv = _osenv()
     from bob_core import _port
 
@@ -371,12 +373,10 @@ def _start_endpoint_bg(config: dict) -> tuple:
     lines.append(litellm_line)
     # The loop/clients call the LiteLLM proxy, not llama-swap directly — so gate "ready" on :8081 too,
     # unless the proxy was skipped (no venv). LiteLLM/uvicorn boots seconds after launch; without this
-    # stack_up returns while the proxy is still cold and the caller's first turn races it. TCP connect
+    # we'd return while the proxy is still cold and the caller's first turn races it. TCP connect
     # (is_port_in_use), not an HTTP GET, because LiteLLM answers /v1/models with 401 when up.
     litellm_port = _port(config, "litellmPort")
     litellm_expected = "skipped" not in litellm_line
-    if config.get("voice", {}).get("enabled"):
-        lines.append(_start_whisper_bg(config))
 
     def ready():
         if not (osenv.pid_alive(pid) and _http_ok(f"http://localhost:{port}/v1/models", timeout=2)):
@@ -388,16 +388,31 @@ def _start_endpoint_bg(config: dict) -> tuple:
     return (ok and osenv.pid_alive(pid), lines)
 
 
+def ensure_inference(config: dict) -> tuple:
+    """THE single 'make core inference reachable' operation. Everything that needs the LLM — the shell /
+    `bob chat` / `bob agent` auto-start, `bob up`, `bob restart` — composes THIS instead of re-launching
+    llama-swap+LiteLLM itself, so what-starts-inference lives in one place. No-op (already reachable) when
+    the LiteLLM proxy answers a TCP connect. Returns (ok, status-lines)."""
+    from bob_core import check_litellm
+    if check_litellm(config):
+        return (True, ["Inference already running."])
+    return _start_endpoint_bg(config)
+
+
 def stack_up(config: dict, open_browser: bool = True, with_services: bool = False) -> str:
-    """Background bring-up (port of up.ps1): endpoint + LiteLLM + (whisper if voice) + Open WebUI,
-    then optionally open the browser and start Docker services. Returns a status report."""
+    """The persistent 'bring up everything for outside-terminal use': core inference + (whisper if voice)
+    + Open WebUI, then optionally open the browser and start Docker services. Composes ensure_inference
+    (the one place that starts inference) rather than re-launching it — so `bob up` and the auto-start
+    share identical core-start behaviour; `bob up` just adds the extras."""
     osenv = _osenv()
     from bob_core import _port
 
     err = _ensure_configs()
     if err:
         return err
-    ok, lines = _start_endpoint_bg(config)
+    ok, lines = ensure_inference(config)
+    if config.get("voice", {}).get("enabled"):    # STT is a voice extra, not part of core inference
+        lines.append(_start_whisper_bg(config))
 
     # Open WebUI (opt-in; hidden background window in pwsh -> detached here).
     webui = osenv.venv_exe("venv-webui", "open-webui")

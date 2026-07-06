@@ -25,34 +25,33 @@ class TestEnsureEndpoint(unittest.TestCase):
         cli._stack = self._orig_stack
 
     def _fake_stack(self, counter):
+        # Auto-start now delegates to the single ensure_inference() (core only), NOT the full stack_up —
+        # so `bob chat` no longer silently starts WebUI/whisper. Returns (ok, lines).
         return lambda: types.SimpleNamespace(
-            stack_up=lambda *a, **k: counter.__setitem__("up", counter["up"] + 1) or "")
+            ensure_inference=lambda *a, **k: (counter.__setitem__("up", counter["up"] + 1) or True, []))
 
     def test_noop_when_already_up(self):
         # Regression guard: LiteLLM answers /v1/models with 401 when up; the old urlopen probe read that
-        # as "down" and relaunched the stack on every invocation. check_litellm is a TCP connect, so an
-        # up proxy => zero stack_up calls.
+        # as "down" and relaunched on every invocation. check_litellm is a TCP connect, so up => 0 starts.
         bob_core.check_litellm = lambda config=None: True
         counter = {"up": 0}
         cli._stack = self._fake_stack(counter)
         cli._ensure_endpoint(fake_config())
         self.assertEqual(counter["up"], 0)
 
-    def test_starts_and_waits_when_down(self):
-        # First probe (top of the fn) is down -> stack_up runs; the post-launch poll then sees it ready
-        # and returns without error (no real sleep because it's ready on the first poll).
-        seq = iter([False, True])
-        bob_core.check_litellm = lambda config=None: next(seq)
+    def test_starts_core_inference_when_down(self):
+        bob_core.check_litellm = lambda config=None: False
         counter = {"up": 0}
         cli._stack = self._fake_stack(counter)
         cli._ensure_endpoint(fake_config())
-        self.assertEqual(counter["up"], 1)
+        self.assertEqual(counter["up"], 1)   # ensure_inference called exactly once (waits internally)
 
     def test_launch_failure_is_advisory_not_fatal(self):
         bob_core.check_litellm = lambda config=None: False
 
         def boom():
-            return types.SimpleNamespace(stack_up=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+            return types.SimpleNamespace(
+                ensure_inference=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
 
         cli._stack = boom
         # Must not raise — a launch failure prints a hint; the turn surfaces the real error later.

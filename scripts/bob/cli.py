@@ -653,32 +653,26 @@ def _cfg():
 
 
 def _ensure_endpoint(config) -> None:
-    """Auto-start inference on demand: if the LiteLLM proxy (what the loop talks to) isn't reachable,
-    bring the stack up in the background AND wait until the proxy actually accepts connections — so
-    `bob`, `bob chat`, and `bob agent` just work without a separate `bob up`. No-op when it's already
-    up. Best-effort: a launch failure prints a hint, not a crash (the turn then surfaces the real error).
+    """Auto-start CORE inference on demand so `bob`, `bob chat`, and `bob agent` just work without a
+    separate `bob up`. Delegates to the single stack.ensure_inference() — it starts ONLY llama-swap +
+    LiteLLM (not WebUI/whisper: those are `bob up`'s extras) and waits until the proxy is reachable, so
+    'start inference' lives in exactly one place. No-op when already up. Best-effort: a launch failure
+    prints a hint, not a crash (the turn then surfaces the real connection error).
 
-    Readiness is a TCP connect (bob_core.check_litellm), NOT an HTTP GET: LiteLLM answers /v1/models with
-    401 when up, which an urlopen probe raises as HTTPError and would misread as "down" — re-launching the
-    stack on every invocation. And stack_up polls only llama-swap (:8080); LiteLLM (:8081, uvicorn) boots
-    a few seconds later, so we poll it here or the first turn races an unready proxy."""
-    import time
-
+    'Reachable' is bob_core.check_litellm (a TCP connect), NOT an HTTP GET — LiteLLM answers /v1/models
+    with 401 when up, which an urlopen probe would misread as 'down' and relaunch on every call."""
     from bob_core import check_litellm
     if check_litellm(config):
         return
     print("Starting local inference (first run loads the model — a few seconds)…", file=sys.stderr)
     try:
-        _stack().stack_up(config, open_browser=False)
+        ok, _lines = _stack().ensure_inference(config)   # core only; waits for the proxy internally
     except Exception as e:  # noqa: BLE001 — advisory; the turn reports the real error if this didn't help
         print(f"(couldn't auto-start inference: {e} — try `bob up`)", file=sys.stderr)
         return
-    for _ in range(60):  # ~30s: wait out the LiteLLM/uvicorn boot so the loop's first call connects
-        if check_litellm(config):
-            return
-        time.sleep(0.5)
-    print("(inference is still starting — the first turn may take a moment; see `bob logs`.)",
-          file=sys.stderr)
+    if not ok:
+        print("(inference is still starting — the first turn may take a moment; see `bob logs`.)",
+              file=sys.stderr)
 
 
 def _handle_up(rest: list) -> int:
