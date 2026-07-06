@@ -133,6 +133,35 @@ class TestWebuiForeground(unittest.TestCase):
         run.assert_called_once()           # free port -> actually serve in the foreground
 
 
+class TestSwapLaunchSpec(unittest.TestCase):
+    """S2 — the llama-swap launch (exe path, config path, --listen addr, LLAMA_LOCAL_ROOT) lives in ONE
+    place (_swap_launch), consumed by both the background and foreground starts so they can't drift."""
+
+    def test_spec_shape(self):
+        with mock.patch.object(osenv, "bin_exe", return_value=Path("/x/llama-swap")):
+            exe, argv, env_add, port = stack._swap_launch(CFG)
+        self.assertEqual(port, 8080)
+        self.assertTrue(argv[0].endswith("llama-swap"))
+        self.assertIn("--config", argv)
+        self.assertIn("--listen", argv)
+        self.assertIn("127.0.0.1:8080", argv)
+        self.assertIn("LLAMA_LOCAL_ROOT", env_add)
+
+    def test_both_starts_funnel_through_the_one_spec(self):
+        # _swap_launch runs BEFORE the exe-exists guard in both callers, so with the binary absent each
+        # path returns early (no real process/port touched) yet still proves it used the shared spec.
+        with mock.patch.object(osenv, "bin_exe", return_value=Path("/nonexistent/llama-swap")), \
+             mock.patch.object(stack, "_swap_launch", wraps=stack._swap_launch) as spec:
+            ok, lines = stack._start_endpoint_bg(CFG)
+            self.assertFalse(ok)
+            self.assertTrue(spec.called)                      # background start used _swap_launch
+            spec.reset_mock()
+            with mock.patch.object(stack, "_ensure_configs", return_value=""):
+                rc = stack.serve_foreground(CFG)
+            self.assertEqual(rc, 1)
+            self.assertTrue(spec.called)                      # foreground start used the SAME spec
+
+
 class TestStop(unittest.TestCase):
     def setUp(self):
         self.logs = Path(tempfile.mkdtemp(prefix="bob-logs-"))

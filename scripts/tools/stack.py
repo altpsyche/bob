@@ -10,6 +10,7 @@ Config regeneration (`gen`) runs the Python generators (scripts/tools/generate.p
 single-sourced bob_models.regenerate_configs; bring-up does a best-effort regen, then requires
 config/llama-swap.yaml + config/litellm.yaml (checked-in-locally, gitignored), erroring only if
 they're absent."""
+import os
 import shutil
 import subprocess
 import sys
@@ -355,6 +356,27 @@ def _start_piper_bg(config: dict) -> str:
     return f"piper-server: http://localhost:{tts_port} (PID {new_pid}, voice={voice}) — {tail}"
 
 
+def _swap_launch(config: dict) -> tuple:
+    """The ONE llama-swap launch spec — (exe, argv, env_add, port) — shared by the background
+    (_start_endpoint_bg) and foreground (serve_foreground) starts, so the exe path, llama-swap.yaml
+    path, --listen address, and LLAMA_LOCAL_ROOT env can never drift between them. `env_add` is the
+    environment ADDITIONS only: start_detached merges them into os.environ, and the foreground path
+    merges them itself."""
+    osenv = _osenv()
+    from bob_core import _port
+
+    exe = osenv.bin_exe("llama-swap")
+    port = _port(config, "port")
+    swap_cfg = REPO / "config" / "llama-swap.yaml"
+    argv = [str(exe), "--config", str(swap_cfg), "--listen", f"127.0.0.1:{port}"]
+    env_add = {"LLAMA_LOCAL_ROOT": str(REPO).replace("\\", "/")}
+    return exe, argv, env_add, port
+
+
+def _swap_missing_msg(exe) -> str:
+    return f"{exe.name} missing — run: python -m bob.kernel build-swap (or drop the binary in bin/)."
+
+
 def _start_endpoint_bg(config: dict) -> tuple:
     """Launch the CORE inference pair — llama-swap + LiteLLM — detached, then poll until the proxy the
     loop/clients actually call is reachable. Returns (ok, status-lines). CORE ONLY: whisper/WebUI/Docker
@@ -363,19 +385,15 @@ def _start_endpoint_bg(config: dict) -> tuple:
     osenv = _osenv()
     from bob_core import _port
 
-    swap = osenv.bin_exe("llama-swap")
-    if not swap.exists():
-        return (False, [f"{swap.name} missing — run: python -m bob.kernel build-swap (or drop the binary in bin/)."])
-    port = _port(config, "port")
+    exe, argv, env_add, port = _swap_launch(config)
+    if not exe.exists():
+        return (False, [_swap_missing_msg(exe)])
     lines = []
     if osenv.is_port_in_use(port):
         return (True, [f"Port {port} already in use — the endpoint is probably already running "
                        f"(bob stop to free it)."])
-    swap_cfg = REPO / "config" / "llama-swap.yaml"
     pid = osenv.start_detached(
-        [str(swap), "--config", str(swap_cfg), "--listen", f"127.0.0.1:{port}"],
-        pidfile=_pidfile("llama-swap"), log_path=_logfile("llama-swap"),
-        env={"LLAMA_LOCAL_ROOT": str(REPO).replace("\\", "/")})
+        argv, pidfile=_pidfile("llama-swap"), log_path=_logfile("llama-swap"), env=env_add)
     lines.append(f"Endpoint: http://localhost:{port}/v1 (PID {pid})")
     litellm_line = _start_litellm_bg(config)
     lines.append(litellm_line)
@@ -564,30 +582,24 @@ def serve_foreground(config: dict) -> int:
     """`bob serve` — interactive: start LiteLLM + whisper in the background, then run llama-swap in the
     FOREGROUND (Ctrl+C to stop). Inherits the terminal so logs stream live."""
     osenv = _osenv()
-    from bob_core import _port
 
     err = _ensure_configs()
     if err:
         print(err, file=sys.stderr)
         return 1
-    swap = osenv.bin_exe("llama-swap")
-    if not swap.exists():
-        print(f"{swap.name} missing — run: python -m bob.kernel build-swap (or drop the binary in bin/).",
-              file=sys.stderr)
+    exe, argv, env_add, port = _swap_launch(config)   # same launch spec as the background start
+    if not exe.exists():
+        print(_swap_missing_msg(exe), file=sys.stderr)
         return 1
     print(_start_litellm_bg(config), file=sys.stderr)
     if config.get("voice", {}).get("enabled"):
         print(_start_whisper_bg(config), file=sys.stderr)
-    port = _port(config, "port")
     if osenv.is_port_in_use(port):
         print(f"Port {port} already in use — the endpoint is probably already running (bob stop).",
               file=sys.stderr)
         return 0
-    swap_cfg = REPO / "config" / "llama-swap.yaml"
     print(f"Endpoint: http://localhost:{port}/v1   (loopback only; Ctrl+C to stop)", file=sys.stderr)
-    env = {**__import__("os").environ, "LLAMA_LOCAL_ROOT": str(REPO).replace("\\", "/")}
-    return subprocess.run([str(swap), "--config", str(swap_cfg), "--listen", f"127.0.0.1:{port}"],
-                          env=env).returncode
+    return subprocess.run(argv, env={**os.environ, **env_add}).returncode
 
 
 def webui_foreground(config: dict) -> int:
