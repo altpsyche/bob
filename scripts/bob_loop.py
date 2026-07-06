@@ -1243,6 +1243,13 @@ def run_agent_events(
         # S1 — chat mode over a caller-supplied registry (e.g. the shell): an EMPTY tool view via the
         # O1/NE0 filtered() seam, no rebuild. Default no_tools=False -> registry unchanged.
         registry = registry.filtered(allow=[])
+    # Root-cause the memory_recall spin: when autoRecall is on at ROOT depth, the recalled memory is
+    # injected into the system prompt below, so ALSO offering the memory_recall TOOL is redundant that
+    # turn -- small models double-dip and re-call it forever. Drop it from the offered toolset (the
+    # model can't spin on a tool it was never given). The maxDuplicateToolCalls guard stays as
+    # defense-in-depth. Sub-agents (depth>0) have no autoRecall, so they keep the tool.
+    if config.get("memory", {}).get("autoRecall") and agent_depth == 0 and hasattr(registry, "filtered"):
+        registry = registry.filtered(deny={"memory_recall"})
     tool_schemas = registry.tool_schemas
     exit_on_tools = exit_on_tools if exit_on_tools is not None else registry.exit_voice_tools
     exit_on_tools = exit_on_tools or set()

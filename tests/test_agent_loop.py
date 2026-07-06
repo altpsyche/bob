@@ -66,6 +66,89 @@ class TestAgentLoop(unittest.TestCase):
         self.assertEqual(final["result"], "done")
         self.assertEqual(reg.dispatched.count("echo"), 2)          # both distinct calls ran
 
+    def _capturing_client(self, captured):
+        def create(model, messages, tools, stream, timeout, **kwargs):
+            captured["system"] = messages[0]["content"] if messages else ""
+            captured["tools"] = tools
+            return _common._FakeStream([_common._content_chunk("done")])
+        return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+    def _filter_reg(self, names):
+        """A FakeRegistry whose filtered(deny=...) actually drops tools — so the loop's autoRecall
+        deny path is exercised end to end (hermes mode injects the surviving schemas into system)."""
+        import copy
+
+        class _Reg(_common.FakeRegistry):
+            def __init__(self):
+                super().__init__({})
+                self.tool_schemas = [
+                    {"type": "function",
+                     "function": {"name": n, "description": n,
+                                  "parameters": {"type": "object", "properties": {}}}}
+                    for n in names]
+
+            def filtered(self, deny=None, allow=None):
+                v = copy.copy(self)
+                d, a = set(deny or ()), (set(allow) if allow is not None else None)
+                v.tool_schemas = [s for s in self.tool_schemas
+                                  if s["function"]["name"] not in d
+                                  and (a is None or s["function"]["name"] in a)]
+                return v
+        return _Reg()
+
+    def test_memory_recall_dropped_when_autorecall_on_at_root(self):
+        # Root-cause the memory_recall spin: autoRecall already injects the memory, so the redundant
+        # memory_recall TOOL is dropped from the offered set for that root turn (the model can't spin
+        # on a tool it was never given).
+        for fn in ("memory_recall", "memory_profile_block", "project_memory_block"):
+            setattr(self, f"_orig_{fn}", getattr(bob_core, fn))
+            setattr(bob_core, fn, lambda *a, **k: "")   # keep the run hermetic (no memory DB / embed)
+        try:
+            cfg = _common.fake_config()
+            cfg["memory"] = {"enabled": True, "autoRecall": True}
+            captured = {}
+            bob_core.get_llm_client = lambda config=None: self._capturing_client(captured)
+            list(bob_loop.run_agent_events("hi", cfg, agency="silent",
+                                           registry=self._filter_reg(["memory_recall", "echo"])))
+            self.assertNotIn("memory_recall", captured["system"])   # dropped this turn
+            self.assertIn("echo", captured["system"])               # other tools untouched
+        finally:
+            for fn in ("memory_recall", "memory_profile_block", "project_memory_block"):
+                setattr(bob_core, fn, getattr(self, f"_orig_{fn}"))
+
+    def test_memory_recall_kept_when_autorecall_off(self):
+        for fn in ("memory_profile_block", "project_memory_block"):
+            setattr(self, f"_orig_{fn}", getattr(bob_core, fn))
+            setattr(bob_core, fn, lambda *a, **k: "")
+        try:
+            cfg = _common.fake_config()
+            cfg["memory"] = {"enabled": True}      # autoRecall unset -> off; tool stays available
+            captured = {}
+            bob_core.get_llm_client = lambda config=None: self._capturing_client(captured)
+            list(bob_loop.run_agent_events("hi", cfg, agency="silent",
+                                           registry=self._filter_reg(["memory_recall", "echo"])))
+            self.assertIn("memory_recall", captured["system"])
+        finally:
+            for fn in ("memory_profile_block", "project_memory_block"):
+                setattr(bob_core, fn, getattr(self, f"_orig_{fn}"))
+
+    def test_memory_recall_kept_for_subagent_even_with_autorecall(self):
+        # A sub-agent (depth>0) has no autoRecall injection, so it must KEEP the tool.
+        for fn in ("memory_profile_block", "project_memory_block"):
+            setattr(self, f"_orig_{fn}", getattr(bob_core, fn))
+            setattr(bob_core, fn, lambda *a, **k: "")
+        try:
+            cfg = _common.fake_config()
+            cfg["memory"] = {"enabled": True, "autoRecall": True}
+            captured = {}
+            bob_core.get_llm_client = lambda config=None: self._capturing_client(captured)
+            list(bob_loop.run_agent_events("hi", cfg, agency="silent", agent_depth=1,
+                                           registry=self._filter_reg(["memory_recall", "echo"])))
+            self.assertIn("memory_recall", captured["system"])
+        finally:
+            for fn in ("memory_profile_block", "project_memory_block"):
+                setattr(bob_core, fn, getattr(self, f"_orig_{fn}"))
+
     def test_hermes_tool_call_without_closing_tag_still_executes(self):
         # Small models sometimes emit <tool_call>{...} but drop the </tool_call>; the call must still
         # run (not leak as raw text in the answer).
