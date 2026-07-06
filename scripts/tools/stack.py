@@ -456,11 +456,13 @@ def stack_up(config: dict, open_browser: bool = True, with_services: bool = Fals
 
 
 def stack_restart(config: dict) -> str:
-    """Background restart for the agent (port of the `restart` case, but non-blocking): tear the
-    endpoint down, then bring it back up detached + poll. `bob serve`/`stack_up` remain the fg paths."""
+    """Background restart: bounce the endpoint + proxy + WebUI (core inference plus open-webui — voice
+    servers survive), then bring core inference back via the one ensure_inference. The restart set is
+    derived from the SERVICES registry, not another hardcoded list."""
     osenv = _osenv()
-    osenv.stop_processes_by_name(["llama-swap", "llama-server", "open-webui"])
-    for svc in ("llama-swap", "open-webui", "litellm"):
+    restart = [s for s in SERVICES if s.get("core") or s["name"] == "open-webui"]
+    osenv.stop_processes_by_name([p for s in restart for p in s.get("procnames", ())])
+    for svc in [s["name"] for s in restart]:
         pid = _read_pid(svc)
         if pid is not None and osenv.pid_alive(pid):
             osenv.stop_process_tree(pid)
@@ -469,7 +471,7 @@ def stack_restart(config: dict) -> str:
     err = _ensure_configs()
     if err:
         return err
-    ok, lines = _start_endpoint_bg(config)
+    ok, lines = ensure_inference(config)   # the one core-start op, same as auto-start / `bob up`
     return "Restarting endpoint...\n" + "\n".join(lines)
 
 
