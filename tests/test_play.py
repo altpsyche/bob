@@ -79,7 +79,7 @@ class TestPlay(unittest.TestCase):
 
     def test_play_stream_uses_mpv_detached(self):
         # The real fix: start the song via mpv (audio-only), detached so it outlives the voice turn.
-        with mock.patch.object(tool, "_ytdlp_bin", return_value="yt-dlp"), \
+        with mock.patch.object(tool, "_ytdlp_bin", return_value="/venv/bin/yt-dlp"), \
              mock.patch("shutil.which", return_value="/usr/bin/mpv"), \
              mock.patch("subprocess.Popen") as popen:
             ok = tool._play_stream("https://www.youtube.com/watch?v=abc123DEF45")
@@ -88,6 +88,8 @@ class TestPlay(unittest.TestCase):
         self.assertEqual(argv[0], "/usr/bin/mpv")
         self.assertIn("--no-video", argv)
         self.assertIn("https://www.youtube.com/watch?v=abc123DEF45", argv)
+        # mpv is pointed at OUR yt-dlp (it only searches PATH otherwise, and ours is in the venv)
+        self.assertIn("--script-opts=ytdl_hook-ytdl_path=/venv/bin/yt-dlp", argv)
         self.assertTrue(popen.call_args.kwargs.get("start_new_session"))   # detached
 
     def test_play_stream_false_without_mpv_or_ytdlp(self):

@@ -72,18 +72,19 @@ def _find_youtube_url(query: str) -> str | None:
 
 
 def _ytdlp_bin() -> str | None:
-    """A yt-dlp binary if one is available: PATH first, then a repo-staged bin/yt-dlp (osenv.bin_exe).
-    Preferred over the HTML scrape because it resolves a search to a video id through a maintained API,
-    not markup that can change out from under us."""
+    """A yt-dlp binary if one is available: PATH first, then the venv-litellm one (installed with Bob's
+    deps), then a repo-staged bin/yt-dlp. Preferred over the HTML scrape because it resolves a search to
+    a video id through a maintained API, not markup that can change out from under us -- and mpv needs
+    it to stream YouTube."""
     import shutil
     exe = shutil.which("yt-dlp")
     if exe:
         return exe
     try:
         import osenv
-        staged = osenv.bin_exe("yt-dlp")
-        if staged.exists():
-            return str(staged)
+        for cand in (osenv.venv_exe("venv-litellm", "yt-dlp"), osenv.bin_exe("yt-dlp")):
+            if cand.exists():
+                return str(cand)
     except Exception:
         pass
     return None
@@ -142,12 +143,16 @@ def _play_stream(url: str) -> bool:
     caller falls back to opening the URL in a browser."""
     import shutil
     mpv = shutil.which("mpv")
-    if not (mpv and _ytdlp_bin()):
+    ytdlp = _ytdlp_bin()
+    if not (mpv and ytdlp):
         return False
     import subprocess
     try:
         subprocess.Popen(
-            [mpv, "--no-video", "--no-terminal", url],
+            # Point mpv at OUR yt-dlp explicitly: mpv's ytdl hook only searches PATH, and Bob's yt-dlp
+            # lives in the venv (off PATH). Without this, mpv can't resolve the stream and nothing plays.
+            [mpv, "--no-video", "--no-terminal",
+             f"--script-opts=ytdl_hook-ytdl_path={ytdlp}", url],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
             start_new_session=True,   # detach: the song outlives the voice turn / shell command
         )
