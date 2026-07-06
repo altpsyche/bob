@@ -593,10 +593,23 @@ class BobShell:
             if r["up"]:
                 glyph, detail = f"[{t.success}]●[/]", f"[{t.muted}]{r['desc']}[/]"
             else:
-                glyph, detail = f"[{t.error}]○[/]", f"[{t.warn}]start: {r['hint']}[/]"
+                glyph, detail = f"[{t.error}]○[/]", f"[{t.warn}]start: {self._tui_start_hint(r)}[/]"
             tbl.add_row(glyph, f"  {r['label']}", f":{r['port']}", detail)
         self.console.print(tbl)
-        self.console.print(f"[{t.muted}]● running   ○ down · /services start|stop <name> to toggle[/]")
+        self.console.print(f"[{t.muted}]● running   ○ down · toggle from here: /services start|stop <name>[/]")
+
+    def _tui_start_hint(self, r: dict) -> str:
+        """The IN-TUI command that starts a down service — the cockpit acts from inside, not via raw
+        `bob` verbs. (The plain-text `bob status` keeps CLI verbs; that's the CLI context.) Only the
+        agent HTTP server is genuinely external — it's a separate long-running server, not a toggle."""
+        import stack
+        if r["core"] or r["name"] == "open-webui":
+            return "/up"                                  # inference + WebUI come up together
+        if r["name"] in stack._DAEMON_CONTROL or r["docker"]:
+            return f"/services start {r['name']}"         # whisper/piper + the Docker services
+        if r["name"] == "agent-api":
+            return "bob agent serve   (separate server)"
+        return "/up"
 
     def _cmd_services(self, arg: str = "") -> None:
         """/services — the cockpit dashboard (every service, up/down). /services start|stop [name]

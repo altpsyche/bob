@@ -185,6 +185,7 @@ def service_snapshot(config: dict) -> list:
             "name": s["name"], "label": s.get("label", s["name"]), "group": s["group"],
             "port": p, "up": osenv.is_port_in_use(p), "url": f"http://localhost:{p}",
             "hint": s.get("hint", "bob up"), "desc": s["desc"],
+            "core": bool(s.get("core")), "docker": bool(s.get("docker")),
         })
     return rows
 
