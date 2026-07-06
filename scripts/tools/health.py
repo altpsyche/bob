@@ -142,7 +142,7 @@ def health_check(config: dict, doctor: bool = False) -> str:
     searx_port = _port(config, "searxngPort")
     n8n_port = _port(config, "n8nPort")
     if not osenv.docker_present():
-        pending("Docker (for SearXNG / n8n / langfuse)", f"not installed — {osenv.docker_install_hint()}")
+        pending("Docker (for SearXNG / n8n / langfuse)", f"not installed. {osenv.docker_install_hint()}")
         pending(f"SearXNG (:{searx_port})", "unavailable (needs Docker, not installed)")
         pending(f"n8n (:{n8n_port})", "unavailable (needs Docker, not installed)")
     else:
