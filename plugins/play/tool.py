@@ -29,11 +29,17 @@ def configure(config: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def _spotify_installed() -> bool:
+    """Cross-platform best-effort: a `spotify` launcher on PATH (Linux native/flatpak wrapper, macOS
+    CLI), the macOS app bundle, or the Windows install locations."""
+    import shutil
+    if shutil.which("spotify"):
+        return True
     appdata = os.environ.get("APPDATA", "")
     localappdata = os.environ.get("LOCALAPPDATA", "")
     candidates = [
         Path(appdata) / "Spotify" / "Spotify.exe",
         Path(localappdata) / "Microsoft" / "WindowsApps" / "Spotify.exe",
+        Path("/Applications/Spotify.app"),
     ]
     return any(p.exists() for p in candidates)
 
@@ -61,13 +67,24 @@ def _find_youtube_url(query: str) -> str | None:
     return None
 
 
-def _open(uri: str) -> None:
-    os.startfile(uri)
+def _open(uri: str) -> bool:
+    """Open an http(s):// URL or a scheme URI (e.g. spotify:) via the OS seam — cross-platform
+    (xdg-open / open / webbrowser), never the Windows-only os.startfile. False if no opener fired."""
+    import osenv   # scripts/ is on sys.path via configure()
+    return osenv.open_url(uri)
 
 
 # ---------------------------------------------------------------------------
 # Tool function
 # ---------------------------------------------------------------------------
+
+def _launch(uri: str, ok_msg: str) -> str:
+    """Open `uri`; report success or a clear 'no opener' message (headless box / no URL handler
+    registered) instead of pretending it played."""
+    if _open(uri):
+        return ok_msg
+    return f"Couldn't open a player (no URL handler, or a headless session). URL: {uri}"
+
 
 def _music_play(query: str, platform: str = "auto") -> str:
     query = query.strip()
@@ -75,28 +92,23 @@ def _music_play(query: str, platform: str = "auto") -> str:
         return "No query provided."
 
     platform = platform.lower()
+    q = urllib.parse.quote(query)
 
-    try:
-        if platform == "spotify":
-            _open(f"spotify:search:{urllib.parse.quote(query)}")
-            return f"Opening Spotify: {query}"
+    if platform == "spotify":
+        return _launch(f"spotify:search:{q}", f"Opening Spotify: {query}")
 
-        if platform in ("youtube", "auto") and not (platform == "auto" and _spotify_installed()):
-            # Try to find a direct watch URL so the video plays immediately
-            url = _find_youtube_url(query)
-            if url:
-                _open(url)
-                return f"Playing on YouTube: {query}"
-            # SearXNG unavailable — fall back to search page
-            _open(f"https://music.youtube.com/search?q={urllib.parse.quote(query)}")
-            return f"Opening YouTube Music search: {query} (SearXNG unavailable — click to play)"
+    if platform in ("youtube", "auto") and not (platform == "auto" and _spotify_installed()):
+        # Try to find a direct watch URL so the video plays immediately (needs SearXNG).
+        url = _find_youtube_url(query)
+        if url:
+            return _launch(url, f"Playing on YouTube: {query}")
+        # SearXNG unavailable: open the search page (start SearXNG with 'bob services start' for
+        # instant play).
+        return _launch(f"https://music.youtube.com/search?q={q}",
+                       f"Opening YouTube search for {query} (SearXNG down; showing the search page)")
 
-        # auto + Spotify installed
-        _open(f"spotify:search:{urllib.parse.quote(query)}")
-        return f"Opening Spotify: {query}"
-
-    except OSError as e:
-        return f"music_play error: {e}"
+    # auto + Spotify installed
+    return _launch(f"spotify:search:{q}", f"Opening Spotify: {query}")
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +119,7 @@ def test() -> str:
     url = _find_youtube_url("Arctic Monkeys")
     searxng_status = f"SearXNG found: {url}" if url else "SearXNG unavailable (fallback active)"
     platform = "Spotify" if _spotify_installed() else "YouTube"
-    return f"music_play: OK — default platform: {platform} | {searxng_status}"
+    return f"music_play: OK. default platform: {platform} | {searxng_status}"
 
 
 # ---------------------------------------------------------------------------
