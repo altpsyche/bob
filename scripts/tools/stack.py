@@ -171,24 +171,38 @@ def stack_ps(config: dict) -> str:
     return "\n".join(lines)
 
 
-def _service_health_lines(config: dict) -> list:
-    """One-glance up/down for EVERY component (inference, voice, web/automation, agent), always shown —
-    so `bob status` answers 'is SearXNG / n8n / WebUI actually running?' in one place. Iterates the single
-    SERVICES registry (already ordered by group); piper is labelled optional (CLI/voice TTS uses the
-    binary directly, so a down :8083 server doesn't mean voice is broken)."""
+def service_snapshot(config: dict) -> list:
+    """Structured up/down snapshot of EVERY service — the ONE data source for both the plain-text
+    dashboard (_service_health_lines / `bob status`) and the TUI's rich cockpit table (shell._render_
+    dashboard), so the two can't drift. Ordered by the SERVICES registry (already grouped). Each row:
+    name / label / group / port / up / url / hint / desc."""
     osenv = _osenv()
     from bob_core import _port
-    out, seen_group = ["", "Services"], None
+    rows = []
     for s in SERVICES:
-        if s["group"] != seen_group:
-            out.append(f"  {s['group']}:")
-            seen_group = s["group"]
         p = _port(config, s["port"])
-        up = osenv.is_port_in_use(p)
-        mark = "UP  " if up else "down"
+        rows.append({
+            "name": s["name"], "label": s.get("label", s["name"]), "group": s["group"],
+            "port": p, "up": osenv.is_port_in_use(p), "url": f"http://localhost:{p}",
+            "hint": s.get("hint", "bob up"), "desc": s["desc"],
+        })
+    return rows
+
+
+def _service_health_lines(config: dict) -> list:
+    """One-glance up/down for EVERY component (inference, voice, web/automation, agent), always shown —
+    so `bob status` answers 'is SearXNG / n8n / WebUI actually running?' in one place. Renders the one
+    service_snapshot; piper is labelled optional (CLI/voice TTS uses the binary directly, so a down
+    :8083 server doesn't mean voice is broken)."""
+    out, seen_group = ["", "Services"], None
+    for r in service_snapshot(config):
+        if r["group"] != seen_group:
+            out.append(f"  {r['group']}:")
+            seen_group = r["group"]
+        mark = "UP  " if r["up"] else "down"
         # Actionable: a running service shows its URL (to open); a down one shows how to start it.
-        detail = f"http://localhost:{p}" if up else f"→ start: {s.get('hint', 'bob up')}"
-        out.append(f"    {mark}  {s.get('label', s['name']):<10} :{str(p):<5}  {detail:<26}  {s['desc']}")
+        detail = r["url"] if r["up"] else f"→ start: {r['hint']}"
+        out.append(f"    {mark}  {r['label']:<10} :{str(r['port']):<5}  {detail:<26}  {r['desc']}")
     return out
 
 

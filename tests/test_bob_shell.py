@@ -245,6 +245,27 @@ class TestCockpit(unittest.TestCase):
             sh.dispatch("/webui")
         self.assertIn("/up", out.file.getvalue())        # honest next step, no inline foreground block
 
+    def test_services_dashboard_lists_every_service(self):
+        import osenv
+        import stack
+        sh, out = _make_shell()
+        with _patch(osenv, "is_port_in_use", lambda p, *a, **k: False):
+            sh.dispatch("/services")
+        text = out.file.getvalue()
+        for s in stack.SERVICES:
+            self.assertIn(s.get("label", s["name"]), text)   # every service in the cockpit table
+        self.assertIn("start:", text)                        # down services show how to start
+
+    def test_status_appends_the_dashboard(self):
+        import bob_core
+        import osenv
+        sh, out = _make_shell()
+        with _patch(bob_core, "check_litellm", lambda cfg: False), \
+             _patch(osenv, "is_port_in_use", lambda p, *a, **k: False):
+            sh.dispatch("/status")
+        text = out.file.getvalue()
+        self.assertIn("searxng", text)                       # dashboard rendered under the session table
+
 
 class TestRenderLoop(unittest.TestCase):
     def test_streams_and_returns_final(self):

@@ -68,6 +68,7 @@ _SLASH = {
     "/agent": None,
     "/voice": None,
     "/skill": None,
+    "/services": {"start": None, "stop": None},
     "/up": None,
     "/restart": None,
     "/webui": None,
@@ -485,6 +486,7 @@ class BobShell:
             "/agent": self._run_turn,
             "/voice": self._cmd_voice,
             "/skill": self._cmd_skill,
+            "/services": self._cmd_services,
             "/up": self._cmd_up,
             "/restart": self._cmd_restart,
             "/webui": self._cmd_webui,
@@ -513,6 +515,7 @@ class BobShell:
         ("/tools", "list the agent's tools"),
         ("/skills", "list available skills"),
         ("/status", "system dashboard — every service, up/down"),
+        ("/services [start|stop [name]]", "service dashboard; toggle a service in place"),
         ("/up [--with-services]", "start the stack in the background (endpoint + proxy + WebUI)"),
         ("/restart", "restart the inference endpoint"),
         ("/webui", "open the Open WebUI browser tab"),
@@ -565,10 +568,37 @@ class BobShell:
                     f"[{t.success}]ready[/]" if reachable else f"[{t.error}]DOWN[/] — run: bob up")
         self.console.print(tbl)
         # The whole system in one glance — so services (WebUI, SearXNG, n8n, Langfuse, …) aren't a
-        # separate mystery from the assistant. Same up/down table as `bob status`.
+        # separate mystery from the assistant.
+        self._render_dashboard()
+
+    def _render_dashboard(self) -> None:
+        """The cockpit dashboard: every service, grouped, coloured ● UP/down, with its URL (running) or
+        start hint (down). Reads the one stack.service_snapshot — same data as `bob status`, rendered
+        richly. `/services` shows this; `/status` appends it under the session table."""
         import stack
-        for line in stack._service_health_lines(self.config):
-            self.console.print(f"[{t.muted}]{line}[/]" if line else "")
+        from rich.table import Table
+        t = self.theme
+        tbl = Table(show_header=True, header_style=t.muted, box=None, pad_edge=False)
+        tbl.add_column("")                       # status dot
+        tbl.add_column("service", style=t.accent, no_wrap=True)
+        tbl.add_column("port", style=t.muted, no_wrap=True)
+        tbl.add_column("where / how")
+        tbl.add_column("", style=t.muted)        # description
+        seen_group = None
+        for r in stack.service_snapshot(self.config):
+            if r["group"] != seen_group:
+                tbl.add_row("", f"[bold {t.accent}]{r['group']}[/]", "", "", "")
+                seen_group = r["group"]
+            dot = f"[{t.success}]{t.dot}[/]" if r["up"] else f"[{t.error}]{t.dot}[/]"
+            where = (f"[{t.muted}]{r['url']}[/]" if r["up"]
+                     else f"[{t.warn}]start: {r['hint']}[/]")
+            tbl.add_row(dot, f"  {r['label']}", f":{r['port']}", where, r["desc"])
+        self.console.print(tbl)
+
+    def _cmd_services(self, arg: str = "") -> None:
+        """/services — the cockpit dashboard (every service, up/down). /services start|stop [name]
+        toggles one; with no name, the Docker services (SearXNG/n8n/Langfuse) as a group."""
+        self._render_dashboard()
 
     def _cmd_up(self, arg: str = "") -> None:
         """/up [--with-services] [--no-open] — bring the stack up in the background (endpoint + proxy +
