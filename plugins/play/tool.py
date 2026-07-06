@@ -2,9 +2,10 @@
 
 Voice-safe: fire-and-forget, no confirmation prompt, no blocking.
 
-YouTube path: resolves a direct youtube.com/watch URL so the video plays
-immediately, most-robust first: SearXNG (if up) -> yt-dlp (if installed) ->
-a fragile HTML scrape -> the YouTube Music search page as a last resort.
+YouTube path: resolves a direct youtube.com/watch URL (SearXNG if up -> yt-dlp
+-> HTML scrape -> search page), then STARTS it: streams audio via mpv when
+available (autoplays immediately and outlives the voice turn), else opens the
+browser with autoplay hinted.
 
 Spotify path: opens spotify:search: URI (Spotify handles playback).
 """
@@ -133,6 +134,36 @@ def _youtube_first_video(query: str) -> str | None:
     return None
 
 
+def _play_stream(url: str) -> bool:
+    """Actually START the song: stream `url` through mpv (audio-only), detached so it keeps playing
+    after voice/the shell moves on. mpv autoplays immediately -- a browser tab does NOT (browsers block
+    autoplay-with-sound until a click), which is why opening the watch page 'just goes to the page'
+    without playing. mpv streams via yt-dlp, so both must be present; returns False otherwise so the
+    caller falls back to opening the URL in a browser."""
+    import shutil
+    mpv = shutil.which("mpv")
+    if not (mpv and _ytdlp_bin()):
+        return False
+    import subprocess
+    try:
+        subprocess.Popen(
+            [mpv, "--no-video", "--no-terminal", url],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+            start_new_session=True,   # detach: the song outlives the voice turn / shell command
+        )
+        return True
+    except OSError as e:
+        print(f"[play] mpv playback failed: {e}", file=sys.stderr)
+        return False
+
+
+def _autoplay_url(url: str) -> str:
+    """Browser fallback: hint autoplay on the watch URL (best-effort -- a browser may still gate
+    autoplay-with-sound until the user clicks)."""
+    sep = "&" if "?" in url else "?"
+    return f"{url}{sep}autoplay=1"
+
+
 def _open(uri: str) -> bool:
     """Open an http(s):// URL or a scheme URI (e.g. spotify:) via the OS seam — cross-platform
     (xdg-open / open / webbrowser), never the Windows-only os.startfile. False if no opener fired."""
@@ -164,11 +195,14 @@ def _music_play(query: str, platform: str = "auto") -> str:
         return _launch(f"spotify:search:{q}", f"Opening Spotify: {query}")
 
     if platform in ("youtube", "auto") and not (platform == "auto" and _spotify_installed()):
-        # Resolve a direct watch URL so the video plays immediately, most-robust first: SearXNG if it's
-        # up, then yt-dlp if it's installed (stable API), then the fragile HTML scrape as a backstop.
+        # Resolve a direct watch URL, most-robust first: SearXNG if it's up, then yt-dlp if installed
+        # (stable API), then the fragile HTML scrape as a backstop.
         url = _find_youtube_url(query) or _ytdlp_search(query) or _youtube_first_video(query)
         if url:
-            return _launch(url, f"Playing on YouTube: {query}")
+            # Start the song for real via a local player; if none, open the browser (autoplay hinted).
+            if _play_stream(url):
+                return f"Playing on YouTube: {query}"
+            return _launch(_autoplay_url(url), f"Playing on YouTube: {query}")
         # Couldn't resolve a video: open the search page.
         return _launch(f"https://music.youtube.com/search?q={q}",
                        f"Opening YouTube search for {query} (couldn't resolve a direct video)")

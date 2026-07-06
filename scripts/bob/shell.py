@@ -968,6 +968,8 @@ class BobShell:
                                 bob_voice.speak(spoken, self.config)
                         except KeyboardInterrupt:     # Ctrl-C during playback → stop audio, leave voice
                             break
+                if getattr(self, "_exit_requested", False):   # a tool (e.g. music_play) ends voice mode
+                    break
         finally:
             self.console.print(f"[{t.muted}]voice ended[/]")
 
@@ -1028,6 +1030,7 @@ class BobShell:
         renderer.begin()          # 'thinking' spinner until the first event — no dead air
         result = None
         cancelled = False
+        self._exit_requested = False   # set from the final event; /voice reads it to leave voice mode
         # Poll with a short timeout rather than block forever on get(): on Windows a Ctrl-C can't
         # interrupt a lock held in C, so a bare get() would swallow the signal — the timeout returns
         # control to Python bytecode ~10×/s so a pending KeyboardInterrupt is delivered promptly.
@@ -1047,6 +1050,7 @@ class BobShell:
                     else:
                         if ev.get("type") == "final":
                             result = ev.get("result")
+                            self._exit_requested = bool(ev.get("exit_requested"))
                         renderer.handle(ev)
                 except KeyboardInterrupt:  # Ctrl-C: trip the run's cancel, release any pending approval
                     cancel.cancel()

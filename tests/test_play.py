@@ -64,16 +64,51 @@ class TestPlay(unittest.TestCase):
 
     def test_music_play_prefers_ytdlp_over_scrape(self):
         # When yt-dlp resolves, the fragile HTML scrape (requests.get) must NOT be reached.
+        # (_play_stream forced off so the deterministic browser-fallback path is exercised.)
         opened = []
         with mock.patch.object(osenv, "is_port_in_use", return_value=False), \
              mock.patch.object(osenv, "open_url", lambda u: opened.append(u) or True), \
              mock.patch.object(tool, "_ytdlp_bin", return_value="yt-dlp"), \
+             mock.patch.object(tool, "_play_stream", return_value=False), \
              mock.patch("subprocess.run",
                         return_value=mock.Mock(stdout="abc123DEF45\n", returncode=0)), \
              mock.patch.object(requests, "get", side_effect=AssertionError("scrape must not run")):
             out = tool._music_play("Arctic Monkeys", "youtube")
         self.assertIn("Playing on YouTube", out)
         self.assertTrue(opened and "watch?v=abc123DEF45" in opened[0])
+
+    def test_play_stream_uses_mpv_detached(self):
+        # The real fix: start the song via mpv (audio-only), detached so it outlives the voice turn.
+        with mock.patch.object(tool, "_ytdlp_bin", return_value="yt-dlp"), \
+             mock.patch("shutil.which", return_value="/usr/bin/mpv"), \
+             mock.patch("subprocess.Popen") as popen:
+            ok = tool._play_stream("https://www.youtube.com/watch?v=abc123DEF45")
+        self.assertTrue(ok)
+        argv = popen.call_args[0][0]
+        self.assertEqual(argv[0], "/usr/bin/mpv")
+        self.assertIn("--no-video", argv)
+        self.assertIn("https://www.youtube.com/watch?v=abc123DEF45", argv)
+        self.assertTrue(popen.call_args.kwargs.get("start_new_session"))   # detached
+
+    def test_play_stream_false_without_mpv_or_ytdlp(self):
+        with mock.patch.object(tool, "_ytdlp_bin", return_value="yt-dlp"), \
+             mock.patch("shutil.which", return_value=None):
+            self.assertFalse(tool._play_stream("http://x"))   # no mpv
+        with mock.patch.object(tool, "_ytdlp_bin", return_value=None), \
+             mock.patch("shutil.which", return_value="/usr/bin/mpv"):
+            self.assertFalse(tool._play_stream("http://x"))   # no yt-dlp for mpv to stream through
+
+    def test_music_play_streams_via_player_without_browser(self):
+        # When a local player plays, the song starts directly -- no browser tab is opened.
+        with mock.patch.object(osenv, "is_port_in_use", return_value=False), \
+             mock.patch.object(tool, "_ytdlp_bin", return_value="yt-dlp"), \
+             mock.patch("subprocess.run",
+                        return_value=mock.Mock(stdout="abc123DEF45\n", returncode=0)), \
+             mock.patch.object(tool, "_play_stream", return_value=True), \
+             mock.patch.object(osenv, "open_url",
+                               side_effect=AssertionError("no browser when the player plays")):
+            out = tool._music_play("Arctic Monkeys", "youtube")
+        self.assertIn("Playing on YouTube", out)
 
     def test_music_play_falls_back_to_search_page(self):
         # Nothing resolves (no SearXNG, scrape finds no id) → open the search page, no crash.

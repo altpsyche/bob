@@ -161,6 +161,20 @@ class TestVoiceMode(unittest.TestCase):
         self.assertEqual(turns, ["do a thing"])   # stopped at the exit word; third item untouched
         self.assertEqual(spoken, ["reply to do a thing"])
 
+    def test_exit_requested_tool_leaves_the_loop(self):
+        # A tool with EXIT_VOICE (e.g. music_play) sets exit_requested on the final event; the loop
+        # speaks the confirmation, then LEAVES voice mode instead of listening again.
+        sh, _out, spoken, turns = self._voice_shell(["play a song", "never reached"])
+
+        def run_turn(goal):
+            turns.append(goal)
+            sh._exit_requested = True        # mimic _consume seeing exit_requested from the tool
+            return f"reply to {goal}"
+        sh._run_turn = run_turn
+        sh.dispatch("/voice")
+        self.assertEqual(turns, ["play a song"])              # stopped; second item never captured
+        self.assertEqual(spoken, ["reply to play a song"])    # confirmation still spoken before leaving
+
     def test_blank_transcript_keeps_listening(self):
         sh, _out, spoken, turns = self._voice_shell(["", "  ", "real"])
         sh.dispatch("/voice")
