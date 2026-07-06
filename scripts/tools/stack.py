@@ -518,31 +518,33 @@ def _service_stop(svc: str, label: str) -> str:
     return f"{label} stopped." if stopped else f"{label} not running."
 
 
-def litellm_control(config: dict, action: str = "start") -> str:
+# The individually-controllable Bob daemons — the ONE table that drives service_control (start/stop/
+# status), the per-service `bob <name>` verbs, and the per-service agent tools. Each entry carries its
+# start fn + display label + port key + health-URL suffix, so litellm/whisper/piper are no longer three
+# hand-written near-identical control functions (nor three hand-written CLI handlers / tool defs).
+_DAEMON_CONTROL = {
+    "litellm": {"start": _start_litellm_bg, "label": "LiteLLM",
+                "port": "litellmPort", "url_suffix": "/v1", "desc": "the LiteLLM proxy (:8081)"},
+    "whisper": {"start": _start_whisper_bg, "label": "whisper-server",
+                "port": "sttPort", "url_suffix": "", "desc": "the whisper STT server"},
+    "piper":   {"start": _start_piper_bg,   "label": "piper-server",
+                "port": "ttsPort", "url_suffix": "", "desc": "the piper TTS server"},
+}
+
+
+def service_control(config: dict, name: str, action: str = "start") -> str:
+    """Generic start/stop/status for a Bob-launched daemon (litellm/whisper/piper), driven off the
+    _DAEMON_CONTROL table — the one place the per-service lifecycle logic lives. `bob litellm|whisper|
+    piper`, the matching agent tools, provisioning smoke, and the shell's /voice preflight all route here."""
     from bob_core import _port
+    d = _DAEMON_CONTROL.get(name)
+    if d is None:
+        return f"Unknown service '{name}'. Known: {', '.join(_DAEMON_CONTROL)}"
     if action == "stop":
-        return _service_stop("litellm", "LiteLLM")
+        return _service_stop(name, d["label"])
     if action == "status":
-        return _service_status("litellm", "LiteLLM", _port(config, "litellmPort"))
-    return _start_litellm_bg(config)
-
-
-def whisper_control(config: dict, action: str = "start") -> str:
-    from bob_core import _port
-    if action == "stop":
-        return _service_stop("whisper", "whisper-server")
-    if action == "status":
-        return _service_status("whisper", "whisper-server", _port(config, "sttPort"), url_suffix="")
-    return _start_whisper_bg(config)
-
-
-def piper_control(config: dict, action: str = "start") -> str:
-    from bob_core import _port
-    if action == "stop":
-        return _service_stop("piper", "piper-server")
-    if action == "status":
-        return _service_status("piper", "piper-server", _port(config, "ttsPort"), url_suffix="")
-    return _start_piper_bg(config)
+        return _service_status(name, d["label"], _port(config, d["port"]), url_suffix=d["url_suffix"])
+    return d["start"](config)
 
 
 def services_control(config: dict, action: str = "status") -> str:
@@ -665,16 +667,11 @@ def _stack_logs(lines: int = 50) -> str:
     return stack_logs(_cfg, lines=lines)
 
 
-def _litellm_control(action: str = "status") -> str:
-    return litellm_control(_cfg, action=action)
-
-
-def _whisper_control(action: str = "status") -> str:
-    return whisper_control(_cfg, action=action)
-
-
-def _piper_control(action: str = "status") -> str:
-    return piper_control(_cfg, action=action)
+def _daemon_adapter(name: str):
+    """One agent-tool adapter per daemon, bound to its name — generated, not written three times."""
+    def adapter(action: str = "status") -> str:
+        return service_control(_cfg, name, action=action)
+    return adapter
 
 
 def _services_control(action: str = "status") -> str:
@@ -717,28 +714,24 @@ TOOL_DEFS = [
         "parameters": {"type": "object", "properties": {
             "lines": {"type": "integer", "description": "How many trailing lines (default 50)."}}}}},
     {"type": "function", "function": {
-        "name": "litellm_control",
-        "description": "Manage the LiteLLM proxy (:8081). start brings it up in the background.",
-        "parameters": {"type": "object", "properties": {"action": _ACTION_ENUM}}}},
-    {"type": "function", "function": {
-        "name": "whisper_control",
-        "description": "Manage the whisper STT server. start brings it up in the background.",
-        "parameters": {"type": "object", "properties": {"action": _ACTION_ENUM}}}},
-    {"type": "function", "function": {
-        "name": "piper_control",
-        "description": "Manage the piper TTS server. start brings it up in the background.",
-        "parameters": {"type": "object", "properties": {"action": _ACTION_ENUM}}}},
-    {"type": "function", "function": {
         "name": "services_control",
         "description": "Manage optional Docker services (Langfuse / SearXNG / n8n): start|stop|status|logs.",
         "parameters": {"type": "object", "properties": {
             "action": {"type": "string", "enum": ["start", "stop", "status", "logs"],
                        "description": "Default status."}}}}},
+] + [
+    # The per-daemon control tools (litellm_control / whisper_control / piper_control) are generated
+    # from the one _DAEMON_CONTROL table — same three names, no hand-repeated defs.
+    {"type": "function", "function": {
+        "name": f"{_n}_control",
+        "description": f"Manage {_d['desc']}. start brings it up in the background.",
+        "parameters": {"type": "object", "properties": {"action": _ACTION_ENUM}}}}
+    for _n, _d in _DAEMON_CONTROL.items()
 ]
 
 DISPATCH = {
     "stack_up": _stack_up, "stack_stop": _stack_stop, "stack_restart": _stack_restart,
     "stack_status": _stack_status, "stack_ps": _stack_ps, "stack_logs": _stack_logs,
-    "litellm_control": _litellm_control, "whisper_control": _whisper_control,
-    "piper_control": _piper_control, "services_control": _services_control,
+    "services_control": _services_control,
+    **{f"{_n}_control": _daemon_adapter(_n) for _n in _DAEMON_CONTROL},
 }

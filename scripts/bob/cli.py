@@ -730,19 +730,13 @@ def _service_action(rest: list) -> str:
     return rest[0] if rest and rest[0] in ("start", "stop", "status") else "start"
 
 
-def _handle_litellm(rest: list) -> int:
-    print(_stack().litellm_control(_cfg(), action=_service_action(rest)))
-    return 0
-
-
-def _handle_whisper(rest: list) -> int:
-    print(_stack().whisper_control(_cfg(), action=_service_action(rest)))
-    return 0
-
-
-def _handle_piper(rest: list) -> int:
-    print(_stack().piper_control(_cfg(), action=_service_action(rest)))
-    return 0
+def _svc_handler(name: str):
+    """One `bob <daemon> [start|stop|status]` handler per daemon, generated — all route to the single
+    stack.service_control core (no per-service handler to keep in sync)."""
+    def handler(rest: list) -> int:
+        print(_stack().service_control(_cfg(), name, action=_service_action(rest)))
+        return 0
+    return handler
 
 
 def _handle_services(rest: list) -> int:
@@ -1043,9 +1037,9 @@ _HANDLERS = {
     "ps": _handle_ps,
     "logs": _handle_logs,
     "webui": _handle_webui,
-    "litellm": _handle_litellm,
-    "whisper": _handle_whisper,
-    "piper": _handle_piper,
+    "litellm": _svc_handler("litellm"),   # POST-ONE-2 S3 — one service_control core, per-verb adapters
+    "whisper": _svc_handler("whisper"),
+    "piper": _svc_handler("piper"),
     "services": _handle_services,
     "models": _handle_models,         # ONE-C Slice 4 — model registry readers (scripts/tools/models.py)
     "show": _handle_show,

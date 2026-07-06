@@ -315,7 +315,7 @@ def _voice_smoke(stt_port: int) -> str:
     _silent_wav(wav)
     try:
         stack.configure(_cfg)
-        stack.whisper_control("start")
+        stack.service_control(_cfg, "whisper", "start")
         time.sleep(2)
         body, ctype = _multipart({"temperature": "0.0", "response_format": "json"},
                                  wav.name, wav.read_bytes())
@@ -330,7 +330,7 @@ def _voice_smoke(stt_port: int) -> str:
     finally:
         wav.unlink(missing_ok=True)
         try:
-            stack.whisper_control("stop")
+            stack.service_control(_cfg, "whisper", "stop")
         except Exception:  # noqa: BLE001
             pass
 

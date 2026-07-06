@@ -170,7 +170,7 @@ class TestVoiceMode(unittest.TestCase):
         ready = iter([False, True])          # down at preflight, up after whisper_control
         started = []
         with _patch(bob_voice, "stt_ready", lambda cfg: next(ready)), \
-             _patch(stack, "whisper_control", lambda cfg, action="start": started.append(action) or "ok"), \
+             _patch(stack, "service_control", lambda cfg, name, action="start": started.append(action) or "ok"), \
              _patch(bob_voice, "listen", lambda cfg, silence_sec=None: (_ for _ in ()).throw(KeyboardInterrupt())):
             sh.dispatch("/voice")
         self.assertEqual(started, ["start"])           # it tried to bring STT up itself
@@ -181,7 +181,7 @@ class TestVoiceMode(unittest.TestCase):
         import stack
         sh, out = _make_shell()
         with _patch(bob_voice, "stt_ready", lambda cfg: False), \
-             _patch(stack, "whisper_control", lambda cfg, action="start": "ok"):
+             _patch(stack, "service_control", lambda cfg, name, action="start": "ok"):
             sh.dispatch("/voice")
         self.assertIn("bob setup-voice", out.file.getvalue())   # honest next step when it can't start
 

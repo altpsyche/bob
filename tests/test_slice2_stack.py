@@ -233,19 +233,22 @@ class TestServiceControl(unittest.TestCase):
     def test_status_running(self):
         (self.logs / "litellm.pid").write_text("200")
         with mock.patch.object(osenv, "process_stats", return_value={"rss_mb": 10, "uptime": "0:00:30"}):
-            out = stack.litellm_control(CFG, "status")
+            out = stack.service_control(CFG, "litellm", "status")
         self.assertIn("running", out)
         self.assertIn("PID=200", out)
         self.assertIn(":8081", out)
 
     def test_status_not_running(self):
-        self.assertIn("not running", stack.litellm_control(CFG, "status"))
+        self.assertIn("not running", stack.service_control(CFG, "litellm", "status"))
+
+    def test_unknown_service_is_reported(self):
+        self.assertIn("Unknown service", stack.service_control(CFG, "nope", "status"))
 
     def test_stop_when_alive(self):
         (self.logs / "whisper.pid").write_text("300")
         with mock.patch.object(osenv, "pid_alive", return_value=True), \
              mock.patch.object(osenv, "stop_process_tree") as tree:
-            out = stack.whisper_control(CFG, "stop")
+            out = stack.service_control(CFG, "whisper", "stop")
         tree.assert_called_once()
         self.assertIn("stopped", out)
         self.assertFalse((self.logs / "whisper.pid").exists())
