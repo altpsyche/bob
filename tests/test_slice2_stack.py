@@ -104,6 +104,21 @@ class TestServiceRegistry(unittest.TestCase):
         for s in stack.SERVICES:
             self.assertIn(s.get("label", s["name"]), out)   # every service shows up in the dashboard
 
+    def test_every_service_has_a_start_hint(self):
+        for s in stack.SERVICES:
+            self.assertTrue(s.get("hint"), f"{s['name']} needs a start hint for the actionable dashboard")
+
+    def test_down_lines_show_start_hint_up_lines_show_url(self):
+        # S4 — actionable: down services show how to start them; up services show their URL.
+        with mock.patch.object(osenv, "is_port_in_use", return_value=False):
+            down = "\n".join(stack._service_health_lines(CFG))
+        self.assertIn("→ start: bob services start", down)   # e.g. searxng/n8n/langfuse when down
+        self.assertIn("→ start: bob whisper start", down)
+        with mock.patch.object(osenv, "is_port_in_use", return_value=True):
+            up = "\n".join(stack._service_health_lines(CFG))
+        self.assertIn("http://localhost:8081", up)           # litellm URL shown when up
+        self.assertNotIn("→ start:", up)
+
 
 class TestWebuiForeground(unittest.TestCase):
     """`bob webui` must not crash on a bind error when WebUI is already up (e.g. from `bob up`)."""

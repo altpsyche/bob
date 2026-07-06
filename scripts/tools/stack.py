@@ -36,24 +36,29 @@ SCRIPTS = REPO / "scripts"
 #             unlinks its pidfile, so a name-kill is the only thing that can still find a reparented WebUI.
 #   docker    True if it's a docker-compose service (stopped via `docker compose down`, no pidfile)
 #   core      True if it's part of core inference (what ensure_inference starts)
+#   hint      the command that starts it (shown on a `down` line so the dashboard is actionable, and in
+#             the TUI cockpit's toggle routing)
 SERVICES = [
     {"name": "llama-swap", "label": "endpoint", "port": "port", "group": "Inference", "pidfile": True,
-     "procnames": ("llama-swap", "llama-server"), "core": True, "desc": "llama.cpp via llama-swap"},
+     "procnames": ("llama-swap", "llama-server"), "core": True, "hint": "bob up",
+     "desc": "llama.cpp via llama-swap"},
     {"name": "litellm",    "label": "api", "port": "litellmPort", "group": "Inference", "pidfile": True,
-     "procnames": (), "core": True, "desc": "OpenAI-compatible proxy — point any client here"},
+     "procnames": (), "core": True, "hint": "bob up",
+     "desc": "OpenAI-compatible proxy — point any client here"},
     {"name": "whisper",    "port": "sttPort",     "group": "Voice", "pidfile": True,
-     "procnames": ("whisper-server",), "desc": "speech-to-text"},
+     "procnames": ("whisper-server",), "hint": "bob whisper start", "desc": "speech-to-text"},
     {"name": "piper",      "port": "ttsPort",     "group": "Voice", "pidfile": True,
-     "procnames": (), "desc": "text-to-speech server (optional; voice also works without it)"},
+     "procnames": (), "hint": "bob piper start",
+     "desc": "text-to-speech server (optional; voice also works without it)"},
     {"name": "open-webui", "label": "webui", "port": "webuiPort", "group": "Web & automation", "pidfile": True,
-     "procnames": ("open-webui",), "desc": "Open WebUI — browser chat"},
+     "procnames": ("open-webui",), "hint": "bob up", "desc": "Open WebUI — browser chat"},
     {"name": "searxng",    "port": "searxngPort", "group": "Web & automation", "docker": True,
-     "desc": "private web search"},
+     "hint": "bob services start", "desc": "private web search"},
     {"name": "n8n",        "port": "n8nPort",     "group": "Web & automation", "docker": True,
-     "desc": "workflow automation"},
+     "hint": "bob services start", "desc": "workflow automation"},
     {"name": "langfuse",   "port": "langfusePort", "group": "Web & automation", "docker": True,
-     "desc": "tracing / observability"},
-    {"name": "agent-api",  "port": "agentPort",   "group": "Agent",
+     "hint": "bob services start", "desc": "tracing / observability"},
+    {"name": "agent-api",  "port": "agentPort",   "group": "Agent", "hint": "bob agent serve",
      "desc": "bob agent serve — REST/SSE"},
 ]
 
@@ -179,8 +184,11 @@ def _service_health_lines(config: dict) -> list:
             out.append(f"  {s['group']}:")
             seen_group = s["group"]
         p = _port(config, s["port"])
-        mark = "UP  " if osenv.is_port_in_use(p) else "down"
-        out.append(f"    {mark}  {s.get('label', s['name']):<10} :{str(p):<5}  {s['desc']}")
+        up = osenv.is_port_in_use(p)
+        mark = "UP  " if up else "down"
+        # Actionable: a running service shows its URL (to open); a down one shows how to start it.
+        detail = f"http://localhost:{p}" if up else f"→ start: {s.get('hint', 'bob up')}"
+        out.append(f"    {mark}  {s.get('label', s['name']):<10} :{str(p):<5}  {detail:<26}  {s['desc']}")
     return out
 
 
