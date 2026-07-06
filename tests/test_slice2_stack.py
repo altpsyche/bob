@@ -80,6 +80,34 @@ class TestStatus(unittest.TestCase):
         self.assertIn("down (port 8083)", out)   # tts down
 
 
+class TestWebuiForeground(unittest.TestCase):
+    """`bob webui` must not crash on a bind error when WebUI is already up (e.g. from `bob up`)."""
+
+    def _webui_exe(self):
+        exe = mock.Mock()
+        exe.exists.return_value = True
+        return exe
+
+    def test_already_running_points_and_skips_serve(self):
+        with mock.patch.object(osenv, "venv_exe", return_value=self._webui_exe()), \
+             mock.patch.object(osenv, "is_port_in_use", return_value=True), \
+             mock.patch.object(osenv, "open_url") as open_url, \
+             mock.patch.object(stack.subprocess, "run") as run:
+            rc = stack.webui_foreground(CFG)
+        self.assertEqual(rc, 0)
+        run.assert_not_called()            # no doomed foreground bind on the occupied port
+        open_url.assert_called_once()      # pointed the user at the running instance
+
+    def test_serves_when_port_free(self):
+        with mock.patch.object(osenv, "venv_exe", return_value=self._webui_exe()), \
+             mock.patch.object(osenv, "is_port_in_use", return_value=False), \
+             mock.patch.object(stack.subprocess, "run",
+                               return_value=mock.Mock(returncode=0)) as run:
+            rc = stack.webui_foreground(CFG)
+        self.assertEqual(rc, 0)
+        run.assert_called_once()           # free port -> actually serve in the foreground
+
+
 class TestStop(unittest.TestCase):
     def setUp(self):
         self.logs = Path(tempfile.mkdtemp(prefix="bob-logs-"))

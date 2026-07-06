@@ -534,7 +534,16 @@ def webui_foreground(config: dict) -> int:
     if not webui.exists():
         print("Open WebUI not installed (opt-in). Re-run setup with --with-webui", file=sys.stderr)
         return 1
-    return subprocess.run([str(webui), "serve", "--port", str(_port(config, "webuiPort"))]).returncode
+    port = _port(config, "webuiPort")
+    # If something is already serving :webuiPort (e.g. a `bob up` started WebUI in the background),
+    # a foreground `serve` would just fail to bind. Point at the running instance instead of crashing.
+    if osenv.is_port_in_use(port):
+        url = f"http://localhost:{port}"
+        print(f"Open WebUI is already running at {url} (port {port} in use — likely from `bob up`). "
+              f"Opening it; run `bob stop` first if you want a fresh foreground instance.", file=sys.stderr)
+        osenv.open_url(url)
+        return 0
+    return subprocess.run([str(webui), "serve", "--port", str(port)]).returncode
 
 
 def logs_follow(config: dict, lines: int = 50) -> int:
