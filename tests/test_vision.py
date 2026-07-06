@@ -113,11 +113,24 @@ class TestScreenshotHandler(unittest.TestCase):
 
 
 class TestBobVision(unittest.TestCase):
-    def test_capture_no_tool_raises(self):
-        with mock.patch.object(bob_vision.sys, "platform", "linux"), \
+    def test_capture_no_tool_raises_on_linux(self):
+        # NB3 — the OS branch goes through osenv.os_name(), so BOB_FORCE_OS drives it in tests
+        # (no dependency on the real sys.platform).
+        with mock.patch.dict(os.environ, {"BOB_FORCE_OS": "linux"}), \
              mock.patch.object(bob_vision.shutil, "which", lambda _t: None):
             with self.assertRaises(RuntimeError):
                 bob_vision.capture_screen()
+
+    def test_capture_routes_to_pillow_branch_off_linux(self):
+        # Forcing macOS routes to the Pillow ImageGrab path, NOT the Linux tool lookup -- prove the
+        # seam picked the right branch: the Linux branch is the only one that calls shutil.which.
+        with mock.patch.dict(os.environ, {"BOB_FORCE_OS": "macos"}), \
+             mock.patch.object(bob_vision.shutil, "which", mock.MagicMock(return_value="/nope")) as which:
+            try:
+                bob_vision.capture_screen()   # PIL may be absent or headless; either way, no which()
+            except Exception:
+                pass
+            which.assert_not_called()
 
     def test_resize_without_pil_returns_original(self):
         try:

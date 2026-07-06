@@ -7,8 +7,9 @@ image file paths the loop consumes via run_agent(images=[...])."""
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
+
+import osenv   # NB3 — OS decisions go through the one seam (so BOB_FORCE_OS drives them in tests)
 
 # Linux capture backends, in preference order (Wayland first, then X11 tools). Each maps a tool name
 # to the argv that writes a PNG to `out`.
@@ -54,7 +55,7 @@ def capture_screen() -> str:
     ImageGrab; Linux via the first available of grim/spectacle/scrot/import. Raises RuntimeError with an
     actionable message when no capture backend is available or capture produced nothing."""
     out = _tmp_png()
-    if sys.platform in ("win32", "darwin"):
+    if osenv.os_name() in ("windows", "macos"):
         try:
             from PIL import ImageGrab
         except ImportError as e:
