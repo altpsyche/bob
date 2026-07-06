@@ -45,26 +45,27 @@ def _is_blocked_host(host: str) -> bool:
     return False
 
 
-def _ensure_searxng() -> None:
+def _ensure_searxng() -> str:
     """On-demand: bring SearXNG up if it's down and auto-start is enabled (agent.autoStartSearxng,
-    default on). Best-effort — a failure just leaves the request to hit the existing fallback."""
+    default on). Returns '' on success/already-up, else a short reason (e.g. Docker not installed)."""
     if not _cfg.get("agent", {}).get("autoStartSearxng", True):
-        return
+        return "auto-start disabled (agent.autoStartSearxng)"
     try:
         import osenv
         from bob_core import _port
         if osenv.is_port_in_use(_port(_cfg, "searxngPort")):
-            return                      # already up — no docker call
+            return ""                   # already up — no docker call
         import stack                    # scripts/tools is on sys.path (tool loader)
-        stack.ensure_searxng(_cfg)
-    except Exception:                   # noqa: BLE001 — advisory; fall through to the normal request
-        pass
+        ok, msg = stack.ensure_searxng(_cfg)
+        return "" if ok else msg
+    except Exception as e:              # noqa: BLE001 — advisory; fall through to the normal request
+        return str(e)
 
 
 def _web_search(query: str, num_results: int = 5) -> str:
     if not _searxng_url:
         return "web_search not configured (SearXNG URL missing)"
-    _ensure_searxng()                   # on-demand start (no-op if already up or auto-start off)
+    reason = _ensure_searxng()          # on-demand start (no-op if already up or auto-start off)
     try:
         r = requests.get(
             _searxng_url,
@@ -74,7 +75,8 @@ def _web_search(query: str, num_results: int = 5) -> str:
         r.raise_for_status()
         results = r.json().get("results", [])[:num_results]
     except Exception as e:
-        return f"web_search error: {e}\nIs SearXNG running? Try: bob services start"
+        hint = reason or "start it with: bob services start (or /services start searxng)"
+        return f"web_search unavailable. SearXNG isn't reachable: {hint}"
     if not results:
         return "(no results)"
     return "\n\n".join(

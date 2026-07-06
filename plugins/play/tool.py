@@ -45,29 +45,16 @@ def _spotify_installed() -> bool:
     return any(p.exists() for p in candidates)
 
 
-def _ensure_searxng() -> None:
-    """On-demand: start SearXNG if down and auto-start is enabled (agent.autoStartSearxng, default on),
-    so a direct-play lookup works without the user starting services first. Best-effort."""
-    if not _cfg.get("agent", {}).get("autoStartSearxng", True):
-        return
+def _find_youtube_url(query: str) -> str | None:
+    """First choice: ask SearXNG (only if it's already listening — no docker needed) for a direct
+    youtube.com/watch result."""
     try:
         import osenv
-        from bob_core import _port
-        if osenv.is_port_in_use(_port(_cfg, "searxngPort")):
-            return
-        import stack
-        stack.ensure_searxng(_cfg)
-    except Exception:  # noqa: BLE001 — advisory; the search-page fallback still applies
-        pass
-
-
-def _find_youtube_url(query: str) -> str | None:
-    """Ask SearXNG for the first youtube.com/watch result for query (starting it on demand)."""
-    _ensure_searxng()
-    try:
         import requests
         from bob_core import _port  # N7 — single source of truth for ports
         port = _port(_cfg, "searxngPort")
+        if not osenv.is_port_in_use(port):
+            return None                    # SearXNG not up; the direct scrape below handles it
         r = requests.get(
             f"http://localhost:{port}/search",
             params={"q": f"{query} site:youtube.com", "format": "json", "pageno": 1},
@@ -79,9 +66,28 @@ def _find_youtube_url(query: str) -> str | None:
             if "youtube.com/watch" in url:
                 return url
     except Exception as e:
-        # M16 — SearXNG lookup is best-effort (caller falls back to the search page),
-        # but log the swallow so a persistently-broken SearXNG isn't invisible.
         print(f"[play] youtube lookup via SearXNG failed: {e}", file=sys.stderr)
+    return None
+
+
+def _youtube_first_video(query: str) -> str | None:
+    """Docker-free direct lookup: fetch YouTube's results page and pull the first videoId from the
+    embedded JSON. No SearXNG, no API key — so direct-play works even without Docker installed."""
+    try:
+        import re
+        import requests
+        r = requests.get(
+            "https://www.youtube.com/results",
+            params={"search_query": query},
+            headers={"User-Agent": "Mozilla/5.0 (compatible; Bob/1.0)"},
+            timeout=8,
+        )
+        r.raise_for_status()
+        m = re.search(r'"videoId":"([A-Za-z0-9_-]{11})"', r.text)
+        if m:
+            return f"https://www.youtube.com/watch?v={m.group(1)}"
+    except Exception as e:
+        print(f"[play] youtube direct lookup failed: {e}", file=sys.stderr)
     return None
 
 
@@ -116,14 +122,14 @@ def _music_play(query: str, platform: str = "auto") -> str:
         return _launch(f"spotify:search:{q}", f"Opening Spotify: {query}")
 
     if platform in ("youtube", "auto") and not (platform == "auto" and _spotify_installed()):
-        # Try to find a direct watch URL so the video plays immediately (needs SearXNG).
-        url = _find_youtube_url(query)
+        # Resolve a direct watch URL so the video plays immediately: SearXNG if it's up, else a
+        # docker-free scrape of YouTube's results page.
+        url = _find_youtube_url(query) or _youtube_first_video(query)
         if url:
             return _launch(url, f"Playing on YouTube: {query}")
-        # SearXNG unavailable: open the search page (start SearXNG with 'bob services start' for
-        # instant play).
+        # Couldn't resolve a video: open the search page.
         return _launch(f"https://music.youtube.com/search?q={q}",
-                       f"Opening YouTube search for {query} (SearXNG down; showing the search page)")
+                       f"Opening YouTube search for {query} (couldn't resolve a direct video)")
 
     # auto + Spotify installed
     return _launch(f"spotify:search:{q}", f"Opening Spotify: {query}")
