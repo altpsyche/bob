@@ -165,22 +165,26 @@ class TestVoiceMode(unittest.TestCase):
         # New behavior: /voice auto-starts whisper (like chat's auto-start) instead of telling the user
         # to run `bob whisper`. Here the start "succeeds" (stt_ready flips True), so the loop proceeds.
         import bob_voice
+        import osenv
         import stack
         sh, out = _make_shell()
-        ready = iter([False, True])          # down at preflight, up after whisper_control
+        ready = iter([False, True])          # down at preflight, up after the ensure_deps start
         started = []
         with _patch(bob_voice, "stt_ready", lambda cfg: next(ready)), \
+             _patch(osenv, "is_port_in_use", lambda p, *a, **k: False), \
              _patch(stack, "service_control", lambda cfg, name, action="start": started.append(action) or "ok"), \
              _patch(bob_voice, "listen", lambda cfg, silence_sec=None: (_ for _ in ()).throw(KeyboardInterrupt())):
             sh.dispatch("/voice")
-        self.assertEqual(started, ["start"])           # it tried to bring STT up itself
+        self.assertEqual(started, ["start"])           # ensure_deps(stt=True) brought STT up
         self.assertNotIn("bob whisper", out.file.getvalue())
 
     def test_stt_still_down_after_autostart_points_to_setup(self):
         import bob_voice
+        import osenv
         import stack
         sh, out = _make_shell()
         with _patch(bob_voice, "stt_ready", lambda cfg: False), \
+             _patch(osenv, "is_port_in_use", lambda p, *a, **k: False), \
              _patch(stack, "service_control", lambda cfg, name, action="start": "ok"):
             sh.dispatch("/voice")
         self.assertIn("bob setup-voice", out.file.getvalue())   # honest next step when it can't start

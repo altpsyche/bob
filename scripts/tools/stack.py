@@ -447,6 +447,27 @@ def ensure_inference(config: dict) -> tuple:
     return _start_endpoint_bg(config)
 
 
+def ensure_deps(config: dict, inference: bool = False, stt: bool = False) -> tuple:
+    """The ONE 'bring up exactly the services this command needs' seam. inference → core LLM
+    (ensure_inference, the shell/chat/agent auto-start); stt → the whisper STT server (the /voice
+    preflight). Returns (all_ok, status-lines). Idempotent: each need no-ops when its service is
+    already reachable, so callers can invoke it unconditionally."""
+    from bob_core import _port
+    osenv = _osenv()
+    ok, lines = True, []
+    if inference:
+        i_ok, i_lines = ensure_inference(config)
+        ok = ok and i_ok
+        lines += i_lines
+    if stt:
+        if osenv.is_port_in_use(_port(config, "sttPort")):
+            lines.append("whisper already running.")
+        else:
+            lines.append(service_control(config, "whisper", "start"))
+            ok = ok and osenv.is_port_in_use(_port(config, "sttPort"))
+    return ok, lines
+
+
 def stack_up(config: dict, open_browser: bool = True, with_services: bool = False) -> str:
     """The persistent 'bring up everything for outside-terminal use': core inference + (whisper if voice)
     + Open WebUI, then optionally open the browser and start Docker services. Composes ensure_inference

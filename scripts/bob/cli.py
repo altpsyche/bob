@@ -666,7 +666,7 @@ def _ensure_endpoint(config) -> None:
         return
     print("Starting local inference (first run loads the model — a few seconds)…", file=sys.stderr)
     try:
-        ok, _lines = _stack().ensure_inference(config)   # core only; waits for the proxy internally
+        ok, _lines = _stack().ensure_deps(config, inference=True)  # the one ensure-deps seam; waits internally
     except Exception as e:  # noqa: BLE001 — advisory; the turn reports the real error if this didn't help
         print(f"(couldn't auto-start inference: {e} — try `bob up`)", file=sys.stderr)
         return

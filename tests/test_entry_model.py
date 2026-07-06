@@ -25,10 +25,10 @@ class TestEnsureEndpoint(unittest.TestCase):
         cli._stack = self._orig_stack
 
     def _fake_stack(self, counter):
-        # Auto-start now delegates to the single ensure_inference() (core only), NOT the full stack_up —
-        # so `bob chat` no longer silently starts WebUI/whisper. Returns (ok, lines).
+        # Auto-start delegates to the one ensure_deps(inference=True) seam (core only), NOT the full
+        # stack_up — so `bob chat` no longer silently starts WebUI/whisper. Returns (ok, lines).
         return lambda: types.SimpleNamespace(
-            ensure_inference=lambda *a, **k: (counter.__setitem__("up", counter["up"] + 1) or True, []))
+            ensure_deps=lambda *a, **k: (counter.__setitem__("up", counter["up"] + 1) or True, []))
 
     def test_noop_when_already_up(self):
         # Regression guard: LiteLLM answers /v1/models with 401 when up; the old urlopen probe read that
@@ -51,7 +51,7 @@ class TestEnsureEndpoint(unittest.TestCase):
 
         def boom():
             return types.SimpleNamespace(
-                ensure_inference=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+                ensure_deps=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
 
         cli._stack = boom
         # Must not raise — a launch failure prints a hint; the turn surfaces the real error later.

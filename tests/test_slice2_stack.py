@@ -177,6 +177,39 @@ class TestSwapLaunchSpec(unittest.TestCase):
             self.assertTrue(spec.called)                      # foreground start used the SAME spec
 
 
+class TestEnsureDeps(unittest.TestCase):
+    """S8 — the one 'bring up exactly the deps this command needs' seam: inference (chat/agent/shell)
+    and stt (the /voice preflight), each idempotent and composed from the single-service ops."""
+
+    def test_inference_only_composes_ensure_inference(self):
+        with mock.patch.object(stack, "ensure_inference", return_value=(True, ["inf up"])) as ei:
+            ok, lines = stack.ensure_deps(CFG, inference=True)
+        ei.assert_called_once()
+        self.assertTrue(ok)
+        self.assertIn("inf up", lines)
+
+    def test_stt_noop_when_already_running(self):
+        with mock.patch.object(osenv, "is_port_in_use", return_value=True), \
+             mock.patch.object(stack, "service_control") as sc:
+            ok, lines = stack.ensure_deps(CFG, stt=True)
+        sc.assert_not_called()                       # idempotent — whisper already up
+        self.assertTrue(any("already running" in ln for ln in lines))
+
+    def test_stt_starts_whisper_when_down(self):
+        with mock.patch.object(osenv, "is_port_in_use", return_value=False), \
+             mock.patch.object(stack, "service_control", return_value="starting") as sc:
+            stack.ensure_deps(CFG, stt=True)
+        sc.assert_called_once_with(CFG, "whisper", "start")
+
+    def test_inference_and_stt_together(self):
+        with mock.patch.object(stack, "ensure_inference", return_value=(True, [])), \
+             mock.patch.object(osenv, "is_port_in_use", return_value=True), \
+             mock.patch.object(stack, "service_control") as sc:
+            ok, _ = stack.ensure_deps(CFG, inference=True, stt=True)
+        self.assertTrue(ok)
+        sc.assert_not_called()
+
+
 class TestStop(unittest.TestCase):
     def setUp(self):
         self.logs = Path(tempfile.mkdtemp(prefix="bob-logs-"))

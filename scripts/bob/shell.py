@@ -893,7 +893,7 @@ class BobShell:
             self.console.print(f"[{t.muted}]starting whisper (speech-to-text)…[/]")
             import stack
             try:
-                stack.service_control(self.config, "whisper", action="start")  # idempotent; waits for :8082
+                stack.ensure_deps(self.config, stt=True)   # the one ensure-deps seam; idempotent, waits
             except Exception as e:  # noqa: BLE001 — advisory; the readiness re-check below decides
                 self.console.print(f"[{t.warn}]{e}[/]")
             if not bob_voice.stt_ready(self.config):
