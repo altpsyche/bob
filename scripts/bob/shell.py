@@ -331,9 +331,9 @@ class BobShell:
         from bob_core import check_litellm
 
         counts = catalog.counts(self.tools, self.skills)
-        endpoint = "endpoint ready" if check_litellm(self.config) else "endpoint DOWN — run: bob up"
+        endpoint = "endpoint ready" if check_litellm(self.config) else "endpoint DOWN, run: bob up"
         return "\n".join([
-            "Bob — local AI assistant",
+            "Bob, local AI assistant",
             f"model: {self.role}   agency: {self.agency}   session: {self._sid_label()}",
             f"{counts}   {endpoint}",
             "",
@@ -565,7 +565,7 @@ class BobShell:
         tbl.add_row("turns", str(len(self.history)))
         tbl.add_row("catalog", catalog.counts(self.tools, self.skills))
         tbl.add_row("endpoint",
-                    f"[{t.success}]ready[/]" if reachable else f"[{t.error}]DOWN[/] — run: bob up")
+                    f"[{t.success}]ready[/]" if reachable else f"[{t.error}]DOWN[/] (run: bob up)")
         self.console.print(tbl)
         # The whole system in one glance — so services (WebUI, SearXNG, n8n, Langfuse, …) aren't a
         # separate mystery from the assistant.
@@ -640,13 +640,13 @@ class BobShell:
             return stack.services_control(self.config, action)    # Docker group (the default target)
         canonical = name if name in by else label_to_name.get(name)
         if canonical is None:
-            return f"unknown service '{name}' — see /services"
+            return f"unknown service '{name}' (see /services)"
         if canonical in daemons:
             return stack.service_control(self.config, canonical, action)
         if canonical in docker:
             return stack.services_control(self.config, action)    # compose toggles the group
-        return (f"'{canonical}' can't be toggled individually here — use "
-                f"/up · /restart · /stop (inference/WebUI), or `bob agent serve` (agent-api).")
+        return (f"'{canonical}' can't be toggled individually here. Use "
+                f"/up, /restart, /stop (inference/WebUI), or `bob agent serve` (agent-api).")
 
     def _cmd_up(self, arg: str = "") -> None:
         """/up [--with-services] [--no-open] — bring the stack up in the background (endpoint + proxy +
@@ -677,7 +677,7 @@ class BobShell:
             osenv.open_url(f"http://localhost:{port}")
             self.console.print(f"[{self.theme.muted}]opening http://localhost:{port}[/]")
         else:
-            self.console.print("Open WebUI isn't running — [bold]/up[/] starts it in the background "
+            self.console.print("Open WebUI isn't running. [bold]/up[/] starts it in the background "
                                "(or [bold]/services start webui[/]).")
 
     def _cmd_stop(self, _arg: str = "") -> None:
@@ -791,7 +791,7 @@ class BobShell:
 
     def _session_show(self, ref: str) -> None:
         if not ref and self.session_id is None:
-            self.console.print("[dim]no active session yet — starts on your first message[/]")
+            self.console.print("[dim]no active session yet; starts on your first message[/]")
             return
         if self.sessions is None:
             self.console.print("[dim]sessions unavailable[/]")
@@ -870,7 +870,7 @@ class BobShell:
         # positive agent.maxSessionTokens is configured (over_budget is False for a 0 budget).
         if self.sessions is not None and self.session_id and self.sessions.over_budget(self.session_id):
             self.console.print(
-                f"[{self.theme.warn}]session token budget exhausted — /session new to continue[/]")
+                f"[{self.theme.warn}]session token budget exhausted. /session new to continue[/]")
             return None
         from bob_loop import run_agent_events
 
@@ -925,7 +925,7 @@ class BobShell:
             while True:
                 # Phase feedback so the wait never reads as a hang: record → transcribe → think → speak,
                 # each announced. (Recording blocks until you pause ~1.5s; then STT + the model run.)
-                self.console.print(f"[{t.accent}]🎙 listening…[/] [{t.muted}](speak, then pause — "
+                self.console.print(f"[{t.accent}]listening…[/] [{t.muted}](speak, then pause. "
                                    f"Ctrl-C or say \"exit\" to leave)[/]")
                 try:
                     wav = bob_voice.record(self.config)
@@ -936,7 +936,7 @@ class BobShell:
                     break
                 if not wav:                          # nothing captured → nudge (mic?) and keep listening
                     self.console.print(
-                        f"[{t.muted}]…didn't catch anything — speak a bit louder, check your mic "
+                        f"[{t.muted}]didn't catch anything. Speak a bit louder, check your mic "
                         f"input device/volume, or Ctrl-C to exit[/]")
                     continue
                 try:
@@ -946,7 +946,7 @@ class BobShell:
                     self.console.print(f"[{t.error}]{e}[/]")
                     break
                 if not transcript.strip():
-                    self.console.print(f"[{t.muted}]…couldn't make out any words — try again, or Ctrl-C[/]")
+                    self.console.print(f"[{t.muted}]couldn't make out any words. Try again, or Ctrl-C[/]")
                     continue
                 if transcript.strip().lower().rstrip(".!?") in _VOICE_EXIT_WORDS:
                     break
@@ -958,10 +958,10 @@ class BobShell:
                 if result:
                     spoken = bob_voice.format_for_speech(result)
                     if spoken:
-                        with self._phase("🔊 speaking…"):
+                        with self._phase("speaking…"):
                             bob_voice.speak(spoken, self.config)
         finally:
-            self.console.print(f"[{t.muted}]— voice ended[/]")
+            self.console.print(f"[{t.muted}]voice ended[/]")
 
     def _phase(self, label: str):
         """A short-lived status spinner for a voice phase (transcribing / speaking). Falls back to a
@@ -1048,7 +1048,7 @@ class BobShell:
             renderer.close()
         t.join(timeout=10)
         if cancelled:
-            self.console.print(f"[{self.theme.warn}]— cancelled[/]")
+            self.console.print(f"[{self.theme.warn}]cancelled[/]")
         return None if cancelled else result
 
     # -- approval -------------------------------------------------------------
@@ -1102,7 +1102,7 @@ class BobShell:
         from rich.text import Text
         t = self.theme
         body = Text()
-        body.append("Welcome — Bob runs entirely on your machine.\n\n")
+        body.append("Welcome. Bob runs entirely on your machine.\n\n")
         for cmd, what in (("bob doctor", "check your setup is healthy"),
                           ("/help", "see every command"),
                           ("/agent <goal>", "let Bob use tools to do a task")):

@@ -44,14 +44,14 @@ SERVICES = [
      "desc": "llama.cpp via llama-swap"},
     {"name": "litellm",    "label": "api", "port": "litellmPort", "group": "Inference", "pidfile": True,
      "procnames": (), "core": True, "hint": "bob up",
-     "desc": "OpenAI-compatible proxy — point any client here"},
+     "desc": "OpenAI-compatible proxy; point any client here"},
     {"name": "whisper",    "port": "sttPort",     "group": "Voice", "pidfile": True,
      "procnames": ("whisper-server",), "hint": "bob whisper start", "desc": "speech-to-text"},
     {"name": "piper",      "port": "ttsPort",     "group": "Voice", "pidfile": True,
      "procnames": (), "hint": "bob piper start",
      "desc": "text-to-speech server (optional; voice also works without it)"},
     {"name": "open-webui", "label": "webui", "port": "webuiPort", "group": "Web & automation", "pidfile": True,
-     "procnames": ("open-webui",), "hint": "bob up", "desc": "Open WebUI — browser chat"},
+     "procnames": ("open-webui",), "hint": "bob up", "desc": "Open WebUI, browser chat"},
     {"name": "searxng",    "port": "searxngPort", "group": "Web & automation", "docker": True,
      "hint": "bob services start", "desc": "private web search"},
     {"name": "n8n",        "port": "n8nPort",     "group": "Web & automation", "docker": True,
@@ -59,7 +59,7 @@ SERVICES = [
     {"name": "langfuse",   "port": "langfusePort", "group": "Web & automation", "docker": True,
      "hint": "bob services start", "desc": "tracing / observability"},
     {"name": "agent-api",  "port": "agentPort",   "group": "Agent", "hint": "bob agent serve",
-     "desc": "bob agent serve — REST/SSE"},
+     "desc": "bob agent serve (REST/SSE)"},
 ]
 
 # Derived views — kept as module constants so callers/tests read one canonical list, never a fresh copy.
@@ -317,7 +317,7 @@ def _start_litellm_bg(config: dict) -> str:
 
     proxy = osenv.venv_exe("venv-litellm", "litellm")
     if not proxy.exists():
-        return "LiteLLM venv not found — proxy skipped (run: python -m bob.kernel venv litellm)."
+        return "LiteLLM venv not found; proxy skipped (run: python -m bob.kernel venv litellm)."
     pid = _read_pid("litellm")
     if pid is not None and osenv.pid_alive(pid):
         return f"LiteLLM already running (PID {pid})."
@@ -338,9 +338,9 @@ def _start_whisper_bg(config: dict) -> str:
     stt_port = _port(config, "sttPort")
     model = REPO / "models" / "whisper" / f"ggml-{config.get('voice', {}).get('sttModel', 'small')}.bin"
     if not exe.exists():
-        return f"whisper-server missing ({exe.name}) — run: bob setup-voice"
+        return f"whisper-server missing ({exe.name}). run: bob setup-voice"
     if not model.exists():
-        return f"Whisper model not found at {model} — run: bob setup-voice"
+        return f"Whisper model not found at {model}. run: bob setup-voice"
     osenv.stop_processes_by_name("whisper-server")  # reap stale (VRAM leak guard)
     _pidfile("whisper").unlink(missing_ok=True)
     pid = osenv.start_detached(
@@ -348,7 +348,7 @@ def _start_whisper_bg(config: dict) -> str:
         pidfile=_pidfile("whisper"), log_path=_logfile("whisper"))
     ready = _poll(lambda: osenv.is_port_in_use(stt_port), timeout=30, interval=0.5)
     tail = "ready" if ready else "may not be ready yet — check logs/whisper.log"
-    return f"whisper-server: http://localhost:{stt_port} (PID {pid}) — {tail}"
+    return f"whisper-server: http://localhost:{stt_port} (PID {pid}), {tail}"
 
 
 def _start_piper_bg(config: dict) -> str:
@@ -362,11 +362,11 @@ def _start_piper_bg(config: dict) -> str:
     py = osenv.venv_exe("venv-litellm", "python")
     server = SCRIPTS / "piper_server.py"
     if not piper_exe.exists():
-        return "piper binary not found — run: bob setup-voice"
+        return "piper binary not found. run: bob setup-voice"
     if not voice_path.exists():
-        return f"Voice model not found at {voice_path} — run: bob setup-voice"
+        return f"Voice model not found at {voice_path}. run: bob setup-voice"
     if not py.exists():
-        return "venv-litellm not found — run: python -m bob.kernel venv litellm"
+        return "venv-litellm not found. run: python -m bob.kernel venv litellm"
     pid = _read_pid("piper")
     if pid is not None and osenv.pid_alive(pid):
         return f"piper-server already running (PID {pid})."
@@ -376,7 +376,7 @@ def _start_piper_bg(config: dict) -> str:
         env={"PIPER_EXE": str(piper_exe), "PIPER_VOICE": str(voice_path), "PIPER_PORT": str(tts_port)})
     ready = _poll(lambda: osenv.is_port_in_use(tts_port), timeout=20, interval=0.5)
     tail = "ready" if ready else "may not be ready — check logs/piper.log"
-    return f"piper-server: http://localhost:{tts_port} (PID {new_pid}, voice={voice}) — {tail}"
+    return f"piper-server: http://localhost:{tts_port} (PID {new_pid}, voice={voice}), {tail}"
 
 
 def _swap_launch(config: dict) -> tuple:
@@ -397,7 +397,7 @@ def _swap_launch(config: dict) -> tuple:
 
 
 def _swap_missing_msg(exe) -> str:
-    return f"{exe.name} missing — run: python -m bob.kernel build-swap (or drop the binary in bin/)."
+    return f"{exe.name} missing. run: python -m bob.kernel build-swap (or drop the binary in bin/)."
 
 
 def _start_endpoint_bg(config: dict) -> tuple:
@@ -413,7 +413,7 @@ def _start_endpoint_bg(config: dict) -> tuple:
         return (False, [_swap_missing_msg(exe)])
     lines = []
     if osenv.is_port_in_use(port):
-        return (True, [f"Port {port} already in use — the endpoint is probably already running "
+        return (True, [f"Port {port} already in use; the endpoint is probably already running "
                        f"(bob stop to free it)."])
     pid = osenv.start_detached(
         argv, pidfile=_pidfile("llama-swap"), log_path=_logfile("llama-swap"), env=env_add)
@@ -433,7 +433,7 @@ def _start_endpoint_bg(config: dict) -> tuple:
         return osenv.is_port_in_use(litellm_port) if litellm_expected else True
 
     ok = _poll(ready, timeout=60, interval=0.3)
-    lines.append("Endpoint ready." if ok else "Endpoint did not respond in 60s — check: bob logs")
+    lines.append("Endpoint ready." if ok else "Endpoint did not respond in 60s; check: bob logs")
     return (ok and osenv.pid_alive(pid), lines)
 
 
@@ -507,9 +507,9 @@ def stack_up(config: dict, open_browser: bool = True, with_services: bool = Fals
                 lines.append("Open WebUI ready.")
                 osenv.open_url(f"http://localhost:{webui_port}")
             else:
-                lines.append(f"Open WebUI didn't respond — open manually: http://localhost:{webui_port}")
+                lines.append(f"Open WebUI didn't respond; open manually: http://localhost:{webui_port}")
     else:
-        lines.append("open-webui not installed (opt-in) — skipping. (re-run setup with --with-webui)")
+        lines.append("open-webui not installed (opt-in); skipping. (re-run setup with --with-webui)")
 
     if with_services:
         lines.append(services_control(config, "start"))
@@ -641,7 +641,7 @@ def serve_foreground(config: dict) -> int:
     if config.get("voice", {}).get("enabled"):
         print(_start_whisper_bg(config), file=sys.stderr)
     if osenv.is_port_in_use(port):
-        print(f"Port {port} already in use — the endpoint is probably already running (bob stop).",
+        print(f"Port {port} already in use; the endpoint is probably already running (bob stop).",
               file=sys.stderr)
         return 0
     print(f"Endpoint: http://localhost:{port}/v1   (loopback only; Ctrl+C to stop)", file=sys.stderr)
@@ -662,7 +662,7 @@ def webui_foreground(config: dict) -> int:
     # a foreground `serve` would just fail to bind. Point at the running instance instead of crashing.
     if osenv.is_port_in_use(port):
         url = f"http://localhost:{port}"
-        print(f"Open WebUI is already running at {url} (port {port} in use — likely from `bob up`). "
+        print(f"Open WebUI is already running at {url} (port {port} in use, likely from `bob up`). "
               f"Opening it; run `bob stop` first if you want a fresh foreground instance.", file=sys.stderr)
         osenv.open_url(url)
         return 0
