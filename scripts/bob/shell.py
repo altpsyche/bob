@@ -572,28 +572,31 @@ class BobShell:
         self._render_dashboard()
 
     def _render_dashboard(self) -> None:
-        """The cockpit dashboard: every service, grouped, coloured ● UP/down, with its URL (running) or
-        start hint (down). Reads the one stack.service_snapshot — same data as `bob status`, rendered
-        richly. `/services` shows this; `/status` appends it under the session table."""
+        """The cockpit dashboard: every service, grouped, with state legible WITHOUT relying on colour —
+        a filled ● (green) = running, a hollow ○ (red) = down. Reads the one stack.service_snapshot
+        (same data as `bob status`). The last column shows what the service IS when it's up, and HOW to
+        start it when it's down — so a running row identifies itself and a down row is actionable. No URL
+        column (the port is right there). `/services` shows this; `/status` appends it."""
         import stack
         from rich.table import Table
         t = self.theme
-        tbl = Table(show_header=True, header_style=t.muted, box=None, pad_edge=False)
-        tbl.add_column("")                       # status dot
-        tbl.add_column("service", style=t.accent, no_wrap=True)
-        tbl.add_column("port", style=t.muted, no_wrap=True)
-        tbl.add_column("where / how")
-        tbl.add_column("", style=t.muted)        # description
+        tbl = Table(show_header=False, box=None, pad_edge=False)
+        tbl.add_column(no_wrap=True)                       # status glyph
+        tbl.add_column(style=t.accent, no_wrap=True)       # service
+        tbl.add_column(style=t.muted, no_wrap=True, justify="right")  # port
+        tbl.add_column()                                   # desc (up) / start hint (down)
         seen_group = None
         for r in stack.service_snapshot(self.config):
             if r["group"] != seen_group:
-                tbl.add_row("", f"[bold {t.accent}]{r['group']}[/]", "", "", "")
+                tbl.add_row("", f"[bold {t.accent}]{r['group']}[/]", "", "")
                 seen_group = r["group"]
-            dot = f"[{t.success}]{t.dot}[/]" if r["up"] else f"[{t.error}]{t.dot}[/]"
-            where = (f"[{t.muted}]{r['url']}[/]" if r["up"]
-                     else f"[{t.warn}]start: {r['hint']}[/]")
-            tbl.add_row(dot, f"  {r['label']}", f":{r['port']}", where, r["desc"])
+            if r["up"]:
+                glyph, detail = f"[{t.success}]●[/]", f"[{t.muted}]{r['desc']}[/]"
+            else:
+                glyph, detail = f"[{t.error}]○[/]", f"[{t.warn}]start: {r['hint']}[/]"
+            tbl.add_row(glyph, f"  {r['label']}", f":{r['port']}", detail)
         self.console.print(tbl)
+        self.console.print(f"[{t.muted}]● running   ○ down · /services start|stop <name> to toggle[/]")
 
     def _cmd_services(self, arg: str = "") -> None:
         """/services — the cockpit dashboard (every service, up/down). /services start|stop [name]
