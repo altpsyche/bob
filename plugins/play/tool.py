@@ -20,7 +20,7 @@ def configure(config: dict) -> None:
     global _cfg
     _cfg = config
     root = Path(__file__).parent.parent.parent
-    for p in (root / "scripts", root / "scripts" / "tools"):   # bob_core._port + stack.ensure_searxng
+    for p in (root / "scripts", root / "scripts" / "tools"):   # bob_core._port + osenv on sys.path
         if str(p) not in sys.path:
             sys.path.insert(0, str(p))
 

@@ -642,26 +642,40 @@ def services_control(config: dict, action: str = "status", service: str = None) 
     return "Usage: bob services start|stop|status|logs"
 
 
-def ensure_searxng(config: dict) -> tuple:
-    """On-demand: bring up JUST the SearXNG container (not the whole compose group) if it isn't already
-    listening, then wait until :searxngPort answers. The single 'make private web search reachable' op,
-    used by web_search + music_play. Best-effort: returns (False, msg) when docker/compose is
-    unavailable so callers fall back gracefully. No-op (already reachable) short-circuits fast."""
+def ensure_service(config: dict, name: str) -> tuple:
+    """On-demand: bring up JUST the named docker service (not the whole compose group) if it isn't
+    already listening, then wait until its port answers. The single generic 'make one docker service
+    reachable' op. Every service-specific value (container name, port) comes from the SERVICES registry
+    entry, so auto-starting a new docker service is a registry property, not hand-written code.
+    Best-effort: returns (False, msg) when the service is unknown/non-docker or docker/compose is
+    unavailable, so callers fall back gracefully. No-op (already reachable) short-circuits fast."""
     from bob_core import _port
     osenv = _osenv()
-    port = _port(config, "searxngPort")
+    svc = next((s for s in SERVICES if s["name"] == name), None)
+    if svc is None:
+        return False, f"Unknown service '{name}'."
+    if not svc.get("docker"):
+        return False, f"'{name}' is not a docker service (no on-demand start)."
+    label = svc.get("desc", name)
+    port = _port(config, svc["port"])
     if osenv.is_port_in_use(port):
-        return True, "SearXNG already running."
+        return True, f"{name} already running."
     base, err = _compose_base(config)
     if err:
         return False, err
     _write_compose_env(config)
-    r = subprocess.run(base + ["up", "-d", "searxng"], check=False, capture_output=True, text=True)
+    r = subprocess.run(base + ["up", "-d", name], check=False, capture_output=True, text=True)
     if r.returncode != 0:
-        return False, "SearXNG failed to start:\n" + (r.stderr or r.stdout).strip()
+        return False, f"{name} failed to start:\n" + (r.stderr or r.stdout).strip()
     ready = _poll(lambda: osenv.is_port_in_use(port), timeout=40, interval=0.5)
-    return ready, (f"SearXNG ready on :{port}." if ready
-                   else f"SearXNG starting on :{port} (still warming up; retry shortly).")
+    return ready, (f"{name} ({label}) ready on :{port}." if ready
+                   else f"{name} starting on :{port} (still warming up; retry shortly).")
+
+
+def ensure_searxng(config: dict) -> tuple:
+    """Thin alias over the generic ensure_service — 'make private web search reachable', used by
+    web_search + music_play. See ensure_service for behavior."""
+    return ensure_service(config, "searxng")
 
 
 # --- foreground (CLI-only) launchers --------------------------------------------------------------

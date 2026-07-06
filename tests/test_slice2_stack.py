@@ -259,6 +259,43 @@ class TestSearxngOnDemand(unittest.TestCase):
         self.assertTrue(ok)
         self.assertIn("up", lines)
 
+    def test_ensure_searxng_is_thin_alias(self):
+        # searxng auto-start now delegates to the generic ensure_service — no bespoke code.
+        with mock.patch.object(stack, "ensure_service", return_value=(True, "aliased")) as es:
+            ok, msg = stack.ensure_searxng(CFG)
+        es.assert_called_once_with(CFG, "searxng")
+        self.assertTrue(ok)
+        self.assertEqual(msg, "aliased")
+
+    def test_ensure_service_generic_second_docker_service(self):
+        # A different docker service (n8n) auto-starts through the SAME path with NO new code:
+        # its container name + port come from the SERVICES registry entry.
+        from bob_core import _port
+        seq = iter([False, True])                    # down at check, up after start (via _poll)
+        with mock.patch.object(osenv, "is_port_in_use", side_effect=lambda p, *a, **k: next(seq)), \
+             mock.patch.object(stack, "_compose_base", return_value=(["docker", "compose", "-f", "x"], "")), \
+             mock.patch.object(stack, "_write_compose_env"), \
+             mock.patch.object(stack.subprocess, "run",
+                               return_value=mock.Mock(returncode=0, stdout="", stderr="")) as run:
+            ok, msg = stack.ensure_service(CFG, "n8n")
+        self.assertTrue(ok)
+        self.assertEqual(run.call_args[0][0][-3:], ["up", "-d", "n8n"])   # single service, from registry
+        self.assertIn(str(_port(CFG, "n8nPort")), msg)
+
+    def test_ensure_service_rejects_non_docker(self):
+        # A non-docker service (whisper) has no on-demand docker start; refuse cleanly, no docker call.
+        with mock.patch.object(osenv, "is_port_in_use", return_value=False), \
+             mock.patch.object(stack.subprocess, "run") as run:
+            ok, msg = stack.ensure_service(CFG, "whisper")
+        self.assertFalse(ok)
+        self.assertIn("not a docker service", msg)
+        run.assert_not_called()
+
+    def test_ensure_service_unknown_name(self):
+        ok, msg = stack.ensure_service(CFG, "nope")
+        self.assertFalse(ok)
+        self.assertIn("Unknown service", msg)
+
 
 class TestStop(unittest.TestCase):
     def setUp(self):
