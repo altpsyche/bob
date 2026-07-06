@@ -3,7 +3,8 @@
 
 Entered via `bob agent <goal>` (cli.py) and, in-process, by the scheduled-agent runner
 (scripts/tools/schedule.py:run_due_schedules, fired by scripts/bob_agent_runner.py).
-All config is read from data/config.json (written by Get-BobConfig in _models.ps1).
+All config is resolved by bob_core.load_config (config/defaults.json + config/user.json; one Python
+resolver, no PowerShell).
 """
 import base64
 import hashlib

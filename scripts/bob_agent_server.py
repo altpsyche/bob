@@ -401,7 +401,7 @@ if __name__ == "__main__":
     from bob_core import _port, load_config
 
     _agent = load_config().get("agent", {})
-    # Default to loopback. Set agent.serveHost = '0.0.0.0' in bob.psd1 to expose on the LAN
+    # Default to loopback. Set agent.serveHost = '0.0.0.0' in config/user.json to expose on the LAN
     # (also harden web_fetch — see MODULE-M / M9 — before doing so).
     uvicorn.run(
         app,

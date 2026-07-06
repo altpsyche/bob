@@ -3,13 +3,13 @@ proxy, Open WebUI, whisper STT, piper TTS, and optional Docker services.
 
 Functional grouping (D6): one module, several related tool fns, each reached three ways with no
 duplicated logic — the agent tool (DISPATCH), the `bob <verb>` cli handler (scripts/bob/cli.py), and
-`bob --run <cap>`. Ports scripts/start*.ps1 + up.ps1 + the bob.ps1 lifecycle cases, launching binaries
-DIRECTLY via osenv.start_detached (no pwsh Tee-Object wrapper) and reaping via the osenv process seams.
+`bob --run <cap>`. Launches binaries DIRECTLY via osenv.start_detached (no pwsh wrapper) and reaps via
+the osenv process seams.
 
-Interim bridge: config regeneration (`gen`) is still PowerShell until ONE-C Slice 6, so bring-up does a
-best-effort regen via pwsh IF present, else proceeds with the existing (checked-in-locally, gitignored)
-config/llama-swap.yaml + config/litellm.yaml — erroring only if they're absent. When Slice 6 lands,
-_regen_configs swaps to the Python generator."""
+Config regeneration (`gen`) runs the Python generators (scripts/tools/generate.py) via the
+single-sourced bob_models.regenerate_configs; bring-up does a best-effort regen, then requires
+config/llama-swap.yaml + config/litellm.yaml (checked-in-locally, gitignored), erroring only if
+they're absent."""
 import shutil
 import subprocess
 import sys

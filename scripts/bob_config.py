@@ -45,19 +45,25 @@ def _routing_from_role_table(role_table: dict) -> dict:
     return routing
 
 
-def _load_user_override(user_path: Optional[Path]) -> dict:
-    """Load the neutral user override (config/user.json, or user.toml if present). Returns {} if
-    none. The override is the runtime-config shape (e.g. {"agent": {"maxSteps": 3}})."""
-    if user_path is not None:
-        if not user_path.exists():
-            return {}
-        if user_path.suffix == ".toml":
-            return _load_toml(user_path)
-        return json.loads(user_path.read_text(encoding="utf-8"))
-    if _USER_JSON.exists():
-        return json.loads(_USER_JSON.read_text(encoding="utf-8"))
-    if _USER_TOML.exists():
-        return _load_toml(_USER_TOML)
+def load_user_overlay(user_path: Optional[Path] = None) -> dict:
+    """The ONE loader for the neutral per-machine override (config/user.json, or user.toml if present).
+    Both the runtime resolver (resolve_runtime_config) and the model-registry resolver
+    (bob_models.load_models_config) merge THIS, so the override is parsed one way with one policy.
+    Returns {} when absent OR unreadable — a malformed overlay must never break config resolution.
+    The override is the runtime/registry-config shape (e.g. {"agent": {"maxSteps": 3}})."""
+    try:
+        if user_path is not None:
+            if not user_path.exists():
+                return {}
+            if user_path.suffix == ".toml":
+                return _load_toml(user_path)
+            return json.loads(user_path.read_text(encoding="utf-8"))
+        if _USER_JSON.exists():
+            return json.loads(_USER_JSON.read_text(encoding="utf-8"))
+        if _USER_TOML.exists():
+            return _load_toml(_USER_TOML)
+    except (json.JSONDecodeError, OSError, RuntimeError):
+        return {}   # a bad overlay is ignored, not fatal (matches the model-registry resolver)
     return {}
 
 
@@ -92,7 +98,7 @@ def resolve_runtime_config(user_path: Optional[Path] = None) -> dict:
     # agentPort default lives under agent (that's where the server reads it, via _port).
     cfg["agent"].setdefault("agentPort", ports["agentPort"])
 
-    cfg = _deep_merge(cfg, _load_user_override(user_path))
+    cfg = _deep_merge(cfg, load_user_overlay(user_path))
 
     # Mirror Get-BobConfig: default allowedReadPaths to the repo root when empty, so file_read
     # works out of the box (the N9 denylist still refuses secrets inside it).

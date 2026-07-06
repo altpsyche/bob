@@ -54,7 +54,7 @@ def serve(config: dict = None) -> int:
     from bob_core import load_config
     config = config or load_config()
     if not config.get("agent", {}).get("mcpEnabled", False):
-        print("MCP disabled — set agent.mcpEnabled = $true in config/bob.psd1 to enable.", file=sys.stderr)
+        print("MCP disabled — set agent.mcpEnabled = true in config/user.json to enable.", file=sys.stderr)
         return 1
     try:
         from mcp.server import Server            # type: ignore

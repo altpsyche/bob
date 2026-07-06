@@ -298,7 +298,7 @@ def agent_install(config: dict) -> str:
     except RuntimeError as e:
         return str(e)
     return ("BobAgent task registered (runs every minute).\n"
-            "Enable proactive mode: set agent.enabled = true in config/bob.psd1")
+            "Enable proactive mode: set agent.enabled = true in config/user.json")
 
 
 def agent_uninstall(config: dict) -> str:

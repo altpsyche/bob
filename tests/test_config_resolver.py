@@ -63,6 +63,41 @@ class TestResolver(unittest.TestCase):
         self.assertEqual(cfg["litellmKey"], "sk-override")
 
 
+class TestUserOverlayLoader(unittest.TestCase):
+    """S1 — the ONE user-overlay loader (bob_config.load_user_overlay), shared by the runtime resolver
+    and the model registry: one parse, one error policy (a bad overlay is ignored, never fatal)."""
+
+    def test_absent_returns_empty(self):
+        self.assertEqual(bob_config.load_user_overlay(Path("/no/such/user.json")), {})
+
+    def test_malformed_json_is_tolerated(self):
+        d = Path(tempfile.mkdtemp(prefix="bob-baduser-"))
+        bad = d / "user.json"
+        bad.write_text("{ not valid json", encoding="utf-8")
+        # The loader swallows it (returns {}) rather than raising...
+        self.assertEqual(bob_config.load_user_overlay(bad), {})
+        # ...so a malformed overlay never breaks the whole runtime resolve (previously this raised).
+        cfg = bob_config.resolve_runtime_config(user_path=bad)
+        self.assertIn("routing", cfg)
+
+    def test_reads_json_overlay(self):
+        d = Path(tempfile.mkdtemp(prefix="bob-user-"))
+        f = d / "user.json"
+        f.write_text(json.dumps({"litellmKey": "sk-x"}), encoding="utf-8")
+        self.assertEqual(bob_config.load_user_overlay(f), {"litellmKey": "sk-x"})
+
+    def test_models_registry_uses_the_shared_loader(self):
+        # bob_models.load_models_config must merge the overlay via the SAME loader — assert it delegates
+        # (not a private re-read) so the parse/error policy can't drift. bob_models binds the name at
+        # import, so patch it there. `_s1_marker` is a top-level key nothing else touches.
+        import bob_models
+        with unittest.mock.patch.object(bob_models, "load_user_overlay",
+                                        return_value={"_s1_marker": "sentinel"}) as m:
+            cfg = bob_models.load_models_config()
+        self.assertTrue(m.called)
+        self.assertEqual(cfg["_s1_marker"], "sentinel")
+
+
 class TestCapabilityProbe(unittest.TestCase):
     """NB5 — the provisioner readiness probe: degrades with a clear message, never assumes setup ran."""
 

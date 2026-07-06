@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 import osenv
-from bob_config import _deep_merge
+from bob_config import _deep_merge, load_user_overlay
 
 REPO = Path(__file__).resolve().parent.parent
 MODELS_FILE = REPO / "config" / "models.json"
@@ -36,12 +36,9 @@ def load_models_config(models_file: Optional[Path] = None, user_file: Optional[P
     if not mf.exists():
         raise RuntimeError(f"models config not found: {mf}")
     config = json.loads(mf.read_text(encoding="utf-8"))
-    uf = user_file or USER_FILE
-    if uf.exists():
-        try:
-            config = _deep_merge(config, json.loads(uf.read_text(encoding="utf-8")))
-        except (json.JSONDecodeError, OSError):
-            pass  # a malformed user overlay must not break the registry read
+    overlay = load_user_overlay(user_file or USER_FILE)   # one loader/policy (bob_config); {} if bad
+    if overlay:
+        config = _deep_merge(config, overlay)
     apf = _active_profile_file()
     if apf.exists():
         try:

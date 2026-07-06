@@ -160,7 +160,7 @@ def _file_write(path: str, content: str) -> str:
     if not _allowed_write:
         return (
             "file_write is disabled.\n"
-            "Add paths to agent.allowedWritePaths in config/bob.psd1 or config/user.psd1 to enable."
+            "Add paths to agent.allowedWritePaths in config/user.json to enable."
         )
     p = _abs(path, _allowed_write)
     if not _is_allowed(p, _allowed_write):

@@ -4,8 +4,8 @@ related tool fns, each reached three ways (agent tool / `bob <verb>` / `bob --ru
 logic. Ports the bob.ps1 models/show/profiles/profile/verify-urls/bench cases + Get-Models/Get-GpuVramGB/
 Get-SuggestedProfile.
 
-`gen` is still PowerShell (Slice 6), so a profile switch regenerates configs via the single-sourced
-best-effort bridge bob_models.regenerate_configs (shared with the stack bring-up)."""
+A profile switch regenerates the runtime configs via the single-sourced best-effort
+bob_models.regenerate_configs (the Python generators — shared with the stack bring-up)."""
 import sys
 from pathlib import Path
 
@@ -194,7 +194,7 @@ def profile_switch(name: str, config: dict) -> str:
         bob_models.set_active_profile(target, mcfg)
     except ValueError as e:
         return str(e)
-    bob_models.regenerate_configs()  # best-effort; no-op without pwsh until Slice 6 ports `gen`
+    bob_models.regenerate_configs()  # best-effort; runs the Python generators (generate.py)
 
     # Report which of the new profile's models are on disk.
     roles = bob_models.profile_roles(target)

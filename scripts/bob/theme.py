@@ -14,6 +14,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from bob_config import _deep_merge   # the ONE deep-merge helper (was a third private copy here)
+
 _CONFIG_DIR = Path(__file__).resolve().parent.parent.parent / "config"   # scripts/bob/theme.py -> repo/config
 UI_FILE = _CONFIG_DIR / "ui.json"
 
@@ -54,14 +56,6 @@ _ANSI_NAMES = {"black", "red", "green", "yellow", "blue", "magenta", "cyan", "wh
 
 
 # --- merge + load ----------------------------------------------------------------------------------
-
-def _deep_merge(base: dict, over: dict) -> dict:
-    """Recursively merge `over` into a copy of `base` (dict-into-dict; scalars/lists replace)."""
-    out = dict(base)
-    for k, v in (over or {}).items():
-        out[k] = _deep_merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
-    return out
-
 
 def load_ui(config=None) -> dict:
     """Merged theme dict: `_DEFAULT_UI` ← `config/ui.json` ← `config['ui']`."""
