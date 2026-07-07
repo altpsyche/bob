@@ -3,9 +3,9 @@
 Voice-safe: fire-and-forget, no confirmation prompt, no blocking.
 
 YouTube path: resolves a direct youtube.com/watch URL (SearXNG if up -> yt-dlp
--> HTML scrape -> search page), then STARTS it: streams audio via mpv when
-available (autoplays immediately and outlives the voice turn), else opens the
-browser with autoplay hinted.
+-> HTML scrape -> search page), then STARTS it: streams via mpv in a visible
+window when available (autoplays immediately, outlives the voice turn, and can
+be stopped with music_stop), else opens the browser with autoplay hinted.
 
 Spotify path: opens spotify:search: URI (Spotify handles playback).
 """
@@ -15,6 +15,7 @@ import urllib.parse
 from pathlib import Path
 
 _cfg: dict = {}
+_players: list = []   # PIDs of mpv players we launched this session (so music_stop can reap them)
 
 
 def configure(config: dict) -> None:
@@ -135,31 +136,56 @@ def _youtube_first_video(query: str) -> str | None:
     return None
 
 
+def _stop_players() -> int:
+    """Reap every mpv we launched this session. Returns how many were stopped. start_new_session made
+    each a process-group leader, so osenv.stop_process_tree reaps mpv and its yt-dlp child."""
+    import osenv
+    n = 0
+    for pid in _players:
+        try:
+            if osenv.pid_alive(pid):
+                osenv.stop_process_tree(pid)
+                n += 1
+        except Exception:   # noqa: BLE001 — best-effort teardown
+            pass
+    _players.clear()
+    return n
+
+
 def _play_stream(url: str) -> bool:
-    """Actually START the song: stream `url` through mpv (audio-only), detached so it keeps playing
-    after voice/the shell moves on. mpv autoplays immediately -- a browser tab does NOT (browsers block
-    autoplay-with-sound until a click), which is why opening the watch page 'just goes to the page'
-    without playing. mpv streams via yt-dlp, so both must be present; returns False otherwise so the
-    caller falls back to opening the URL in a browser."""
+    """Actually START the song: stream `url` through mpv in a VISIBLE window (so you can see what's
+    playing, pause, and close it — and its own audio doesn't need the mic for control), detached so it
+    keeps playing after the voice turn ends. mpv autoplays immediately -- a browser tab does NOT
+    (browsers block autoplay-with-sound until a click), which is why opening the watch page 'just goes
+    to the page' without playing. mpv streams via yt-dlp, so both must be present; returns False
+    otherwise so the caller falls back to opening the URL in a browser."""
     import shutil
     mpv = shutil.which("mpv")
     ytdlp = _ytdlp_bin()
     if not (mpv and ytdlp):
         return False
     import subprocess
+    _stop_players()   # one player at a time — don't stack windows/audio on a new request
     try:
-        subprocess.Popen(
+        proc = subprocess.Popen(
             # Point mpv at OUR yt-dlp explicitly: mpv's ytdl hook only searches PATH, and Bob's yt-dlp
             # lives in the venv (off PATH). Without this, mpv can't resolve the stream and nothing plays.
-            [mpv, "--no-video", "--no-terminal",
+            # --force-window shows a window even before video decodes, so there's always a visible player.
+            [mpv, "--force-window=yes", "--no-terminal",
              f"--script-opts=ytdl_hook-ytdl_path={ytdlp}", url],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
-            start_new_session=True,   # detach: the song outlives the voice turn / shell command
+            start_new_session=True,   # detach + own process group: the song outlives the voice turn
         )
+        _players.append(proc.pid)
         return True
     except OSError as e:
         print(f"[play] mpv playback failed: {e}", file=sys.stderr)
         return False
+
+
+def _music_stop() -> str:
+    """Stop music that music_play started (closes the mpv window)."""
+    return "Stopped the music." if _stop_players() else "No music is playing."
 
 
 def _autoplay_url(url: str) -> str:
@@ -206,7 +232,7 @@ def _music_play(query: str, platform: str = "auto") -> str:
         if url:
             # Start the song for real via a local player; if none, open the browser (autoplay hinted).
             if _play_stream(url):
-                return f"Playing on YouTube: {query}"
+                return f"Playing on YouTube: {query} (in a player window; say 'stop the music' to end it)"
             return _launch(_autoplay_url(url), f"Playing on YouTube: {query}")
         # Couldn't resolve a video: open the search page.
         return _launch(f"https://music.youtube.com/search?q={q}",
@@ -266,9 +292,22 @@ TOOL_DEFS = [
                 "required": ["query"],
             },
         },
-    }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "music_stop",
+            "description": (
+                "Stop music that music_play started (closes the player window). "
+                "Use when the user asks to stop, pause, or turn off the music."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
 ]
 
-DISPATCH = {"music_play": _music_play}
+DISPATCH = {"music_play": _music_play, "music_stop": _music_stop}
 
-EXIT_VOICE = True
+# Only music_play leaves voice mode (so the song can play without the mic transcribing the lyrics);
+# music_stop stays in voice so you can stop the music and keep talking.
+EXIT_VOICE = {"music_play"}

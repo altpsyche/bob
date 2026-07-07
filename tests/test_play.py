@@ -21,6 +21,8 @@ class TestPlay(unittest.TestCase):
         self._ytdlp = mock.patch.object(tool, "_ytdlp_bin", return_value=None)
         self._ytdlp.start()
         self.addCleanup(self._ytdlp.stop)
+        tool._players.clear()               # isolate the session player list between tests
+        self.addCleanup(tool._players.clear)
 
     def _resp(self, text):
         r = mock.Mock()
@@ -77,20 +79,51 @@ class TestPlay(unittest.TestCase):
         self.assertIn("Playing on YouTube", out)
         self.assertTrue(opened and "watch?v=abc123DEF45" in opened[0])
 
-    def test_play_stream_uses_mpv_detached(self):
-        # The real fix: start the song via mpv (audio-only), detached so it outlives the voice turn.
+    def test_play_stream_uses_mpv_detached_visible(self):
+        # The real fix: start the song via mpv in a VISIBLE window, detached so it outlives the turn.
         with mock.patch.object(tool, "_ytdlp_bin", return_value="/venv/bin/yt-dlp"), \
              mock.patch("shutil.which", return_value="/usr/bin/mpv"), \
-             mock.patch("subprocess.Popen") as popen:
+             mock.patch("subprocess.Popen", return_value=mock.Mock(pid=4242)) as popen:
             ok = tool._play_stream("https://www.youtube.com/watch?v=abc123DEF45")
         self.assertTrue(ok)
         argv = popen.call_args[0][0]
         self.assertEqual(argv[0], "/usr/bin/mpv")
-        self.assertIn("--no-video", argv)
+        self.assertIn("--force-window=yes", argv)          # a visible player window
+        self.assertNotIn("--no-video", argv)               # not headless anymore
         self.assertIn("https://www.youtube.com/watch?v=abc123DEF45", argv)
         # mpv is pointed at OUR yt-dlp (it only searches PATH otherwise, and ours is in the venv)
         self.assertIn("--script-opts=ytdl_hook-ytdl_path=/venv/bin/yt-dlp", argv)
         self.assertTrue(popen.call_args.kwargs.get("start_new_session"))   # detached
+        self.assertIn(4242, tool._players)                 # tracked so music_stop can reap it
+
+    def test_music_stop_reaps_tracked_players(self):
+        import osenv
+        tool._players.extend([111, 222])
+        reaped = []
+        with mock.patch.object(osenv, "pid_alive", return_value=True), \
+             mock.patch.object(osenv, "stop_process_tree", side_effect=lambda p: reaped.append(p)):
+            out = tool._music_stop()
+        self.assertIn("Stopped the music", out)
+        self.assertEqual(sorted(reaped), [111, 222])
+        self.assertEqual(tool._players, [])                # cleared after stopping
+
+    def test_music_stop_when_nothing_playing(self):
+        self.assertIn("No music is playing", tool._music_stop())
+
+    def test_new_play_reaps_previous_player(self):
+        # Playing again must not stack windows/audio: the prior mpv is reaped before the new one starts.
+        import osenv
+        tool._players.append(999)
+        reaped = []
+        with mock.patch.object(tool, "_ytdlp_bin", return_value="/venv/bin/yt-dlp"), \
+             mock.patch("shutil.which", return_value="/usr/bin/mpv"), \
+             mock.patch.object(osenv, "pid_alive", return_value=True), \
+             mock.patch.object(osenv, "stop_process_tree", side_effect=lambda p: reaped.append(p)), \
+             mock.patch("subprocess.Popen", return_value=mock.Mock(pid=1234)):
+            ok = tool._play_stream("http://x")
+        self.assertTrue(ok)
+        self.assertEqual(reaped, [999])                    # old player reaped
+        self.assertEqual(tool._players, [1234])            # only the new one tracked
 
     def test_play_stream_false_without_mpv_or_ytdlp(self):
         with mock.patch.object(tool, "_ytdlp_bin", return_value="yt-dlp"), \

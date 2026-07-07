@@ -214,11 +214,13 @@ class ToolRegistry:
         self.tool_schemas.extend(tool_defs)
         self.dispatch.update(mod_dispatch)
 
-        if getattr(mod, "EXIT_VOICE", False):
-            for td in tool_defs:
-                fn_name = td.get("function", {}).get("name")
-                if fn_name:
-                    self.exit_voice_tools.add(fn_name)
+        exit_voice = getattr(mod, "EXIT_VOICE", False)
+        if exit_voice:
+            # EXIT_VOICE may be True (every tool in the module leaves voice mode) OR a collection of
+            # specific tool names (only those do) — so a module can mix exit and non-exit tools.
+            named = (exit_voice if isinstance(exit_voice, (set, list, tuple))
+                     else [td.get("function", {}).get("name") for td in tool_defs])
+            self.exit_voice_tools.update(n for n in named if n)
 
         if getattr(mod, "REQUIRES_APPROVAL", False):
             for td in tool_defs:

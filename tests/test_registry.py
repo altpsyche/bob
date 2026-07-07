@@ -33,6 +33,12 @@ class TestRealTools(unittest.TestCase):
             self.assertIn("function", s)
             self.assertTrue(s["function"].get("name"))
 
+    def test_exit_voice_can_target_specific_tools(self):
+        # The play plugin sets EXIT_VOICE = {"music_play"} — only music_play leaves voice mode; its
+        # sibling music_stop stays in voice so you can stop the song and keep talking.
+        self.assertIn("music_play", self.reg.exit_voice_tools)
+        self.assertNotIn("music_stop", self.reg.exit_voice_tools)
+
     def test_mutating_tools_marked(self):
         # MEM-6 — memory_store mutates (SQLite write); memory_recall is read-only. The mutating set is
         # the O2/O6 seam and must never leak into the wire schema.
