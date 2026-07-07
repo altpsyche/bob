@@ -16,6 +16,7 @@ from pathlib import Path
 
 _cfg: dict = {}
 _players: list = []   # PIDs of mpv players we launched this session (so music_stop can reap them)
+_mpv_caps: dict = {}  # mpv path -> set of supported --options (probed once; older mpv lacks --focus-on)
 
 
 def configure(config: dict) -> None:
@@ -152,6 +153,21 @@ def _stop_players() -> int:
     return n
 
 
+def _mpv_supports(mpv: str, option: str) -> bool:
+    """True if this mpv build accepts --<option>. Probed once per binary (mpv errors out on an unknown
+    option, which would kill playback), so we can pass newer flags only where supported."""
+    caps = _mpv_caps.get(mpv)
+    if caps is None:
+        import subprocess
+        try:
+            out = subprocess.run([mpv, "--list-options"], capture_output=True, text=True, timeout=5).stdout
+        except Exception:   # noqa: BLE001 — probe is best-effort
+            out = ""
+        caps = {ln.split()[0] for ln in out.splitlines() if ln.strip().startswith("--")}
+        _mpv_caps[mpv] = caps
+    return f"--{option}" in caps
+
+
 def _play_stream(url: str) -> bool:
     """Actually START the song: stream `url` through mpv in a VISIBLE window (so you can see what's
     playing, pause, and close it — and its own audio doesn't need the mic for control), detached so it
@@ -166,13 +182,19 @@ def _play_stream(url: str) -> bool:
         return False
     import subprocess
     _stop_players()   # one player at a time — don't stack windows/audio on a new request
+    # Point mpv at OUR yt-dlp explicitly: mpv's ytdl hook only searches PATH, and Bob's yt-dlp lives in
+    # the venv (off PATH). Without this, mpv can't resolve the stream and nothing plays.
+    # --force-window shows a window even before video decodes, so there's always a visible player.
+    argv = [mpv, "--force-window=yes", "--no-terminal",
+            f"--script-opts=ytdl_hook-ytdl_path={ytdlp}"]
+    if _mpv_supports(mpv, "focus-on"):
+        # Don't steal focus from the terminal when the window opens (mpv >= 0.38) -- so the player is
+        # visible but doesn't "take over": you keep typing in your shell.
+        argv.append("--focus-on=never")
+    argv.append(url)
     try:
         proc = subprocess.Popen(
-            # Point mpv at OUR yt-dlp explicitly: mpv's ytdl hook only searches PATH, and Bob's yt-dlp
-            # lives in the venv (off PATH). Without this, mpv can't resolve the stream and nothing plays.
-            # --force-window shows a window even before video decodes, so there's always a visible player.
-            [mpv, "--force-window=yes", "--no-terminal",
-             f"--script-opts=ytdl_hook-ytdl_path={ytdlp}", url],
+            argv,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
             start_new_session=True,   # detach + own process group: the song outlives the voice turn
         )

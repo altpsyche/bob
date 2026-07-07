@@ -83,6 +83,7 @@ class TestPlay(unittest.TestCase):
         # The real fix: start the song via mpv in a VISIBLE window, detached so it outlives the turn.
         with mock.patch.object(tool, "_ytdlp_bin", return_value="/venv/bin/yt-dlp"), \
              mock.patch("shutil.which", return_value="/usr/bin/mpv"), \
+             mock.patch.object(tool, "_mpv_supports", return_value=True), \
              mock.patch("subprocess.Popen", return_value=mock.Mock(pid=4242)) as popen:
             ok = tool._play_stream("https://www.youtube.com/watch?v=abc123DEF45")
         self.assertTrue(ok)
@@ -90,11 +91,21 @@ class TestPlay(unittest.TestCase):
         self.assertEqual(argv[0], "/usr/bin/mpv")
         self.assertIn("--force-window=yes", argv)          # a visible player window
         self.assertNotIn("--no-video", argv)               # not headless anymore
+        self.assertIn("--focus-on=never", argv)            # visible but doesn't grab terminal focus
         self.assertIn("https://www.youtube.com/watch?v=abc123DEF45", argv)
         # mpv is pointed at OUR yt-dlp (it only searches PATH otherwise, and ours is in the venv)
         self.assertIn("--script-opts=ytdl_hook-ytdl_path=/venv/bin/yt-dlp", argv)
         self.assertTrue(popen.call_args.kwargs.get("start_new_session"))   # detached
         self.assertIn(4242, tool._players)                 # tracked so music_stop can reap it
+
+    def test_play_stream_omits_focus_flag_on_old_mpv(self):
+        # An mpv too old for --focus-on must not get the flag (mpv errors on unknown options -> no play).
+        with mock.patch.object(tool, "_ytdlp_bin", return_value="/venv/bin/yt-dlp"), \
+             mock.patch("shutil.which", return_value="/usr/bin/mpv"), \
+             mock.patch.object(tool, "_mpv_supports", return_value=False), \
+             mock.patch("subprocess.Popen", return_value=mock.Mock(pid=7)) as popen:
+            self.assertTrue(tool._play_stream("http://x"))
+        self.assertNotIn("--focus-on=never", popen.call_args[0][0])
 
     def test_music_stop_reaps_tracked_players(self):
         import osenv
@@ -117,6 +128,7 @@ class TestPlay(unittest.TestCase):
         reaped = []
         with mock.patch.object(tool, "_ytdlp_bin", return_value="/venv/bin/yt-dlp"), \
              mock.patch("shutil.which", return_value="/usr/bin/mpv"), \
+             mock.patch.object(tool, "_mpv_supports", return_value=False), \
              mock.patch.object(osenv, "pid_alive", return_value=True), \
              mock.patch.object(osenv, "stop_process_tree", side_effect=lambda p: reaped.append(p)), \
              mock.patch("subprocess.Popen", return_value=mock.Mock(pid=1234)):
