@@ -1,5 +1,11 @@
 # Bob — Claude Code Rules
 
+## Committing
+
+Do NOT run `git commit` unless the user explicitly asks. Make and iterate on changes in the working
+tree; keep the gate green and let the user review the diff and commit when they're ready. Never commit
+proactively "per fix" or to checkpoint — even during a multi-step task. Same for `git push`.
+
 ## Plugin and Tool Placement
 
 This project has a three-layer capability model. Before creating any new tool or plugin, follow the decision rule:
