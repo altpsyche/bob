@@ -759,7 +759,9 @@ class TestHygiene(unittest.TestCase):
         self.assertTrue(profiles)                                        # wrote type=profile memory rows
         self.assertTrue(any("Siva" in r["content"] for r in profiles))
         db = bob_memory.get_db(self.db)
-        self.assertEqual(db.execute("SELECT COUNT(*) FROM profile").fetchone()[0], 0)  # dead table unused
+        tables = {r[0] for r in
+                  db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        self.assertNotIn("profile", tables)   # identity is memory rows; no separate profile table
 
 
 class TestNormalize(unittest.TestCase):

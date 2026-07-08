@@ -202,16 +202,8 @@ def _ensure_schema(db: sqlite_utils.Database) -> None:
             source_session TEXT
         )
     """)
-    # DEPRECATED: the legacy key/value profile table is no longer written or read — identity
-    # now lives as type='profile' rows in `memories` (cmd_init_profile + consolidation). Kept one
-    # release for back-compat on existing DBs; a later migration drops it.
-    db.execute("""
-        CREATE TABLE IF NOT EXISTS profile (
-            key TEXT PRIMARY KEY,
-            value TEXT,
-            updated_at TEXT DEFAULT (datetime('now'))
-        )
-    """)
+    # Identity lives as type='profile' rows in `memories` (cmd_init_profile + consolidation); there is
+    # no separate profile table.
     version = db.execute("PRAGMA user_version").fetchone()[0]
     if version >= SCHEMA_VERSION:
         return

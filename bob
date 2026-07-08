@@ -1,12 +1,12 @@
 #!/usr/bin/env sh
-# NB4 (contract C1) — POSIX front-door shim for Bob. Dumb by design: it hands every command to
+# POSIX front-door shim for Bob. Dumb by design: it hands every command to
 # `python -m bob`, which resolves it against the command registry (scripts/bob/registry.py) and runs
-# the matching handler. Every verb is Python (ONE-D/E); the cold-start provisioner is
+# the matching handler. Every verb is Python; the cold-start provisioner is
 # `python -m bob.kernel` (setup.sh/install_prereqs.sh call it). Windows uses a bob.cmd -> `python -m
 # bob` shim (written by bob.kernel's install_cli).
 set -e
 # Resolve symlinks so REPO is the real repo dir even when invoked via a symlink on PATH
-# (install-cli.ps1 links this into ~/.local/bin). POSIX: walk the chain — readlink -f is GNU-only.
+# (bob.kernel's install_cli links this into ~/.local/bin). POSIX: walk the chain — readlink -f is GNU-only.
 SELF="$0"
 while [ -h "$SELF" ]; do
   _link="$(readlink "$SELF")"
@@ -18,18 +18,18 @@ done
 # shellcheck disable=SC1007  # `CDPATH= cd` deliberately clears CDPATH for this one command (not an assign)
 REPO="$(CDPATH= cd -- "$(dirname -- "$SELF")" && pwd)"
 # $BOB_REPO overrides for the copy-install case: symlink-resolution above only finds the repo when the
-# on-PATH `bob` is a SYMLINK (how install-cli.ps1 sets it up). If someone COPIED this shim onto PATH,
+# on-PATH `bob` is a SYMLINK (how kernel install_cli sets it up). If someone COPIED this shim onto PATH,
 # REPO points at the copy's dir and `python -m bob` can't find the package — so honor an explicit
 # override and, failing that, fail loudly instead of with a confusing ModuleNotFoundError.
 REPO="${BOB_REPO:-$REPO}"
 if [ ! -d "$REPO/scripts/bob" ]; then
   echo "bob: can't find the Bob repo (looked in '$REPO'). If you copied this shim onto PATH instead of" >&2
-  echo "     symlinking it, set BOB_REPO=/path/to/bob, or run scripts/install-cli.ps1 to symlink it." >&2
+  echo "     symlinking it, set BOB_REPO=/path/to/bob, or re-run setup (python -m bob.kernel setup) to symlink it." >&2
   exit 1
 fi
 # Run under the venv-litellm interpreter — it holds the runtime deps (openai, rich, requests,
-# prompt_toolkit, sqlite-utils). Mirrors the Windows dispatch (bob.ps1 routes python commands to
-# `& venv-litellm\python -m bob`). $BOB_PYTHON overrides; fall back to system python3 for the
+# prompt_toolkit, sqlite-utils). Mirrors the Windows bob.cmd shim, which runs `python -m bob`.
+# $BOB_PYTHON overrides; fall back to system python3 for the
 # stdlib-only pre-bootstrap commands (version/help) when the venv isn't built yet.
 if [ -n "$BOB_PYTHON" ]; then
   PYTHON="$BOB_PYTHON"

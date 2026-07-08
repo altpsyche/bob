@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ONE-D Slice D8 (DD5) — Tier-0 shell stub. The ONE thin, unavoidable shell layer: ensure a system
+# Tier-0 shell stub. The ONE thin, unavoidable shell layer: ensure a system
 # python3 (one package-manager call), then hand off to the Python cold-start kernel, which installs the
 # toolchain (compiler, cmake, ninja, go, node, python3, CUDA) via apt/dnf/pacman/zypper. Zero PowerShell.
 # Idempotent — safe to re-run.
@@ -12,7 +12,7 @@ export PYTHONPATH="$SCRIPT_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}"
 
 log() { printf '[install_prereqs] %s\n' "$*"; }
 
-# ND4 — version-stamp: state which Bob release this blessed entry belongs to.
+# version-stamp: state which Bob release this blessed entry belongs to.
 log "Bob $(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo '?') — prerequisite install"
 
 # Root vs sudo: work on root containers/minimal installs (no sudo) as well as normal desktops.

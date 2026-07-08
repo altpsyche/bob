@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================================
-REM  Bob master setup (ONE-D Slice D8, DD5 — Python kernel, zero PowerShell).
+REM  Bob master setup (Python kernel, zero PowerShell).
 REM  Run ONCE after cloning + install_prereqs.bat. Idempotent (safe to re-run).
 REM  Builds engine+proxy -> creates venvs + installs tools -> fetches models ->
 REM  wires Continue/aider, via `python -m bob.kernel setup`.
@@ -12,7 +12,7 @@ REM           setup.bat --profile 12gb  (smaller models for ~12GB VRAM)
 REM           setup.bat --launch        (start the stack when done)
 REM ============================================================================
 setlocal
-REM ND4 — version-stamp: state which Bob release this blessed entry belongs to.
+REM version-stamp: state which Bob release this blessed entry belongs to.
 set "BOBVER=?"
 if exist "%~dp0VERSION" set /p BOBVER=<"%~dp0VERSION"
 echo [setup] Bob %BOBVER% - setup

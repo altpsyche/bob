@@ -1,6 +1,6 @@
-# Bob skill manifest (NE4). Required: description. Optional: name (defaults to dir), group,
+# Bob skill manifest. Required: description. Optional: name (defaults to dir), group,
 # argument-hint, steps. `steps` (a list of {tool, arguments}) makes this a simple tool-sequence skill
-# the NE stub executor can run today; a skill with no steps is a sub-agent skill (Module O runs it).
+# the stub executor can run today; a skill with no steps is a sub-agent skill.
 name: repo-brief
 description: Summarize recent activity in the current repo — working-tree status plus the last commits.
 group: Know

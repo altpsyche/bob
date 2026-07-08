@@ -1,30 +1,27 @@
-# NB6 (contract C5) — the ONE CI workflow. NB6 creates it; ND2 (fresh-install matrix) and O10
-# (agent-capability eval) later ADD jobs to this same file — never recreate it.
+# The one CI workflow. Jobs:
+#   lint           — shellcheck (bootstrap .sh/shim). Every PR (GATES).
+#   core-suite     — Python core + check.py gate on Linux + Windows, no GPU. Every PR.
+#   prereqs-distro — install_prereqs.sh + diagnose across fedora/arch/opensuse containers. NON-GATING
+#                    first (proves the dnf/pacman/zypper package-map cells resolve on real distros).
+#   eval           — agent-capability eval (records-based, no live model), both OSes. NON-GATING.
+#   acceptance-cpu — fresh-install + e2e smoke on the CPU tier, both OSes. Every PR (GATES).
+#   acceptance-gpu — native-from-source CUDA + real inference on a self-hosted GPU. RELEASE TAGS ONLY.
 #
-# Jobs:
-#   lint           (NDx)  — shellcheck (bootstrap .sh/shim). Every PR (GATES). (ONE-E retired the .ps1 layer.)
-#   core-suite     (NB6)  — Python core + check.py gate on Linux + Windows, no GPU. Every PR.
-#   prereqs-distro (ND2)  — install_prereqs.sh + diagnose across fedora/arch/opensuse containers. NON-GATING
-#                           first (proves the dnf/pacman/zypper package-map cells resolve on real distros).
-#   eval           (O10)  — agent-capability eval (records-based, no live model), both OSes. NON-GATING.
-#   acceptance-cpu (ND2)  — fresh-install + e2e smoke on the NC8 CPU tier, both OSes. Every PR (GATES).
-#   acceptance-gpu (ND2)  — native-from-source CUDA + real inference on a self-hosted GPU. RELEASE TAGS ONLY.
-#
-# Gating scope is C7's ND consequence: the per-PR gate is the portable/CPU tier only. Native-from-source
-# CUDA is exercised solely in the non-gating release-tag tier, so a fragile native build can never red a
-# per-PR gate. core-suite is the executable proof the Python core is OS-agnostic; acceptance-cpu is the
-# proof a clean machine -> documented steps -> working Bob on both OSes.
+# The per-PR gate is the portable/CPU tier only. Native-from-source CUDA is exercised solely in the
+# non-gating release-tag tier, so a fragile native build can never red a per-PR gate. core-suite is the
+# executable proof the Python core is OS-agnostic; acceptance-cpu is the proof a clean machine ->
+# documented steps -> working Bob on both OSes.
 name: CI
 
 on:
   pull_request:
   push:
     branches: [main]
-    tags: ['v*']        # ND2 — release tags additionally trigger the GPU acceptance tier
+    tags: ['v*']        # release tags additionally trigger the GPU acceptance tier
 
 jobs:
   # Static analysis of the shell bootstrap. shellcheck catches bashisms/quoting/unset-var bugs in the
-  # .sh entry points + the `bob` shim. (ONE-E retired the PowerShell layer, so PSScriptAnalyzer is gone.)
+  # .sh entry points + the `bob` shim.
   lint:
     name: lint (shellcheck)
     runs-on: ubuntu-latest
@@ -54,21 +51,21 @@ jobs:
       # sqlite-utils + requests are real deps of bob_memory (test_memory imports it), which
       # sys.exit(1)s at import if they're missing — omitting them fails the whole suite, not one test.
       - name: Install core-suite deps
-        shell: pwsh
-        # rich/prompt_toolkit/pyfiglet (NE2 shell UI) + PyYAML (NE4 skills manifests) are lightweight
+        shell: bash
+        # rich/prompt_toolkit/pyfiglet (shell UI) + PyYAML (skills manifests) are lightweight
         # pure-python runtime deps — installed so the shell/theme/render/skills tests run for real
         # (the tests also skip cleanly if these are ever absent, so the suite still passes minimally).
         run: python -m pip install --upgrade pip fastapi uvicorn pydantic httpx requests openai sqlite-utils rich prompt_toolkit pyfiglet pyyaml
 
-      # One gate, both OSes: py_compile + verbs/lock sync + exec-bits + the unittest core suite. Runs on
-      # the CI interpreter (there is no venv-litellm here); check.py is stdlib-only (ONE-E, no PowerShell).
+      # One gate, both OSes: py_compile + lock sync + exec-bits + the unittest core suite. Runs on
+      # the CI interpreter (there is no venv-litellm here); check.py is stdlib-only.
       - name: check.py (py_compile + verbs/lock sync + unittest core suite)
         run: python scripts/check.py
 
-  # O10 (contracts C5 + C7) — agent-capability eval on the existing Win+Linux matrix, EVERY PR but
-  # NON-GATING (continue-on-error): it reports a deterministic capability score from a records-based run
-  # (scripted client + FakeRegistry, NO live model — CPU-safe, mirrors the smoke's CPU-tier tolerance).
-  # A threshold gate is added later once baselines stabilize (run_eval.py --gate). Tracks O1/O2/O6 wins.
+  # Agent-capability eval on the Win+Linux matrix, EVERY PR but NON-GATING (continue-on-error): it
+  # reports a deterministic capability score from a records-based run (scripted client + FakeRegistry,
+  # NO live model — CPU-safe, mirrors the smoke's CPU-tier tolerance). A threshold gate is added later
+  # once baselines stabilize (run_eval.py --gate).
   eval:
     name: eval (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -87,18 +84,18 @@ jobs:
       # Same lightweight core deps as core-suite — the eval imports the agent runtime (bob_core/bob_loop)
       # and injects fakes, so no GPU / inference stack is needed.
       - name: Install core deps
-        shell: pwsh
+        shell: bash
         run: python -m pip install --upgrade pip fastapi uvicorn pydantic httpx requests openai sqlite-utils
 
       - name: Agent-capability eval (records-based, non-gating)
-        shell: pwsh
+        shell: bash
         run: python tests/eval/run_eval.py --json
 
-  # ND2 (contracts C5 + C7) — fresh-install acceptance on the CPU tier, both OSes, EVERY PR (gates).
-  # Provisions a clean runner per the documented one-command entry, builds the NC8 CPU llama.cpp,
-  # serves the tiny CPU GGUF, and runs the shared cross-OS smoke (provision -> serve -> coherent answer
-  # -> agent server /health + owner-scoped session + SSE). No GPU. This is the FIRST place the Linux
-  # provisioner path executes end-to-end for real; expect first-run debugging here, not in production.
+  # Fresh-install acceptance on the CPU tier, both OSes, EVERY PR (gates). Provisions a clean runner per
+  # the documented one-command entry, builds the CPU llama.cpp, serves the tiny CPU GGUF, and runs the
+  # shared cross-OS smoke (provision -> serve -> coherent answer -> agent server /health + owner-scoped
+  # session + SSE). No GPU. This is the FIRST place the Linux provisioner path executes end-to-end for
+  # real; expect first-run debugging here, not in production.
   acceptance-cpu:
     name: acceptance-cpu (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -117,7 +114,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      # ND2 realism note — building llama.cpp (even CPU) is minutes-scale. Cache the built binaries,
+      # Realism note — building llama.cpp (even CPU) is minutes-scale. Cache the built binaries,
       # the downloaded model, and the llama.cpp build tree, keyed by the versions.lock hash so a PR that
       # doesn't move the pins reuses the cache instead of rebuilding/redownloading from scratch.
       - name: Cache build + model by versions.lock
@@ -129,7 +126,7 @@ jobs:
             external/llama.cpp/build
           key: ${{ runner.os }}-bob-cpu-${{ hashFiles('versions.lock') }}
 
-      # Documented one-command prerequisites (NC2), CPU variant. Per-OS entry script.
+      # Documented one-command prerequisites, CPU variant. Per-OS entry script.
       - name: Install prerequisites (Linux, CPU)
         if: runner.os == 'Linux'
         shell: bash
@@ -138,21 +135,21 @@ jobs:
           ./install_prereqs.sh --cpu
       - name: Install prerequisites (Windows, CPU)
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: bash
         run: python -m bob.kernel prereqs --cpu
 
-      # Bob's Python runtime venv (the agent server the smoke exercises is python -m bob — NB, not NC).
-      # The cold-start kernel provisions it via osenv.new_bob_venv (replaces bootstrap-litellm.ps1).
+      # Bob's Python runtime venv (the agent server the smoke exercises is python -m bob).
+      # The cold-start kernel provisions it via osenv.new_bob_venv.
       - name: Bootstrap the Python runtime venv
-        shell: pwsh
+        shell: bash
         run: python -m bob.kernel venv litellm
 
       # CPU tier: select the profile, build CPU-only llama.cpp + the llama-swap proxy (Go, from the
       # submodule), fetch the tiny GGUF (verified against versions.lock). llama-swap is what `bob up`
       # launches as the endpoint, so it must be built before the stack comes up. All via the Python
-      # front door / kernel — zero PowerShell provisioning (ONE-D Slice D8).
+      # front door / kernel.
       - name: Select CPU profile + build + fetch (from versions.lock)
-        shell: pwsh
+        shell: bash
         run: |
           python -m bob profile cpu
           python -m bob build --cpu
@@ -160,11 +157,11 @@ jobs:
           python -m bob fetch cpu
 
       - name: Bring the stack up
-        shell: pwsh
+        shell: bash
         run: python -m bob up -NoOpen
 
       # The shared cross-OS end-to-end gate. --up also starts the agent server and tears it down after.
-      # A red smoke blocks the PR. smoke.py is stdlib-only (ONE-E, no PowerShell), runs on any interpreter.
+      # A red smoke blocks the PR. smoke.py is stdlib-only, runs on any interpreter.
       - name: End-to-end smoke
         run: python scripts/smoke.py --up
 
@@ -180,7 +177,7 @@ jobs:
           echo "===== bin/ ====="
           ls -l bin 2>/dev/null || true
 
-  # ND2 (contract C5) — fresh-install prereq matrix across the non-apt distro families, so the
+  # Fresh-install prereq matrix across the non-apt distro families, so the
   # dnf/pacman/zypper columns of osenv.PACKAGE_MAP (and install_prereqs.sh -> the kernel's per-distro
   # install) actually EXECUTE in CI instead of rotting untested (core-suite/acceptance-cpu only exercise
   # apt). Runs the documented one-command Linux entry inside each distro image, then `bob diagnose` (which
@@ -209,9 +206,9 @@ jobs:
             PYTHONPATH=scripts python3 -m bob diagnose
           '
 
-  # ND2 (contracts C5 + C7) — native-from-source CUDA + REAL inference. RELEASE TAGS ONLY (job-level
-  # `if`), on a self-hosted GPU runner. This tier is NEVER on the per-PR path, so a fragile native build
-  # cannot red a merge. Green here is what makes a tagged release GPU-eligible.
+  # Native-from-source CUDA + REAL inference. RELEASE TAGS ONLY (job-level `if`), on a self-hosted GPU
+  # runner. This tier is NEVER on the per-PR path, so a fragile native build cannot red a merge. Green
+  # here is what makes a tagged release GPU-eligible.
   acceptance-gpu:
     name: acceptance-gpu (native CUDA, release tags)
     if: startsWith(github.ref, 'refs/tags/v')
@@ -224,7 +221,7 @@ jobs:
           submodules: recursive
 
       - name: Provision (native CUDA), build, fetch, serve
-        shell: pwsh
+        shell: bash
         run: |
           python -m bob.kernel venv litellm
           python -m bob build             # native-from-source CUDA (auto-detected arch)

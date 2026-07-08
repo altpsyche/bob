@@ -4,7 +4,7 @@ Bob installs and runs on **Windows and Linux** from one documented, two-step pat
 the "how to install" guide for both; [PORTABILITY.md](PORTABILITY.md) is the "how the split works"
 reference (portable runtime + cross-platform provisioner), and [MANUAL-INSTALL.md](MANUAL-INSTALL.md) is
 the by-hand path for advanced users / debugging a partial install. The exact steps below are the same
-ones the [ND2 CI acceptance matrix](../.github/workflows/ci.yml) runs on a fresh Ubuntu **and** Windows
+ones the [CI acceptance matrix](../.github/workflows/ci.yml) runs on a fresh Ubuntu **and** Windows
 runner on every change, so "clean machine → these steps → working Bob" is continuously proven.
 
 ## Hardware
@@ -82,7 +82,7 @@ terminal to pick up the PATH change, then just run `bob` (inference auto-starts 
 
 0. **Diagnose** — a machine summary (GPU, VRAM, RAM, CUDA, NUMA topology, mlock privilege, active profile, model files) before anything is installed. Run `bob diagnose` at any time to see the same report.
 1. `git submodule update --init --recursive` fetches the llama.cpp and llama-swap source trees.
-2. **Build llama.cpp** (`build.build_llama`) — compiles the CUDA engine, or the CPU tier with `--cpu` / when no CUDA toolkit is found, and writes the binaries to `bin/`. Skips if the binary already exists (`bob build --force` to rebuild). Before replacing a binary it backs it up as `bin/<name>.bak`; `bob update` snapshots `bin/` before a rebuild and rolls back automatically if the new build fails to verify (ND3).
+2. **Build llama.cpp** (`build.build_llama`) — compiles the CUDA engine, or the CPU tier with `--cpu` / when no CUDA toolkit is found, and writes the binaries to `bin/`. Skips if the binary already exists (`bob build --force` to rebuild). Before replacing a binary it backs it up as `bin/<name>.bak`; `bob update` snapshots `bin/` before a rebuild and rolls back automatically if the new build fails to verify.
 3. **Build llama-swap** — the model-swap proxy (Go).
 4. **Python venvs** — `tools/venv-aider` and `tools/venv-litellm` (plus `tools/venv-webui` with `--with-webui`) are created via `osenv.new_bob_venv` and their deps installed. Kept separate on purpose — their pins conflict. (`venv-eval` is provisioned lazily by `bob eval`.)
 5. **Generate configs** (`generate.gen_all`) — writes `config/llama-swap.yaml` + `config/litellm.yaml` from `config/models.json`. Never edit them by hand; both are regenerated on every `bob up`/`serve`.

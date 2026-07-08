@@ -60,20 +60,20 @@ Setup detects your GPU and selects the best-fit profile automatically. RTX 5000 
 ## Supported matrix
 
 What is actually tested, versus what is expected to work but is not in the per-PR gate. Kept honest by
-the ND2 CI acceptance matrix. No "works everywhere" claims.
+the CI acceptance matrix. No "works everywhere" claims.
 
 Legend: **gated** means proven every PR by CI on hosted runners. **supported** means shipped and used, exercised by the release-tag GPU tier (not per-PR). **not yet** means unsupported.
 
 | OS | CPU tier (no GPU, tiny model: wiring/correctness only) | NVIDIA GPU (CUDA, real inference) |
 |---|---|---|
 | **Windows 11** | gated (`acceptance-cpu`, every PR) | supported: day-to-day driver; native-from-source CUDA build proven in the release-tag `acceptance-gpu` tier |
-| **Linux** (glibc; apt/dnf/pacman/zypper) | gated (`acceptance-cpu`, every PR) | supported: provisioner shipped (NC); native CUDA proven in the release-tag `acceptance-gpu` tier |
+| **Linux** (glibc; apt/dnf/pacman/zypper) | gated (`acceptance-cpu`, every PR) | supported: cross-platform provisioner shipped; native CUDA proven in the release-tag `acceptance-gpu` tier |
 | **macOS** | not yet | not yet |
 | **AMD / ROCm** | not yet | not yet |
 
 The GPU rows use the VRAM profiles above (`16gb` default down to `8gb`, up to `32gb`); the CPU tier is a
 single tiny model (`bob profile cpu`) that proves the provision → serve → agent-loop path without a GPU.
-Per contract C7 the per-PR gate is the CPU/portable tier only, so a fragile native CUDA build can never
+The per-PR gate is the CPU/portable tier only, so a fragile native CUDA build can never
 block a merge; native-from-source is verified when a release is tagged. See
 [`versions.lock`](versions.lock) for the exact pinned, checksum-verified build each release ships.
 
@@ -111,7 +111,7 @@ Windows:
 setup.bat                       :: GPU-less: setup.bat --cpu
 ```
 
-Builds the inference engine and proxy from source, downloads models, wires VS Code and terminal clients, and (if Docker is present) starts the compose services. Open a new terminal afterward so the `bob` command resolves (Linux: `~/.local/bin` on PATH; Windows: the `bob.cmd` shim install_cli drops into your scoop shims — if you don't use scoop, add the repo folder to PATH).
+Builds the inference engine and proxy from source, downloads models, wires VS Code and terminal clients, and (if Docker is present) starts the compose services. Open a new terminal afterward so the `bob` command resolves (Linux: `~/.local/bin` on PATH; Windows: the `bob.cmd` shim that setup drops into your scoop shims — if you don't use scoop, add the repo folder to PATH).
 
 Then just talk to Bob — **inference auto-starts on demand**, no separate command needed:
 

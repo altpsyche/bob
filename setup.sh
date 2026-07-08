@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ONE-D Slice D8 (DD5) — Tier-1 shell stub. Thin bootstrapper: ensure python3 is present (install_prereqs
+# Tier-1 shell stub. Thin bootstrapper: ensure python3 is present (install_prereqs
 # put it there), then hand off to the Python cold-start kernel (submodules -> build llama.cpp -> venvs +
 # tools -> gen configs -> fetch models -> wire clients). Zero PowerShell. Run after ./install_prereqs.sh.
 # Idempotent — safe to re-run.
@@ -12,7 +12,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PYTHONPATH="$SCRIPT_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}"
 
-# ND4 — version-stamp: state which Bob release this blessed entry belongs to.
+# version-stamp: state which Bob release this blessed entry belongs to.
 echo "[setup] Bob $(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo '?') — setup"
 
 if ! command -v python3 >/dev/null 2>&1; then
