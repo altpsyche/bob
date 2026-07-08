@@ -88,7 +88,7 @@ class _BuildTreeMixin:
 class TestBuildLlama(_BuildTreeMixin, unittest.TestCase):
     def test_already_built_short_circuits(self):
         self.bin.mkdir()
-        (self.bin / "llama-server").write_text("x")
+        (self.bin / osenv.exe_name("llama-server")).write_text("x")   # .exe on Windows
         out = build_mod.build_llama(cpu=True)
         self.assertIn("already built", out)
 
@@ -97,6 +97,9 @@ class TestBuildLlama(_BuildTreeMixin, unittest.TestCase):
         with self.assertRaises(RuntimeError):
             build_mod.build_llama(cpu=True)
 
+    @unittest.skipIf(sys.platform == "win32",
+                     "Linux CUDA build: cmake paths go through pathlib, which yields host separators "
+                     "on a Windows runner (Windows uses the VS-generator path instead)")
     def test_linux_cuda_configure_args_and_swap(self):
         cap = []
         with mock.patch("osenv.os_name", return_value="linux"), \

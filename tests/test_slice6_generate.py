@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 
 import _common  # noqa: F401 — puts scripts/ on sys.path
+import osenv
 from bob import cli, registry
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts" / "tools"))
@@ -63,7 +64,8 @@ class TestLlamaSwap(unittest.TestCase):
 
     def test_macros_and_group(self):
         out = self._gen("16gb")
-        self.assertIn('srv: "${env.LLAMA_LOCAL_ROOT}/bin/llama-server --port ${PORT} -ngl 99 --flash-attn on"', out)
+        server = osenv.exe_name("llama-server")   # llama-server.exe on Windows
+        self.assertIn(f'srv: "${{env.LLAMA_LOCAL_ROOT}}/bin/{server} --port ${{PORT}} -ngl 99 --flash-attn on"', out)
         self.assertIn('kv: "--cache-type-k q8_0 --cache-type-v q8_0"', out)
         self.assertIn("members: [planner, coder, chat, vision, agent]", out)
 

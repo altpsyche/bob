@@ -134,6 +134,8 @@ class TestInstallPrereqsLinux(unittest.TestCase):
             singles.append(pkg)
 
         with mock.patch.dict(os.environ, {"BOB_FORCE_OS": "linux"}), \
+             mock.patch.object(install_prereqs.subprocess, "run",
+                               return_value=mock.Mock(returncode=0)), \
              mock.patch.object(osenv, "linux_package_manager", return_value=mgr), \
              mock.patch.object(osenv, "install_packages", side_effect=fake_batch), \
              mock.patch.object(osenv, "install_package", side_effect=fake_single), \
@@ -291,6 +293,8 @@ class TestKernelWiring(unittest.TestCase):
         with mock.patch.object(sys.stdin, "isatty", return_value=False):
             kernel.onboard()  # no exception, no input() call
 
+    @unittest.skipIf(sys.platform == "win32",
+                     "POSIX symlink install; on Windows install_cli copies and real symlinks need privilege")
     def test_install_cli_posix_symlinks_bob(self):
         with tempfile.TemporaryDirectory() as home, \
              mock.patch.dict(os.environ, {"BOB_FORCE_OS": "linux", "HOME": home}):

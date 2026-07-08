@@ -215,6 +215,7 @@ class TestOsenvQuartet(unittest.TestCase):
                 r.stdout = ""
             return r
         with mock.patch("shutil.which", return_value=None), \
+             mock.patch.object(osenv, "os_name", return_value="linux"), \
              mock.patch("osenv.crontab_available", return_value=True), \
              mock.patch("subprocess.run", side_effect=fake_run):
             osenv.register_agent_task("/venv/bin/python", "/repo/scripts/bob_agent_runner.py")
