@@ -15,9 +15,9 @@ import tempfile
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
-import osenv       # ONE-B3 — mic capture lives in the OS seam (single-sourced)
-import bob_voice   # ONE-B4 — the STT client (transcribe) is single-sourced in the voice capability core
-from bob_core import _port   # ONE-A Finding 4 — the STT port default lives in config/defaults.json (NB1)
+import osenv       # mic capture lives in the OS seam (single-sourced)
+import bob_voice   # the STT client (transcribe) is single-sourced in the voice capability core
+from bob_core import _port   # the STT port default lives in config/defaults.json
 
 
 def transcribe(wav_path: str, port: int) -> str:

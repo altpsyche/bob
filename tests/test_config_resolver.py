@@ -1,7 +1,6 @@
-"""NB2 (contract C2) — the Python runtime-config resolver produces every runtime key the core
-reads, from neutral sources, without PowerShell; and bob_core.load_config falls back to it when
-data/config.json is absent. Parity rule: "the runtime receives every runtime key it needs,
-correctly" — NOT byte-identity with the PowerShell Get-BobConfig merge."""
+"""The Python runtime-config resolver produces every runtime key the core
+reads, from neutral sources; and bob_core.load_config falls back to it when
+data/config.json is absent. Rule: the runtime receives every runtime key it needs, correctly."""
 import json
 import tempfile
 import unittest
@@ -12,7 +11,7 @@ import _common  # noqa: F401 — puts scripts/ on sys.path
 import bob_config
 import bob_core
 
-# Provisioner keys the runtime must never need (C2) — the resolver must not emit these.
+# Provisioner keys the runtime must never need — the resolver must not emit these.
 _PROVISIONER_KEYS = {"profiles", "peers", "activeProfile", "toastAppId", "defaults"}
 
 
@@ -22,13 +21,13 @@ class TestResolver(unittest.TestCase):
         for key in ("port", "litellmPort", "searxngPort", "litellmKey", "routing",
                     "persona", "agent", "memory", "vision"):
             self.assertIn(key, cfg, f"missing runtime key: {key}")
-        # routing resolves to real role values (derived from the shared roleTable, NB1)
+        # routing resolves to real role values (derived from the shared roleTable)
         self.assertEqual(cfg["routing"]["defaultRole"], "chat")
         self.assertEqual(cfg["routing"]["proCodeRole"], "coder-pro")
         self.assertEqual(cfg["routing"]["agentRole"], "agent")
         # persona.systemPrompt is a non-empty string
         self.assertTrue(cfg["persona"]["systemPrompt"])
-        # N1 ownership keys the agent server reads
+        # ownership keys the agent server reads
         self.assertIn("apiTokens", cfg["agent"])
         self.assertEqual(cfg["agent"]["defaultOwner"], "local")
         # agentPort lives under agent (where bob_agent_server._port reads it)
@@ -40,7 +39,7 @@ class TestResolver(unittest.TestCase):
     def test_no_provisioner_keys(self):
         cfg = bob_config.resolve_runtime_config()
         self.assertEqual(_PROVISIONER_KEYS & set(cfg), set())
-        self.assertNotIn("toastAppId", cfg["agent"])  # retired from runtime (C2/NB3)
+        self.assertNotIn("toastAppId", cfg["agent"])  # retired from runtime
 
     def test_allowed_read_paths_defaults_to_repo(self):
         cfg = bob_config.resolve_runtime_config()
@@ -64,7 +63,7 @@ class TestResolver(unittest.TestCase):
 
 
 class TestUserOverlayLoader(unittest.TestCase):
-    """S1 — the ONE user-overlay loader (bob_config.load_user_overlay), shared by the runtime resolver
+    """The ONE user-overlay loader (bob_config.load_user_overlay), shared by the runtime resolver
     and the model registry: one parse, one error policy (a bad overlay is ignored, never fatal)."""
 
     def test_absent_returns_empty(self):
@@ -99,7 +98,7 @@ class TestUserOverlayLoader(unittest.TestCase):
 
 
 class TestCapabilityProbe(unittest.TestCase):
-    """NB5 — the provisioner readiness probe: degrades with a clear message, never assumes setup ran."""
+    """The provisioner readiness probe: degrades with a clear message, never assumes setup ran."""
 
     def test_endpoint_down_reports_clearly(self):
         cfg = bob_config.resolve_runtime_config()

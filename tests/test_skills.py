@@ -1,7 +1,7 @@
-"""NE4 + O11 — the skills registry (discover/validate/list), simple tool-sequence execution, and O11
+"""The skills registry (discover/validate/list), simple tool-sequence execution, and
 sub-agent execution: a no-`steps` skill runs as an isolated `run_agent_events` sub-run (its prompt is
 the manifest description + user args), surfacing through the same event stream as any agent turn.
-Malformed manifests stay hard contract errors; the tool-sequence path is byte-identical to pre-O11."""
+Malformed manifests stay hard contract errors; the tool-sequence path keeps its original byte-identical output."""
 import tempfile
 import unittest
 from pathlib import Path
@@ -47,8 +47,8 @@ class TestSkillRegistry(unittest.TestCase):
         self.assertIn("git_status", out)
 
     def test_tool_sequence_run_matches_run_events_final(self):
-        """O11 refactor: `run` is now a thin consumer of `run_events`; the steps path's assembled text
-        must be byte-identical to the pre-O11 output (the `final` event carries it)."""
+        """`run` is now a thin consumer of `run_events`; the steps path's assembled text
+        must be byte-identical to the original output (the `final` event carries it)."""
         reg = SkillRegistry.build()
         blocking = reg.run("repo-brief", _FakeToolReg())
         finals = [e["result"] for e in reg.run_events("repo-brief", _FakeToolReg())
@@ -75,7 +75,7 @@ class TestSkillRegistry(unittest.TestCase):
 
 
 class TestSubAgentExecution(unittest.TestCase):
-    """O11 — a no-`steps` skill (web-research/code-review) runs end-to-end as an isolated sub-run,
+    """A no-`steps` skill (web-research/code-review) runs end-to-end as an isolated sub-run,
     NOT the old 'requires Module O' stub. Drives the real `run_agent_events` with a scripted client."""
 
     def setUp(self):
@@ -109,7 +109,7 @@ class TestSubAgentExecution(unittest.TestCase):
         reg_tools = _common.FakeRegistry({"web_search": "hits"})
         out = SkillRegistry.build().run("web-research", reg_tools, config=_cfg())
         self.assertEqual(out, "done")
-        self.assertIn("web_search", reg_tools.dispatched)  # ran through the shared dispatch path (O6)
+        self.assertIn("web_search", reg_tools.dispatched)  # ran through the shared dispatch path
 
     def test_sub_agent_skill_without_config_reports_runtime_not_module_o(self):
         out = SkillRegistry.build().run("web-research", _common.FakeRegistry())  # no config

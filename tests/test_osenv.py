@@ -1,4 +1,4 @@
-"""NB3 (contracts C3 secrets, C4 data-dir) — the OS seam. Per-OS branches are exercised by
+"""The OS seam: secrets and data-dir contracts. Per-OS branches are exercised by
 monkeypatching platform.system(); the secret precedence and data-dir migration are exercised
 against temp trees so no real state is touched."""
 import json
@@ -105,7 +105,7 @@ class TestSecret(unittest.TestCase):
         self.assertEqual(osenv.secret("nope", default="fallback"), "fallback")
 
     def test_secrets_file_lives_under_data_dir(self):
-        # C3: the secrets file is under data_dir() (gitignored /data/), never a tracked path.
+        # the secrets file is under data_dir() (gitignored /data/), never a tracked path.
         self.assertEqual(osenv.secrets_file(), self.dst / "secrets.json")
 
 
@@ -117,7 +117,7 @@ class TestNotify(unittest.TestCase):
 
 
 class TestAudioSeam(unittest.TestCase):
-    """ONE-B3 — the mic-in / speaker-out seam. Playback backends are exercised by monkeypatching
+    """The mic-in / speaker-out seam. Playback backends are exercised by monkeypatching
     platform.system + shutil.which + subprocess.run; capture is exercised for its no-audio-stack path."""
 
     def test_play_audio_linux_uses_first_available_player(self):
@@ -189,7 +189,7 @@ class TestAudioSeam(unittest.TestCase):
         self.assertIn(b"WAVE", wav[:16])
 
 
-# --- ONE-C §1b seams -----------------------------------------------------------------------------
+# --- OS-detection / platform seams -----------------------------------------------------------------------------
 
 
 class _ForceOSMixin:
@@ -466,7 +466,7 @@ def _smi(stdout):
 
 
 class TestGpuSeams(unittest.TestCase):
-    """ONE-D §1b — gpu_vram_gb / gpu_arch / gpu_info consolidated into osenv (were duped in health/models)."""
+    """gpu_vram_gb / gpu_arch / gpu_info consolidated into osenv (were duped in health/models)."""
 
     def test_vram_parses_and_rounds(self):
         with mock.patch("osenv.shutil.which", return_value="/usr/bin/nvidia-smi"), \

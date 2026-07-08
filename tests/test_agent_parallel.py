@@ -1,4 +1,4 @@
-"""O2 — parallel tool execution: wall-clock speedup for side-effect-free calls, stable result order,
+"""Parallel tool execution: wall-clock speedup for side-effect-free calls, stable result order,
 mutating/deny/ask stay sequential, cancel abandons the batch, and cap==1 reproduces the sequential
 loop. Fake client + FakeRegistry; no model."""
 import time

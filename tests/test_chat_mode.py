@@ -66,7 +66,7 @@ class TestLoopChatSeam(unittest.TestCase):
         bob_core.get_llm_client = lambda config=None: client
         list(bob_loop.run_agent_events("q", self._openai_cfg(), agency="silent",
                                        registry=_common.FakeRegistry()))
-        self.assertNotIn("max_tokens", calls[0])   # byte-identical to pre-S
+        self.assertNotIn("max_tokens", calls[0])   # matches the prior path when unset
 
     def test_no_tools_suppresses_tools(self):
         # openai mode: tools kwarg is built from the registry schemas — no_tools must empty it.

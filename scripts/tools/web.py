@@ -8,9 +8,9 @@ import requests
 
 _cfg: dict = {}
 _searxng_url: str = ""
-_allow_private_fetch: bool = False  # M9 — gate SSRF-prone fetches behind an explicit flag
+_allow_private_fetch: bool = False  # gate SSRF-prone fetches behind an explicit flag
 _web_search_fallback: bool = True   # #5b — degrade to a direct provider when SearXNG is unreachable
-_MAX_REDIRECTS = 5  # NE0 — cap manual redirect following so each hop can be re-validated
+_MAX_REDIRECTS = 5  # cap manual redirect following so each hop can be re-validated
 
 
 def configure(config: dict) -> None:
@@ -21,7 +21,7 @@ def configure(config: dict) -> None:
     scripts_dir = str(Path(__file__).parent.parent)
     if scripts_dir not in sys.path:
         sys.path.insert(0, scripts_dir)
-    from bob_core import _port  # N7 — single source of truth for ports
+    from bob_core import _port  # single source of truth for ports
     _searxng_url = f"http://localhost:{_port(config, 'searxngPort')}/search"
     _allow_private_fetch = bool(config.get("agent", {}).get("allowPrivateFetch", False))
     _web_search_fallback = bool(config.get("agent", {}).get("webSearchFallback", True))
@@ -127,7 +127,7 @@ def _web_search(query: str, num_results: int = 5) -> str:
 
 
 def _web_fetch(url: str) -> str:
-    # M9 / NE0 — allowlist http(s) and re-validate the host on EVERY hop: the initial URL AND each
+    # Allowlist http(s) and re-validate the host on EVERY hop: the initial URL AND each
     # redirect Location. Following redirects blindly (requests' default) let a public URL 302 into a
     # loopback/private target (e.g. cloud metadata at 169.254.169.254); manual per-hop validation
     # closes that. Residual: a DNS-rebinding TOCTOU window remains between the check and the connect —

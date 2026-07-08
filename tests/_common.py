@@ -1,4 +1,4 @@
-"""Shared test helpers (M13). Import first — it puts scripts/ and scripts/tools/ on sys.path
+"""Shared test helpers. Import first — it puts scripts/ and scripts/tools/ on sys.path
 so the tests run under both `python -m unittest discover -s tests` and `pytest`."""
 import os
 import sys
@@ -38,7 +38,7 @@ def fake_config(**over):
 class FakeRegistry:
     """Stand-in for ToolRegistry with scripted dispatch results.
 
-    O6: carries `mutating_tools` / `approval_required_tools` (empty by default) so permission tests
+    Carries `mutating_tools` / `approval_required_tools` (empty by default) so permission tests
     can mark a fake tool mutating or approval-gated. `dispatched` records what actually ran, so a test
     can assert a denied tool never reached dispatch_call."""
 
@@ -51,7 +51,7 @@ class FakeRegistry:
         self.mutating_tools = set(mutating_tools or ())
         self.approval_required_tools = set(approval_required_tools or ())
         self.dispatched = []
-        self._delay = delay   # O2 — per-call sleep so a test can measure parallel vs sequential wall-clock
+        self._delay = delay   # per-call sleep so a test can measure parallel vs sequential wall-clock
 
     def dispatch_call(self, name, arguments_json, context=None):
         if self._delay:
@@ -66,7 +66,7 @@ def _content_chunk(text):
 
 
 class _FakeStream:
-    """An iterable streaming response with a .close() the loop can call on cancel (N3)."""
+    """An iterable streaming response with a .close() the loop can call on cancel."""
 
     def __init__(self, chunks):
         self._chunks = list(chunks)
@@ -82,7 +82,7 @@ class _FakeStream:
 
 def scripted_client(turns):
     """A fake OpenAI client whose create() returns each item of `turns` in order, as a one-chunk
-    stream (the loop always consumes streaming internally now, N3). Each turn is the assistant
+    stream (the loop always consumes streaming internally now). Each turn is the assistant
     content string (Hermes tool calls inline as <tool_call>…)."""
     state = {"i": 0}
 
@@ -113,7 +113,7 @@ def stream_client(deltas):
 
 def multi_turn_stream_client(turns):
     """Fake client: each create() streams the next turn; a turn is a list of content-delta strings,
-    so a test can split a <tool_call> marker across chunks (N6)."""
+    so a test can split a <tool_call> marker across chunks."""
     state = {"i": 0}
 
     class _C:
@@ -131,7 +131,7 @@ def multi_turn_stream_client(turns):
 
 def slow_stream_client(deltas, sleep_s=0.02, on_chunk=None):
     """A streaming fake that sleeps between chunks so a test can trip a cancel token mid-stream
-    (N3). on_chunk(i) runs before yielding chunk i — use it to set the token. The returned stream
+    on_chunk(i) runs before yielding chunk i — use it to set the token. The returned stream
     exposes .close() and records .closed so the test can assert the abort path ran."""
     import time
 

@@ -1,4 +1,4 @@
-"""M13 — web_fetch SSRF guard (M9); #5b — non-docker web_search fallback."""
+"""web_fetch SSRF guard; non-docker web_search fallback."""
 import socket
 import unittest
 from unittest import mock
@@ -41,7 +41,7 @@ class TestWebFetchGuard(unittest.TestCase):
         self.assertIn("blocked host", out)
 
     def test_fetch_blocks_redirect_to_private(self):
-        # NE0: a public URL that 302-redirects to a private host must be blocked at the second hop.
+        # a public URL that 302-redirects to a private host must be blocked at the second hop.
         socket.getaddrinfo = lambda host, *a, **k: [
             (2, 1, 6, "", (("93.184.216.34" if host == "public.example" else "10.0.0.5"), 0))
         ]

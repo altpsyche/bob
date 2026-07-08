@@ -1,8 +1,8 @@
-"""ONE-C Slice 2 — lifecycle capabilities (scripts/tools/stack.py).
+"""Lifecycle capabilities (scripts/tools/stack.py).
 
 The launch/stop primitives are validated end-to-end against a real service elsewhere; here we cover the
 pure logic hermetically — the ps table, the teardown bookkeeping, the bounded log read, per-service
-status/stop, the config-regen bridge, and the registry wiring — mocking osenv/subprocess so nothing
+status/stop, the config-regen bridge, and the agent-tool surface — mocking osenv/subprocess so nothing
 touches real processes, ports, or Docker."""
 import sys
 import tempfile
@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 import _common  # noqa: F401 — puts scripts/ + scripts/tools on sys.path
-from bob import cli, registry
+from bob import registry
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts" / "tools"))
 import stack  # noqa: E402
@@ -21,19 +21,9 @@ CFG = {"port": 8080, "litellmPort": 8081, "sttPort": 8082, "ttsPort": 8083, "web
        "langfusePort": 3001, "searxngPort": 8888, "n8nPort": 5678, "voice": {"enabled": False}}
 
 
-class TestRegistryWiring(unittest.TestCase):
-    LIFECYCLE = ["up", "serve", "restart", "stop", "status", "ps", "logs", "webui",
-                 "litellm", "whisper", "piper", "services"]
-
-    def test_verbs_flipped_to_python_with_handlers(self):
-        by_name = registry.by_name()
-        for verb in self.LIFECYCLE:
-            entry = by_name[verb]
-            self.assertTrue(entry.get("handler"), f"{verb} runtime")
-            self.assertIn(entry["handler"], cli._HANDLERS, f"{verb} handler")
-
+class TestStackToolSurface(unittest.TestCase):
     def test_down_alias_removed(self):
-        # D1 — "one clean way, no silly alias." `down` is no longer a command.
+        # "one clean way, no silly alias." `down` is no longer a command.
         self.assertNotIn("down", registry.by_name())
 
     def test_agent_tools_registered_and_mutating(self):
@@ -110,7 +100,7 @@ class TestServiceRegistry(unittest.TestCase):
             self.assertTrue(s.get("hint"), f"{s['name']} needs a start hint for the actionable dashboard")
 
     def test_down_lines_show_start_hint_up_lines_show_url(self):
-        # S4 — actionable: down services show how to start them; up services show their URL.
+        # actionable: down services show how to start them; up services show their URL.
         # docker present so the compose services render as startable (the n/a path is tested below).
         with mock.patch.object(osenv, "docker_present", return_value=True), \
              mock.patch.object(osenv, "is_port_in_use", return_value=False):
@@ -167,7 +157,7 @@ class TestWebuiForeground(unittest.TestCase):
 
 
 class TestSwapLaunchSpec(unittest.TestCase):
-    """S2 — the llama-swap launch (exe path, config path, --listen addr, LLAMA_LOCAL_ROOT) lives in ONE
+    """The llama-swap launch (exe path, config path, --listen addr, LLAMA_LOCAL_ROOT) lives in ONE
     place (_swap_launch), consumed by both the background and foreground starts so they can't drift."""
 
     def test_spec_shape(self):
@@ -196,7 +186,7 @@ class TestSwapLaunchSpec(unittest.TestCase):
 
 
 class TestEnsureDeps(unittest.TestCase):
-    """S8 — the one 'bring up exactly the deps this command needs' seam: inference (chat/agent/shell)
+    """The one 'bring up exactly the deps this command needs' seam: inference (chat/agent/shell)
     and stt (the /voice preflight), each idempotent and composed from the single-service ops."""
 
     def test_inference_only_composes_ensure_inference(self):
@@ -409,7 +399,7 @@ class TestServiceControl(unittest.TestCase):
 
 class TestConfigBridge(unittest.TestCase):
     def test_regen_delegates_to_python_generators(self):
-        # ONE-C Slice 6 — the regen bridge runs the Python generators (no pwsh); _regen_configs is a
+        # The regen bridge runs the Python generators; _regen_configs is a
         # thin delegate to bob_models.regenerate_configs.
         import bob_models
         with mock.patch.object(bob_models, "regenerate_configs", return_value=True) as rc:

@@ -44,15 +44,15 @@ See [plugins/AUTHORING.md](plugins/AUTHORING.md) for the three-layer capability 
    a per-run id; keep the coloured `stderr` previews for interactive use
    ([scripts/bob_loop.py](scripts/bob_loop.py) `_agent_logger`).
 
-8. **Single source of truth for defaults (NB1).** Shared constants (service ports and the role
+8. **Single source of truth for defaults.** Shared constants (service ports and the role
    table) live only in [config/defaults.json](config/defaults.json), read by
    `bob_core.load_defaults()` (→ `_PORT_DEFAULTS` / `get_role`). Never re-inline a port number or
    role literal; add it to `defaults.json`. The runtime config resolves live from
    `defaults.json` + `config/user.json` via [scripts/bob_config.py](scripts/bob_config.py)
-   `resolve_runtime_config()`. (`config/bob.psd1` remains a Windows-only authoring source.)
+   `resolve_runtime_config()` — the same way on every OS.
 
-9. **Portability seams (NB3/NB4).** OS-specific behavior goes through one seam, not scattered
-   branches: [scripts/osenv.py](scripts/osenv.py) for shell / data-dir (C4) / secrets (C3) / notify;
+9. **Portability seams.** OS-specific behavior goes through one seam, not scattered
+   branches: [scripts/osenv.py](scripts/osenv.py) for shell / data-dir / secrets / notify;
    secrets resolve via `osenv.secret()` (env → keychain → `data/secrets.json`), never a git-tracked
    file. New `bob` commands are added to the command registry
    ([scripts/bob/registry.py](scripts/bob/registry.py)) — `registry.COMMANDS` is the sole source for

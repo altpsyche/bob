@@ -1,7 +1,7 @@
-"""ONE-E (contract C6) — the command registry: the SINGLE source for dispatch (C1), help, and the NE
+"""The command registry: the SINGLE source for dispatch, help, and the
 catalog. Each entry is {name, group, summary, args, handler} (+ optional hidden). Adding a command is
 one entry here plus its cli.py handler — no generated table to regenerate, no runtime field (every verb
-is Python since ONE-D/E retired PowerShell), no sync gate.
+is Python), no sync gate.
 
   name     fully-qualified command path ("agent", "agent serve", "setup")
   group    catalog grouping for help/splash (Talk/Act/Make/Know/Run/Config)
@@ -13,12 +13,12 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent.parent  # scripts/bob/registry.py -> repo
 
-# NE1 — grouped mental-model catalog. `group` is one of the six below; `hidden` (optional, default
-# False) keeps a command dispatchable but out of the human catalog (Decision B's sanctioned exception,
+# Grouped mental-model catalog. `group` is one of the six below; `hidden` (optional, default
+# False) keeps a command dispatchable but out of the human catalog (a sanctioned exception,
 # e.g. an internal dev utility). This registry is the sole catalog — help/dispatch both read it.
 COMMANDS = [
     # --- Talk: converse + senses --------------------------------------------------------------
-    {"name": "chat", "group": "Talk", "summary": "Chat with Bob — one-shot or REPL, routed role (S2: on the agent loop)",
+    {"name": "chat", "group": "Talk", "summary": "Chat with Bob — one-shot or REPL, routed role (on the agent loop)",
      "args": "[--pro|--think|--code] [--raw] [--max N] [--sys <text>] [prompt]", "handler": "chat"},
     {"name": "code", "group": "Talk", "summary": "Code-focused chat (coder / coder-pro)",
      "args": "[--pro] [--raw] [--max N] [prompt]", "handler": "code"},
@@ -138,7 +138,7 @@ COMMANDS = [
      "args": "[--cpu] [--force]", "handler": "build"},
     {"name": "update", "group": "Config", "summary": "Pull latest llama.cpp and rebuild",
      "args": "[--tag <ref>]", "handler": "update"},
-    {"name": "lock", "group": "Config", "summary": "(Re)generate versions.lock from pinned sources (ND1)",
+    {"name": "lock", "group": "Config", "summary": "(Re)generate versions.lock from pinned sources",
      "args": "[--check]", "handler": "lock"},
     {"name": "version", "group": "Config", "summary": "Show binary versions and submodule commits",
      "args": "", "handler": "version"},
@@ -150,7 +150,7 @@ COMMANDS = [
      "args": "[profile]", "handler": "verify-urls", "hidden": True},
 
     # Meta — the generated help/catalog itself (hidden: it needn't list itself). Registering it routes
-    # `bob help` through `python -m bob help` on both front doors, retiring the pwsh here-string (WI-7).
+    # `bob help` through `python -m bob help` on both front doors.
     {"name": "help", "group": "Run", "summary": "Show the command catalog",
      "args": "", "handler": "help", "hidden": True},
 ]

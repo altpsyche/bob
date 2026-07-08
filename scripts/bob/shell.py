@@ -1,9 +1,9 @@
-"""NE2 (contract C1) — the interactive REPL/TUI: the no-arg `bob` front door on an interactive TTY.
+"""The interactive REPL/TUI: the no-arg `bob` front door on an interactive TTY.
 
 Splash (header + model/role + session + tool/skill counts) + a prompt. Non-slash input is an agent
 turn; slash commands drive the shell (`/agent`, `/tools`, `/skills`, `/model`, `/status`, `/session`,
 `/agency`, `/theme`, `/clear`, `/help`, `/exit`). The turn drives `run_agent_events` (bob_loop) — the
-SAME event stream the HTTP server consumes ([bob_agent_server.py]) — so a new O event type surfaces by
+SAME event stream the HTTP server consumes ([bob_agent_server.py]) — so a new event type surfaces by
 adding one case in `_TurnRenderer.handle`, never a shell rewrite.
 
 Rendering aims at frontier-grade *inline* UX (like Claude Code / aider), NOT a full-screen TUI: a
@@ -17,18 +17,18 @@ editing surface — colours, header font/gradient, glyphs, spacing, layout toggl
 reloads the file. Everything degrades safely — no pyfiglet → a bold header; non-UTF-8 console → ASCII
 glyphs + an ASCII font.
 
-Coexistence (Decision A): rich renders; prompt_toolkit owns input (line editing / history / slash
+Coexistence: rich renders; prompt_toolkit owns input (line editing / history / slash
 completion) — readline is absent from Windows CPython, so stdlib input() has no editing there. The two
 are never active at once: the prompt is idle while a turn streams, and a turn is fully quiescent while an
 approval prompt is up.
 
-Approval (NE0): the loop is event-driven, not a blocking input(). The turn generator runs in a worker
+Approval: the loop is event-driven, not a blocking input(). The turn generator runs in a worker
 thread pushing events onto a queue; the main thread renders them. When the loop needs approval it yields
 `approval_required` (→ queue) then blocks its own `approve()` on an answer queue; the main thread sees
 the event, prompts the user, and hands the decision back. Ctrl-C trips the shared CancelToken → the turn
 returns to the prompt, never the OS.
 
-Built behind an isatty gate (Decision C): scripts/CI (no TTY) never enter the shell — `run()` refuses
+Built behind an isatty gate: scripts/CI (no TTY) never enter the shell — `run()` refuses
 and prints help instead, so a redirected/piped `bob` keeps today's behaviour.
 """
 import json
@@ -52,7 +52,7 @@ from bob.theme import Theme
 _SENTINEL = object()
 
 # Spoken words that leave /voice mode (matched after stripping trailing punctuation). Ctrl-C while
-# listening does the same; the pwsh voice loop had no verbal exit, so this is a small UX add.
+# listening does the same.
 _VOICE_EXIT_WORDS = {"exit", "quit", "stop", "goodbye", "bye"}
 
 # Slash-command completion tree (NestedCompleter): each key may map to a sub-map or None.
@@ -89,7 +89,7 @@ _ERR_MARKERS = (
 
 
 def is_interactive() -> bool:
-    """Decision C — the shell launches only when BOTH ends are a real terminal. A pipe/redirect/CI on
+    """The shell launches only when BOTH ends are a real terminal. A pipe/redirect/CI on
     either stdin or stdout means a script, which must get help, never the REPL."""
     return bool(
         getattr(sys.stdin, "isatty", lambda: False)()
@@ -100,7 +100,7 @@ def is_interactive() -> bool:
 def _force_utf8() -> None:
     """Best-effort: make stdout/stderr UTF-8 so the glyphs and Markdown never hit a cp1252 encode error
     on a legacy Windows console. `errors='replace'` degrades an unexpected char to '?' instead of
-    crashing. No-op where already UTF-8 (POSIX, Windows Terminal launched via bob.ps1)."""
+    crashing. No-op where already UTF-8 (POSIX, Windows Terminal)."""
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
@@ -273,17 +273,17 @@ class BobShell:
         self.config = config
         self.tools = tools
         self.skills = skills
-        # S2 — `bob chat/code/think` launch the shell in chat mode: a preset role + no_tools (a plain
+        # `bob chat/code/think` launch the shell in chat mode: a preset role + no_tools (a plain
         # conversation). Default (bare `bob`/`bob shell`) keeps the agent role + full toolset.
         self.role = role or config.get("routing", {}).get("agentRole", "chat")
         self.no_tools = no_tools
         self.agency = config.get("agent", {}).get("agency", "show")
-        # WI-6 — owner-scoped persisted sessions. The row is created LAZILY on the first turn
+        # Owner-scoped persisted sessions. The row is created LAZILY on the first turn
         # (session_id stays None until then) so opening `bob` and leaving leaves no empty session.
         # `sessions` is a SessionStore (injected in build()); None in unit tests unless supplied.
         self.owner = config.get("agent", {}).get("defaultOwner", "local")
         self._max_tokens = int(config.get("agent", {}).get("maxSessionTokens", 0) or 0)
-        # MEM-7 — the project this shell was launched in (git root / cwd, or None if scopeByProject
+        # The project this shell was launched in (git root / cwd, or None if scopeByProject
         # off). Threaded into each turn so project-type memory is scoped to this repo.
         try:
             from bob_core import project_key
@@ -317,7 +317,7 @@ class BobShell:
                     if isinstance(disabled_raw, str) else set(disabled_raw))
         tools = ToolRegistry.build(config, disabled, quiet=True)   # clean splash — no startup summary
         skills = SkillRegistry.build()
-        # WI-6 — same SessionStore the agent server uses (agent.sessionDbPath, resolved against the
+        # Same SessionStore the agent server uses (agent.sessionDbPath, resolved against the
         # repo root; _SCRIPTS is scripts/, its parent is the repo), so a session persists across
         # restarts and is resumable from either surface.
         session_db = _SCRIPTS.parent / agent_cfg.get("sessionDbPath", "data/sessions.db")
@@ -721,12 +721,12 @@ class BobShell:
         return self.session_id[:8] if self.session_id else "new"
 
     def _cmd_session(self, arg: str) -> None:
-        """/session new | list | resume <id> | show [id] — owner-scoped persisted sessions (WI-6)."""
+        """/session new | list | resume <id> | show [id] — owner-scoped persisted sessions."""
         parts = arg.split(maxsplit=1)
         sub = parts[0].lower() if parts else ""
         rest = parts[1].strip() if len(parts) > 1 else ""
         if sub == "new":
-            self._on_session_end(self.session_id)   # consolidate the one we're leaving (MEM-4 fills)
+            self._on_session_end(self.session_id)   # consolidate the one we're leaving (memory fills)
             self.session_id = None                  # lazy — the row is created on the next message
             self.history = []
             self.console.print("[green]new session[/] [dim](starts on your next message)[/]")
@@ -788,7 +788,7 @@ class BobShell:
         if s is None:
             self.console.print(f"[yellow]no such session for this owner: {ref}[/]")
             return
-        self._on_session_end(self.session_id)   # consolidate the one we're leaving (MEM-4 fills)
+        self._on_session_end(self.session_id)   # consolidate the one we're leaving (memory fills)
         self.session_id = s["id"]
         self.history = s["history"]
         turns = len([m for m in s["history"] if m.get("role") == "user"])
@@ -832,8 +832,8 @@ class BobShell:
         if self.skills.skills[name]["steps"]:            # tool-sequence — synchronous, no model
             self.console.print(self.skills.run(name, self.tools))
             return
-        # Sub-agent skill (O11): drive it as an event stream through the SAME renderer as an agent
-        # turn (C6 — surface through run_agent_events, never bespoke skill-rendering in the shell).
+        # Sub-agent skill: drive it as an event stream through the SAME renderer as an agent
+        # turn — surface through run_agent_events, never bespoke skill-rendering in the shell.
         def factory(cancel, approve):
             return self.skills.run_events(
                 name, self.tools, config=self.config, args=skill_args,
@@ -897,10 +897,10 @@ class BobShell:
         return result
 
     def _cmd_voice(self, _arg: str = "") -> None:
-        """/voice — a spoken conversation inside the shell (ONE-B4). Loops mic → STT → agent turn → TTS,
+        """/voice — a spoken conversation inside the shell. Loops mic → STT → agent turn → TTS,
         wrapping the SAME `_run_turn` as text, so voice inherits memory + write-back + one persona + retry
-        + logging + tools automatically (the whole point of the one-engine unification — no Invoke-BobStream
-        path, no 256-token cap, no separate persona). Each reply streams to the screen and is Ctrl-C
+        + logging + tools automatically (the whole point of the one-engine unification — no separate
+        streaming path, no 256-token cap, no separate persona). Each reply streams to the screen and is Ctrl-C
         cancellable; Ctrl-C while listening — or saying 'exit'/'stop'/'quit'/'goodbye' — leaves voice mode
         back to the text prompt. Uses the shell's current role: reasoning/verbosity is a `/model` choice,
         not a per-turn `/no_think` string hack (which would corrupt the persisted turn + memory)."""
@@ -956,7 +956,7 @@ class BobShell:
                 if transcript.strip().lower().rstrip(".!?") in _VOICE_EXIT_WORDS:
                     break
                 self.console.print(f"[{t.accent}]›[/] {transcript}")
-                # M9 — one failed turn must not abort the whole session; _run_turn already renders its
+                # One failed turn must not abort the whole session; _run_turn already renders its
                 # own errors (incl. a 'thinking' spinner) and returns None on cancel/error, so we just
                 # guard the TTS side-effect.
                 result = self._run_turn(transcript)
@@ -1128,8 +1128,8 @@ class BobShell:
         self.console.print()
 
     def _on_session_end(self, session_id) -> None:
-        """WI-6c lifecycle seam — the point where a session is being left (on /exit, /session new,
-        /session resume). MEM-4 wires end-of-session memory consolidation in via _consolidate_session.
+        """Lifecycle seam — the point where a session is being left (on /exit, /session new,
+        /session resume). Wires end-of-session memory consolidation in via _consolidate_session.
         Guarded: no-op without a persisted session, and never raises into the exit path."""
         if not session_id or self.sessions is None:
             return
@@ -1139,7 +1139,7 @@ class BobShell:
             self.console.print(f"[{self.theme.warn}]session consolidation skipped: {e}[/]")
 
     def _consolidate_session(self, session_id) -> None:
-        """MEM-4 — end-of-session consolidation: extract durable facts from this session's turns and
+        """End-of-session consolidation: extract durable facts from this session's turns and
         store them (deduped) + one episodic recap. Gated on memory.enabled && memory.autoConsolidate;
         skipped for a session with no turns. Synchronous but best-effort (the core swallows failures)."""
         mem = self.config.get("memory", {})
@@ -1176,7 +1176,7 @@ class BobShell:
 
 
 def run(config=None, role=None, no_tools=False) -> int:
-    """Entry point for `python -m bob shell` (and the no-arg interactive front door). S2: `role` +
+    """Entry point for `python -m bob shell` (and the no-arg interactive front door). `role` +
     `no_tools` let `bob chat/code/think` launch the shell in chat mode (preset role, tools off)."""
     if not is_interactive():
         from bob.cli import _print_help
@@ -1187,7 +1187,7 @@ def run(config=None, role=None, no_tools=False) -> int:
 
 
 def run_voice(config=None, role=None, no_tools=False) -> int:
-    """Entry point for `bob voice` (ONE-B5): launch the shell straight into /voice mode (mic→STT→loop→TTS)
+    """Entry point for `bob voice`: launch the shell straight into /voice mode (mic→STT→loop→TTS)
     instead of the text REPL, then run the session-end write-back on exit — voice sessions get the same
     memory consolidation as text ones. TTY-gated like run(): a non-TTY invocation prints help."""
     if not is_interactive():

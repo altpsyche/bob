@@ -1,10 +1,10 @@
-"""Bob tool: spawn_agent — delegate a subtask to an isolated nested agent run (O1, the centerpiece).
+"""Bob tool: spawn_agent — delegate a subtask to an isolated nested agent run.
 
-Composes the earlier O work: O2 runs several spawn_agent calls in one step concurrently (fan-out/
-fan-in) for free — spawn_agent is deliberately NOT mutating; O3 lets the sub-run compact its own
-transcript; O6 makes the sub-run inherit the same allow|ask|deny policy + approver.
+Composes the loop's other capabilities: parallel tool dispatch runs several spawn_agent calls in one
+step concurrently (fan-out/fan-in) for free — spawn_agent is deliberately NOT mutating; the sub-run can
+compact its own transcript; and it inherits the same allow|ask|deny policy + approver.
 
-Gated on agent.subAgents (default false) so the default toolset is byte-identical to pre-O1. Reaches
+Gated on agent.subAgents (default false) so with the flag off the default toolset is unchanged. Reaches
 the parent RunContext via tool_registry.get_run_context() — no fn-signature change. The sub-run gets:
   - an ISOLATED transcript (fresh system + the delegated subtask; the parent transcript is NOT inherited)
   - a RESTRICTED tool view (optional agent.subAgentTools whitelist)
@@ -72,7 +72,7 @@ def _spawn_agent(task: str, role: str = None) -> str:
             cancel=child_cancel, run_id=child_rid, approve=getattr(ctx, "approve", None),
             owner=getattr(ctx, "owner", None), agent_depth=parent_depth + 1,
             scope=getattr(ctx, "scope", None),
-            trace_parent=getattr(ctx, "trace_span", None),   # O9 — nest the sub-run under the parent
+            trace_parent=getattr(ctx, "trace_span", None),   # nest the sub-run under the parent
         ):
             t = ev.get("type")
             if t == "tool_call":

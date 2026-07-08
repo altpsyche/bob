@@ -54,7 +54,7 @@ def _find_youtube_url(query: str) -> str | None:
     try:
         import osenv
         import requests
-        from bob_core import _port  # N7 — single source of truth for ports
+        from bob_core import _port  # single source of truth for ports
         port = _port(_cfg, "searxngPort")
         if not osenv.is_port_in_use(port):
             return None                    # SearXNG not up; the direct scrape below handles it

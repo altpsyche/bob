@@ -1,4 +1,4 @@
-"""O6 — permission / approval policy: PermissionPolicy resolution + enforcement at the dispatch
+"""Permission / approval policy: PermissionPolicy resolution + enforcement at the dispatch
 choke point (_dispatch_with_approval) through run_agent_events. Fake client + FakeRegistry; no model."""
 import unittest
 
@@ -9,7 +9,7 @@ from bob_permissions import ALLOW, ASK, DENY, PermissionPolicy
 
 
 def _agent_cfg(permissions):
-    """A fake_config whose agent block carries the O6 permissions plus the keys the loop reads."""
+    """A fake_config whose agent block carries the permissions plus the keys the loop reads."""
     return _common.fake_config(agent={
         "toolFormat": "hermes", "maxSteps": 5,
         "maxContextTokens": 0, "maxToolResultTokens": 1000,
@@ -129,7 +129,7 @@ class TestEnforcement(unittest.TestCase):
         self.assertEqual(self._tool_result(events), "REAL RESULT")
         self.assertFalse(any(e["type"] == "approval_required" for e in events))
 
-    def test_ne0_floor_preserved_under_empty_policy(self):
+    def test_approval_floor_preserved_under_empty_policy(self):
         # A tool that self-declares REQUIRES_APPROVAL still asks even with an empty policy.
         reg = _common.FakeRegistry({"echo": "REAL RESULT"}, approval_required_tools={"echo"})
         events = list(bob_loop.run_agent_events(

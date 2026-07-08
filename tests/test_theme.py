@@ -1,4 +1,4 @@
-"""NE2 — the theme abstraction (bob.theme): merge precedence, gradient math, unicode glyph fallback,
+"""The theme abstraction (bob.theme): merge precedence, gradient math, unicode glyph fallback,
 Theme.load field mapping, and safe header rendering."""
 import io
 import unittest

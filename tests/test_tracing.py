@@ -1,5 +1,5 @@
-"""O9 — tracing seam: no-op when disabled (byte-identical), spans record + nest when enabled, and the
-run/tool spans wire through the real loop carrying the N5 run-id. Hermetic: a fake sink stands in for
+"""Tracing seam: no-op when disabled (byte-identical), spans record + nest when enabled, and the
+run/tool spans wire through the real loop carrying the run-id. Hermetic: a fake sink stands in for
 the OTLP exporter (the opentelemetry package is only touched by _otlp_sink, which is smoke-only), so
 this runs under bare python3."""
 import unittest
@@ -117,14 +117,14 @@ class TestTracingInLoop(unittest.TestCase):
             self.assertEqual(t.parent_id, runs[0].span_id)
             self.assertEqual(t.trace_id, runs[0].trace_id)
             self.assertEqual(t.attributes["tool"], "echo")
-        self.assertIn("steps", runs[0].attributes)      # closed with N5 counters
+        self.assertIn("steps", runs[0].attributes)      # closed with run counters
 
     def test_disabled_emits_no_spans_but_logs_unchanged(self):
         rec = []
         with self.assertLogs("bob.agent", level="INFO") as cm:
             self._run(enabled=False, rec=rec)
         self.assertEqual(rec, [])                        # no OTLP/span activity
-        # N5 metrics line still emitted (file-log unchanged whether tracing is on or off)
+        # metrics line still emitted (file-log unchanged whether tracing is on or off)
         self.assertTrue(any("done steps=" in ln for ln in cm.output))
 
 

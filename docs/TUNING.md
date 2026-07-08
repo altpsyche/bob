@@ -62,7 +62,7 @@ Ports are **not** in this block — they live once in [config/defaults.json](../
 
 Run `bob gen` after editing. Changes take effect on the next `bob serve`.
 
-> Windows-only authoring: `config/bob.psd1` remains the Windows authoring source for persona/routing/ports and is compiled into `data/config.json` on that OS. Off Windows it is irrelevant — config resolves live from `config/defaults.json` + `config/user.json`, and `config/user.json` is the documented override surface on every OS.
+> Config resolves the same way on every OS: live from `config/defaults.json` deep-merged with `config/user.json`, and `config/user.json` is the documented override surface everywhere. There is no per-OS authoring source and no generated `data/config.json`.
 
 ### Agent behavior
 
@@ -77,16 +77,16 @@ registration step. To exclude a tool without deleting it, add its name to `agent
 | `agent.agency` | `"show"` | `"silent"` = run without output. `"show"` = print tool calls and results to stderr. `"confirm"` = prompt before each tool execution. |
 | `agent.maxSteps` | `10` | Maximum tool-call iterations before stopping. |
 | `agent.maxHistoryMsgs` | `40` | Sliding window by **message count**, the first-pass overflow guard. |
-| `agent.maxContextTokens` | `6000` | Token budget for the message history (M7). Drops the oldest non-system turns first; always keeps the system message. `0` = fall back to count-only. Keep it below the agent model's context window. |
+| `agent.maxContextTokens` | `6000` | Token budget for the message history. Drops the oldest non-system turns first; always keeps the system message. `0` = fall back to count-only. Keep it below the agent model's context window. |
 | `agent.maxToolResultTokens` | `1000` | Per-tool-result cap (~4 chars/token) applied before a result is appended to history, so one huge tool output can't blow the budget. |
 | `agent.compactSchemasAfter` | `12` | Once more than this many tools are loaded, inject **compact** tool schemas (param descriptions dropped) so the fixed per-turn prompt doesn't grow unbounded with tool count. |
 | `agent.requestTimeout` | `600` | Client-side LLM call timeout (s). Must be **≥** the litellm proxy's `request_timeout` (600) so thinking models (planner/R1) aren't cut off mid-response. |
 | `agent.llmRetries` | `2` | Retries for a transient LLM error (5xx/timeout/conn) per step: total tries = this + 1. Covers the llama-swap model-swap race (a 500 "upstream command exited prematurely" on the first request after an idle-unload). Retried only before the first token surfaces. |
 | `agent.llmRetryBackoffSec` | `2.0` | Base backoff (s) before a retry; escalates per attempt (2s, 4s, …) to give a restarting backend time to come up. |
-| `agent.allowPrivateFetch` | `false` | When `false`, `web_fetch` blocks `file://`/non-http schemes and loopback/RFC-1918/link-local hosts (SSRF guard, M9). Set `true` only if you deliberately need the agent to reach private hosts. |
+| `agent.allowPrivateFetch` | `false` | When `false`, `web_fetch` blocks `file://`/non-http schemes and loopback/RFC-1918/link-local hosts (SSRF guard). Set `true` only if you deliberately need the agent to reach private hosts. |
 | `agent.disabledTools` | `[]` | Tool names (stem/dir) to **exclude** from discovery. Denylist, not allowlist. |
-| `agent.allowedReadPaths` | (repo root) | Paths `file_read` may access. Defaults to the repo root at runtime. Add more in `config/user.json`. **Secrets denylist (N9):** `config.json`, `*.psd1`, `*.db`, `logs/`, `.env*` are refused even inside an allowed root. |
-| `agent.allowedWritePaths` | `[]` | Paths `file_write` may access. Empty = write disabled. Opt in via `config/user.json`. The N9 secrets denylist applies here too. |
+| `agent.allowedReadPaths` | (repo root) | Paths `file_read` may access. Defaults to the repo root at runtime. Add more in `config/user.json`. **Secrets denylist:** `config.json`, `*.psd1`, `*.db`, `logs/`, `.env*` are refused even inside an allowed root. |
+| `agent.allowedWritePaths` | `[]` | Paths `file_write` may access. Empty = write disabled. Opt in via `config/user.json`. The secrets denylist applies here too. |
 
 Override any of these in `config/user.json` under the top-level `agent` key:
 
@@ -102,20 +102,20 @@ Override any of these in `config/user.json` under the top-level `agent` key:
 
 (On Windows, use Windows paths, e.g. `"allowedReadPaths": ["C:\\local-llm", "D:\\projects"]`.)
 
-**Agent HTTP server (`bob agent serve`, M5/M12/M15).** Exposes the agent loop as REST + SSE on `:8084`. Every
+**Agent HTTP server (`bob agent serve`).** Exposes the agent loop as REST + SSE on `:8084`. Every
 endpoint requires `Authorization: Bearer <token>`.
 
 | Key | Default | Effect |
 |-----|---------|--------|
 | `agent.serveHost` | `"127.0.0.1"` | Bind address. Set `"0.0.0.0"` to expose on the LAN; **harden `allowPrivateFetch` first** (keep it `false`). |
 | `agent.agentPort` | `8084` | Server port. |
-| `agent.apiTokens` | `[]` | Per-client Bearer tokens (N1), each `{"token": "sk-…", "owner": "alice"}`. Sessions are owner-scoped: a token only sees sessions its owner created (others 404). Bare strings still work (token = owner). |
-| `agent.defaultOwner` | `"local"` | Owner id the `litellmKey` (and any unlabelled session) maps to (N1). |
+| `agent.apiTokens` | `[]` | Per-client Bearer tokens, each `{"token": "sk-…", "owner": "alice"}`. Sessions are owner-scoped: a token only sees sessions its owner created (others 404). Bare strings still work (token = owner). |
+| `agent.defaultOwner` | `"local"` | Owner id the `litellmKey` (and any unlabelled session) maps to. |
 | `agent.sessionDbPath` | `"data/sessions.db"` | SQLite store for multi-turn sessions (WAL, created on first server start). |
 | `agent.maxSessionTokens` | `0` | Per-session token budget; `0` = unlimited. Once reached, that session's completions return HTTP 402. |
-| `agent.gitAllowedRoots` | `[]` | Extra repos `git_*` may read (N9); the Bob repo root is always allowed. |
-| `agent.logMaxBytes` / `logBackupCount` | `5000000` / `3` | Rotation for `logs/bob-agent.log` (N5). |
-| `agent.mcpEnabled` | `false` | Enable `bob agent mcp` (expose tools over MCP, N10). |
+| `agent.gitAllowedRoots` | `[]` | Extra repos `git_*` may read; the Bob repo root is always allowed. |
+| `agent.logMaxBytes` / `logBackupCount` | `5000000` / `3` | Rotation for `logs/bob-agent.log`. |
+| `agent.mcpEnabled` | `false` | Enable `bob agent mcp` (expose tools over MCP). |
 
 See [AGENT-SERVER.md](AGENT-SERVER.md) for the endpoint contract.
 
@@ -163,7 +163,7 @@ A plugin can be written in any language that reads arguments and writes stdout; 
 are Python.
 
 Python plugins read config through `bob_core.load_config()` (which resolves `config/defaults.json` +
-`config/user.json` live; on Windows it reads the generated `data/config.json`) and can use any routing
+`config/user.json` live on every OS) and can use any routing
 role. To override the model a plugin uses for a specific invocation, most accept a `--role` flag (check
 `--help` on each plugin, or run one directly with `bob --run <name> '{json}'`).
 
@@ -357,7 +357,7 @@ The voice loop reuses the **same** agent turn (and the same persona) as text cha
 
 **Bob's persona (agent loop + interactive shell)**: the base system prompt Bob runs with lives in
 the neutral runtime layer at `config/defaults.json` → `runtime.persona.systemPrompt` (read on every OS
-by the Python resolver; on Windows also via the compiled `data/config.json`). The shipped default is
+by the Python resolver). The shipped default is
 intentionally short and general — it introduces Bob and tells the model to save durable facts about you
 with the memory tools.
 

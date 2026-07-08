@@ -1,8 +1,8 @@
-"""ONE-C Slice 1 — memory + meta capabilities on Python.
+"""Memory and meta capabilities: budget, memory verbs, and passthrough handlers.
 
-Covers the registry wiring (verbs flipped to runtime=python with a live handler), the budget capability
-core (port of bob-budget.ps1, network-mocked), and the CLI handlers for remember/recall/memory/fabric/
-aider/plugins. Everything that would touch a service or subprocess is mocked, so the suite stays hermetic."""
+Covers the budget capability core (network-mocked) and the CLI handlers for remember/recall/memory/
+fabric/aider/plugins. Everything that would touch a service or subprocess is mocked, so the suite stays
+hermetic."""
 import io
 import sys
 import tempfile
@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 import _common  # noqa: F401 — puts scripts/ + scripts/tools on sys.path
-from bob import cli, registry
+from bob import cli
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts" / "tools"))
 import budget  # noqa: E402
@@ -23,22 +23,6 @@ def _run(handler, rest):
     with redirect_stdout(out), redirect_stderr(err):
         code = handler(rest)
     return code, out.getvalue(), err.getvalue()
-
-
-class TestRegistryWiring(unittest.TestCase):
-    """Each Slice-1 verb is runtime=python with a handler that exists in cli._HANDLERS."""
-
-    SLICE1 = {
-        "remember": "remember", "recall": "recall", "memory": "memory", "budget": "budget",
-        "tools": "tools", "plugins": "plugins", "fabric": "fabric", "aider": "aider",
-    }
-
-    def test_verbs_flipped_to_python_with_live_handlers(self):
-        by_name = registry.by_name()
-        for verb, handler_key in self.SLICE1.items():
-            entry = by_name[verb]
-            self.assertEqual(entry["handler"], handler_key, f"{verb} handler key")
-            self.assertIn(handler_key, cli._HANDLERS, f"{handler_key} missing from _HANDLERS")
 
 
 class TestBudgetCore(unittest.TestCase):

@@ -1,7 +1,7 @@
-"""NB4 (contract C1) — the `python -m bob` package exposes the runtime API and serves the agent
-HTTP app. Proves (OS-neutrally, no PowerShell, no live socket) that `from bob import
+"""The `python -m bob` package exposes the runtime API and serves the agent
+HTTP app. Proves (OS-neutrally, no live socket) that `from bob import
 run_agent_events` works and that the app the package's `agent serve` starts answers /health and an
-owner-scoped session round-trip against a stub. This is the NB6 Linux proof, run in-process."""
+owner-scoped session round-trip against a stub. This is the Linux proof, run in-process."""
 import shutil
 import tempfile
 import unittest

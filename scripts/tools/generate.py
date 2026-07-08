@@ -1,15 +1,13 @@
-"""Bob config generators (ONE-C Slice 6) — regenerate the runtime configs from the neutral registry
-(config/models.json via bob_models). Ports the four PowerShell generators into one module (D6), each a
-core fn reached the standard three ways; `gen` runs all four.
+"""Bob config generators — regenerate the runtime configs from the neutral registry
+(config/models.json via bob_models). One core fn per config reached the standard three ways;
+`gen` runs all four.
 
   gen_llama_swap  -> config/llama-swap.yaml   (macros + per-model cmd assembly + swap group)
   gen_litellm     -> config/litellm.yaml      (local models via llama-swap + pro models via peers)
   gen_continue    -> config/continue/config.yaml
   gen_webui       -> tools/webui-data/webui.db (model system prompts; skips if the db is absent)
 
-Deterministic + idempotent; byte-parity with the retired gen-*.ps1 (bodies verified against snapshots).
-This is the port that lets `bob_models.regenerate_configs` drop its interim pwsh bridge — the last pwsh
-in the lifecycle hot path."""
+Deterministic + idempotent."""
 import sys
 from pathlib import Path
 
@@ -20,7 +18,7 @@ SCRIPTS = REPO / "scripts"
 
 MUTATING_TOOLS = {"gen"}
 
-# Get-Models order: planner,coder,chat,fim,embed first, then the rest sorted.
+# Canonical role order: planner,coder,chat,fim,embed first, then the rest sorted.
 _ROLE_ORDER = ["planner", "coder", "chat", "fim", "embed"]
 
 
@@ -34,7 +32,7 @@ def configure(config: dict) -> None:
 # --- shared helpers -------------------------------------------------------------------------------
 
 def _fmt(v) -> str:
-    """InvariantCulture-style scalar formatting (mirrors the pwsh Fmt): bools lowercase, integral floats
+    """InvariantCulture-style scalar formatting: bools lowercase, integral floats
     without a decimal point, everything else str()."""
     if isinstance(v, bool):
         return "true" if v else "false"
@@ -49,7 +47,7 @@ def _assert_no_quote(s: str, what: str) -> None:
 
 
 def _ordered_models(mcfg: dict, profile: str = None):
-    """(profile_name, [spec-with-'role', ...]) in Get-Models order. Skips '_'-prefixed metadata keys."""
+    """(profile_name, [spec-with-'role', ...]) in canonical role order. Skips '_'-prefixed metadata keys."""
     import bob_models
 
     name = bob_models.resolve_profile_name(profile, mcfg)
@@ -64,7 +62,7 @@ def _ordered_models(mcfg: dict, profile: str = None):
 
 
 def enabled_peers(mcfg: dict):
-    """Enabled peers as dicts with 'name', in registry (insertion) order. Port of Get-EnabledPeers."""
+    """Enabled peers as dicts with 'name', in registry (insertion) order."""
     peers = mcfg.get("peers", {})
     out = []
     for name, spec in peers.items():
@@ -89,7 +87,7 @@ def _bob_cfg() -> dict:
 # --- gen-llama-swap -------------------------------------------------------------------------------
 
 def gen_llama_swap(profile: str = None) -> str:
-    """Generate config/llama-swap.yaml from the registry. Port of gen-llama-swap.ps1."""
+    """Generate config/llama-swap.yaml from the registry."""
     import bob_models
     import osenv
 
@@ -217,7 +215,7 @@ def gen_llama_swap(profile: str = None) -> str:
 # --- gen-litellm ----------------------------------------------------------------------------------
 
 def gen_litellm(profile: str = None) -> str:
-    """Generate config/litellm.yaml. Port of gen-litellm.ps1."""
+    """Generate config/litellm.yaml."""
     import bob_models
     import osenv
     from bob_core import _port
@@ -286,7 +284,7 @@ def gen_litellm(profile: str = None) -> str:
                 "API Keys in Langfuse UI)"]
     out += ["", "general_settings:",
             "  drop_params: true      # silently drop unsupported params from clients (avoids 400s)",
-            f"  master_key: {litellm_key}   # from litellmKey seam (C3); default sk-local — local-only proxy"]
+            f"  master_key: {litellm_key}   # from the litellmKey seam; default sk-local — local-only proxy"]
 
     dest = _write(REPO / "config" / "litellm.yaml", "\n".join(out) + "\n")
     return f"Generated {dest}"
@@ -310,7 +308,7 @@ def _yaml_str(s: str) -> str:
 
 
 def gen_continue(profile: str = None) -> str:
-    """Generate config/continue/config.yaml. Port of gen-continue.ps1."""
+    """Generate config/continue/config.yaml."""
     import bob_models
     import osenv
     from bob_core import _port
@@ -328,7 +326,7 @@ def gen_continue(profile: str = None) -> str:
 
     out = ["# GENERATED - DO NOT EDIT.  Source: config/models.json  (+ config/user.json)",
            "# Regenerate: bob gen",
-           "# Continue.dev config (2026 YAML format). Symlinked to ~/.continue/config.yaml by setup-clients.ps1.",
+           "# Continue.dev config (2026 YAML format). Symlinked to ~/.continue/config.yaml during client setup.",
            "name: bob", "version: 0.0.1", "schema: v1", "", "models:"]
 
     def add_model(name, model, ctx, prompt, roles):
@@ -383,8 +381,8 @@ def gen_continue(profile: str = None) -> str:
 # --- gen-webui ------------------------------------------------------------------------------------
 
 def gen_webui(profile: str = None) -> str:
-    """Sync model system prompts into the Open WebUI sqlite db. Port of gen-webui.ps1 (whose logic was
-    already Python). Skips gracefully if the db is absent, or if WebUI holds the write lock."""
+    """Sync model system prompts into the Open WebUI sqlite db. Skips gracefully if the db is absent,
+    or if WebUI holds the write lock."""
     import bob_models
 
     db_path = REPO / "tools" / "webui-data" / "webui.db"

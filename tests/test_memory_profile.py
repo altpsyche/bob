@@ -39,7 +39,7 @@ class TestConfigStaleness(unittest.TestCase):
         self.assertEqual(bob_core.load_config().get("_sentinel"), "resolved")
 
     def test_windows_also_resolves_no_data_config_fork(self):
-        # S9 — the dead Windows data/config.json fork is gone: load_config resolves in Python on EVERY
+        # the dead Windows data/config.json fork is gone: load_config resolves in Python on EVERY
         # OS (Get-BobConfig is retired, so nothing writes data/config.json anywhere).
         os.environ["BOB_FORCE_OS"] = "windows"
         self.bob_config.resolve_runtime_config = lambda user_path=None: {"_sentinel": "resolved"}

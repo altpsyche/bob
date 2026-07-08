@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""O10 — agent-capability eval harness (records-based, CPU-safe).
+"""Agent-capability eval harness (records-based, CPU-safe).
 
 Runs each fixture task (tests/eval/tasks.py) through the REAL agent loop with a scripted client + a
 FakeRegistry, scores it deterministically from the event stream, and prints a per-task + total
@@ -103,7 +103,7 @@ def _report(earned: int, total: int, results: list) -> None:
 
 def main(argv=None) -> int:
     import argparse
-    p = argparse.ArgumentParser(prog="run_eval", description="Bob agent-capability eval (O10).")
+    p = argparse.ArgumentParser(prog="run_eval", description="Bob agent-capability eval.")
     p.add_argument("--json", action="store_true", help="emit a JSON summary line")
     p.add_argument("--gate", type=float, default=None, help="exit 1 if score < this fraction (0..1)")
     args = p.parse_args(argv)

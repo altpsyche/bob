@@ -1,4 +1,4 @@
-"""N10 — MCP seam: registry tools -> MCP descriptors + a dispatch round-trip, and the disabled
+"""MCP seam: registry tools -> MCP descriptors + a dispatch round-trip, and the disabled
 gate. Hermetic: the mcp package and stdio transport are only touched by serve() when enabled."""
 import json
 import unittest

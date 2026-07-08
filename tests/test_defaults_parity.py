@@ -1,6 +1,6 @@
-"""NB1 — config/defaults.json is the neutral single source of truth for ports + roles, read by Python
+"""config/defaults.json is the neutral single source of truth for ports + roles, read by Python
 (bob_core.load_defaults / _port / get_role). This proves the resolution and that a dropped key fails
-loudly. (The PowerShell half was retired in ONE-E — Python is now the only side.)"""
+loudly."""
 import json
 import os
 import shutil
@@ -15,7 +15,7 @@ import bob_core
 REPO = Path(bob_core.REPO)
 DEFAULTS = REPO / "config" / "defaults.json"
 
-# A fully-populated routing/vision config so both languages resolve to the routing *values*
+# A fully-populated routing/vision config so the resolver lands on the routing *values*
 # (the fallback literals only matter for sparse configs, which production never has).
 _CFG = {
     "routing": {
@@ -26,7 +26,7 @@ _CFG = {
     },
     "vision": {"visionRole": "vision", "visionProRole": "vision-pro"},
 }
-# Tasks the PowerShell Get-RoleForTask ValidateSet accepts (no 'agent' there).
+# Tasks the role resolver accepts (no 'agent' there).
 _TASKS = ["chat", "code", "think", "vision", "voice"]
 
 

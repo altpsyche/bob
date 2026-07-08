@@ -1,4 +1,4 @@
-"""M13 — bob_memory importable core (M14-blocker) with the embed server mocked."""
+"""bob_memory importable core, with the embed server mocked."""
 import json
 import shutil
 import tempfile
@@ -87,7 +87,7 @@ class TestMemoryCore(unittest.TestCase):
 @unittest.skipUnless(bob_memory._DEPS_ERROR is None,
                      f"memory deps (sqlite-utils/requests) not installed: {bob_memory._DEPS_ERROR}")
 class TestTypedWrite(unittest.TestCase):
-    """MEM-1 — typed, owner-scoped write path: normalize, content_hash exact-dedup, near-dedup."""
+    """Typed, owner-scoped write path: normalize, content_hash exact-dedup, near-dedup."""
 
     def setUp(self):
         self._orig = bob_memory.embed
@@ -175,7 +175,7 @@ class TestTypedWrite(unittest.TestCase):
 @unittest.skipUnless(bob_memory._DEPS_ERROR is None,
                      f"memory deps (sqlite-utils/requests) not installed: {bob_memory._DEPS_ERROR}")
 class TestBlendedRead(unittest.TestCase):
-    """MEM-2 — owner/scope prefilter + blended (semantic·recency·type·usage) ranking."""
+    """Owner/scope prefilter + blended (semantic·recency·type·usage) ranking."""
 
     def setUp(self):
         self._orig = bob_memory.embed
@@ -249,14 +249,14 @@ class TestBlendedRead(unittest.TestCase):
         self.assertIn("repo A fact", contents)
         self.assertNotIn("repo B fact", contents)      # other project's rows excluded
 
-    def test_higher_salience_outranks_lower_at_equal_cosine(self):   # MEM-9
+    def test_higher_salience_outranks_lower_at_equal_cosine(self):
         now = datetime.now(timezone.utc).isoformat()
         self._insert("low", emb_key="Q", salience=0.1, created_at=now)
         self._insert("high", emb_key="Q", salience=1.0, created_at=now)
         hits = bob_memory.recall("Q", self.db, k=2, threshold=0.0)
         self.assertEqual(hits[0]["content"], "high")    # wSalience breaks the tie
 
-    def test_recent_access_beats_untouched_same_age(self):           # MEM-9 recency off last_used
+    def test_recent_access_beats_untouched_same_age(self):           # recency off last_used
         old = "2020-01-01T00:00:00+00:00"
         now = datetime.now(timezone.utc).isoformat()
         self._insert("touched", emb_key="Q", created_at=old, last_used=now)
@@ -264,7 +264,7 @@ class TestBlendedRead(unittest.TestCase):
         hits = bob_memory.recall("Q", self.db, k=2, threshold=0.0)
         self.assertEqual(hits[0]["content"], "touched")  # reinforced fact stops decaying
 
-    def test_corrupt_timestamp_ranks_oldest(self):                    # MEM-10 A3
+    def test_corrupt_timestamp_ranks_oldest(self):
         now = datetime.now(timezone.utc).isoformat()
         self._insert("good", emb_key="Q", created_at=now)
         self._insert("corrupt", emb_key="Q", created_at="not-a-date")
@@ -296,7 +296,7 @@ class TestBlendedRead(unittest.TestCase):
 @unittest.skipUnless(bob_memory._DEPS_ERROR is None,
                      f"memory deps (sqlite-utils/requests) not installed: {bob_memory._DEPS_ERROR}")
 class TestProfileBlock(unittest.TestCase):
-    """MEM-3 — profile_block selection/order/cap + bob_core gating and framing."""
+    """profile_block selection/order/cap + bob_core gating and framing."""
 
     def setUp(self):
         self._orig = bob_memory.embed
@@ -366,7 +366,7 @@ class TestProfileBlock(unittest.TestCase):
 @unittest.skipUnless(bob_memory._DEPS_ERROR is None,
                      f"memory deps (sqlite-utils/requests) not installed: {bob_memory._DEPS_ERROR}")
 class TestConsolidation(unittest.TestCase):
-    """MEM-4 — in-process consolidation: typed fact extraction (LLM mocked), dedup, episodic recap."""
+    """In-process consolidation: typed fact extraction (LLM mocked), dedup, episodic recap."""
 
     def setUp(self):
         self._orig_embed = bob_memory.embed
@@ -412,7 +412,7 @@ class TestConsolidation(unittest.TestCase):
         self.assertIsNone(r["summary"])
 
     def test_empty_extraction_stores_only_recap(self):
-        # B6 — a down/empty summarizer no longer silently drops the session: no durable facts, but a
+        # a down/empty summarizer no longer silently drops the session: no durable facts, but a
         # deterministic episodic recap is still written.
         bob_memory.summarize_turns = lambda *a, **k: ""
         r = bob_memory.consolidate_session(self._TURNS, self.db)
@@ -430,7 +430,7 @@ class TestConsolidation(unittest.TestCase):
         self.assertEqual(captured["timeout"], 17)          # bounded exit stall reaches the LLM call
         self.assertEqual(captured["mt"], 800)              # reasoning-token budget reaches the LLM call
 
-    # --- MEM-8: conflict-aware reconciliation --------------------------------------------------
+    # --- conflict-aware reconciliation --------------------------------------------------
     def test_parse_reconciled_bullets(self):
         quads = bob_memory._parse_reconciled_bullets(
             "preference: User likes tea | NEW | 4\n"
@@ -508,7 +508,7 @@ class TestConsolidation(unittest.TestCase):
         self.assertIn("User uses vim", hits)                          # untouched — stale id ignored
         self.assertIn("User is building Bob", hits)
 
-    def test_provenance_stamped_and_forget_by_session(self):          # MEM-10 B3
+    def test_provenance_stamped_and_forget_by_session(self):
         bob_memory.summarize_turns = lambda *a, **k: "preference: User likes go | NEW | 5\n"
         bob_memory.consolidate_session(self._TURNS, self.db, source_session="sess-42")
         db = bob_memory.get_db(self.db)
@@ -523,7 +523,7 @@ class TestConsolidation(unittest.TestCase):
 
 
 class TestOwnerThreading(unittest.TestCase):
-    """MEM-6 — RunContext carries owner/agent_depth; the memory tools scope to the run's owner."""
+    """RunContext carries owner/agent_depth; the memory tools scope to the run's owner."""
 
     def test_run_context_owner_depth_scope(self):
         from bob_loop import RunContext
@@ -569,7 +569,7 @@ class TestOwnerThreading(unittest.TestCase):
 
 
 class TestProjectScoping(unittest.TestCase):
-    """MEM-7a — project_key detection + bob_core scoping gate (project-type only)."""
+    """project_key detection + bob_core scoping gate (project-type only)."""
 
     def test_project_key_finds_git_root(self):
         import bob_core
@@ -649,7 +649,7 @@ class TestProjectScoping(unittest.TestCase):
 @unittest.skipUnless(bob_memory._DEPS_ERROR is None,
                      f"memory deps (sqlite-utils/requests) not installed: {bob_memory._DEPS_ERROR}")
 class TestHygiene(unittest.TestCase):
-    """MEM-5 — TTL prune, size cap, soft-delete (forget), soft-update (edit), list/export."""
+    """TTL prune, size cap, soft-delete (forget), soft-update (edit), list/export."""
 
     def setUp(self):
         self._orig = bob_memory.embed
@@ -715,7 +715,7 @@ class TestHygiene(unittest.TestCase):
         self.assertIn("the user likes coffee", hits)
         self.assertNotIn("the user likes tea", hits)        # superseded -> filtered from recall
 
-    def test_pin_unpin_and_survives_prune(self):                      # MEM-9 / B5
+    def test_pin_unpin_and_survives_prune(self):
         mid, _ = bob_memory.store("keep me around", self.db, mem_type="fact")
         self.assertTrue(bob_memory.set_pinned(mid, self.db, True))
         self.assertEqual(bob_memory.get_memory(mid, self.db)["pinned"], 1)
@@ -726,7 +726,7 @@ class TestHygiene(unittest.TestCase):
         self.assertEqual(bob_memory.get_memory(mid, self.db)["pinned"], 0)
         self.assertFalse(bob_memory.set_pinned(999999, self.db, True))  # unknown id
 
-    def test_prune_keeps_legacy_space_format_within_ttl(self):        # MEM-10 A4
+    def test_prune_keeps_legacy_space_format_within_ttl(self):
         # SQLite's default 'YYYY-MM-DD HH:MM:SS' (space, tz-naive) vs an ISO 'T' cutoff — a raw string
         # compare over-prunes; the parsed compare keeps a clearly-within-TTL row.
         recent = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -735,7 +735,7 @@ class TestHygiene(unittest.TestCase):
         self.assertEqual(r["ttl_pruned"], 0)
         self.assertIn("legacy recent recap", self._contents())
 
-    def test_size_cap_ignores_superseded_rows(self):                 # MEM-10 A4
+    def test_size_cap_ignores_superseded_rows(self):
         self._insert("active1", salience=0.5)
         self._insert("active2", salience=0.6)
         self._insert("dead low", salience=0.1, superseded_by=999)    # inactive — must not count/drop
@@ -763,7 +763,7 @@ class TestHygiene(unittest.TestCase):
 
 
 class TestNormalize(unittest.TestCase):
-    """§2.3 deterministic third-person normalization + content hash — pure, no deps."""
+    """Deterministic third-person normalization + content hash — pure, no deps."""
 
     def test_leading_pronoun_rules(self):
         n = bob_memory._normalize_third_person
@@ -791,7 +791,7 @@ class TestNormalize(unittest.TestCase):
 @unittest.skipUnless(bob_memory._DEPS_ERROR is None,
                      f"memory deps (sqlite-utils/requests) not installed: {bob_memory._DEPS_ERROR}")
 class TestSchemaV2(unittest.TestCase):
-    """MEM-0/10 — PRAGMA user_version migration ladder in get_db + migrate --normalize."""
+    """PRAGMA user_version migration ladder in get_db + migrate --normalize."""
 
     def setUp(self):
         self._orig = bob_memory.embed
@@ -815,7 +815,7 @@ class TestSchemaV2(unittest.TestCase):
             self.assertIn(c, cols)
 
     def _seed_v1(self):
-        """Build a pre-MEM-0 (v1) DB: the old column set, user_version=0, the 4 legacy rows."""
+        """Build a legacy v1 DB (pre-migration): the old column set, user_version=0, the 4 legacy rows."""
         import sqlite3
         conn = sqlite3.connect(str(self.db))
         conn.execute(
@@ -877,7 +877,7 @@ class TestSchemaV2(unittest.TestCase):
 
 
 class TestInjectionBudget(unittest.TestCase):
-    """MEM-10 B4 — bob_core.budget_injection: fit injected memory into a token budget; trim autoRecall
+    """bob_core.budget_injection: fit injected memory into a token budget; trim autoRecall
     before profile before BOB.md. Pure function — no memory deps needed."""
 
     def test_fits_all_when_under_budget(self):

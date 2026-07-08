@@ -1,4 +1,4 @@
-"""POST-ONE Mission 1 — the entry model: auto-start (`_ensure_endpoint`) and the TUI's own lifecycle
+"""The entry model: auto-start (`_ensure_endpoint`) and the TUI's own lifecycle
 slash-commands. All hermetic: no real servers, probes, or launches — check_litellm and the stack module
 are monkeypatched."""
 import io

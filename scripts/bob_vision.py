@@ -1,7 +1,7 @@
-"""ONE-B2 — vision capability (screen capture + image prep), ported from the pwsh describe/screenshot
-handlers onto the Python agent loop. One importable core shared by the `bob describe` / `bob screenshot`
-CLI handlers (bob.cli) and, later (ONE-C), the agent tools. Cross-platform with no PowerShell and no
-System.Drawing: Pillow for resize + Windows/macOS capture, and grim/spectacle/scrot/import for Linux
+"""Vision capability (screen capture + image prep) on the Python agent loop.
+One importable core shared by the `bob describe` / `bob screenshot`
+CLI handlers (bob.cli) and the agent tools. Cross-platform:
+Pillow for resize + Windows/macOS capture, and grim/spectacle/scrot/import for Linux
 capture. Image encoding itself lives in bob_loop._image_content_block (DRY) — this module only produces
 image file paths the loop consumes via run_agent(images=[...])."""
 import os
@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import tempfile
 
-import osenv   # NB3 — OS decisions go through the one seam (so BOB_FORCE_OS drives them in tests)
+import osenv   # OS decisions go through the one seam (so BOB_FORCE_OS drives them in tests)
 
 # Linux capture backends, in preference order (Wayland first, then X11 tools). Each maps a tool name
 # to the argv that writes a PNG to `out`.
@@ -31,7 +31,7 @@ def resize_image(path: str, max_dim: int = 1024) -> str:
     """Downscale to `max_dim` on the longest edge (large screenshots blow the vision context window).
     Returns a NEW temp path when it resized, else the ORIGINAL path unchanged; never upscales. Uses
     Pillow when installed and sends the image as-is when it is not (the vision model tolerates larger
-    inputs) — matching the pre-ONE-B2 Linux behavior. Never raises: image prep must not abort a describe."""
+    inputs) — matching the prior Linux behavior. Never raises: image prep must not abort a describe."""
     try:
         from PIL import Image
     except ImportError:

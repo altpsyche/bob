@@ -1,5 +1,5 @@
-"""NB4 (contract C1) — `python -m bob` dispatch. Resolves a command path against the registry and
-routes to the matching handler. Every verb is Python now (ONE-E retired the pwsh front door); heavy
+"""The `python -m bob` dispatch. Resolves a command path against the registry and
+routes to the matching handler. Every verb is Python; heavy
 runtime imports are lazy so `bob` help stays light and dependency-free.
 """
 import os
@@ -16,7 +16,7 @@ SCRIPTS = REPO / "scripts"
 
 def _resolve(argv: list):
     """Return (command_name, remaining_args). Prefer a 2-token path (e.g. 'agent serve') over the
-    bare verb (e.g. 'agent <goal>'), so subcommands split correctly per C1."""
+    bare verb (e.g. 'agent <goal>'), so subcommands split correctly."""
     cmds = registry.by_name()
     if not argv:
         return (None, [])
@@ -27,14 +27,14 @@ def _resolve(argv: list):
 
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    # ONE-C §1a — the deterministic invoker. `bob --run <cap> '{json}'` runs a capability through the
+    # The deterministic invoker. `bob --run <cap> '{json}'` runs a capability through the
     # EXACT agent path (ToolRegistry.dispatch_call), no model, no parallel dispatcher, so CI/scripts and
-    # the loop hit identical code. A mode flag (D5), not a verb — kept out of the registry/catalog.
+    # the loop hit identical code. A mode flag, not a verb — kept out of the registry/catalog.
     if argv and argv[0] == "--run":
         return _handle_run(argv[1:])
     name, rest = _resolve(argv)
     if name is None:
-        # NE2 Decision C — no-arg on an interactive terminal launches the shell; piped/redirected/CI
+        # No-arg on an interactive terminal launches the shell; piped/redirected/CI
         # keeps today's help. (Both the POSIX `bob` shim and the Windows bob.cmd send the bare `bob`
         # straight here.)
         from bob.shell import is_interactive
@@ -52,7 +52,7 @@ def main(argv=None) -> int:
     return handler(rest) or 0
 
 
-# --- the deterministic invoker (ONE-C §1a) -------------------------------------------------------
+# --- the deterministic invoker -------------------------------------------------------------------
 
 def _build_registry(config: dict):
     """Build the same ToolRegistry the agent loop builds (same disabledTools parsing, bob_loop.py:1147),
@@ -71,7 +71,7 @@ def _build_registry(config: dict):
 
 
 def _handle_run(rest: list) -> int:
-    """`bob --run <cap> '{json}'` — invoke one capability deterministically (D5: flag, JSON-only, single
+    """`bob --run <cap> '{json}'` — invoke one capability deterministically (flag, JSON-only, single
     surface). Prints the tool's returned string; exits non-zero when the result is an error (unknown cap,
     bad JSON, or a tool error) so CI can gate on it. Same fn/dispatch as the loop — no parallel path."""
     if not rest:
@@ -152,7 +152,7 @@ def _handle_agent_tools(rest: list) -> int:
     return 0
 
 
-# --- ONE-C Slice 5: agent scheduling (scripts/tools/schedule.py) ---------------------------------
+# --- agent scheduling (scripts/tools/schedule.py) ------------------------------------------------
 # schedule CRUD + the OS-task lifecycle + the runner core. install/uninstall are CLI-only (they touch
 # the OS scheduler); the CRUD + status/log cores are also agent tools.
 
@@ -165,7 +165,7 @@ def _sched_mod():
 
 
 def _flag(rest: list, name: str, default=None):
-    """--flag <value> extractor mirroring the pwsh schedule-arg parsing."""
+    """--flag <value> extractor."""
     if name in rest:
         i = rest.index(name)
         if i + 1 < len(rest):
@@ -254,7 +254,7 @@ def _handle_clip(rest: list) -> int:
 def _handle_skill(rest: list) -> int:
     """bob skill                 -> list registered skills (catalog)
        bob skill <name> [args…]  -> run a skill: a tool-sequence skill runs its steps; a sub-agent
-                                    skill runs as an isolated agent sub-run (O11) with the args as input
+                                    skill runs as an isolated agent sub-run with the args as input
        bob skill <name> --show   -> print the skill's manifest summary"""
     from bob import catalog
     from bob_skills import SkillRegistry
@@ -291,8 +291,8 @@ _CHAT_KNOWN_ROLES = {"chat", "coder", "planner", "fim", "embed",
 
 
 def _chat(task: str, rest: list) -> int:
-    """Unified `bob chat|code|think` (S2 — one loop, no tools). One-shot when a prompt is given, else
-    the interactive shell in chat mode. Preserves the pwsh flags: --pro/--think/--code role routing
+    """Unified `bob chat|code|think` (one loop, no tools). One-shot when a prompt is given, else
+    the interactive shell in chat mode. Supports --pro/--think/--code role routing
     (via get_role), --max N, --raw, --sys <text>, and legacy `bob chat <role> <prompt>`."""
     from bob_core import get_role, load_config
 
@@ -337,8 +337,8 @@ def _chat(task: str, rest: list) -> int:
 
     _ensure_endpoint(config)  # auto-start the stack so a bare `bob`/`bob chat` needs no prior `bob up`
     if not prompt:
-        # Interactive: the NE shell in chat mode (preset role, tools off) — inherits persisted
-        # sessions, MEM-3/autoRecall/consolidate, rich streaming, and approval.
+        # Interactive: the shell in chat mode (preset role, tools off) — inherits persisted
+        # sessions, autoRecall/consolidate, rich streaming, and approval.
         from bob.shell import run as shell_run
         return shell_run(config=config, role=role, no_tools=True)
 
@@ -362,9 +362,9 @@ def _handle_think(rest: list) -> int:
 
 
 def _describe(image: str, rest: list) -> int:
-    """ONE-B2 — `bob describe <image> [--pro] [prompt]` on the agent loop: resize (cross-platform) →
-    one-shot vision turn via run_agent(images=[…]). Replaces the pwsh handler + Invoke-BobStream +
-    System.Drawing. Role is pinned to vision (so the loop uses it verbatim, no auto-route needed)."""
+    """`bob describe <image> [--pro] [prompt]` on the agent loop: resize (cross-platform) →
+    one-shot vision turn via run_agent(images=[…]). Role is pinned to vision (so the loop uses it
+    verbatim, no auto-route needed)."""
     from bob_core import get_role, load_config
     import bob_loop
     import bob_vision
@@ -404,8 +404,8 @@ def _handle_describe(rest: list) -> int:
 
 
 def _handle_screenshot(rest: list) -> int:
-    """ONE-B2 — `bob screenshot [--pro] [prompt]`: capture the screen (cross-platform), then describe
-    it through the loop. Replaces the pwsh handler + System.Windows.Forms capture."""
+    """`bob screenshot [--pro] [prompt]`: capture the screen (cross-platform), then describe
+    it through the loop."""
     import bob_vision
 
     try:
@@ -423,9 +423,9 @@ def _handle_screenshot(rest: list) -> int:
 
 
 def _handle_voice(rest: list) -> int:
-    """bob voice [--pro] [--agent] — spoken conversation (ONE-B5). Launches the shell straight into
-    /voice mode (mic→STT→loop→TTS): the pwsh voice loop + Invoke-BobStream are deleted, so voice now
-    runs on the one engine and inherits memory + write-back + one persona + retry + logging + tools.
+    """bob voice [--pro] [--agent] — spoken conversation. Launches the shell straight into
+    /voice mode (mic→STT→loop→TTS): voice runs on the one engine and inherits memory + write-back +
+    one persona + retry + logging + tools.
     Default is a plain chat-role conversation (no tools); --agent keeps the full agent toolset; --pro
     uses the pro voice model."""
     from bob.shell import is_interactive, run_voice
@@ -443,8 +443,8 @@ def _handle_voice(rest: list) -> int:
 
 
 def _handle_listen(rest: list) -> int:
-    """bob listen — record the mic until silence, print the transcript (whisper). ONE-B5: the STT client
-    is bob_voice (shared with the /voice mode); replaces the pwsh handler that shelled out to a script."""
+    """bob listen — record the mic until silence, print the transcript (whisper). The STT client
+    is bob_voice (shared with the /voice mode)."""
     import bob_voice
     from bob_core import load_config
 
@@ -462,7 +462,7 @@ def _handle_listen(rest: list) -> int:
 
 
 def _handle_transcribe(rest: list) -> int:
-    """bob transcribe <file> — transcribe an audio file via whisper-server. ONE-B5."""
+    """bob transcribe <file> — transcribe an audio file via whisper-server."""
     import bob_voice
     from bob_core import load_config
 
@@ -485,8 +485,8 @@ def _handle_transcribe(rest: list) -> int:
 
 
 def _handle_speak(rest: list) -> int:
-    """bob speak [text] — synthesize speech with piper, reading stdin if no text is given. ONE-B5: the
-    TTS synth is bob_voice.speak (piper → osenv.play_audio); replaces the pwsh SoundPlayer/paplay branch."""
+    """bob speak [text] — synthesize speech with piper, reading stdin if no text is given. The
+    TTS synth is bob_voice.speak (piper → osenv.play_audio)."""
     import bob_voice
     from bob_core import load_config
 
@@ -497,7 +497,7 @@ def _handle_speak(rest: list) -> int:
     return 0 if bob_voice.speak(text, load_config()) else 1
 
 
-# --- ONE-C Slice 1: memory + meta -----------------------------------------------------------------
+# --- memory + meta --------------------------------------------------------------------------------
 # Each verb below routes to the same capability the agent uses (no duplicated logic). budget is an
 # agent tool (scripts/tools/budget.py) reached here + via `bob --run budget_summary`; the rest are
 # CLI-only re-exposures of existing Python (bob_core memory, bob_memory.py, tool_loader.py).
@@ -508,7 +508,7 @@ _MEMORY_SUBCOMMANDS = {"status", "clear", "list", "show", "forget", "edit", "pin
 
 def _handle_remember(rest: list) -> int:
     """bob remember <text> — store a memory (wires the verb to bob_core.memory_store, the same write
-    path the agent's memory_store tool uses). Replaces the pwsh shell-out to bob-memory.ps1."""
+    path the agent's memory_store tool uses)."""
     if not rest:
         print("usage: bob remember <text>", file=sys.stderr)
         return 1
@@ -531,7 +531,7 @@ def _handle_recall(rest: list) -> int:
 
 def _handle_memory(rest: list) -> int:
     """bob memory <sub> — inspect/curate memory. 1:1 onto bob_memory.py's argparse subcommands (the
-    --db path resolves from config, like the pwsh bob-memory.ps1 wrapper). No args -> status."""
+    --db path resolves from config). No args -> status."""
     if rest and rest[0] not in _MEMORY_SUBCOMMANDS:
         print("Usage: bob memory <" + "|".join(sorted(_MEMORY_SUBCOMMANDS)) + "> [args]",
               file=sys.stderr)
@@ -593,7 +593,7 @@ def _handle_tools(rest: list) -> int:
 
 def _handle_plugins(rest: list) -> int:
     """bob plugins [list] — enumerate plugins/<name>/ (invoke.ps1|invoke.py + description.txt). Filesystem
-    scan; ports the pwsh listing verbatim."""
+    scan."""
     if rest and rest[0] != "list":
         print("Usage: bob plugins list", file=sys.stderr)
         return 1
@@ -635,7 +635,7 @@ def _handle_aider(rest: list) -> int:
     return subprocess.run([str(exe)] + rest).returncode
 
 
-# --- ONE-C Slice 2: lifecycle ---------------------------------------------------------------------
+# --- lifecycle ------------------------------------------------------------------------------------
 # Each verb routes to the scripts/tools/stack.py capability the agent also calls (no duplicated logic).
 # up/stop/restart/ps and the service controls are background/non-blocking; serve/webui are foreground.
 
@@ -745,10 +745,10 @@ def _handle_services(rest: list) -> int:
     return 0
 
 
-# --- ONE-C Slice 4: model registry (read-only + profile) ------------------------------------------
+# --- model registry (read-only + profile) ---------------------------------------------------------
 # Each verb routes to the scripts/tools/models.py capability the agent also calls (built on the neutral
 # config/models.json via bob_models.py). profile is mutating (writes data/active-profile.json); the rest
-# are read-only. eval stays pwsh (very long, separate venv — ONE-D).
+# are read-only. eval runs in a separate eval venv (very long-running).
 
 def _models_mod():
     tools_dir = str(SCRIPTS / "tools")
@@ -768,7 +768,7 @@ def _build_mod():
 
 
 def _handle_build(rest: list) -> int:
-    """bob build [--cpu] [--force] — (re)build llama.cpp. Auto-selects the CPU tier when no GPU (DD1)."""
+    """bob build [--cpu] [--force] — (re)build llama.cpp. Auto-selects the CPU tier when no GPU."""
     import osenv
     rest = list(rest)
     force = "--force" in rest
@@ -796,7 +796,7 @@ def _handle_fabric_setup(rest: list) -> int:
 
 
 def _handle_update(rest: list) -> int:
-    """bob update [--tag <ref>] — release-aware update with rebuild + rollback (ND3)."""
+    """bob update [--tag <ref>] — release-aware update with rebuild + rollback."""
     rest = list(rest)
     tag = None
     if "--tag" in rest:
@@ -905,7 +905,7 @@ def _handle_bench(rest: list) -> int:
 
 
 def _handle_eval(rest: list) -> int:
-    """bob eval <role> [task] [--shots N] [--limit N] — lm-eval quality benchmark (DD3: venv-eval)."""
+    """bob eval <role> [task] [--shots N] [--limit N] — lm-eval quality benchmark (runs in the eval venv)."""
     rest = list(rest)
     shots = limit = 0
     positional = []
@@ -922,7 +922,7 @@ def _handle_eval(rest: list) -> int:
     return _models_mod().eval_model(role, task, shots=shots, limit=limit, config=_cfg())
 
 
-# --- ONE-C Slice 3: health / diagnostics (scripts/tools/health.py) -------------------------------
+# --- health / diagnostics (scripts/tools/health.py) ----------------------------------------------
 # setup(check) + doctor share health_check(); version + diagnose are separate cores. diagnose does both
 # the registry/light discovery AND the deep OS discovery (CUDA/RAM/NUMA/mlock/package) — all Python now.
 
@@ -959,7 +959,7 @@ def _handle_diagnose(rest: list) -> int:
 
 
 def _handle_gen(rest: list) -> int:
-    """bob gen [profile] — regenerate all runtime configs from config/models.json (ONE-C Slice 6)."""
+    """bob gen [profile] — regenerate all runtime configs from config/models.json."""
     tools_dir = str(SCRIPTS / "tools")
     if tools_dir not in sys.path:
         sys.path.insert(0, tools_dir)
@@ -970,7 +970,7 @@ def _handle_gen(rest: list) -> int:
 
 
 def _handle_shell(rest: list) -> int:
-    """bob shell — the interactive REPL/TUI (NE2). Behind an isatty gate: a non-TTY invocation prints
+    """bob shell — the interactive REPL/TUI. Behind an isatty gate: a non-TTY invocation prints
     help instead, so scripts/CI never block on a prompt. Auto-starts inference so the bare `bob` front
     door 'just works' with no prior `bob up`."""
     from bob.shell import is_interactive, run
@@ -983,8 +983,8 @@ def _handle_shell(rest: list) -> int:
 
 
 def _handle_help(rest: list) -> int:
-    """bob help — the single generated command catalog (WI-7), rendered from the registry so it can't
-    drift. Grouped commands + drop-in plugins; the pwsh front door delegates here (no more here-string)."""
+    """bob help — the single generated command catalog, rendered from the registry so it can't
+    drift. Grouped commands + drop-in plugins."""
     from rich.console import Console
 
     from bob import render
@@ -1006,7 +1006,7 @@ _HANDLERS = {
     "agent_serve": _handle_agent_serve,
     "agent_mcp": _handle_agent_mcp,
     "agent_tools": _handle_agent_tools,
-    "agent_schedule": _handle_agent_schedule,   # ONE-C Slice 5 — scheduling (scripts/tools/schedule.py)
+    "agent_schedule": _handle_agent_schedule,   # scheduling (scripts/tools/schedule.py)
     "agent_log": _handle_agent_log,
     "agent_install": _handle_agent_install,
     "agent_uninstall": _handle_agent_uninstall,
@@ -1014,16 +1014,16 @@ _HANDLERS = {
     "clip": _handle_clip,
     "skill": _handle_skill,
     "shell": _handle_shell,
-    "chat": _handle_chat,     # S2 — unified text conversation onto the loop
+    "chat": _handle_chat,     # unified text conversation onto the loop
     "code": _handle_code,
     "think": _handle_think,
-    "describe": _handle_describe,     # ONE-B2 — vision doors on the loop
+    "describe": _handle_describe,     # vision doors on the loop
     "screenshot": _handle_screenshot,
-    "voice": _handle_voice,           # ONE-B5 — voice doors on the loop (pwsh loop deleted)
+    "voice": _handle_voice,           # voice doors on the loop
     "listen": _handle_listen,
     "transcribe": _handle_transcribe,
     "speak": _handle_speak,
-    "remember": _handle_remember,     # ONE-C Slice 1 — memory + meta on Python
+    "remember": _handle_remember,     # memory + meta
     "recall": _handle_recall,
     "memory": _handle_memory,
     "budget": _handle_budget,
@@ -1031,34 +1031,34 @@ _HANDLERS = {
     "plugins": _handle_plugins,
     "fabric": _handle_fabric,
     "aider": _handle_aider,
-    "up": _handle_up,                 # ONE-C Slice 2 — lifecycle on Python (scripts/tools/stack.py)
+    "up": _handle_up,                 # lifecycle (scripts/tools/stack.py)
     "serve": _handle_serve,
     "restart": _handle_restart,
     "stop": _handle_stop,
-    "status": _handle_status,         # ONE-C follow-up — loaded-models status (scripts/tools/stack.py)
+    "status": _handle_status,         # loaded-models status (scripts/tools/stack.py)
     "ps": _handle_ps,
     "logs": _handle_logs,
     "webui": _handle_webui,
-    "litellm": _svc_handler("litellm"),   # POST-ONE-2 S3 — one service_control core, per-verb adapters
+    "litellm": _svc_handler("litellm"),   # one service_control core, per-verb adapters
     "whisper": _svc_handler("whisper"),
     "piper": _svc_handler("piper"),
     "services": _handle_services,
-    "models": _handle_models,         # ONE-C Slice 4 — model registry readers (scripts/tools/models.py)
+    "models": _handle_models,         # model registry readers (scripts/tools/models.py)
     "show": _handle_show,
     "profiles": _handle_profiles,
     "profile": _handle_profile,
     "verify-urls": _handle_verify_urls,
     "bench": _handle_bench,
-    "eval": _handle_eval,             # ONE-D Slice D4 — lm-eval quality benchmark (scripts/tools/models.py)
-    "build": _handle_build,           # ONE-D Slice D5 — native llama.cpp build (scripts/tools/build.py)
+    "eval": _handle_eval,             # lm-eval quality benchmark (scripts/tools/models.py)
+    "build": _handle_build,           # native llama.cpp build (scripts/tools/build.py)
     "fabric-setup": _handle_fabric_setup,
-    "update": _handle_update,         # ONE-D Slice D6 — release-aware update + rollback (build.py)
-    "setup-voice": _handle_setup_voice,  # ONE-D Slice D7 — voice provisioning (provision.py)
-    "fetch": _handle_fetch,           # ONE-D Slice D1 — model downloads (scripts/tools/provision.py)
-    "lock": _handle_lock,             # ONE-D Slice D2 — versions.lock writer + gate (scripts/bob/versions.py)
-    "mlock": _handle_mlock,           # ONE-D Slice D3 — mlock privilege status/grant (osenv)
-    "gen": _handle_gen,               # ONE-C Slice 6 — config generators (scripts/tools/generate.py)
-    "setup": _handle_setup,           # ONE-C Slice 3 — health / diagnostics (scripts/tools/health.py)
+    "update": _handle_update,         # release-aware update + rollback (build.py)
+    "setup-voice": _handle_setup_voice,  # voice provisioning (provision.py)
+    "fetch": _handle_fetch,           # model downloads (scripts/tools/provision.py)
+    "lock": _handle_lock,             # versions.lock writer + gate (scripts/bob/versions.py)
+    "mlock": _handle_mlock,           # mlock privilege status/grant (osenv)
+    "gen": _handle_gen,               # config generators (scripts/tools/generate.py)
+    "setup": _handle_setup,           # health / diagnostics (scripts/tools/health.py)
     "doctor": _handle_doctor,
     "version": _handle_version,
     "diagnose": _handle_diagnose,
@@ -1074,7 +1074,7 @@ _GROUP_ORDER = ["Talk", "Act", "Make", "Know", "Run", "Config"]
 def _print_help() -> None:
     print("bob — local AI assistant\n", file=sys.stderr)
     groups: dict = {}
-    for c in registry.commands(include_hidden=False):  # NE1 — hidden verbs stay out of the catalog
+    for c in registry.commands(include_hidden=False):  # hidden verbs stay out of the catalog
         groups.setdefault(c["group"], []).append(c)
     ordered = [g for g in _GROUP_ORDER if g in groups] + [g for g in groups if g not in _GROUP_ORDER]
     for group in ordered:

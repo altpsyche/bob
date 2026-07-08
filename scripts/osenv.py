@@ -1,9 +1,9 @@
-"""NB3 (contracts C3 secrets, C4 data-dir) — the OS-abstraction seam for the Python runtime.
+"""The OS-abstraction seam for the Python runtime.
 
 One place that knows about the OS, so the rest of the Python core stays OS-neutral:
   - default_shell()  the agent tool shell, always OS-native (pwsh on Windows, bash/sh elsewhere)
-  - data_dir()/cache_dir()  repo-relative data/ + logs/ by default; BOB_DATA_DIR override (C4)
-  - secret(name)     env -> OS keychain -> <data_dir>/secrets.json -> default (C3); never a tracked file
+  - data_dir()/cache_dir()  repo-relative data/ + logs/ by default; BOB_DATA_DIR override
+  - secret(name)     env -> OS keychain -> <data_dir>/secrets.json -> default; never a tracked file
   - notify()         WinRT toast on Windows, notify-send elsewhere, no-op if neither
 
 Per-OS branches key off platform.system() so tests can monkeypatch it.
@@ -21,9 +21,9 @@ REPO = Path(__file__).resolve().parent.parent
 
 
 def os_name() -> str:
-    """'windows' | 'linux' | 'macos' — the tri-state OS, mirroring pwsh Get-BobOS. Honors a TEST-ONLY
+    """'windows' | 'linux' | 'macos' — the tri-state OS. Honors a TEST-ONLY
     BOB_FORCE_OS ('windows'|'linux'|'macos'); anything else warns and is ignored. Replaces the 2-way
-    is_windows() for the ONE-C lifecycle/provisioning seams that must branch macOS separately."""
+    is_windows() for the lifecycle/provisioning seams that must branch macOS separately."""
     forced = os.environ.get("BOB_FORCE_OS")
     if forced:
         f = forced.lower()
@@ -42,12 +42,12 @@ def is_windows() -> bool:
     return os_name() == "windows"
 
 
-# --- shell (C1: the agent tool shell is OS-native, independent of pwsh-for-orchestration) --------
+# --- shell (the agent tool shell is OS-native) --------
 
 def default_shell() -> list:
     """Argv prefix for running a command *string* in the OS-native shell.
 
-    Windows -> pwsh (byte-identical to the pre-NB3 hardcode); elsewhere -> bash, falling back to
+    Windows -> pwsh (the previously hardcoded default); elsewhere -> bash, falling back to
     sh. Append the command string to run it: subprocess.run(default_shell() + [cmd]).
     """
     if is_windows():
@@ -56,7 +56,7 @@ def default_shell() -> list:
     return [shell, "-c"]
 
 
-# --- data / state location (C4) ------------------------------------------------------------------
+# --- data / state location ------------------------------------------------------------------
 
 def _repo_data() -> Path:
     return REPO / "data"
@@ -65,7 +65,7 @@ def _repo_data() -> Path:
 def data_dir() -> Path:
     """The directory for state (sessions.db, bob.db, schedules.json, secrets.json).
 
-    C4: repo-relative data/ by default (local-first, zero migration). Only when BOB_DATA_DIR is
+    Repo-relative data/ by default (local-first, zero migration). Only when BOB_DATA_DIR is
     set (a future system-install / multi-user mode) does it move — and existing data/* is copied
     once so nothing is lost.
     """
@@ -89,7 +89,7 @@ def cache_dir() -> Path:
 
 
 def _migrate_once(src: Path, dst: Path) -> None:
-    """One-time copy of existing data/* into a freshly-used BOB_DATA_DIR (C4). Marked with a
+    """One-time copy of existing data/* into a freshly-used BOB_DATA_DIR. Marked with a
     .migrated stamp so it never re-copies (and never clobbers newer files in dst)."""
     stamp = dst / ".migrated"
     if stamp.exists() or not src.exists() or src.resolve() == dst.resolve():
@@ -108,7 +108,7 @@ def _migrate_once(src: Path, dst: Path) -> None:
     stamp.write_text("", encoding="utf-8")
 
 
-# --- secrets (C3) --------------------------------------------------------------------------------
+# --- secrets --------------------------------------------------------------------------------
 
 def secrets_file() -> Path:
     """The resolved secrets.json path (under data_dir(); data/ is gitignored, so never tracked)."""
@@ -116,7 +116,7 @@ def secrets_file() -> Path:
 
 
 def secret(name: str, default=None, config: dict = None):
-    """Resolve a secret by name with precedence env -> OS keychain -> secrets.json -> default (C3).
+    """Resolve a secret by name with precedence env -> OS keychain -> secrets.json -> default.
 
     Env keys checked: the exact name, then BOB_<UPPER>. Keychain via the optional `keyring`
     package (skipped if not installed). No secret is ever read from a git-tracked file.
@@ -175,7 +175,7 @@ def _notify_windows(title: str, body: str) -> bool:  # pragma: no cover — exer
         return False
 
 
-# --- audio I/O (ONE-B3: mic-in / speaker-out seam for the /voice mode + speak) -------------------
+# --- audio I/O (mic-in / speaker-out seam for the /voice mode + speak) -------------------
 # The one place that knows how this OS records the mic and plays a clip, so the voice capability and
 # the shell /voice mode stay OS-neutral. sounddevice/numpy are optional and imported lazily (like
 # keyring/win10toast) so the base runtime never depends on the audio stack.
@@ -187,7 +187,7 @@ _AUDIO_CHANNELS = 1
 def play_audio(path: str) -> bool:
     """Play a WAV file through the OS. Windows -> winsound; macOS -> afplay; Linux -> first of
     paplay/aplay/ffplay. Returns True if a backend played it, False when none is available (the
-    caller can then point the user at the file). Replaces the inline pwsh SoundPlayer/paplay branch."""
+    caller can then point the user at the file)."""
     if is_windows():
         try:
             import winsound  # type: ignore
@@ -281,17 +281,16 @@ def record_audio(silence_sec: float = 1.5, rms_silence: int = 200,
     return _pcm_to_wav(np.concatenate(frames, axis=0).tobytes())
 
 
-# --- process + service lifecycle (ONE-C §1b) -----------------------------------------------------
-# The OS core of every lifecycle/provisioning port. Low-level primitives live here; the orchestration
-# (pidfile read/write, readiness polling) sits above in scripts/tools/stack.py. Mirrors the pwsh split
-# (Test-PortInUse/Stop-ProcessTree/Start-BobBackgroundProcess) and keeps the BOB_FORCE_OS test hook.
+# --- process + service lifecycle -----------------------------------------------------
+# The OS core of every lifecycle/provisioning primitive. Low-level primitives live here; the orchestration
+# (pidfile read/write, readiness polling) sits above in scripts/tools/stack.py, and keeps the
+# BOB_FORCE_OS test hook.
 # psutil is an OPTIONAL accelerator (imported lazily like keyring/sounddevice); every function has an
 # stdlib fallback so the base runtime never hard-depends on it. Best-effort: a dead PID is not an error.
 
 
 def is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
-    """True if something accepts a TCP connection on host:port (a service is up). Port of pwsh
-    Test-PortInUse — identical on both OSes."""
+    """True if something accepts a TCP connection on host:port (a service is up). Identical on both OSes."""
     import socket
 
     try:
@@ -390,8 +389,8 @@ def _fmt_uptime(seconds: float) -> str:
 
 
 def stop_process_tree(pid: int) -> None:
-    """Terminate a process and its children (uvicorn workers, piper's native child, …). Port of pwsh
-    Stop-ProcessTree: Windows reaps children via psutil/taskkill; POSIX prefers a process-GROUP kill
+    """Terminate a process and its children (uvicorn workers, piper's native child, …).
+    Windows reaps children via psutil/taskkill; POSIX prefers a process-GROUP kill
     (works when start_detached made the PID a group leader) then belt-and-suspenders pkill -P + kill.
     Best-effort — a dead PID never raises."""
     if not pid or pid <= 0:
@@ -448,9 +447,9 @@ def start_detached(argv: list, pidfile=None, log_path=None, env: dict = None) ->
     (setsid) so the child is its own group leader — REQUIRED so stop_process_tree's killpg reaps the
     whole tree. Windows uses DETACHED_PROCESS|CREATE_NO_WINDOW (no console window, survives the parent).
     Writes the PID to `pidfile` when given. When `log_path` is set, the child's stdout+stderr are
-    redirected there (truncated per launch — one clean log per run, replacing the pwsh `Tee-Object`
-    wrapper), else discarded. `env` overrides/extends the process environment. Port of pwsh
-    Start-BobBackgroundProcess — but launches the target binary DIRECTLY, no pwsh shell in between."""
+    redirected there (truncated per launch — one clean log per run), else discarded. `env`
+    overrides/extends the process environment. Launches the target binary DIRECTLY, with no
+    shell wrapper in between."""
     if log_path is not None:
         Path(log_path).parent.mkdir(parents=True, exist_ok=True)
         out = open(log_path, "wb")  # truncate: one clean log per run
@@ -475,10 +474,9 @@ def start_detached(argv: list, pidfile=None, log_path=None, env: dict = None) ->
     return proc.pid
 
 
-# --- executable + path resolvers (ONE-C §1b) -----------------------------------------------------
-# Where binaries and per-app config live, OS-aware. Mirror pwsh Get-BobExeName/Get-VenvExe/Get-BinExe/
-# Get-HomeConfigDir so a capability that shells out to a staged binary resolves the same path in both
-# languages. All key off os_name() so BOB_FORCE_OS drives them in tests.
+# --- executable + path resolvers -----------------------------------------------------
+# Where binaries and per-app config live, OS-aware, so a capability that shells out to a staged
+# binary resolves the same path everywhere. All key off os_name() so BOB_FORCE_OS drives them in tests.
 
 
 def exe_name(base: str) -> str:
@@ -527,7 +525,7 @@ def docker_install_hint() -> str:
     return "install your distro's docker package (with the compose plugin), then re-run bob setup"
 
 
-# --- open a URL (ONE-C §1b) ----------------------------------------------------------------------
+# --- open a URL ----------------------------------------------------------------------
 
 
 def open_url(url: str) -> bool:
@@ -550,12 +548,11 @@ def open_url(url: str) -> bool:
         return False
 
 
-# --- agent scheduler quartet (ONE-C Slice 5) -----------------------------------------------------
+# --- agent scheduler quartet -----------------------------------------------------
 # The OS task that ticks every minute and fires the Python runner (scripts/bob_agent_runner.py); the
 # runner evaluates the per-schedule cron expressions itself (schedule.cron_due). Windows uses
 # schtasks.exe (the ScheduledTasks cmdlets aren't callable from Python); POSIX uses an idempotent
-# crontab edit tagged "# <task_name>". Ports the pwsh Get-AgentTaskSpec/Register-AgentTask/
-# Unregister-AgentTask/Get-AgentTaskStatus/Test-CrontabAvailable (retired from _platform.ps1).
+# crontab edit tagged "# <task_name>".
 
 
 def crontab_available() -> bool:
@@ -651,14 +648,14 @@ def agent_task_status(task_name: str = "BobAgent") -> dict:
     return {"registered": bool(line), "state": "Ready" if line else None, "next_run": None}
 
 
-# --- hardware + build-time discovery (ONE-D §1b) -------------------------------------------------
+# --- hardware + build-time discovery -------------------------------------------------
 # The build-time / deep-OS-discovery family. GPU probes are pure nvidia-smi (no OS branch); RAM/NUMA
 # and the package-manager helpers fork by OS. Consolidated here so tools/health.py + tools/models.py
 # (which each carried a copy of gpu_arch / gpu_vram_gb) delegate to one source.
 
 def gpu_vram_gb():
-    """Total VRAM of GPU 0 in whole GB via nvidia-smi, or None (no GPU / nvidia-smi absent). Port of
-    _models.ps1 Get-GpuVramGB. Cross-platform — pure nvidia-smi, no OS branch."""
+    """Total VRAM of GPU 0 in whole GB via nvidia-smi, or None (no GPU / nvidia-smi absent).
+    Cross-platform — pure nvidia-smi, no OS branch."""
     if not shutil.which("nvidia-smi"):
         return None
     try:
@@ -673,8 +670,8 @@ def gpu_vram_gb():
 
 
 def gpu_arch():
-    """{'CudaArch': int, 'Gen': str, 'MinCudaMajor': int} for GPU 0, or None. Port of _models.ps1
-    Get-GpuArch — nvidia-smi compute_cap ('8.9'->89, '12.0'->120) mapped to a generation name.
+    """{'CudaArch': int, 'Gen': str, 'MinCudaMajor': int} for GPU 0, or None.
+    nvidia-smi compute_cap ('8.9'->89, '12.0'->120) mapped to a generation name.
     Cross-platform — pure nvidia-smi, no OS branch."""
     if not shutil.which("nvidia-smi"):
         return None
@@ -702,8 +699,8 @@ def gpu_arch():
 
 
 def gpu_info():
-    """Unified GPU probe → {'VramGB', 'CudaArch', 'Gen', 'MinCudaMajor'} for GPU 0, or None. Port of
-    _platform.ps1 Get-GpuInfo (composes gpu_arch + gpu_vram_gb; None when no NVIDIA GPU)."""
+    """Unified GPU probe → {'VramGB', 'CudaArch', 'Gen', 'MinCudaMajor'} for GPU 0, or None.
+    Composes gpu_arch + gpu_vram_gb; None when no NVIDIA GPU."""
     arch = gpu_arch()
     if not arch:
         return None
@@ -711,8 +708,8 @@ def gpu_info():
 
 
 def system_ram_gb():
-    """Physical RAM {'TotalGB': int, 'FreeGB': int|None} or None on failure. Port of _platform.ps1
-    Get-SystemRamGB — Windows via GlobalMemoryStatusEx (ctypes, pwsh-free), Linux via /proc/meminfo
+    """Physical RAM {'TotalGB': int, 'FreeGB': int|None} or None on failure.
+    Windows via GlobalMemoryStatusEx (ctypes), Linux via /proc/meminfo
     (MemTotal / MemAvailable, kB -> GB)."""
     if os_name() == "windows":  # pragma: no cover — exercised only on Windows
         import ctypes
@@ -752,7 +749,7 @@ def system_ram_gb():
 
 
 def numa_node_count() -> int:
-    """Number of NUMA nodes (>= 1, falls back to 1). Port of _models.ps1 Get-NumaNodeCount — Windows via
+    """Number of NUMA nodes (>= 1, falls back to 1). Windows via
     GetNumaHighestNodeNumber (ctypes), Linux counts /sys/devices/system/node/node*."""
     try:
         if os_name() == "windows":  # pragma: no cover — exercised only on Windows
@@ -781,8 +778,8 @@ def is_atomic_linux() -> bool:
 
 def linux_package_manager():
     """Normalized Linux package manager: 'rpm-ostree' on an atomic host (checked first — an atomic box may
-    also carry a dnf that doesn't persist), else the first of apt/dnf/pacman/zypper on PATH, or None. Port
-    of _platform.ps1 Get-LinuxPackageManager (+ ONE-E atomic support). None on non-Linux."""
+    also carry a dnf that doesn't persist), else the first of apt/dnf/pacman/zypper on PATH, or None
+    (with atomic-update support). None on non-Linux."""
     if os_name() != "linux":
         return None
     if is_atomic_linux():
@@ -794,8 +791,8 @@ def linux_package_manager():
 
 
 def linux_os_family(os_release_path: str = "/etc/os-release"):
-    """Distro family ('debian'|'rhel'|'arch'|'suse'|<ID>|None) from /etc/os-release. Port of _platform.ps1
-    Get-LinuxOsFamily — reads ID then ID_LIKE so derivatives resolve to their base (CachyOS/Manjaro->arch,
+    """Distro family ('debian'|'rhel'|'arch'|'suse'|<ID>|None) from /etc/os-release.
+    Reads ID then ID_LIKE so derivatives resolve to their base (CachyOS/Manjaro->arch,
     Mint/Pop->debian, Rocky/Alma->rhel)."""
     import re
 
@@ -823,13 +820,13 @@ def linux_os_family(os_release_path: str = "/etc/os-release"):
     return kv.get("ID") or None
 
 
-# --- build-output rollback (ND3 update; ONE-D §1b) -----------------------------------------------
+# --- build-output rollback (used by update) -----------------------------------------------
 # Cross-platform snapshot/restore of a build-output dir (bin/), used by `update` to roll back a failed
 # rebuild. Operate on any path — no .exe assumptions.
 
 def backup_build_output(path):
     """Snapshot <path> to <path>.bak (clearing any stale .bak first). Returns the .bak Path, or None if
-    <path> doesn't exist (a fresh build — nothing to protect). Port of _platform.ps1 Backup-BuildOutput."""
+    <path> doesn't exist (a fresh build — nothing to protect)."""
     src = Path(path)
     bak = Path(f"{src}.bak")
     if bak.exists():
@@ -844,8 +841,7 @@ def backup_build_output(path):
 
 
 def restore_build_output(path, bak_path=None) -> bool:
-    """Roll <path> back to the snapshot from backup_build_output. Returns True if a restore happened.
-    Port of _platform.ps1 Restore-BuildOutput."""
+    """Roll <path> back to the snapshot from backup_build_output. Returns True if a restore happened."""
     src = Path(path)
     bak = Path(bak_path) if bak_path else Path(f"{src}.bak")
     if not bak.exists():
@@ -873,7 +869,7 @@ def _rm_rf(p: Path) -> None:
             pass
 
 
-# --- CUDA toolkit discovery (ONE-D §1b — the hardest seam; used by diagnose + build) --------------
+# --- CUDA toolkit discovery (the hardest seam; used by diagnose + build) --------------
 # The pin is a FLOOR, not an exact match: sm_120 (Blackwell) needs >= 12.8 but 12.9 / 13.x also qualify.
 # Versions are compared as (major, minor) tuples. Windows and Linux fork on search roots + dir prefix.
 
@@ -917,8 +913,7 @@ def resolve_cuda_root_candidates(cuda_arch: int = 0, os: str = None) -> dict:
 
 def cuda_toolkit_version(root):
     """(major, minor) tuple for the CUDA toolkit at `root`, or None. version.json -> version.txt ->
-    `bin/nvcc --version` (lets a caller rank unversioned canonical roots like /opt/cuda). Port of
-    Get-CudaToolkitVersion."""
+    `bin/nvcc --version` (lets a caller rank unversioned canonical roots like /opt/cuda)."""
     import re
     if not root:
         return None
@@ -957,7 +952,7 @@ def cuda_toolkit_version(root):
 def best_cuda_root(cuda_arch: int = 0):
     """Path (str) of the NEWEST CUDA toolkit meeting the arch's minimum version, or None. Pools canonical/
     pinned/env roots (version read from disk) and versioned <prefix><maj.min> dirs (version from the name),
-    filters >= MinVer, returns the newest. Port of Get-CudaRoot / Get-BestCudaRoot."""
+    filters >= MinVer, returns the newest."""
     import re
     c = resolve_cuda_root_candidates(cuda_arch)
     min_ver = _parse_ver(c.get("MinVer")) or (0, 0)
@@ -991,8 +986,7 @@ def best_cuda_root(cuda_arch: int = 0):
 
 def cuda_host_compiler():
     """The g++ nvcc should use as -ccbin (Linux CUDA), or None to use the default. Honors $NVCC_CCBIN, else
-    the newest versioned g++-NN older than the default g++ (a too-new default fails nvcc). Port of
-    Get-CudaHostCompiler. None on Windows."""
+    the newest versioned g++-NN older than the default g++ (a too-new default fails nvcc). None on Windows."""
     import os as _os
     import re
     if os_name() == "windows":
@@ -1053,7 +1047,7 @@ def assert_cuda_host_compiler_ok(nvcc, host_cxx=None) -> None:
         raise RuntimeError(f"CUDA host-compiler check failed: {hint}")
 
 
-# --- build toolchain flags + cmake provisioning (ONE-D §1b — used by build) ------------------------
+# --- build toolchain flags + cmake provisioning (used by build) ------------------------
 
 def resolve_build_cmake_flags(cpu: bool = False, arch: int = 0, os: str = None) -> dict:
     """PURE. {'Cuda', 'Generator', 'StageDlls'} for a build. CPU => CUDA off + no staging (both OSes);
@@ -1069,7 +1063,7 @@ def resolve_build_cmake_flags(cpu: bool = False, arch: int = 0, os: str = None) 
 def linux_cmake3(repo, pinned_version: str = "3.31.7") -> str:
     """A cmake < 4.0 path (llama.cpp/whisper.cpp reject 4.x's policy changes). System cmake if it is 3.x,
     else download + cache the pinned Kitware build into tools/ (rolling distros ship only 4.x). urllib, not
-    requests, so it works pre-venv in the kernel. Port of Get-LinuxCmake3. Raises on download failure."""
+    requests, so it works pre-venv in the kernel. Raises on download failure."""
     import re
     import tempfile
     import urllib.request
@@ -1103,11 +1097,11 @@ def linux_cmake3(repo, pinned_version: str = "3.31.7") -> str:
     return str(exe)
 
 
-# --- mlock privilege (ONE-D §1b, DD4 — read-only status is a tool; grant is CLI-only) -------------
+# --- mlock privilege (read-only status is a tool; grant is CLI-only) -------------
 
 def mlock_status() -> dict:
     """{'granted': bool, 'detail': str}. Read-only, no elevation. Windows: SeLockMemoryPrivilege (secedit
-    export); Linux: the memlock rlimit (ulimit -l). Port of grant-mlock.ps1 -Check."""
+    export); Linux: the memlock rlimit (ulimit -l)."""
     if os_name() == "windows":  # pragma: no cover — exercised only on Windows
         return _mlock_status_windows()
     try:
@@ -1154,7 +1148,7 @@ def _mlock_status_windows() -> dict:  # pragma: no cover — exercised only on W
 def mlock_grant() -> str:
     """Grant the mlock privilege (CLI-only, never an agent tool — privilege escalation). Windows:
     SeLockMemoryPrivilege via secedit, self-elevating via UAC if not admin. Linux: print the
-    ulimit/limits.conf guidance (never auto-edits a system file). Port of grant-mlock.ps1 grant mode."""
+    ulimit/limits.conf guidance (never auto-edits a system file)."""
     if os_name() != "windows":
         return ("mlock on Linux is the memlock rlimit, not a grantable privilege. Raise it:\n"
                 "  session:    ulimit -l unlimited\n"
@@ -1206,13 +1200,13 @@ def _mlock_grant_windows() -> str:  # pragma: no cover — exercised only on Win
         db.unlink(missing_ok=True)
 
 
-# --- Tier-0 provisioning seams (ONE-D §1b, Slice D8 — the cold-start KERNEL uses these under the
-# system python3, before any venv exists). Ports the _platform.ps1 python-provisioning + package
-# family: PACKAGE_MAP / Resolve-PackageName / Resolve-PackageCmd / Install-Package + the venv-creator
-# cluster Test-PythonVersionAtLeast / Install-Uv / Get-BobPython / Get-BobVenvPython / New-BobVenv. ----
+# --- Tier-0 provisioning seams (the cold-start KERNEL uses these under the
+# system python3, before any venv exists). The python-provisioning + package family: PACKAGE_MAP /
+# resolve_package_name / resolve_package_cmd / install_package + the venv-creator cluster
+# python_version_at_least / install_uv / bob_python / bob_venv_python / new_bob_venv. ----
 
 # Logical package -> concrete name per manager; None means the manager bundles it (caller skips).
-# Single source (C2) — adding a distro column is a data change here, never re-inlined in a script.
+# Single source — adding a distro column is a data change here, never re-inlined in a script.
 PACKAGE_MAP = {
     "git":          {"apt": "git",             "dnf": "git",         "pacman": "git",        "zypper": "git"},
     "curl":         {"apt": "curl",            "dnf": "curl",        "pacman": "curl",       "zypper": "curl"},
@@ -1235,7 +1229,7 @@ PACKAGE_MAP = {
 def resolve_package_name(logical: str, manager: str = None):
     """Concrete package name for a logical one on a manager, or None when it's bundled (caller skips).
     Raises KeyError on an unknown logical name or a manager with no column — a mapping gap fails loudly
-    instead of silently no-op'ing an install. Port of _platform.ps1 Resolve-PackageName."""
+    instead of silently no-op'ing an install."""
     manager = manager or linux_package_manager()
     if logical not in PACKAGE_MAP:
         raise KeyError(f"resolve_package_name: no mapping for logical package '{logical}' — "
@@ -1267,7 +1261,7 @@ def _linux_pkg_spec(manager: str, packages: list) -> dict:
 
 def resolve_package_cmd(package: str, os: str = None, manager: str = None) -> dict:
     """PURE. The install command spec {'Exe','Args','Sudo'} for the OS (+ Linux manager). Windows uses
-    winget; Linux uses the detected manager. Port of _platform.ps1 Resolve-PackageCmd (+ rpm-ostree)."""
+    winget; Linux uses the detected manager (+ rpm-ostree)."""
     os = os or os_name()
     if os == "windows":
         return {"Exe": "winget", "Args": ["install", package, "--accept-package-agreements",
@@ -1345,15 +1339,14 @@ def _py_minor(exe: str):
 
 
 def python_at_least(exe: str = "python", min_ver: str = "3.12") -> bool:
-    """True if `<exe> --version` reports >= min_ver. Bob needs 3.12+ but not exactly 3.12. Port of
-    _platform.ps1 Test-PythonVersionAtLeast."""
+    """True if `<exe> --version` reports >= min_ver. Bob needs 3.12+ but not exactly 3.12."""
     v = _py_minor(exe)
     return bool(v and v >= (_parse_ver(min_ver) or (3, 12)))
 
 
 def install_uv():
     """Ensure astral `uv` is on PATH; return its path or None. pacman ships uv; apt/dnf don't, so fall
-    back to astral's official installer (~/.local/bin, no sudo). Linux/macOS only. Port of Install-Uv."""
+    back to astral's official installer (~/.local/bin, no sudo). Linux/macOS only."""
     uv = shutil.which("uv")
     if uv:
         return uv
@@ -1380,7 +1373,7 @@ def install_uv():
 def bob_python(prefer: str = "3.12"):
     """A Python interpreter Bob's venvs can use: >= 3.11 and < 3.13 (pinned deps cap at <3.13, so a
     too-NEW system Python is rejected). Prefer one on PATH in range; else uv-provision CPython 3.12 (any
-    distro, no root). Returns a path/command, or None (Windows resolves upstream). Port of Get-BobPython."""
+    distro, no root). Returns a path/command, or None (Windows resolves upstream)."""
     for cand in ("python3.12", "python3.11", "python3", "python"):
         exe = shutil.which(cand)
         if exe:
@@ -1407,7 +1400,7 @@ def bob_venv_python():
     """Resolve a Python suitable for CREATING venvs (>= 3.11, < 3.13). Windows: scoop python312 -> py
     launcher -3.12 -> an in-range PATH interpreter. Linux/macOS: defer to bob_python (uv-provisions when
     the system one is out of range). Returns a path/command or None. The single resolver new_bob_venv and
-    the kernel bootstrap share. Port of Get-BobVenvPython."""
+    the kernel bootstrap share."""
     if os_name() != "windows":
         return bob_python()
     try:  # pragma: no cover — Windows path
@@ -1438,7 +1431,7 @@ def new_bob_venv(name: str, requirements_base: str = None, extra_packages=(), py
     venv-build path (the kernel bootstrap loop + `update`/`eval` all call it). Idempotent: reuses an
     in-range venv, recreates one built with an out-of-range interpreter. Requirements from
     tools/<base>.lock on Windows (pinned) else tools/<base>.txt. Returns the venv python path (str).
-    Raises RuntimeError on any failure. Port of _platform.ps1 New-BobVenv."""
+    Raises RuntimeError on any failure."""
     python = python or bob_venv_python()
     if not python:
         raise RuntimeError("new_bob_venv: no venv-compatible Python (3.11/3.12) found and couldn't "

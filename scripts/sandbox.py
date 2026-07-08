@@ -1,7 +1,7 @@
-"""O5 — OS-level sandbox for exec surfaces (shell_run today; any future exec tool).
+"""OS-level sandbox for exec surfaces (shell_run today; any future exec tool).
 
 `run_sandboxed(argv, cwd, timeout, limits)` runs a command under an OS-native confinement backend,
-selected via NB3's `osenv`. Read-only tools stay in-process — there is no benefit to sandboxing a pure
+selected via the `osenv` seam. Read-only tools stay in-process — there is no benefit to sandboxing a pure
 read, and the wrapping cost/limits only make sense around an exec surface.
 
 Backends (deny-by-default filesystem where the OS allows, resource limits, optional no-network):
@@ -11,13 +11,13 @@ Backends (deny-by-default filesystem where the OS allows, resource limits, optio
 
 Policy (config, all under `runtime.agent.*`):
   ``sandbox`` = ``'off'`` (default) | ``'on'``
-    off -> callers do NOT wrap (they run in-process); byte-identical to pre-O5 behavior.
+    off -> callers do NOT wrap (they run in-process); the behavior when the sandbox is off.
     on  -> `run_sandboxed` wraps the command. If no usable backend exists it **fails closed**
            (raises ``SandboxUnavailable``) so the caller refuses rather than silently running
            unconfined — a loud *unsandboxed* fallback is only ever chosen when ``sandbox='off'``.
   ``sandboxLimits`` = ``{ cpuSeconds, memoryMB, allowRoots: [paths], network: bool }``
 
-Defense in depth, not a replacement: the N9 secrets denylist + web_fetch SSRF guard still apply at the
+Defense in depth, not a replacement: the secrets denylist + web_fetch SSRF guard still apply at the
 tool layer. On Linux the deny-by-default bind set never mounts ``$HOME`` (so ``~/.ssh``/secrets are
 absent from the sandbox namespace even with a filesystem view); on Windows a restricted token filters
 the user's own SIDs. Both are documented in docs/SECURITY.md with the per-OS guarantee matrix.
@@ -199,7 +199,7 @@ def _run_windows(argv, cwd, timeout, limits):  # pragma: no cover — exercised 
     tree teardown). Full deny-by-default *filesystem* confinement on Windows needs a restricted token
     with restricting SIDs (Chromium-style) or an AppContainer — that is a tracked Windows hardening
     follow-up, because it must be validated live on Windows before it can be trusted. Until then the
-    N9 secrets denylist is the filesystem floor for file_* tools; a sandboxed shell_run on Windows is
+    secrets denylist is the filesystem floor for file_* tools; a sandboxed shell_run on Windows is
     resource-confined but not FS-jailed."""
     import win32con
     import win32job

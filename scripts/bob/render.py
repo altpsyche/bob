@@ -1,4 +1,4 @@
-"""NE2 — rich views of the catalog (commands / tools / skills) for the shell, themed by the active
+"""Rich views of the catalog (commands / tools / skills) for the shell, themed by the active
 `Theme`. Kept separate from `catalog.py` (which stays plain-string for the CLI front door) and from
 `shell.py` (the REPL): these are pure `data + theme -> rich renderable` functions, so `/help`, `/tools`,
 and `/skills` match the splash and are unit-testable. New surfaces (e.g. a voice/status view) slot in as

@@ -1,10 +1,9 @@
-"""ONE-C Slice 3 — health / diagnostics capabilities (scripts/tools/health.py). Hermetic: nvidia-smi,
+"""Health / diagnostics capabilities (scripts/tools/health.py). Hermetic: nvidia-smi,
 port probes, HTTP, subprocess (binary --version / git / package import), and the tool-registry build are
 all mocked, so nothing hits the network, a GPU, real ports, or the real toolchain.
 
-Slice-3 scope: diagnose is the SPLIT port (light discovery only, deep OS discovery stays pwsh -> ONE-D).
-ONE-D Slice D0 wired the two formerly-degraded health_check rows to their real readers — the BobAgent
-task row reads osenv.agent_task_status(), the versions.lock row reads bob.versions — asserted in
+The scheduler + reproducibility health_check rows read their real sources — the BobAgent task row reads
+osenv.agent_task_status(), the versions.lock row reads bob.versions — asserted in
 TestHealthCheckWiredRows (not-registered / missing-lock stay informational, never a failure)."""
 import sys
 import unittest
@@ -12,7 +11,6 @@ from pathlib import Path
 from unittest import mock
 
 import _common  # noqa: F401 — puts scripts/ on sys.path
-from bob import cli, registry
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts" / "tools"))
 import health as health_mod  # noqa: E402
@@ -29,15 +27,7 @@ def _smi(stdout):
     return r
 
 
-class TestRegistryWiring(unittest.TestCase):
-    VERBS = ["setup", "doctor", "version", "diagnose"]
-
-    def test_flipped_to_python_with_handlers(self):
-        by_name = registry.by_name()
-        for verb in self.VERBS:
-            self.assertTrue(by_name[verb].get("handler"), verb)
-            self.assertIn(by_name[verb]["handler"], cli._HANDLERS, verb)
-
+class TestHealthToolSurface(unittest.TestCase):
     def test_tools_registered_none_mutating(self):
         self.assertEqual(set(health_mod.DISPATCH), {"doctor", "diagnose", "version_info"})
         # All health verbs are read-only — none should declare mutation.
@@ -90,7 +80,7 @@ class TestVersionInfo(unittest.TestCase):
 
 class TestDiagnoseLightRows(unittest.TestCase):
     """diagnose's light rows (GPU/VRAM/Profile/Endpoint). The deep rows (CUDA/RAM/NUMA/mlock/Package) are
-    covered hermetically in test_slice_d3_mlock_diag.TestDiagnoseDeep; here we mock the deep osenv seams so
+    covered hermetically in test_health.TestDiagnoseDeep; here we mock the deep osenv seams so
     these stay hermetic (no real nvidia-smi / secedit / /proc reads)."""
 
     def _run(self, gpu, vram):
@@ -127,17 +117,15 @@ class TestDiagnoseLightRows(unittest.TestCase):
         self.assertIn("not detected", out)
         self.assertIn("VRAM        unknown", out)
 
-    def test_deep_rows_now_present(self):
-        # ONE-D Slice D3 healed the split — the deep rows are produced by the Python port now, and the
-        # old "ports to Python in ONE-D" deferral note is gone.
+    def test_deep_rows_present(self):
+        # diagnose renders the deep OS-discovery rows alongside the light rows.
         out = self._run({"CudaArch": 89, "Gen": "Ada Lovelace", "MinCudaMajor": 11}, 24)
         for label in ("RAM", "CUDA", "NUMA", "mlock", "Package"):
             self.assertIn(f"  {label:<10}", out, label)
-        self.assertNotIn("ports to Python in ONE-D", out)
 
 
 class TestHealthCheckWiredRows(unittest.TestCase):
-    """ONE-D Slice D0: the scheduler + reproducibility rows are wired to the real readers
+    """The scheduler + reproducibility rows are wired to the real readers
     (osenv.agent_task_status, bob.versions). Not-registered / missing-lock are informational
     ('○'), never a failure ('✗')."""
 
@@ -193,7 +181,7 @@ class TestHealthCheckWiredRows(unittest.TestCase):
                 self.assertNotIn("✗", line)
 
     def test_doctor_reports_docker_absent_for_compose_services(self):
-        # #5a — docker missing: the compose services (SearXNG/n8n) are reported unavailable with the
+        # docker missing: the compose services (SearXNG/n8n) are reported unavailable with the
         # real reason + install hint, not a misleading "bob services start" that would just fail.
         out = self._docker(present=False)
         self.assertIn("not installed", out)
@@ -218,6 +206,62 @@ class TestHealthCheckWiredRows(unittest.TestCase):
              mock.patch("bob.versions.load_lock", return_value={"release": "1", "submodules": {}, "models": {}}), \
              mock.patch("bob.versions.check_reproducibility", return_value=[]):
             return health_mod.health_check(CFG, doctor=True)
+
+
+class TestDiagnoseDeep(unittest.TestCase):
+    """The deep diagnose rows: RAM / Package / CUDA / mlock / NUMA render alongside the light rows."""
+
+    def _diag(self, pkg_mgr="pacman", best_cuda="/opt/cuda", mlock_granted=False,
+              numa=1, numa_cfg="", mlock_big=False):
+        import contextlib
+        import models as models_mod
+        mcfg = {"activeProfile": "16gb", "defaults": {"mlockBig": mlock_big, "numa": numa_cfg},
+                "profiles": {"16gb": {"_targetVRAM": "16GB", "coder": {"gguf": "c.gguf", "sizeGB": 8}}}}
+        gpu = {"CudaArch": 120, "Gen": "Blackwell", "MinCudaMajor": 12}
+        patchers = [
+            mock.patch.multiple(
+                "osenv",
+                system_ram_gb=mock.Mock(return_value={"TotalGB": 62, "FreeGB": 52}),
+                os_name=mock.Mock(return_value="linux"),
+                linux_package_manager=mock.Mock(return_value=pkg_mgr),
+                linux_os_family=mock.Mock(return_value="arch"),
+                best_cuda_root=mock.Mock(return_value=best_cuda),
+                mlock_status=mock.Mock(return_value={"granted": mlock_granted, "detail": "detail"}),
+                numa_node_count=mock.Mock(return_value=numa),
+                is_port_in_use=mock.Mock(return_value=False),
+                resolve_cuda_root_candidates=mock.Mock(
+                    return_value={"Base": "/nonexistent", "DirPrefix": "cuda-", "Fixed": []})),
+            mock.patch.object(health_mod, "gpu_arch", return_value=gpu),
+            mock.patch.object(models_mod, "gpu_vram_gb", return_value=16),
+            mock.patch("bob_models.load_models_config", return_value=mcfg),
+            mock.patch("bob_models.resolve_profile_name", return_value="16gb"),
+            mock.patch("bob_models.profile_roles", return_value=mcfg["profiles"]["16gb"]),
+        ]
+        with contextlib.ExitStack() as es:
+            for p in patchers:
+                es.enter_context(p)
+            return health_mod.diagnose(CFG)
+
+    def test_deep_rows_present(self):
+        out = self._diag()
+        for label in ("RAM", "Package", "CUDA", "mlock", "NUMA"):
+            self.assertIn(f"  {label:<10}", out, label)
+        self.assertIn("62 GB total  (52 GB free)", out)
+        self.assertIn("pacman  (family: arch)", out)
+        self.assertIn("cuda  ok", out)  # Path('/opt/cuda').name
+
+    def test_missing_package_manager_is_an_issue(self):
+        out = self._diag(pkg_mgr=None)
+        self.assertIn("no supported manager", out)
+        self.assertIn("issue(s) noted", out)
+
+    def test_cuda_missing_for_gpu_is_an_issue(self):
+        out = self._diag(best_cuda=None)
+        self.assertIn("needs 12.8 (required for Blackwell)", out)
+
+    def test_numa_config_mismatch_is_an_issue(self):
+        out = self._diag(numa=1, numa_cfg="isolate")
+        self.assertIn("flag is a no-op", out)
 
 
 if __name__ == "__main__":

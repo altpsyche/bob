@@ -1,23 +1,22 @@
 #!/usr/bin/env python3
-"""Bob auth store (O8) — DB-backed agent API tokens with hot revocation, RBAC scopes, per-owner rate.
+"""Bob auth store — DB-backed agent API tokens with hot revocation, RBAC scopes, per-owner rate.
 
-Extends N1's static token→owner map ([bob_agent_server.py] `_build_token_owner`) with a SQLite token
-store living beside the N2 session DB (`data/sessions.db`). It closes the multi-user gap: an admin can
+Extends the static token→owner map ([bob_agent_server.py] `_build_token_owner`) with a SQLite token
+store living beside the session DB (`data/sessions.db`). It closes the multi-user gap: an admin can
 issue a scoped, rate-limited token to an owner and revoke it **without restarting the server** (the
 server hashes+looks up the presented bearer per request, so `revoked=1` takes effect on the next call).
 
 Security invariants:
   - **Token values are never stored** — only a salted SHA-256 hash. `issue()` returns the plaintext
     once; it cannot be recovered afterwards (list/lookup never expose it).
-  - The salt resolves through the **C3 secret seam** (`osenv.secret('agent_token_salt')`); absent, a
+  - The salt resolves through the **secret seam** (`osenv.secret('agent_token_salt')`); absent, a
     per-install random salt is generated and persisted in the DB's own `auth_meta` (never a tracked file
     — `data/` is gitignored). So the hash is stable across restarts without a plaintext secret on disk.
 
-Config tokens (N1 `agent.apiTokens` + the litellm key) remain a **static fallback** — the store is
-additive and only consulted when `agent.authStore` is on, so default-off is byte-identical to pre-O8.
+Config tokens (`agent.apiTokens` + the litellm key) remain a **static fallback** — the store is
+additive and only consulted when `agent.authStore` is on, so with it off the behavior is unchanged.
 
-Admin CLI (the `bob agent token` verb front-door is deferred to avoid verbs.json churn — same discipline
-as O4's `--deep`):
+Admin CLI (the `bob agent token` verb front-door is deferred; this stays a CLI-only admin surface):
     python scripts/bob_authstore.py issue  --owner alice --scopes "file_*,web_fetch" --rate 60
     python scripts/bob_authstore.py list
     python scripts/bob_authstore.py revoke <hash-prefix>
@@ -32,7 +31,7 @@ from pathlib import Path
 
 REPO = Path(__file__).parent.parent
 
-_SALT_SECRET = "agent_token_salt"   # C3 secret name (osenv.secret)
+_SALT_SECRET = "agent_token_salt"   # secret name (osenv.secret)
 
 
 def _now() -> str:
@@ -53,7 +52,7 @@ class AuthStore:
         conn = self._conn()
         conn.execute("PRAGMA journal_mode=WAL")
         self._ensure_schema(conn)
-        # salt injectable for tests; else C3 secret seam, else a persisted per-install random salt.
+        # salt injectable for tests; else secret seam, else a persisted per-install random salt.
         self._salt = salt if salt is not None else self._resolve_salt(conn)
 
     # -- connections (mirrors SessionStore) -----------------------------------
@@ -179,7 +178,7 @@ def _open_default() -> AuthStore:
 
 def main(argv=None) -> int:
     import argparse
-    p = argparse.ArgumentParser(prog="bob-authstore", description="Manage Bob agent API tokens (O8).")
+    p = argparse.ArgumentParser(prog="bob-authstore", description="Manage Bob agent API tokens.")
     sub = p.add_subparsers(dest="cmd", required=True)
     pi = sub.add_parser("issue", help="issue a new token for an owner")
     pi.add_argument("--owner", required=True)

@@ -1,4 +1,4 @@
-"""O5 — OS-level sandbox: policy resolvers, backend selection, arg-builder shape (pure, cross-OS),
+"""OS-level sandbox: policy resolvers, backend selection, arg-builder shape (pure, cross-OS),
 shell wiring (mocked), and real-confinement integration tests guarded by backend availability."""
 import shutil
 import subprocess
@@ -115,7 +115,7 @@ class TestArgBuilders(unittest.TestCase):
 
 
 class TestShellWiring(unittest.TestCase):
-    """shell._execute routes to the sandbox only when on; off is in-process (pre-O5)."""
+    """shell._execute routes to the sandbox only when on; off is in-process (no sandbox layer)."""
 
     def setUp(self):
         import shell

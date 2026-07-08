@@ -1,4 +1,4 @@
-"""NE3 — catalog rendering from the registries (commands grouped + hidden excluded, tools/skills with
+"""Catalog rendering from the registries (commands grouped + hidden excluded, tools/skills with
 failed loads surfaced, counts straight from the registries)."""
 import unittest
 
@@ -43,7 +43,7 @@ class TestCatalog(unittest.TestCase):
         ])
         out = catalog.render_skills(reg)
         self.assertIn("repo-brief", out)
-        self.assertIn("[sub-agent]", out)   # web-research has no steps → runnable sub-agent skill (O11)
+        self.assertIn("[sub-agent]", out)   # web-research has no steps → runnable sub-agent skill
 
     def test_counts_from_registries(self):
         c = catalog.counts(

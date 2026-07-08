@@ -1,4 +1,4 @@
-"""N9 — file_read/file_write path allowlist + secrets denylist. Backs the SECURITY.md claim that
+"""file_read/file_write path allowlist + secrets denylist. Backs the SECURITY.md claim that
 config.json (litellm key + api tokens), *.psd1, *.db, logs/, and .env* are unreadable even when
 they sit inside an allowedReadPaths root (which defaults to the repo root)."""
 import shutil
@@ -48,13 +48,13 @@ class TestFileTool(unittest.TestCase):
         self.assertIn("sensitive", file._file_read(str(self.dir / "logs" / "a.log")))
 
     def test_denies_secrets_json(self):
-        # NB3 (C3) — the resolved secrets file must never be readable, secret never leaks.
+        # the resolved secrets file must never be readable, secret never leaks.
         out = file._file_read(str(self.dir / "secrets.json"))
         self.assertIn("sensitive", out)
         self.assertNotIn("SUPERSECRET", out)
 
     def test_denies_home_ssh_key(self):
-        # NB3 (C3) — OS-aware denial of ~/.ssh even when it's inside an allowedReadPaths root.
+        # OS-aware denial of ~/.ssh even when it's inside an allowedReadPaths root.
         import osenv  # noqa: F811
         home = Path(tempfile.mkdtemp(prefix="bob-home-"))
         try:

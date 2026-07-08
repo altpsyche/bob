@@ -1,4 +1,4 @@
-"""NB3/NE0 — shell_run runs in the OS-native shell (osenv.default_shell). Approval is now handled by
+"""shell_run runs in the OS-native shell (osenv.default_shell). Approval is now handled by
 the agent loop's event-driven approve callback (shell declares REQUIRES_APPROVAL), NOT a blocking
 stdin prompt inside the tool — so shell_run works under the TUI/server, not only a console."""
 import unittest
@@ -11,7 +11,7 @@ import shell
 
 class TestShellRun(unittest.TestCase):
     def test_declares_requires_approval(self):
-        # NE0: the loop reads this flag (ToolRegistry.approval_required_tools) to gate the tool.
+        # the loop reads this flag (ToolRegistry.approval_required_tools) to gate the tool.
         self.assertTrue(getattr(shell, "REQUIRES_APPROVAL", False))
 
     def test_runs_without_a_stdin_prompt(self):

@@ -1,9 +1,9 @@
-"""ONE-B4 — voice capability core: STT (whisper client) + TTS (piper) + speech-safe text formatting,
-ported from the pwsh listen/speak/voice handlers onto the Python agent loop. One importable core shared by
-`bob-voice-capture.py` (the STT CLI), the shell `/voice` mode (bob.shell), and later the agent tools. Mic-in
-/ speaker-out go through the osenv seam (ONE-B3); STT/TTS stay standalone servers/binaries (whisper POST /
-piper binary) — this module is the client + the round-trip glue, not the servers. No PowerShell, no
-Invoke-BobStream: the `/voice` mode wraps the same agent turn as text, so voice inherits memory + write-back
+"""Voice capability core: STT (whisper client) + TTS (piper) + speech-safe text formatting,
+on the Python agent loop. One importable core shared by
+`bob-voice-capture.py` (the STT CLI), the shell `/voice` mode (bob.shell), and the agent tools. Mic-in
+/ speaker-out go through the osenv seam; STT/TTS stay standalone servers/binaries (whisper POST /
+piper binary) — this module is the client + the round-trip glue, not the servers.
+The `/voice` mode wraps the same agent turn as text, so voice inherits memory + write-back
 + one persona + retry + logging + tools automatically."""
 import re
 import subprocess
@@ -16,12 +16,12 @@ from bob_core import load_defaults
 
 REPO = Path(__file__).resolve().parent.parent
 
-# ONE-A — voice settings live once in config/defaults.json.runtime.voice (NB1), read by both languages.
+# Voice settings live once in config/defaults.json.runtime.voice.
 # These per-key fallbacks read from there rather than re-inlining a literal (ports go through _port).
 _VOICE_DEFAULTS = load_defaults().get("runtime", {}).get("voice", {})
 
 
-# --- speech-safe text (port of Format-ForSpeech, bob.ps1:129) ------------------------------------
+# --- speech-safe text ----------------------------------------------------------------------------
 # Strip markdown/typography before TTS so piper speaks words, not asterisks and backticks. System prompts
 # ask the model to avoid formatting; this is the reliable safety net. Ordered: typographic normalization
 # first, then structural markdown removal, then whitespace cleanup.
@@ -146,8 +146,8 @@ def _voice_model(config: dict) -> Path:
 
 def speak(text: str, config: dict) -> bool:
     """Synthesize `text` with piper and play it (osenv.play_audio). Returns True on success; False (with a
-    stderr note) when piper/voice/audio-player is missing — a voice turn must degrade, not crash. Ported
-    from the pwsh `speak` handler (bob.ps1:842): piper reads text on stdin, writes a WAV, we play it."""
+    stderr note) when piper/voice/audio-player is missing — a voice turn must degrade, not crash.
+    piper reads text on stdin, writes a WAV, we play it."""
     if not (text or "").strip():
         return False
     piper = _piper_exe()

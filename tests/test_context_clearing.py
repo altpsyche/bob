@@ -1,7 +1,7 @@
-"""O15 — tool-result clearing (context editing). Once the transcript nears budget the loop replaces
+"""Tool-result clearing (context editing). Once the transcript nears budget the loop replaces
 OLD bulky tool-result messages with a compact stub (`[tool result rN cleared; N chars retained —
 read_result('rN')]`) that stays re-fetchable via the model-callable `read_result` tool. The retention
-store (M7/O3) is the seam. Default off (`clearToolResults`) is byte-identical to pre-O15: no clearing,
+store is the seam. Default off (`clearToolResults`) matches the prior path: no clearing,
 and the read_result tool isn't even offered."""
 import json
 import unittest
@@ -141,7 +141,7 @@ class TestRegistryBuildGating(unittest.TestCase):
     def test_default_off_no_tool_no_bump(self):
         off = ToolRegistry.build(self._cfg(False), quiet=True)
         self.assertNotIn("read_result", off.dispatch)
-        self.assertEqual(off._result_store_max, 8)          # pre-O15 default
+        self.assertEqual(off._result_store_max, 8)          # default when clearing is off
 
 
 class TestLoopDefaultOffUnaffected(unittest.TestCase):

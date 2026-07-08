@@ -1,4 +1,4 @@
-"""NE2 — rich catalog views (bob.render): commands grouped + hidden excluded, tools/skills with
+"""Rich catalog views (bob.render): commands grouped + hidden excluded, tools/skills with
 failures surfaced, all themed. Rendered to a captured console and checked by substring."""
 import io
 import unittest
@@ -62,7 +62,7 @@ class TestRender(unittest.TestCase):
         ])
         out = _render(render.skills_view(reg, _theme()))
         self.assertIn("repo-brief", out)
-        self.assertIn("sub-agent", out)      # no-steps skill tagged runnable (O11)
+        self.assertIn("sub-agent", out)      # no-steps skill tagged runnable
 
 
 if __name__ == "__main__":

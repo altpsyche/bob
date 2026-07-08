@@ -1,7 +1,7 @@
-"""O16 — goal recitation + living TODO. The `todo` tool maintains a run-local task list (RunContext.
+"""Goal recitation + living TODO. The `todo` tool maintains a run-local task list (RunContext.
 todos); the recitation hook re-emits the goal + open items at the CONTEXT TAIL of each request (never
-stored in `messages`). Both gated: agent.todoTool / agent.recite default off → byte-identical to
-pre-O16 (no new tool, no tail block)."""
+stored in `messages`). Both gated: agent.todoTool / agent.recite default off → no change to the
+request (no new tool, no tail block)."""
 import unittest
 from types import SimpleNamespace
 

@@ -13,15 +13,15 @@ from typing import Optional
 
 REPO = Path(__file__).parent.parent
 
-# NB1 (contract C2) — one neutral source of truth for the shared constants (ports + role table),
-# read by both Python and PowerShell (scripts/_models.ps1) from config/defaults.json. No more
-# hand-mirrored dicts. bob_config.py (NB2) reads the same file's "runtime" section.
+# One neutral source of truth for the shared constants (ports + role table),
+# read from config/defaults.json. No more hand-mirrored dicts. bob_config.py reads
+# the same file's "runtime" section.
 _DEFAULTS_FILE = REPO / "config" / "defaults.json"
 _defaults_cache: Optional[dict] = None
 
 
 def load_defaults() -> dict:
-    """Load and cache config/defaults.json (the neutral shared-constants file, NB1).
+    """Load and cache config/defaults.json (the neutral shared-constants file).
 
     Raises RuntimeError with a clear message if the file is missing or lacks the required
     top-level keys — a dropped key fails loudly at import rather than resolving to None.
@@ -31,7 +31,7 @@ def load_defaults() -> dict:
         if not _DEFAULTS_FILE.exists():
             raise RuntimeError(
                 f"config/defaults.json not found at {_DEFAULTS_FILE}\n"
-                "This file is the neutral single source of truth for ports + roles (NB1)."
+                "This file is the neutral single source of truth for ports + roles."
             )
         data = json.loads(_DEFAULTS_FILE.read_text(encoding="utf-8"))
         for key in ("ports", "roleTable"):
@@ -41,12 +41,12 @@ def load_defaults() -> dict:
     return _defaults_cache
 
 
-# M6 — single source of truth for service-port defaults on the Python side, now loaded from
-# config/defaults.json (NB1) rather than a mirrored literal. config.json (written by Get-BobConfig)
+# Single source of truth for service-port defaults on the Python side, loaded from
+# config/defaults.json rather than a mirrored literal. The resolved runtime config
 # normally carries these; this dict is the only literal fallback, read via _port().
 _PORT_DEFAULTS = load_defaults()["ports"]
 
-# ONE-A Finding 5 — the memory-config defaults live once in config/defaults.json.runtime.memory (NB1);
+# The memory-config defaults live once in config/defaults.json.runtime.memory;
 # the per-key `.get(key, LITERAL)` fallbacks below read from here instead of re-inlining the literal, so
 # a default is defined in exactly one place. (`memory.enabled` keeps an explicit fail-CLOSED False at its
 # call site — that is a deliberate safety default when no memory config exists at all, not a mirror.)
@@ -67,11 +67,11 @@ def _port(config: dict, name: str) -> int:
 
 
 def get_role(config: dict, task: str = "chat", pro: bool = False) -> str:
-    """M8 — resolve a model role from config for a task (mirrors Get-RoleForTask in PowerShell).
+    """Resolve a model role from config for a task.
 
     task: chat | code | think | voice | vision | agent
     pro:  prefer the *-pro variant where one exists.
-    Centralizes the routing lookup so the plugins don't each re-derive it. NB1: the task->key
+    Centralizes the routing lookup so the plugins don't each re-derive it. The task->key
     mapping and fallback literals live in config/defaults.json roleTable, not inline here.
     """
     table = load_defaults()["roleTable"]
@@ -87,12 +87,8 @@ def get_role(config: dict, task: str = "chat", pro: bool = False) -> str:
 def load_config() -> dict:
     """Resolve the merged runtime config in Python from the neutral sources — on EVERY OS.
 
-    The PowerShell front door is fully retired (MODULE ONE), so `Get-BobConfig` no longer exists and
-    nothing writes data/config.json anywhere. Config now resolves the same way on every platform:
-    config/defaults.json + config/user.json (the documented override), via bob_config. A stale
-    data/config.json from the PS era is deliberately IGNORED — reading it would silently freeze every
-    defaults.json change (persona, memory, …) at whatever PS last wrote. NB2 (contract C2): the runtime
-    never *requires* `bob gen`.
+    Config resolves the same way on every platform: config/defaults.json + config/user.json
+    (the documented override), via bob_config. The runtime never *requires* `bob gen`.
     """
     import bob_config  # local import: avoids a cycle (bob_config imports bob_core)
 
@@ -100,7 +96,7 @@ def load_config() -> dict:
 
 
 def _litellm_key(config: dict) -> str:
-    """Return the LiteLLM master key, resolved through the C3 secret seam (NB3): env -> keychain
+    """Return the LiteLLM master key, resolved through the secret seam: env -> keychain
     -> data/secrets.json -> the config value (sk-local default). On Windows with no env/secret set
     this is unchanged (the config value wins as the default)."""
     import osenv
@@ -131,9 +127,9 @@ def check_litellm(config: Optional[dict] = None) -> bool:
 
 
 def capability_probe(config: Optional[dict] = None) -> tuple:
-    """NB5 provisioner contract — a startup readiness check. Returns (ok, message). The runtime's
-    only hard needs are (a) a resolvable config (always true here — load_config resolves in Python
-    if PowerShell hasn't run) and (b) a reachable OpenAI-compatible endpoint. Callers print the
+    """A startup readiness check. Returns (ok, message). The runtime's
+    only hard needs are (a) a resolvable config (always true here — load_config resolves in Python)
+    and (b) a reachable OpenAI-compatible endpoint. Callers print the
     message and degrade rather than assuming a provisioner ran."""
     cfg = config or load_config()
     port = _port(cfg, "litellmPort")
@@ -153,7 +149,7 @@ def _get_db_path(config: Optional[dict] = None) -> str:
 
 
 def project_key(cwd: Optional[str] = None, config: Optional[dict] = None) -> Optional[str]:
-    """MEM-7 — the project scope key for a directory: the git repo root if inside one, else the
+    """The project scope key for a directory: the git repo root if inside one, else the
     directory itself. Returns None when memory.scopeByProject is off (→ everything global). Pure
     Python (no git subprocess, per CONTRIBUTING): walk up looking for a `.git` entry."""
     cfg = config or load_config()
@@ -167,7 +163,7 @@ def project_key(cwd: Optional[str] = None, config: Optional[dict] = None) -> Opt
 
 
 # One shared frame for every surface that feeds saved memory into the model — per-turn autoRecall
-# (bob_loop), the memory_recall tool (tools/memory), and the once-per-session profile block (MEM-3).
+# (bob_loop), the memory_recall tool (tools/memory), and the once-per-session profile block.
 # A single phrasing means the model never sees three variants of "this is about the user, not you".
 MEMORY_CONTEXT_FRAME = (
     "Notes about the user (context only — about the user, not your own identity; "
@@ -179,8 +175,8 @@ def memory_store(content: str, tags: str = "", mem_type: str = "fact",
                  owner: Optional[str] = None, scope: Optional[str] = None,
                  salience: float = 1.0, config: Optional[dict] = None) -> str:
     """Store content in bob.db directly (no subprocess). Threads type/tags/owner/scope/salience and
-    the configured dedup threshold through to the typed write path (MEM-1/7/9). `owner` defaults to
-    agent.defaultOwner; MEM-6/7 thread the real per-run owner/scope from RunContext. Only
+    the configured dedup threshold through to the typed write path. `owner` defaults to
+    agent.defaultOwner; the real per-run owner/scope are threaded from RunContext. Only
     type='project' facts are scoped to the project; identity/prefs/facts stay global."""
     cfg = config or load_config()
     db_path = _get_db_path(cfg)
@@ -200,8 +196,8 @@ def memory_store(content: str, tags: str = "", mem_type: str = "fact",
 def memory_recall(query: str, k: int = 5, config: Optional[dict] = None,
                   owner: Optional[str] = None, scope: Optional[str] = None) -> str:
     """Recall top-k results from bob.db. Returns newline-joined content strings. Threads the
-    configured blended-ranking threshold/weights and owner/scope through to the read path (MEM-2).
-    `owner` defaults to agent.defaultOwner; MEM-6 threads the real per-run owner in from RunContext."""
+    configured blended-ranking threshold/weights and owner/scope through to the read path.
+    `owner` defaults to agent.defaultOwner; the real per-run owner is threaded in from RunContext."""
     cfg = config or load_config()
     db_path = _get_db_path(cfg)
     _ensure_memory_importable()
@@ -216,7 +212,7 @@ def memory_recall(query: str, k: int = 5, config: Optional[dict] = None,
         owner=owner, scope=scope,
         weights=ranking, type_weights=mem.get("typeWeights"),
         half_lives=ranking.get("halfLifeDays"),
-        # O14 — hybrid recall (dense + BM25/FTS5 + RRF). Default 'dense' == pre-O14.
+        # Hybrid recall (dense + BM25/FTS5 + RRF). Default 'dense' is the dense-only path.
         retrieval=_mem(mem, "retrieval"), rrf_k=int(_mem(mem, "rrfK")),
     )
     if not results:
@@ -225,8 +221,8 @@ def memory_recall(query: str, k: int = 5, config: Optional[dict] = None,
 
 
 def memory_profile_block(owner: Optional[str] = None, config: Optional[dict] = None) -> Optional[str]:
-    """MEM-3 — the once-per-session stable-profile block (framed), or None. Gated on memory.enabled
-    AND memory.injectProfileAtStart. Owner defaults to agent.defaultOwner; MEM-6 threads the real
+    """The once-per-session stable-profile block (framed), or None. Gated on memory.enabled
+    AND memory.injectProfileAtStart. Owner defaults to agent.defaultOwner; the real
     per-run owner. Best-effort: any failure (missing deps, embed server down for the DB open) yields
     None so a session never fails to start over memory."""
     cfg = config or load_config()
@@ -260,7 +256,7 @@ def _project_memory_files(project_dir: str) -> list:
 
 
 def project_memory_block(project_dir: Optional[str], config: Optional[dict] = None) -> Optional[str]:
-    """MEM-7b — concatenated, framed project instruction file(s) for `project_dir` (the git root/cwd),
+    """Concatenated, framed project instruction file(s) for `project_dir` (the git root/cwd),
     or None. Human-curated + git-committable (Claude Code CLAUDE.md analogue). Gated on
     memory.projectFiles; capped at memory.bobMdMaxTokens. Best-effort: unreadable files are skipped."""
     cfg = config or load_config()
@@ -282,7 +278,7 @@ def project_memory_block(project_dir: Optional[str], config: Optional[dict] = No
 
 
 def budget_injection(blocks: list, max_tokens: int) -> tuple:
-    """MEM-10 — fit optional injected-memory blocks into ~max_tokens (≈4 chars/token) before they are
+    """Fit optional injected-memory blocks into ~max_tokens (≈4 chars/token) before they are
     concatenated into the system prompt. `blocks` is a list of (label, text, priority); higher
     priority is kept longer. Greedy by priority desc; the single highest-priority block is always kept
     even if it alone exceeds the budget (so we never inject nothing when a large BOB.md is present).
@@ -305,10 +301,10 @@ def budget_injection(blocks: list, max_tokens: int) -> tuple:
 def consolidate_session(turns: list, config: Optional[dict] = None,
                         owner: Optional[str] = None, scope: Optional[str] = None,
                         session_id: Optional[str] = None) -> dict:
-    """MEM-4 — extract durable facts from a session's turns and store them (deduped), plus one
+    """Extract durable facts from a session's turns and store them (deduped), plus one
     episodic recap. Resolves db path, summarizer model, owner, and dedup threshold from config, then
-    calls the importable core. `scope` (MEM-7) tags extracted type='project' facts; `session_id`
-    (MEM-10) stamps each stored row's provenance. Best-effort: returns {'facts': 0, 'summary': None}
+    calls the importable core. `scope` tags extracted type='project' facts; `session_id`
+    stamps each stored row's provenance. Best-effort: returns {'facts': 0, 'summary': None}
     on any failure. The CALLER gates on memory.enabled && memory.autoConsolidate."""
     cfg = config or load_config()
     db_path = _get_db_path(cfg)
@@ -322,11 +318,11 @@ def consolidate_session(turns: list, config: Optional[dict] = None,
             turns, db_path=db_path, model=model, owner=owner, scope=scope,
             dedup_threshold=float(_mem(mem, "dedupThreshold")),
             timeout=int(_mem(mem, "consolidateTimeout")),   # bound end-of-session stall
-            reconcile_top_k=int(_mem(mem, "reconcileTopK")),  # MEM-8 existing-facts window
+            reconcile_top_k=int(_mem(mem, "reconcileTopK")),  # existing-facts window
             max_tokens=int(_mem(mem, "maxSummaryTokens")),   # clears the reasoning-token budget
-            source_session=session_id,                          # MEM-10 provenance stamp
+            source_session=session_id,                          # provenance stamp
         )
-        # MEM-5 — opportunistic hygiene at end of consolidation: TTL prune + per-owner size cap.
+        # Opportunistic hygiene at end of consolidation: TTL prune + per-owner size cap.
         try:
             bob_memory.prune(db_path, owner=owner, forget_after_days=mem.get("forgetAfterDays"),
                              max_rows=int(_mem(mem, "maxRows")))

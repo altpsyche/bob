@@ -24,14 +24,14 @@ REPO = Path(__file__).parent.parent.parent
 
 _SKIP_STEMS = frozenset({"tool_loader", "tool_registry"})
 
-# NE0/O1 seam — the run-scoped context (cancel token, config, registry, run_id, approve callback) that
-# dispatch_call sets around a tool call. Tools that need it (e.g. a future sub-agent tool) read it via
+# The run-scoped context seam (cancel token, config, registry, run_id, approve callback) that
+# dispatch_call sets around a tool call. Tools that need it (e.g. the sub-agent tool) read it via
 # get_run_context() without any change to their fn(**args) signature. None outside a dispatched call.
 _RUN_CONTEXT: contextvars.ContextVar = contextvars.ContextVar("bob_run_context", default=None)
 
 
 def get_run_context():
-    """Return the RunContext for the tool call currently executing, or None. NE0 seam for O1."""
+    """Return the RunContext for the tool call currently executing, or None. The run-context seam."""
     return _RUN_CONTEXT.get()
 
 
@@ -40,31 +40,31 @@ class ToolRegistry:
         self.tool_schemas: list = []
         self.dispatch: dict = {}
         self.exit_voice_tools: set = set()
-        # NE0 — tools that always require approval before running (module sets REQUIRES_APPROVAL=True,
+        # Tools that always require approval before running (module sets REQUIRES_APPROVAL=True,
         # e.g. shell_run). The agent loop asks the approve callback before dispatching these; the tool
-        # itself no longer prompts on stdin. O6 layers richer per-tool risk policy on top of this set.
+        # itself no longer prompts on stdin. Richer per-tool risk policy layers on top of this set.
         self.approval_required_tools: set = set()
-        # MEM-6 — tools whose call mutates state (module sets MUTATING_TOOLS = {names}, e.g.
-        # memory_store). O2 serializes these within a parallel batch; O6 can default them to `ask`.
+        # Tools whose call mutates state (module sets MUTATING_TOOLS = {names}, e.g.
+        # memory_store). The loop serializes these within a parallel batch and can default them to `ask`.
         self.mutating_tools: set = set()
-        # O7 — namespaced names (mcp:<server>:<tool>) of tools served by a remote MCP server, registered
-        # by bob_mcp_client.register_mcp_tools. The loop defaults these to O6 'ask' (a remote call is a
-        # side effect worth a prompt). Empty unless agent.mcpServers is configured -> byte-identical.
+        # Namespaced names (mcp:<server>:<tool>) of tools served by a remote MCP server, registered
+        # by bob_mcp_client.register_mcp_tools. The loop defaults these to 'ask' (a remote call is a
+        # side effect worth a prompt). Empty unless agent.mcpServers is configured -> no change.
         self.remote_tools: set = set()
         # (tool_name, phase, message) — phase: "import" | "contract" | "configure"
         self.errors: list[tuple[str, str, str]] = []
         self._loaded_names: set = set()
-        # M7 — per-result cap (chars). Derived from agent.maxToolResultTokens in build().
+        # Per-result cap (chars). Derived from agent.maxToolResultTokens in build().
         self.max_result_chars: int = 4000
-        # NE0/O3 seam — full text of results that dispatch_call had to truncate, addressable by handle
-        # so the trimmed tail is retained (not silently lost) for a future read_result tool (O3 wires it
+        # Seam holding the full text of results that dispatch_call had to truncate, addressable by handle
+        # so the trimmed tail is retained (not silently lost) for the read_result tool (which exposes it
         # as model-callable). Bounded to the most recent few to keep memory flat.
         self._result_store: dict = {}
         self._result_seq: int = 0
         self._result_store_max: int = 8
 
     # ------------------------------------------------------------------
-    # Discovery — single source shared by build() and the loader CLI (M16)
+    # Discovery — single source shared by build() and the loader CLI
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -96,12 +96,12 @@ class ToolRegistry:
         registry = cls()
         disabled = disabled_names or set()
         agent_cfg = config.get("agent", {})
-        # M7 — token-aware per-result cap (approx 4 chars/token) so one large tool output
+        # Token-aware per-result cap (approx 4 chars/token) so one large tool output
         # can't blow the context budget. maxToolResultTokens defaults to keep the prior 4000-char cap.
         registry.max_result_chars = int(agent_cfg.get("maxToolResultTokens", 1000)) * 4
-        # O15 — when context-editing (clearToolResults) is on, a cleared message must stay re-fetchable,
+        # When context-editing (clearToolResults) is on, a cleared message must stay re-fetchable,
         # so retain enough handles to cover the whole history window (default 8 keeps memory flat but
-        # would evict the OLD results clearing targets). Default off leaves the store at 8 (pre-O15).
+        # would evict the OLD results clearing targets). With it off the store stays at 8.
         if agent_cfg.get("clearToolResults", False):
             registry._result_store_max = max(registry._result_store_max,
                                              int(agent_cfg.get("maxHistoryMsgs", 40)))
@@ -122,8 +122,8 @@ class ToolRegistry:
                 continue
             registry._load_one(tool_name, path, config)
 
-        # O7 — connect to any configured MCP servers (agent.mcpServers) and register their tools as
-        # synthetic mcp:<server>:<tool> entries. Default {} == no servers == no-op (byte-identical
+        # Connect to any configured MCP servers (agent.mcpServers) and register their tools as
+        # synthetic mcp:<server>:<tool> entries. Default {} == no servers == no-op (an unchanged
         # toolset). A failure here is logged and swallowed — a bad MCP config never blocks local tools.
         try:
             from bob_mcp_client import register_mcp_tools
@@ -188,7 +188,7 @@ class ToolRegistry:
         }
         missing_in_dispatch = defs_names - set(mod_dispatch.keys())
         if missing_in_dispatch:
-            # M9 — hard contract error: a TOOL_DEFS name with no DISPATCH entry would load and
+            # Hard contract error: a TOOL_DEFS name with no DISPATCH entry would load and
             # then fail at call time with "Unknown tool". Fail loudly at load and skip the tool.
             self.errors.append(
                 (tool_name, "contract",
@@ -250,7 +250,7 @@ class ToolRegistry:
     def dispatch_call(self, tool_name: str, arguments_json: str, context=None) -> str:
         """Execute a named tool call. Always returns a string (the format agents expect).
 
-        `context` (NE0): an optional RunContext made reachable to the tool via get_run_context()
+        `context`: an optional RunContext made reachable to the tool via get_run_context()
         for the duration of the call — carries cancel/config/registry/run_id/approve without changing
         tool signatures. Backward compatible: dispatch_call(name, json) still works (context=None).
 
@@ -285,7 +285,7 @@ class ToolRegistry:
             _RUN_CONTEXT.reset(token)
 
     def _truncate_and_retain(self, out: str) -> str:
-        """Cap a result to max_result_chars but RETAIN the full text under a handle (NE0/O3 seam), so
+        """Cap a result to max_result_chars but RETAIN the full text under a handle (the retention seam), so
         the trimmed tail is recoverable via read_result() instead of being discarded."""
         self._result_seq += 1
         handle = f"r{self._result_seq}"
@@ -297,7 +297,7 @@ class ToolRegistry:
         return out[: self.max_result_chars] + f"\n[...truncated {cut} chars; retained as {handle}]"
 
     def read_result(self, handle: str, offset: int = 0, length: int = 4000) -> str:
-        """O3/O15 seam — return a window of a previously-truncated-or-cleared result so the text can be
+        """Return a window of a previously-truncated-or-cleared result so the text can be
         re-read rather than lost. Exposed as the model-callable `read_result` tool (scripts/tools/
         read_result.py) when agent.clearToolResults is on."""
         full = self._result_store.get(handle)
@@ -308,7 +308,7 @@ class ToolRegistry:
     _RETAIN_RE = re.compile(r"retained as (r\d+)\]\s*$")
 
     def clear_stub(self, result_text: str):
-        """O15 — if `result_text` carries a retained handle (from _truncate_and_retain) whose full text
+        """If `result_text` carries a retained handle (from _truncate_and_retain) whose full text
         is still in the store, return a compact stub to replace the bulky message with — re-fetchable
         via read_result(rN). Returns None when there's no handle or it was evicted (so we never leave a
         dangling stub, and an already-cleared stub is idempotently left alone)."""
@@ -322,8 +322,8 @@ class ToolRegistry:
         return f"[tool result {handle} cleared; {len(full)} chars retained — read_result('{handle}')]"
 
     def filtered(self, deny=None, allow=None) -> "_RegistryView":
-        """NE0/O1 seam — a lightweight VIEW of this registry with a narrowed tool set, so a sub-agent
-        (O1) can run with fewer tools (e.g. deny={'shell_run'}) WITHOUT a full ~140 ms rebuild. The
+        """A lightweight VIEW of this registry with a narrowed tool set, so a sub-agent
+        can run with fewer tools (e.g. deny={'shell_run'}) WITHOUT a full ~140 ms rebuild. The
         view shares the already-imported dispatch, result store, and caps; only the visible schema
         list and the callable set are restricted. Keyed on function names (what the model calls).
         `allow` (if given) is a whitelist; `deny` is a blacklist; both may be combined."""

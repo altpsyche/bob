@@ -1,6 +1,7 @@
-"""C6 (ONE-E) — the command registry is THE single source for dispatch + help. Proves every entry is
-well-formed and maps to a real cli.py handler, and that the whole config/verbs.json + pwsh scaffolding is
-gone (registry.COMMANDS is now the only catalog — no generated table to keep in sync)."""
+"""The command registry is THE single source for dispatch + help. Proves every entry is well-formed and
+maps to a real cli.py handler, and that no generated verb table or PowerShell scaffolding remains
+(registry.COMMANDS is the only catalog — nothing to keep in sync). This is also the one place that pins
+every verb to a live handler, so the per-domain test files don't each re-assert their own wiring."""
 import unittest
 from pathlib import Path
 
@@ -19,24 +20,45 @@ class TestRegistry(unittest.TestCase):
             self.assertIn(c["handler"], cli._HANDLERS, f"{c['name']} handler not wired")
 
     def test_every_verb_maps_to_a_handler(self):
-        # spot-check the load-bearing verbs (all Python since ONE-D/E — no pwsh, no verbs.json table).
+        # The load-bearing verbs across every domain map to a live handler. test_enumerable_and_well_formed
+        # already proves this for the WHOLE catalog; this list makes the per-domain coverage explicit in one
+        # place (lifecycle, models, provisioning, build, health, scheduling, memory/meta) so the domain test
+        # files can drop their own redundant wiring checks.
         by = registry.by_name()
-        for name in ("agent serve", "agent mcp", "clip", "serve", "stop", "up", "setup", "doctor",
-                     "diagnose", "version", "build", "fetch", "lock", "mlock", "eval", "update",
-                     "fabric-setup", "status", "chat", "code", "think", "agent schedule", "help"):
+        for name in (
+            # entry / server / misc
+            "agent serve", "agent mcp", "clip", "help",
+            # lifecycle
+            "serve", "stop", "up", "restart", "status", "ps", "logs", "webui",
+            "litellm", "whisper", "piper", "services",
+            # health
+            "setup", "doctor", "diagnose", "version",
+            # models + eval
+            "models", "show", "profiles", "profile", "verify-urls", "bench", "eval",
+            # build / update / provisioning
+            "build", "fabric-setup", "update", "fetch", "lock", "mlock", "setup-voice",
+            # config generation
+            "gen",
+            # memory + meta
+            "remember", "recall", "memory", "budget", "tools", "plugins", "fabric", "aider",
+            # conversation
+            "chat", "code", "think",
+            # scheduling
+            "agent schedule", "agent log", "agent install", "agent uninstall", "agent status",
+        ):
             self.assertIn(name, by, name)
             self.assertIn(by[name]["handler"], cli._HANDLERS, name)
 
     def test_no_verbs_json_machinery(self):
-        # ONE-E collapsed the verb table: the generated file + its generator/sync gate are gone.
+        # The verb table was collapsed: the generated file + its generator/sync gate are gone.
         self.assertFalse((Path(registry.REPO) / "config" / "verbs.json").exists())
         for gone in ("verbs_json_dict", "write_verbs", "_check", "VERBS_FILE"):
             self.assertFalse(hasattr(registry, gone), f"registry.{gone} should be removed")
 
 
 class TestNoPowerShellFrontDoor(unittest.TestCase):
-    """ONE-E — the PowerShell front door (bob.ps1) + seam library are retired; registry.COMMANDS is the
-    sole catalog."""
+    """The PowerShell front door (bob.ps1) + seam library are retired; registry.COMMANDS is the sole
+    catalog."""
 
     def test_help_is_registry_driven(self):
         self.assertEqual(registry.by_name()["help"]["handler"], "help")

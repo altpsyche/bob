@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ONE-E — the pre-commit / CI gate, in Python (port of the retired check.ps1). Runs, in order:
+"""The pre-commit / CI gate, in Python. Runs, in order:
 
   1. py_compile over scripts/, plugins/, tests/ (excluding external/)
   2. versions.lock in sync with its sources    (python -m bob.versions --check)
@@ -7,7 +7,7 @@
   4. the stdlib-unittest suite in tests/         (skip with --no-tests)
 
 Exits non-zero on the first category that fails, so the git pre-commit hook (or CI) blocks. Stdlib-only,
-so any interpreter runs it — the pwsh AST-parse step is gone (there is no PowerShell left to parse).
+so any interpreter runs it.
 
   python scripts/check.py            # full
   python scripts/check.py --no-tests # skip the unittest suite (static checks only)

@@ -1,23 +1,21 @@
-"""Bob health / diagnostics capabilities (ONE-C Slice 3) — the read-only pre-flight verbs.
+"""Bob health / diagnostics capabilities — the read-only pre-flight verbs.
 
-Functional grouping (D6): one module, several related tool fns, each reached three ways (agent tool /
-`bob <verb>` / `bob --run`) with no duplicated logic. Ports the bob.ps1 setup(check)/doctor/version/
-diagnose cases + Invoke-BobHealthCheck.
+Functional grouping: one module, several related tool fns, each reached three ways (agent tool /
+`bob <verb>` / `bob --run`) with no duplicated logic. Ports the former setup(check)/doctor/version/
+diagnose cases + the health-check core.
 
   health_check(config, doctor=False)  <- `bob setup check` (deps/registration) and `bob doctor` (+runtime)
   version_info(config)                <- `bob version`  (Bob release + binary/submodule versions)
   diagnose(config)                    <- `bob diagnose` (GPU/VRAM/profile/endpoint/models/manifest)
 
-FULL diagnose (ONE-D Slice D3 healed the Slice-3 split): `diagnose` now reports the deep build-time OS
-discovery too — CUDA-toolkit resolution, system RAM, NUMA topology, mlock privilege, and the Linux package
-manager — via the ONE-D build-time osenv seams (osenv.best_cuda_root / system_ram_gb / numa_node_count /
-mlock_status / linux_package_manager). scripts/diagnose.ps1 is KEPT on disk until D8 (the pre-venv
-setup.ps1 calls it directly before the venv exists).
+`diagnose` reports the deep build-time OS discovery too — CUDA-toolkit resolution, system RAM, NUMA
+topology, mlock privilege, and the Linux package manager — via the build-time osenv seams
+(osenv.best_cuda_root / system_ram_gb / numa_node_count / mlock_status / linux_package_manager).
 
-ONE-D Slice D0 wired the two rows that used to degrade: the BobAgent scheduled-task check now reads
-osenv.agent_task_status() (Slice 5's scheduler quartet), and doctor's versions.lock reproducibility
-section now reads bob.versions.check_reproducibility() (the reader already existed). A missing lock or
-an unregistered task is reported as informational (both are opt-in), not a failure."""
+Two rows that used to degrade are now wired: the BobAgent scheduled-task check reads
+osenv.agent_task_status() (the scheduler quartet), and doctor's versions.lock reproducibility
+section reads bob.versions.check_reproducibility(). A missing lock or an unregistered task is
+reported as informational (both are opt-in), not a failure."""
 import sys
 from pathlib import Path
 
@@ -27,7 +25,7 @@ REPO = Path(__file__).resolve().parent.parent.parent
 SCRIPTS = REPO / "scripts"
 
 _OK, _BAD, _PENDING = "✓", "✗", "○"  # check, cross, hollow circle (pending/deferred)
-_SIZE_TOL_PCT = 0.10  # ±10% GGUF size tolerance (mirrors _models.ps1 $script:SizeTolPct)
+_SIZE_TOL_PCT = 0.10  # ±10% GGUF size tolerance
 _DIAG_ROLES = ["planner", "coder", "chat", "fim", "embed"]
 
 
@@ -42,7 +40,7 @@ def configure(config: dict) -> None:
 
 def gpu_arch():
     """{'CudaArch': int, 'Gen': str, 'MinCudaMajor': int} for GPU 0, or None. Delegates to the single
-    source osenv.gpu_arch (ONE-D consolidated the former per-module copies)."""
+    source osenv.gpu_arch (the former per-module copies were consolidated here)."""
     import osenv
     return osenv.gpu_arch()
 
@@ -64,8 +62,7 @@ def _has_module(venv_py: Path, module: str) -> bool:
 
 def _tool_load_errors() -> list:
     """Build the same ToolRegistry the loop builds and return its load errors [(name, kind, msg)].
-    Honors agent.disabledTools. Mirrors the pwsh 'Agent tools load without error' check (which shelled
-    the loader) but stays in-process."""
+    Honors agent.disabledTools; builds the registry in-process."""
     from tool_registry import ToolRegistry
 
     disabled_raw = _cfg.get("agent", {}).get("disabledTools", [])
@@ -78,7 +75,7 @@ def _tool_load_errors() -> list:
 
 def health_check(config: dict, doctor: bool = False) -> str:
     """Shared pre-flight for `bob setup check` and `bob doctor`. doctor=True adds the runtime checks
-    (endpoint reachable, GPU/VRAM, writable dirs, config parses). Port of Invoke-BobHealthCheck."""
+    (endpoint reachable, GPU/VRAM, writable dirs, config parses)."""
     import osenv
     import requests
     from bob_core import _port
@@ -100,7 +97,7 @@ def health_check(config: dict, doctor: bool = False) -> str:
 
     venv_py = _venv_python()
     venv_ok = venv_py.exists()
-    check("venv-litellm exists", venv_ok, "scripts/bootstrap-litellm.ps1")
+    check("venv-litellm exists", venv_ok, "bob setup")
 
     # Python packages
     if venv_ok:
@@ -109,11 +106,10 @@ def health_check(config: dict, doctor: bool = False) -> str:
         fix = "pip install openai" if not has_openai else ("pip install requests" if not has_requests else "")
         check("Python packages (openai, requests)", has_openai and has_requests, fix)
     else:
-        check("Python packages (openai, requests)", False, "run bootstrap-litellm.ps1 first")
+        check("Python packages (openai, requests)", False, "run bob setup first")
 
     # Config resolves the same way on every OS now: config/defaults.json + config/user.json via
-    # bob_config (the PowerShell Get-BobConfig/data/config.json path is retired — that file is neither
-    # written nor read).
+    # bob_config.
     from bob_core import load_config
     resolved = False
     try:
@@ -125,7 +121,7 @@ def health_check(config: dict, doctor: bool = False) -> str:
 
     check("scripts/tools/ exists", (SCRIPTS / "tools").is_dir())
 
-    # data/schedules.json — created empty if absent (matches the pwsh side-effect)
+    # data/schedules.json — created empty if absent
     sched = REPO / "data" / "schedules.json"
     if not sched.exists():
         sched.parent.mkdir(parents=True, exist_ok=True)
@@ -157,7 +153,7 @@ def health_check(config: dict, doctor: bool = False) -> str:
     litellm_port = _port(config, "litellmPort")
     check(f"LiteLLM proxy (:{litellm_port})", osenv.is_port_in_use(litellm_port), "bob litellm")
 
-    # BobAgent scheduled task — the every-minute OS task (osenv scheduler quartet, Slice 5). Not-registered
+    # BobAgent scheduled task — the every-minute OS task (osenv scheduler quartet). Not-registered
     # is informational (scheduling is opt-in), so report state without failing the check.
     task = osenv.agent_task_status()
     if task.get("registered"):
@@ -210,7 +206,7 @@ def health_check(config: dict, doctor: bool = False) -> str:
         if vram:
             check(f"GPU VRAM detected (~{vram} GB)", True)
         else:
-            check("No GPU -> CPU backend (NC8 tier)", True, "nvidia-smi absent or no NVIDIA GPU")
+            check("No GPU -> CPU backend (CPU tier)", True, "nvidia-smi absent or no NVIDIA GPU")
 
         for name, path in (("data", osenv.data_dir()), ("logs", osenv.cache_dir())):
             writable = False
@@ -224,7 +220,7 @@ def health_check(config: dict, doctor: bool = False) -> str:
                 pass
             check(f"{name}/ writable", writable, f"check permissions on {path}")
 
-        # Reproducibility (versions.lock, ND1) — compare the lock to the installed state via the Python
+        # Reproducibility (versions.lock) — compare the lock to the installed state via the Python
         # reader (bob.versions.check_reproducibility). A missing lock is a pending (it is generated), not
         # a failure; any drift row fails with a fix hint.
         lines.append("  ── reproducibility ──")
@@ -261,7 +257,7 @@ def _pid() -> int:
 
 def version_info(config: dict) -> str:
     """Bob release (VERSION + versions.lock release) + binary versions + submodule commits. Port of the
-    `version` case (ND3). Binary paths via the osenv seam (.exe only on Windows)."""
+    `version` case. Binary paths via the osenv seam (.exe only on Windows)."""
     import subprocess
 
     import osenv
@@ -305,11 +301,11 @@ def version_info(config: dict) -> str:
     return "\n".join(lines)
 
 
-# --- diagnose (split: registry + light discovery; deep OS discovery -> ONE-D) ---------------------
+# --- diagnose (registry + light discovery + deep OS discovery) ------------------------------------
 
 def _cuda_installed() -> list:
-    """Installed CUDA toolkits for display (names, versioned where known). Mirrors diagnose.ps1's $installed
-    build: versioned <prefix><maj.min> dirs under Base + canonical/fixed roots with their on-disk version."""
+    """Installed CUDA toolkits for display (names, versioned where known): versioned <prefix><maj.min>
+    dirs under Base + canonical/fixed roots with their on-disk version."""
     import osenv
     c = osenv.resolve_cuda_root_candidates(0)
     import re
@@ -334,11 +330,10 @@ def _cuda_installed() -> list:
 
 
 def diagnose(config: dict) -> str:
-    """System + model readiness — the FULL port (ONE-D Slice D3 healed the Slice-3 split): GPU arch/VRAM,
+    """System + model readiness — the full report: GPU arch/VRAM,
     system RAM, active-profile fit, endpoint, Linux package manager, CUDA toolkit resolution, mlock
-    privilege, NUMA topology, model files on disk, manifest coverage. Port of scripts/diagnose.ps1
-    (diagnose.ps1 itself is KEPT until D8 — the pre-venv setup.ps1 calls it directly before the venv
-    exists). Deep discovery reads the ONE-D build-time osenv seams."""
+    privilege, NUMA topology, model files on disk, manifest coverage. Deep discovery reads the
+    build-time osenv seams."""
     import bob_models
     import osenv
     from bob_core import _port

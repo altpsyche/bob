@@ -1,9 +1,9 @@
-"""Bob lifecycle capabilities (ONE-C Slice 2) — the local inference stack: llama-swap endpoint, LiteLLM
+"""Bob lifecycle capabilities — the local inference stack: llama-swap endpoint, LiteLLM
 proxy, Open WebUI, whisper STT, piper TTS, and optional Docker services.
 
-Functional grouping (D6): one module, several related tool fns, each reached three ways with no
+Functional grouping: one module, several related tool fns, each reached three ways with no
 duplicated logic — the agent tool (DISPATCH), the `bob <verb>` cli handler (scripts/bob/cli.py), and
-`bob --run <cap>`. Launches binaries DIRECTLY via osenv.start_detached (no pwsh wrapper) and reaps via
+`bob --run <cap>`. Launches binaries DIRECTLY via osenv.start_detached and reaps via
 the osenv process seams.
 
 Config regeneration (`gen`) runs the Python generators (scripts/tools/generate.py) via the
@@ -87,7 +87,7 @@ def _osenv():
 
 
 def _logs_dir() -> Path:
-    return _osenv().cache_dir()  # repo logs/ by default; BOB_DATA_DIR/logs when overridden (C4)
+    return _osenv().cache_dir()  # repo logs/ by default; BOB_DATA_DIR/logs when overridden
 
 
 def _pidfile(svc: str) -> Path:
@@ -122,7 +122,7 @@ def _poll(check, timeout: float, interval: float = 0.3) -> bool:
 def _regen_configs() -> bool:
     """Best-effort refresh of config/llama-swap.yaml + litellm.yaml from models.json (so profile edits
     take effect). Delegates to the single-sourced regen in bob_models (shared with the profile switch),
-    which since ONE-C Slice 6 runs the Python generators directly — no pwsh in this hot path."""
+    which runs the Python generators directly."""
     import bob_models
     return bob_models.regenerate_configs()
 
@@ -257,7 +257,7 @@ def stack_status(config: dict) -> str:
     return "\n".join(lines)
 
 
-# canonical role order (mirrors Get-Models / models.py)
+# canonical role order (mirrors models.py)
 _ROLE_ORDER = ["planner", "coder", "chat", "fim", "embed"]
 
 
@@ -500,7 +500,7 @@ def stack_up(config: dict, open_browser: bool = True, with_services: bool = Fals
     if config.get("voice", {}).get("enabled"):    # STT is a voice extra, not part of core inference
         lines.append(_start_whisper_bg(config))
 
-    # Open WebUI (opt-in; hidden background window in pwsh -> detached here).
+    # Open WebUI (opt-in; detached background process).
     webui = osenv.venv_exe("venv-webui", "open-webui")
     webui_port = _port(config, "webuiPort")
     if webui.exists():

@@ -1,4 +1,4 @@
-"""NE2 — the shell's theme: config → a typed, console-resolved `Theme`.
+"""The shell's theme: config → a typed, console-resolved `Theme`.
 
 The look is a self-contained, testable unit, separate from the REPL. Precedence (deep-merged,
 lowest→highest): built-in `_DEFAULT_UI` ← `config/ui.json` (the shipped, user-editable file — the

@@ -1,6 +1,6 @@
-"""ONE-C C0c — config/models.json is the neutral single source for model selection, read by Python (bob_models). This proves the
-two sides resolve the registry + activeProfile to the same values, and that the writable activeProfile
-(data/active-profile.json, D4) is shared bidirectionally. (The PowerShell half was retired in ONE-E — Python is now the only side.)"""
+"""config/models.json is the neutral single source for model selection, read by Python (bob_models). Proves the
+resolution of the registry + activeProfile precedence and that the writable activeProfile
+(data/active-profile.json) override round-trips."""
 import json
 import os
 import tempfile

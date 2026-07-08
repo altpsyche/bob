@@ -1,7 +1,7 @@
-"""N2 — SessionStore under concurrent threadpool access: 0 errors, no lost turns.
+"""SessionStore under concurrent threadpool access: 0 errors, no lost turns.
 
 Hammers create/append/read from N threads. The `len(history) == N*PER*2` assertion is the
-direct lost-update detector — it fails against the pre-N2 store (read-modify-write outside the
+direct lost-update detector — it fails against an unlocked store (read-modify-write outside the
 lock) and passes once append_turn is a single BEGIN IMMEDIATE transaction.
 """
 import shutil

@@ -1,6 +1,6 @@
-"""O13 — prefix-cache-aware context (`stablePrefix`, default off). truncate_history freezes a head
+"""Prefix-cache-aware context (`stablePrefix`, default off). truncate_history freezes a head
 (system + append-only summary block + pinned goal) so llama.cpp's KV prefix cache is reused across
-turns instead of being busted every turn. Default `stable_prefix=False` reproduces pre-O13 exactly.
+turns instead of being busted every turn. Default `stable_prefix=False` reproduces the prior cache-busting behavior exactly.
 Also confirms the loop never disables llama.cpp's cache_prompt on a request."""
 import json
 import unittest
@@ -28,7 +28,7 @@ def _history(n=10, big=200):
 
 
 class TestStablePrefixByteStability(unittest.TestCase):
-    """The core O13 guarantee: given NO compaction event, the serialized prefix is byte-identical
+    """The core prefix-cache guarantee: given NO compaction event, the serialized prefix is byte-identical
     across two consecutive turns — only the tail grows."""
 
     def test_prefix_identical_across_turns_no_compaction(self):
@@ -123,7 +123,7 @@ class TestSummaryBlockAppendsNotRegenerates(unittest.TestCase):
 
 
 class TestDefaultOffReproducesToday(unittest.TestCase):
-    """stable_prefix=False must be byte-identical to the pre-O13 path (both modes)."""
+    """stable_prefix=False must be byte-identical to the non-caching path (both modes)."""
 
     def setUp(self):
         self._orig = bob_loop._compact_span

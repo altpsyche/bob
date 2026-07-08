@@ -276,7 +276,7 @@ Bob's persona `name`/`systemPrompt` and defaults live in the neutral `config/def
 }
 ```
 
-Re-run `bob gen` after editing config. (On Windows, `config/bob.psd1` is an additional authoring source for persona/routing/ports.)
+Re-run `bob gen` after editing config. Config resolves the same way on every OS: `config/defaults.json` deep-merged with `config/user.json`.
 
 ### Memory
 
@@ -915,7 +915,7 @@ Configuration is all JSON now. There are three files:
 }
 ```
 
-On Windows, `config/bob.psd1` remains the authoring source for persona/routing/ports; it generates a runtime cache. Off Windows, `bob.psd1` is unused and config resolves live from `defaults.json` + `user.json` — there is no generated `data/config.json` written or read.
+Config resolves the same way on every OS: live from `defaults.json` deep-merged with `user.json`. There is no generated `data/config.json` written or read.
 
 After changing config, run `bob gen` to regenerate the runtime configs (`config/llama-swap.yaml`, `config/litellm.yaml`, and Open WebUI system prompts) from the registry — no server restart needed for the next `bob serve`:
 

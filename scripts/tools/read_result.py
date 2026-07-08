@@ -1,10 +1,10 @@
-"""Bob tool: read_result — page back a tool result that was truncated-and-retained (M7/O3) or
-O15-cleared from the transcript.
+"""Bob tool: read_result — page back a tool result that was truncated-and-retained or
+cleared from the transcript.
 
-Gated on agent.clearToolResults (default off) so the default tool set is byte-identical to pre-O15.
+Gated on agent.clearToolResults (default off) so with the flag off the default tool set is unchanged.
 When on, the loop may replace an old bulky tool-result message with a compact stub pointing at a
 retained handle (rN); this tool lets the model re-fetch the full text on demand instead of losing it.
-Reaches the run's ToolRegistry (which owns the retention store) via the NE0 RunContext seam, so its
+Reaches the run's ToolRegistry (which owns the retention store) via the RunContext seam, so its
 fn signature stays plain."""
 
 

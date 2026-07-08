@@ -1,6 +1,6 @@
-"""O3 — context compaction: `compaction='summarize'` replaces the dropped oldest span with one
+"""Context compaction: `compaction='summarize'` replaces the dropped oldest span with one
 structured note (reusing the summarizer core), keeps the last K verbatim, reserves budget so it can't
-re-overflow, and falls back to plain truncation when no summary is produced. `truncate` == pre-O3."""
+re-overflow, and falls back to plain truncation when no summary is produced. `truncate` is the plain-truncation baseline."""
 import unittest
 
 import _common  # noqa: F401 — sys.path

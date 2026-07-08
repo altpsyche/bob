@@ -1,4 +1,4 @@
-"""M13 — agent loop event generator (M15 refactor): tool step, final, streaming, history."""
+"""Agent loop event generator: tool step, final, streaming, history."""
 import json
 import unittest
 from types import SimpleNamespace
@@ -188,7 +188,7 @@ class TestAgentLoop(unittest.TestCase):
         self.assertEqual("".join(tokens), "Hello world.")
         self.assertEqual(final["result"], "Hello world.")
 
-    # --- streaming robustness (N6) -------------------------------------------
+    # --- streaming robustness ------------------------------------------------
     def test_final_answer_containing_marker_streams_in_full(self):
         # A real final answer that merely mentions the literal marker (no closing tag).
         deltas = ["Use ", "the <tool", "_call> ", "syntax."]
@@ -260,7 +260,7 @@ class TestAgentLoop(unittest.TestCase):
         self.assertEqual(events[-1]["type"], "error")
         self.assertIn("not reachable", events[-1]["message"])
 
-    # --- tool-call wire formats (N8) -----------------------------------------
+    # --- tool-call wire formats ----------------------------------------------
     def test_hermes_tool_response_wire_format(self):
         from types import SimpleNamespace
         turns = ['<tool_call>{"name": "echo", "arguments": {"x": "hi"}}</tool_call>', "done"]
@@ -328,7 +328,7 @@ class TestAgentLoop(unittest.TestCase):
         self.assertEqual(second[-1]["role"], "tool")                # tool-role reply
         self.assertEqual(second[-1]["content"], "echoed")
 
-    # --- cancellation (N3) ---------------------------------------------------
+    # --- cancellation --------------------------------------------------------
     def test_cancel_stops_stream_within_1s(self):
         import time
         from bob_loop import CancelToken
@@ -396,7 +396,7 @@ class TestAgentLoop(unittest.TestCase):
                                        registry=_common.FakeRegistry()))
         self.assertEqual(signal.getsignal(signal.SIGINT), before)
 
-    # --- observability (N5) --------------------------------------------------
+    # --- observability -------------------------------------------------------
     def test_metrics_line_and_rid_propagation(self):
         import logging
         log = logging.getLogger("bob.agent")
@@ -445,7 +445,7 @@ class TestAgentLoop(unittest.TestCase):
         self.assertEqual(captured["messages"][-1]["content"], "now")
 
     def test_image_goal_builds_blocks_and_routes_to_vision(self):
-        # ONE-B1 — an image-bearing turn becomes an OpenAI content-block list and auto-routes to
+        # an image-bearing turn becomes an OpenAI content-block list and auto-routes to
         # the vision role when the caller pins no role.
         captured = {}
 
@@ -511,7 +511,7 @@ class TestAgentLoop(unittest.TestCase):
         self.assertEqual(captured["model"], "chat")
 
     def test_tool_returned_image_threads_into_next_turn_and_routes_vision(self):
-        # ONE-B1 — a tool returning {"__images__":[...], "text":...} feeds the image into the next
+        # a tool returning {"__images__":[...], "text":...} feeds the image into the next
         # model turn as an image_url block and flips the run to the vision role.
         img = "data:image/png;base64,iVBORw0KGgo="
         calls = []
@@ -550,7 +550,7 @@ class TestAgentLoop(unittest.TestCase):
 
 
 class TestApproval(unittest.TestCase):
-    """NE0 — event-driven approval: the loop asks approve() before a gated tool and fails closed
+    """Event-driven approval: the loop asks approve() before a gated tool and fails closed
     (deny) when no approver is wired. Replaces the old blocking input() confirm/shell prompts."""
 
     def setUp(self):
@@ -625,7 +625,7 @@ class TestApproval(unittest.TestCase):
 
 
 class TestCancelTokenLink(unittest.TestCase):
-    """NE0/O1 seam — a child token is cancelled when its parent is (sub-agent teardown)."""
+    """A child token is cancelled when its parent is (sub-agent teardown)."""
 
     def test_parent_cancel_propagates_to_child(self):
         from bob_loop import CancelToken
@@ -646,7 +646,7 @@ class TestCancelTokenLink(unittest.TestCase):
 
 
 class TestProfileInjection(unittest.TestCase):
-    """MEM-3 — the once-per-session profile block is injected into the system prompt only when the
+    """The once-per-session profile block is injected into the system prompt only when the
     session is starting (history empty), not on continuation turns."""
 
     def setUp(self):
@@ -689,7 +689,7 @@ class TestProfileInjection(unittest.TestCase):
         self.assertNotIn("PROFILE_SENTINEL", self._system_prompt_for(history))
 
     def test_project_memory_injected_only_when_scope_set(self):
-        # MEM-7b: BOB.md block injects at session start when a project scope is present, not otherwise.
+        # BOB.md block injects at session start when a project scope is present, not otherwise.
         orig = bob_core.project_memory_block
         bob_core.project_memory_block = lambda project_dir, config=None: (
             "BOBMD_SENTINEL" if project_dir else None)
@@ -700,7 +700,7 @@ class TestProfileInjection(unittest.TestCase):
             bob_core.project_memory_block = orig
 
     def test_autorecall_uses_run_owner_and_scope(self):
-        # A1 regression (MEM-7): autoRecall must recall as the run's owner/scope, not the 'local'
+        # regression: autoRecall must recall as the run's owner/scope, not the 'local'
         # default, and only after owner is resolved.
         import bob_core
         self.cfg["memory"] = {"enabled": True, "autoRecall": True, "injectProfileAtStart": False}
@@ -726,7 +726,7 @@ class TestProfileInjection(unittest.TestCase):
         self.assertEqual(captured.get("scope"), "/repoA")
 
     def test_not_injected_into_subagent_depth(self):
-        # MEM-6 gate: an O1 sub-agent starts with empty isolated history but must NOT get the profile.
+        # a sub-agent starts with empty isolated history but must NOT get the profile.
         captured = {}
 
         class _C:

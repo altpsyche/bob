@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""ONE-E — the end-to-end smoke, in Python (port of the retired smoke.ps1). The shared CROSS-OS gate the
+"""The end-to-end smoke, in Python. The shared CROSS-OS gate the
 CI acceptance matrix runs on Windows AND Linux; it exercises the RUNNING stack, so it passes on either OS
 when the stack is up. Stdlib-only (urllib) so any interpreter runs it — no venv dependency.
 
-Scope (per the NC8 decision): provision -> serve -> a COHERENT answer. Model-agnostic; deliberately does
+Scope: provision -> serve -> a COHERENT answer. Model-agnostic; deliberately does
 NOT gate on a real tool round-trip (tool-protocol correctness lives in the unit tests). Steps:
   1. inference endpoint reachable (llama-swap /v1/models)
   2. `bob agent "say hi"` returns a non-empty answer
-  3. `bob agent serve`: GET /health (no auth) + an owner-scoped session turn (N1) + an SSE stream (N3/N6).
+  3. `bob agent serve`: GET /health (no auth) + an owner-scoped session turn + an SSE stream.
      Step 3 gates the SERVER CONTRACT (auth, session, routing, SSE); a backend-model failure there
      (e.g. a resource-starved CPU-tier reload) is SKIPped — "a coherent answer" is step 2's job.
 
@@ -186,7 +186,7 @@ def main(argv=None) -> int:
             if not sid:
                 skip("session turn + SSE — no session to run them on")
             else:
-                # owner-scoped session turn (N1). A backend model failure (5xx/422/timeout) is infra,
+                # owner-scoped session turn. A backend model failure (5xx/422/timeout) is infra,
                 # not a contract bug -> SKIP; only a contract error (401/404/malformed) FAILs.
                 try:
                     _, body = _post(f"{agent_base}/v1/agent/completions",
@@ -202,7 +202,7 @@ def main(argv=None) -> int:
                 except (urllib.error.URLError, OSError, ValueError) as e:
                     skip(f"session turn — backend/timeout on the CPU tier; server routed it, contract OK ({e})")
 
-                # SSE stream (N3/N6). A 'final'/'token' event = healthy; only an 'error' event = backend
+                # SSE stream. A 'final'/'token' event = healthy; only an 'error' event = backend
                 # failure delivered over a working stream -> SKIP.
                 try:
                     _, text = _post(f"{agent_base}/v1/agent/completions/stream",

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bob MCP server (N10) — exposes Bob's registry tools over the Model Context Protocol.
+"""Bob MCP server — exposes Bob's registry tools over the Model Context Protocol.
 
 Thin seam: it reuses the same ToolRegistry the agent loop uses, so every Bob tool (file, git,
 web, memory, ...) becomes an MCP tool with no per-tool wiring. Gated behind agent.mcpEnabled.
@@ -7,7 +7,7 @@ Start:  bob agent mcp        (stdio transport)
 
 The MCP wire protocol is handled by the `mcp` package when installed; the tool-exposure + dispatch
 seam below (build_mcp_tools / dispatch) is import-light and unit-tested (tests/test_mcp.py) without
-the package or a live transport. Inherits the same tool hardening as the agent (N9 file/git limits,
+the package or a live transport. Inherits the same tool hardening as the agent (file/git limits,
 web_fetch SSRF guard, shell fail-closed)."""
 import json
 import sys

@@ -1,4 +1,4 @@
-"""O8 — auth store: DB-backed tokens with salted-hash storage (plaintext never persisted), hot
+"""Auth store: DB-backed tokens with salted-hash storage (plaintext never persisted), hot
 revocation, scopes, per-owner rate, and persistence across reopen. Pure sqlite + stdlib → runs under
 bare python3 (no venv deps). A fixed salt is injected so hashes are deterministic in-test."""
 import shutil

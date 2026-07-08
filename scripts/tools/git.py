@@ -1,9 +1,9 @@
-"""Bob tool: git_status, git_log, git_diff — restricted to allow-listed repositories (N9)."""
+"""Bob tool: git_status, git_log, git_diff — restricted to allow-listed repositories."""
 import subprocess
 from pathlib import Path
 
 _default_repo: str = ""
-_allowed_roots: list = []  # N9 — repos git_* may touch; defaults to the Bob repo root
+_allowed_roots: list = []  # repos git_* may touch; defaults to the Bob repo root
 
 
 def configure(config: dict) -> None:
@@ -17,7 +17,7 @@ def configure(config: dict) -> None:
 
 
 def _is_allowed_repo(path: str) -> bool:
-    """True if `path` is (within) an allow-listed root — else git_* refuses (N9). Without this,
+    """True if `path` is (within) an allow-listed root — else git_* refuses. Without this,
     the agent could read the status/log/diff of any git repo on disk (info disclosure)."""
     try:
         rp = Path(path).resolve()

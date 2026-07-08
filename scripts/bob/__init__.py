@@ -1,11 +1,11 @@
-"""NB4 (contracts C1 dispatch, C6 registry) — the `python -m bob` runtime package.
+"""The `python -m bob` runtime package — owns command dispatch and the command registry.
 
 This is a *real importable package* exposing the agent runtime as an API, so NE's interactive
 shell (later) can consume `run_agent_events` in-process rather than via subprocess. It also owns
 the command dispatch (`bob.cli`) and the command registry (`bob.registry`).
 
 `python -m bob` requires `scripts/` on sys.path (the `bob_*` modules are siblings of this package).
-The shim (scripts/bob.ps1 dispatcher / the POSIX `bob`) sets PYTHONPATH=scripts; in-process callers
+The shim (the POSIX `bob` / the Windows bob.cmd) sets PYTHONPATH=scripts; in-process callers
 (tests via _common) put scripts/ on sys.path. We add it here too, defensively.
 """
 import os

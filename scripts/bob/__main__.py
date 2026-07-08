@@ -1,4 +1,4 @@
-"""`python -m bob` entry point (NB4)."""
+"""`python -m bob` entry point."""
 import sys
 
 from bob.cli import main

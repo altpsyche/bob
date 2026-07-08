@@ -1,4 +1,4 @@
-"""M13 — bob_core routing + port defaults."""
+"""bob_core routing + port defaults."""
 import unittest
 
 import _common

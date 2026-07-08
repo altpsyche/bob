@@ -43,7 +43,7 @@ if __name__ == "__main__":
     import json
 
     from tool_registry import ToolRegistry
-    # M16 — discovery lives in the registry; the CLI reuses it (no second copy here).
+    # Discovery lives in the registry; the CLI reuses it (no second copy here).
     _iter_all_tools = ToolRegistry.iter_all_tools
 
     parser = argparse.ArgumentParser(description="Bob tool loader CLI")

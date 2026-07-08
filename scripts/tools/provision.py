@@ -1,11 +1,11 @@
-"""Bob provisioning capabilities (ONE-D) — the download/provision verbs.
+"""Bob provisioning capabilities — the download/provision verbs.
 
-Functional grouping (D6): one module, several related capability fns, each reached three ways with no
+Functional grouping: one module, several related capability fns, each reached three ways with no
 duplicated logic — the agent tool (DISPATCH), the `bob <verb>` cli handler (scripts/bob/cli.py), and
 `bob --run <cap>`. The cold-start KERNEL also calls these same fns directly (they must stay import-clean
-under a bare system python — no `requests`, no venv-only deps; downloads shell `curl` per DD2).
+under a bare system python — no `requests`, no venv-only deps; downloads shell `curl` to stay venv-free).
 
-Slice D1 ports `fetch` (scripts/fetch-models.ps1): download the active-profile GGUFs with resume
+`fetch` (ported from the former fetch-models script): download the active-profile GGUFs with resume
 (`curl -C -`), verify each against versions.lock (pinned SHA256 -> loud-fail; unpinned -> TOFU + warn),
 and record the SHA256 into models/manifest.json. mmproj (multimodal projector) rides the model's revision.
 Model set + repos/paths/sizes come from the neutral registry (bob_models, config/models.json)."""
@@ -34,7 +34,7 @@ def configure(config: dict) -> None:
 
 def resolve_fetch_set(profile=None):
     """(profile_name, [ {role, gguf, repo, path, sizeGB, mmproj} ]) for a profile, deduped by gguf
-    (first role wins — a gguf shared across roles is one download). Mirrors Get-Models' role set."""
+    (first role wins — a gguf shared across roles is one download)."""
     import bob_models
 
     config = bob_models.load_models_config()
@@ -64,8 +64,7 @@ def _load_lock():
 
 
 def _model_revision(gguf: str, lock) -> str:
-    """The pinned HF revision for a gguf from versions.lock; 'main' when unpinned/absent. Port of
-    Get-ModelRevision."""
+    """The pinned HF revision for a gguf from versions.lock; 'main' when unpinned/absent."""
     if lock:
         meta = (lock.get("models") or {}).get(gguf) or {}
         if meta.get("revision"):
@@ -90,7 +89,7 @@ def _verify_download(file: Path, gguf: str, lock) -> str:
             file.unlink(missing_ok=True)
             raise RuntimeError(
                 f"Checksum mismatch for {gguf} — versions.lock pins {expected} but the download is {sha}. "
-                "Deleted the bad file. (ND1 verify-on-install)")
+                "Deleted the bad file. (verify-on-install)")
     else:
         print(f"  WARNING: {gguf} is not pinned in versions.lock (sha256 null) — recording the downloaded "
               "hash (TOFU). Run 'bob lock' to pin it.", file=sys.stderr)
@@ -99,7 +98,7 @@ def _verify_download(file: Path, gguf: str, lock) -> str:
 
 def _update_manifest(gguf: str, url: str, size_gb, sha: str) -> None:
     """Record the (already-computed) SHA256 for a downloaded model. Atomic write — models/manifest.json is
-    read concurrently by `bob show`, diagnose and the ND1 lock. Port of Update-Manifest."""
+    read concurrently by `bob show`, diagnose and the lock."""
     import json
     from datetime import datetime, timezone
 
@@ -123,7 +122,7 @@ def _pid() -> int:
     return os.getpid()
 
 
-# --- the download primitive (curl subprocess, DD2 — venv-free for the kernel) ----------------------
+# --- the download primitive (curl subprocess — venv-free for the kernel) ----------------------
 
 def _curl_exe() -> str:
     """curl on PATH (built into Windows 10 1803+; standard elsewhere). Raises if absent."""
@@ -154,7 +153,7 @@ def _download(url: str, dest: Path, headers: list) -> None:
 def fetch_models(profile=None, list_only=False) -> str:
     """Download the GGUFs for a profile into models/. Resume + SHA256-verify (vs versions.lock) + manifest.
     list_only=True is a dry run: report each file's present/MISSING status and size, download nothing.
-    Public repos need no token; gated repos read $HF_TOKEN as a bearer header. Port of fetch-models.ps1."""
+    Public repos need no token; gated repos read $HF_TOKEN as a bearer header."""
     import os
 
     name, models = resolve_fetch_set(profile)
@@ -222,7 +221,7 @@ def _files_for(m: dict):
         yield m["mmproj"], m["mmproj"], 0.6
 
 
-# --- setup-voice (D7): provision whisper + piper (post-venv) --------------------------------------
+# --- setup-voice: provision whisper + piper (post-venv) --------------------------------------
 
 def _dl_file(url: str, dest: Path, label: str, force: bool, out: list) -> None:
     import urllib.request
@@ -236,7 +235,7 @@ def _dl_file(url: str, dest: Path, label: str, force: bool, out: list) -> None:
 
 def _install_piper(url: str, win: bool, bindir: Path, out: list) -> None:
     """Download + extract the piper release: binary -> bin/piper(.exe), shared libs + espeak-ng-data ->
-    bin/. Port of setup-voice.ps1 step 3's extract."""
+    bin/."""
     import tarfile
     import tempfile
     import urllib.request
@@ -337,8 +336,8 @@ def _voice_smoke(stt_port: int) -> str:
 
 def setup_voice(force: bool = False, smoke: bool = True) -> str:
     """Provision Phase-2 voice: build whisper-server, download the whisper model + piper binary/voice +
-    espeak-ng-data, install sounddevice+numpy into venv-litellm, and (best-effort) smoke-test STT. Port of
-    setup-voice.ps1. Post-venv (needs venv-litellm pip)."""
+    espeak-ng-data, install sounddevice+numpy into venv-litellm, and (best-effort) smoke-test STT.
+    Post-venv (needs venv-litellm pip)."""
     import subprocess
 
     import osenv
@@ -393,7 +392,7 @@ def setup_voice(force: bool = False, smoke: bool = True) -> str:
     return "\n".join(out)
 
 
-# --- lock (D2): read-only status for the agent; the write path is CLI-only (bob lock) -------------
+# --- lock: read-only status for the agent; the write path is CLI-only (bob lock) -------------
 
 def lock_status() -> str:
     """versions.lock report (read-only): whether it is in sync with its generating sources, plus

@@ -1,7 +1,7 @@
-"""ONE-D Slice D3 — the CUDA-resolution cluster + mlock seams (osenv) and the healed deep `diagnose`
-(scripts/tools/health.py). Hermetic: nvidia-smi, secedit/ulimit, CUDA disk layout, and the registry are
-mocked or pointed at temp trees. The Windows mlock grant/status paths are `# pragma: no cover` (secedit +
-UAC), verified only on Windows; here we cover the Linux paths, the pure CUDA descriptor, and the ranking."""
+"""CUDA toolkit discovery + mlock privilege (osenv build-time seams). Hermetic: nvidia-smi,
+secedit/ulimit, and CUDA disk layout are mocked or pointed at temp trees. The Windows mlock
+grant/status paths are `# pragma: no cover` (secedit + UAC), verified only on Windows; here we
+cover the Linux paths, the pure CUDA descriptor, and the ranking."""
 import os
 import sys
 import tempfile
@@ -11,22 +11,12 @@ from unittest import mock
 
 import _common  # noqa: F401 — puts scripts/ on sys.path
 import osenv
-from bob import cli, registry
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts" / "tools"))
-import health as health_mod  # noqa: E402
 import provision as prov  # noqa: E402
 
-CFG = {"port": 8080}
 
-
-class TestRegistryAndToolWiring(unittest.TestCase):
-    def test_mlock_flipped_to_python(self):
-        entry = registry.by_name()["mlock"]
-        self.assertTrue(entry.get("handler"))
-        self.assertEqual(entry["handler"], "mlock")
-        self.assertIn("mlock", cli._HANDLERS)
-
+class TestMlockToolSurface(unittest.TestCase):
     def test_mlock_status_tool_read_only(self):
         self.assertIn("mlock_status", prov.DISPATCH)
         self.assertNotIn("mlock_status", prov.MUTATING_TOOLS)
@@ -140,63 +130,6 @@ class TestMlockLinux(unittest.TestCase):
             out = osenv.mlock_grant()
             self.assertIn("ulimit -l unlimited", out)
             self.assertIn("limits.conf", out)
-
-
-class TestDiagnoseDeep(unittest.TestCase):
-    """The healed diagnose: RAM / Package / CUDA / mlock / NUMA rows now render (Slice-3 split gone)."""
-
-    def _diag(self, pkg_mgr="pacman", best_cuda="/opt/cuda", mlock_granted=False,
-              numa=1, numa_cfg="", mlock_big=False):
-        import contextlib
-        import models as models_mod
-        mcfg = {"activeProfile": "16gb", "defaults": {"mlockBig": mlock_big, "numa": numa_cfg},
-                "profiles": {"16gb": {"_targetVRAM": "16GB", "coder": {"gguf": "c.gguf", "sizeGB": 8}}}}
-        gpu = {"CudaArch": 120, "Gen": "Blackwell", "MinCudaMajor": 12}
-        patchers = [
-            mock.patch.multiple(
-                "osenv",
-                system_ram_gb=mock.Mock(return_value={"TotalGB": 62, "FreeGB": 52}),
-                os_name=mock.Mock(return_value="linux"),
-                linux_package_manager=mock.Mock(return_value=pkg_mgr),
-                linux_os_family=mock.Mock(return_value="arch"),
-                best_cuda_root=mock.Mock(return_value=best_cuda),
-                mlock_status=mock.Mock(return_value={"granted": mlock_granted, "detail": "detail"}),
-                numa_node_count=mock.Mock(return_value=numa),
-                is_port_in_use=mock.Mock(return_value=False),
-                resolve_cuda_root_candidates=mock.Mock(
-                    return_value={"Base": "/nonexistent", "DirPrefix": "cuda-", "Fixed": []})),
-            mock.patch.object(health_mod, "gpu_arch", return_value=gpu),
-            mock.patch.object(models_mod, "gpu_vram_gb", return_value=16),
-            mock.patch("bob_models.load_models_config", return_value=mcfg),
-            mock.patch("bob_models.resolve_profile_name", return_value="16gb"),
-            mock.patch("bob_models.profile_roles", return_value=mcfg["profiles"]["16gb"]),
-        ]
-        with contextlib.ExitStack() as es:
-            for p in patchers:
-                es.enter_context(p)
-            return health_mod.diagnose(CFG)
-
-    def test_deep_rows_present(self):
-        out = self._diag()
-        for label in ("RAM", "Package", "CUDA", "mlock", "NUMA"):
-            self.assertIn(f"  {label:<10}", out, label)
-        self.assertIn("62 GB total  (52 GB free)", out)
-        self.assertIn("pacman  (family: arch)", out)
-        self.assertIn("cuda  ok", out)  # Path('/opt/cuda').name
-        self.assertNotIn("ports to Python in ONE-D", out)  # split note gone
-
-    def test_missing_package_manager_is_an_issue(self):
-        out = self._diag(pkg_mgr=None)
-        self.assertIn("no supported manager", out)
-        self.assertIn("issue(s) noted", out)
-
-    def test_cuda_missing_for_gpu_is_an_issue(self):
-        out = self._diag(best_cuda=None)
-        self.assertIn("needs 12.8 (required for Blackwell)", out)
-
-    def test_numa_config_mismatch_is_an_issue(self):
-        out = self._diag(numa=1, numa_cfg="isolate")
-        self.assertIn("flag is a no-op", out)
 
 
 if __name__ == "__main__":

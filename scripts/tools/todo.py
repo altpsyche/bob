@@ -1,10 +1,10 @@
-"""Bob tool: todo — a living task list the model maintains across steps (O16, Manus/TodoWrite style).
+"""Bob tool: todo — a living task list the model maintains across steps (Manus/TodoWrite style).
 
-Gated on agent.todoTool (default false) so the default toolset is byte-identical to pre-O16. State is
+Gated on agent.todoTool (default false) so with the flag off the default toolset is unchanged. State is
 RUN-LOCAL (RunContext.todos, reached via get_run_context()) — it is NOT persisted as memory and does
-NOT mutate any store, so it's deliberately kept out of MUTATING_TOOLS (O2 can run it concurrently, O6
-never gates it). The O16 recitation hook in run_agent_events re-emits the open items at the context tail
-each step; O4's plan phase can seed the list.
+NOT mutate any store, so it's deliberately kept out of MUTATING_TOOLS (the loop can run it concurrently
+and never gates it). The recitation hook in run_agent_events re-emits the open items at the context tail
+each step; the plan phase can seed the list.
 """
 
 _cfg: dict = {}

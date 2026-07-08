@@ -1,16 +1,16 @@
-"""Bob agent scheduling capabilities (ONE-C Slice 5) — the agent-lifecycle scheduler.
+"""Bob agent scheduling capabilities — the agent-lifecycle scheduler.
 
-Functional grouping (D6): one module, several related cores, each reached the standard three ways. Ports
-the bob.ps1 `agent schedule|log|install|uninstall|status` cases + the `bob-agent.ps1` runner + the exact
-`Test-CronDue` semantics (retired from _models.ps1). Two layers:
+Functional grouping: one module, several related cores, each reached the standard three ways. Provides
+the `agent schedule|log|install|uninstall|status` verbs + the agent runner + cron-due evaluation.
+Two layers:
 
   Layer 1 (OS task)   osenv.register_agent_task / unregister / agent_task_status / crontab_available —
                       the every-minute task that fires scripts/bob_agent_runner.py.
-  Layer 2 (this file) cron_due() (exact Test-CronDue port) + data/schedules.json CRUD + run_due_schedules()
+  Layer 2 (this file) cron_due() + data/schedules.json CRUD + run_due_schedules()
                       (the runner core: evaluate cron, run_agent in-process, persist result, notify).
 
-D3: cron_due is the EXACT Test-CronDue port — UTC, 5 fields, '*' / comma lists / 'a-b' ranges / integers
-only (NO '*/n' steps, NO JAN/MON names), day-of-week Sunday=0, and a 60-second re-fire guard. D4: the
+cron_due: UTC, 5 fields, '*' / comma lists / 'a-b' ranges / integers
+only (NO '*/n' steps, NO JAN/MON names), day-of-week Sunday=0, and a 60-second re-fire guard. The
 writable schedule store is data/schedules.json (data/-side state), atomic-written."""
 import re
 import sys
@@ -32,12 +32,12 @@ def configure(config: dict) -> None:
         sys.path.insert(0, str(SCRIPTS))
 
 
-# --- cron evaluation (exact Test-CronDue port, D3) ------------------------------------------------
+# --- cron evaluation --------------------------------------------------------------------------
 
 def cron_due(cron: str, now: datetime, last_run: datetime = None) -> bool:
-    """True if a 5-field cron expression is due at `now` (UTC), given `last_run` (None = never). Exact
-    port of Test-CronDue: '*' / comma lists / 'a-b' ranges / bare integers only — no '*/n', no month/day
-    names. Day-of-week is Sunday=0 (.NET DayOfWeek). A 60-second guard prevents double-firing within a
+    """True if a 5-field cron expression is due at `now` (UTC), given `last_run` (None = never).
+    '*' / comma lists / 'a-b' ranges / bare integers only — no '*/n', no month/day
+    names. Day-of-week is Sunday=0. A 60-second guard prevents double-firing within a
     minute."""
     if last_run is not None and (now - last_run).total_seconds() < 60:
         return False
@@ -64,7 +64,7 @@ def cron_due(cron: str, now: datetime, last_run: datetime = None) -> bool:
             field_match(fields[4], now.isoweekday() % 7))  # isoweekday: Mon=1..Sun=7 -> Sun=0..Sat=6
 
 
-# --- schedule store (data/schedules.json, atomic; D4) ---------------------------------------------
+# --- schedule store (data/schedules.json, atomic) ---------------------------------------------
 
 def _sched_file(config: dict) -> Path:
     rel = config.get("agent", {}).get("scheduleFile", "data/schedules.json").replace("\\", "/")
@@ -98,8 +98,8 @@ def _pid() -> int:
 
 
 def _parse_ts(value) -> datetime:
-    """Parse a stored ISO timestamp to an aware UTC datetime, or None. Accepts both Python's '+00:00'
-    and PowerShell's trailing 'Z'; a naive stamp is assumed UTC."""
+    """Parse a stored ISO timestamp to an aware UTC datetime, or None. Accepts both '+00:00'
+    and a trailing 'Z'; a naive stamp is assumed UTC."""
     if not value:
         return None
     try:
@@ -245,7 +245,7 @@ def schedule_run(config: dict, name: str) -> str:
 def run_due_schedules(config: dict) -> str:
     """Evaluate every enabled schedule against the current UTC minute and run those due. Persists
     lastRun/lastRunResult (atomic, only if something ran), logs, and notifies. Returns a one-line
-    summary. Port of the bob-agent.ps1 runner body."""
+    summary."""
     if not config.get("agent", {}).get("enabled"):
         return "agent disabled (set agent.enabled = true)"
     schedules = _read_schedules(config)

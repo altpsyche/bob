@@ -1,13 +1,12 @@
-"""NB2 (contract C2) — the Python runtime-config resolver: produce the runtime-subset of the
+"""The Python runtime-config resolver: produce the runtime-subset of the
 `config.json` shape from the neutral sources (config/defaults.json + an optional neutral user
-override) WITHOUT PowerShell, so the agent runtime can boot on any OS.
+override) in pure Python, so the agent runtime can boot on any OS.
 
-It produces only the ~15 keys the Python core actually reads (C2): port, litellmPort, agentPort,
+It produces only the ~15 keys the Python core actually reads: port, litellmPort, agentPort,
 searxngPort, litellmKey, routing.*, persona.systemPrompt, agent.*, memory.*, vision.*, voice.*. It
 never reproduces provisioner keys (profiles, peers, model file paths, build flags).
 
-This is now the ONE config resolve path on every OS — bob_core.load_config calls it unconditionally
-(the PowerShell Get-BobConfig/data/config.json path is retired, MODULE ONE).
+This is now the ONE config resolve path on every OS — bob_core.load_config calls it unconditionally.
 """
 import copy
 import json
@@ -33,7 +32,7 @@ def _deep_merge(base: dict, over: dict) -> dict:
 
 def _routing_from_role_table(role_table: dict) -> dict:
     """Derive the default routing map (defaultRole -> chat, proRole -> chat-pro, ...) from the
-    shared roleTable, so the routing default *values* aren't duplicated anywhere (NB1)."""
+    shared roleTable, so the routing default *values* aren't duplicated anywhere."""
     routing: dict = {}
     for entry in role_table.values():
         if entry.get("section", "routing") != "routing":
@@ -98,8 +97,8 @@ def resolve_runtime_config(user_path: Optional[Path] = None) -> dict:
 
     cfg = _deep_merge(cfg, load_user_overlay(user_path))
 
-    # Mirror Get-BobConfig: default allowedReadPaths to the repo root when empty, so file_read
-    # works out of the box (the N9 denylist still refuses secrets inside it).
+    # Default allowedReadPaths to the repo root when empty, so file_read
+    # works out of the box (the secrets denylist still refuses secrets inside it).
     if not cfg["agent"].get("allowedReadPaths"):
         cfg["agent"]["allowedReadPaths"] = [str(REPO)]
     return cfg

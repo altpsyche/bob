@@ -1,8 +1,8 @@
-"""O12 — grammar-constrained tool calls. When agent.constrainedToolCalls is on, the loop attaches the
+"""Grammar-constrained tool calls. When agent.constrainedToolCalls is on, the loop attaches the
 structured `tools` payload + tool_choice='auto' so a grammar-capable backend (llama.cpp) can only emit
 a well-formed tool call, killing the malformed-JSON (__parse_error__) class — while still allowing text
 answers. A backend that rejects the kwargs is detected once and the run falls back to today's hermes
-parse. Default off keeps the request kwargs byte-identical to pre-O12. Decode QUALITY needs a live model
+parse. Default off keeps the request kwargs matching the prior path. Decode QUALITY needs a live model
 and is validated on the GPU tier — these assert wiring + fallback only."""
 import unittest
 from types import SimpleNamespace

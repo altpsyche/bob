@@ -6,12 +6,12 @@ import osenv
 _allowed_read: list = []
 _allowed_write: list = []
 
-# N9 / NB3 (C3) — secrets denylist: refuse these even when they fall inside an allowedReadPaths
+# Secrets denylist: refuse these even when they fall inside an allowedReadPaths
 # root (which defaults to the repo root, and so would otherwise expose the litellm key / api
 # tokens in data/config.json, the resolved secrets file, the session/memory stores, logs, and .env
-# files). NB3 makes it OS-aware + data-dir-relative.
+# files). The osenv seam makes it OS-aware + data-dir-relative.
 _DENY_BASENAMES = {"config.json", "secrets.json"}  # carry litellmKey / apiTokens / provider keys
-_DENY_SUFFIXES = (".psd1", ".db")   # bob.psd1/user.psd1 config; *.db session/memory stores
+_DENY_SUFFIXES = (".psd1", ".db")   # .psd1 config files; *.db session/memory stores
 
 
 def _home() -> Path:
@@ -20,7 +20,7 @@ def _home() -> Path:
 
 
 def _in_secret_dir(rp: Path) -> bool:
-    """True if the resolved path sits under a platform secret directory (C3): the resolved
+    """True if the resolved path sits under a platform secret directory: the resolved
     data-dir secrets file's dir, and the usual home credential dirs."""
     candidates = [
         osenv.secrets_file(),                 # <data_dir>/secrets.json (any OS)
@@ -84,7 +84,7 @@ def _human(n: int) -> str:
 
 
 def _is_denied_secret(target: Path) -> bool:
-    """True for sensitive files that must never be read even inside an allowed root (N9)."""
+    """True for sensitive files that must never be read even inside an allowed root."""
     try:
         rp = target.resolve()
     except Exception:

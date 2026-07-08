@@ -1,4 +1,4 @@
-"""ONE-B2 — vision doors on the loop: cli describe/screenshot handlers + bob_vision capture/resize.
+"""Vision doors on the loop: cli describe/screenshot handlers + bob_vision capture/resize.
 Fake run_agent + monkeypatch; no model call and no real screen capture."""
 import os
 import tempfile
@@ -114,7 +114,7 @@ class TestScreenshotHandler(unittest.TestCase):
 
 class TestBobVision(unittest.TestCase):
     def test_capture_no_tool_raises_on_linux(self):
-        # NB3 — the OS branch goes through osenv.os_name(), so BOB_FORCE_OS drives it in tests
+        # the OS branch goes through osenv.os_name(), so BOB_FORCE_OS drives it in tests
         # (no dependency on the real sys.platform).
         with mock.patch.dict(os.environ, {"BOB_FORCE_OS": "linux"}), \
              mock.patch.object(bob_vision.shutil, "which", lambda _t: None):

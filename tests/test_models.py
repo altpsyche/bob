@@ -1,7 +1,9 @@
-"""ONE-C Slice 4 — model-registry capabilities (scripts/tools/models.py) built on the neutral
-config/models.json (C0c). Hermetic: the endpoint query, HF HEAD checks, nvidia-smi, profile write, and
-config regen are all mocked, so nothing hits the network, a GPU, or real state."""
+"""Model-registry capabilities (scripts/tools/models.py) built on the neutral config/models.json,
+plus the `eval` capability (models.py:eval_model). Hermetic: the endpoint query, HF HEAD checks,
+nvidia-smi, profile write, config regen, the venv-eval lm_eval binary, and the lm_eval subprocess are
+all mocked, so nothing hits the network, a GPU, or real state."""
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -16,24 +18,15 @@ import bob_models  # noqa: E402
 CFG = {"port": 8080}
 
 
-class TestRegistryWiring(unittest.TestCase):
-    VERBS = ["models", "show", "profiles", "profile", "verify-urls", "bench"]
-
-    def test_flipped_to_python_with_handlers(self):
-        by_name = registry.by_name()
-        for verb in self.VERBS:
-            self.assertTrue(by_name[verb].get("handler"), verb)
-            self.assertIn(by_name[verb]["handler"], cli._HANDLERS, verb)
-
-    def test_eval_ported_in_one_d(self):
-        # eval stayed pwsh through ONE-C; ONE-D Slice D4 ported it to Python (models.py:eval_model,
-        # CLI-only — not an agent tool). See test_slice_d4_eval for its behaviour.
-        self.assertTrue(registry.by_name()["eval"].get("handler"))
-
+class TestModelsToolSurface(unittest.TestCase):
     def test_tools_registered_and_only_profile_mutates(self):
         self.assertEqual(set(models_mod.DISPATCH), {
             "models_list", "model_show", "profiles_list", "profile_switch", "verify_urls", "bench"})
         self.assertEqual(models_mod.MUTATING_TOOLS, {"profile_switch"})
+
+    def test_eval_is_not_an_agent_tool(self):
+        # very long + separate venv -> CLI-only, deliberately not exposed to the loop
+        self.assertNotIn("eval_model", models_mod.DISPATCH)
 
 
 class TestModelsList(unittest.TestCase):
@@ -156,12 +149,97 @@ class TestGpuHelpers(unittest.TestCase):
 
 class TestRegenBridgeSingleSourced(unittest.TestCase):
     def test_stack_regen_delegates_to_bob_models(self):
-        # The interim pwsh regen bridge is single-sourced in bob_models (shared by stack + models).
+        # The regen bridge is single-sourced in bob_models (shared by stack + models).
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts" / "tools"))
         import stack
         with mock.patch.object(bob_models, "regenerate_configs", return_value=True) as regen:
             self.assertTrue(stack._regen_configs())
         regen.assert_called_once()
+
+
+class TestEvalModel(unittest.TestCase):
+    def setUp(self):
+        self.venv_exe = Path(tempfile.mkdtemp()) / "lm_eval"
+        self.venv_exe.write_text("#!/bin/sh\n")  # exists
+        self.roles = {"coder": {"gguf": "c.gguf", "tokenizer": "Qwen/Qwen2.5-Coder-14B"}}
+
+    def _run(self, role="coder", task="mmlu", shots=0, limit=0, roles=None, endpoint_ok=True,
+             venv_exists=True, captured=None):
+        import requests
+        exe = self.venv_exe if venv_exists else (self.venv_exe.parent / "missing")
+        get = mock.Mock() if endpoint_ok else mock.Mock(side_effect=requests.RequestException("down"))
+
+        def fake_sub(args, **kw):
+            if captured is not None:
+                captured["args"] = args
+                captured["env"] = kw.get("env", {})
+            return mock.Mock(returncode=0)
+
+        # A missing venv-eval triggers a lazy osenv.new_bob_venv provision. Simulate "couldn't
+        # provision" so the missing-venv path stays deterministic.
+        with mock.patch("osenv.venv_exe", return_value=exe), \
+             mock.patch("osenv.new_bob_venv", side_effect=RuntimeError("no venv here")), \
+             mock.patch("bob_models.profile_roles", return_value=roles if roles is not None else self.roles), \
+             mock.patch("requests.get", get), \
+             mock.patch("subprocess.run", side_effect=fake_sub):
+            return models_mod.eval_model(role, task, shots=shots, limit=limit, config=CFG, now="20260705-1200")
+
+    def test_missing_venv_provisions_then_returns_1_when_unavailable(self):
+        # venv-eval absent -> attempts provisioning; when that fails, returns 1 (not a crash).
+        self.assertEqual(self._run(venv_exists=False), 1)
+
+    def test_unknown_role_returns_1(self):
+        self.assertEqual(self._run(role="nope"), 1)
+
+    def test_missing_tokenizer_returns_1(self):
+        self.assertEqual(self._run(roles={"coder": {"gguf": "c.gguf"}}), 1)
+
+    def test_endpoint_down_returns_1(self):
+        self.assertEqual(self._run(endpoint_ok=False), 1)
+
+    def test_happy_path_builds_lm_eval_args(self):
+        cap = {}
+        rc = self._run(task="gsm8k", shots=5, limit=100, captured=cap)
+        self.assertEqual(rc, 0)
+        args = cap["args"]
+        self.assertEqual(args[0], str(self.venv_exe))
+        joined = " ".join(args)
+        self.assertIn("--tasks gsm8k", joined)
+        self.assertIn("--num_fewshot 5", joined)
+        self.assertIn("--limit 100", joined)
+        model_args = args[args.index("--model_args") + 1]
+        self.assertIn("base_url=http://localhost:8080/v1/chat/completions", model_args)
+        self.assertIn("model=coder", model_args)
+        self.assertIn("tokenizer=Qwen/Qwen2.5-Coder-14B", model_args)
+        self.assertEqual(cap["env"].get("PYTHONUTF8"), "1")
+
+    def test_no_limit_omits_flag(self):
+        cap = {}
+        self._run(limit=0, captured=cap)
+        self.assertNotIn("--limit", cap["args"])
+
+
+class TestCliArgParsing(unittest.TestCase):
+    def _dispatch(self, rest):
+        seen = {}
+        fake = mock.Mock()
+        fake.eval_model = mock.Mock(side_effect=lambda *a, **k: seen.update(args=a, kw=k) or 0)
+        with mock.patch.object(cli, "_models_mod", return_value=fake), \
+             mock.patch.object(cli, "_cfg", return_value=CFG):
+            rc = cli._handle_eval(rest)
+        return rc, seen
+
+    def test_positional_and_flags(self):
+        rc, seen = self._dispatch(["planner", "hellaswag", "--shots", "5", "--limit", "50"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(seen["args"][:2], ("planner", "hellaswag"))
+        self.assertEqual(seen["kw"]["shots"], 5)
+        self.assertEqual(seen["kw"]["limit"], 50)
+
+    def test_defaults(self):
+        _, seen = self._dispatch([])
+        self.assertEqual(seen["args"][:2], ("coder", "mmlu"))
+        self.assertEqual(seen["kw"]["shots"], 0)
 
 
 if __name__ == "__main__":

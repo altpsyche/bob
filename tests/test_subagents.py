@@ -1,5 +1,5 @@
-"""O1 — sub-agents / delegation. `spawn_agent` runs an ISOLATED nested run_agent_events (fresh system +
-the subtask, no parent transcript), inherits owner/scope + the O6 approver, bounds recursion via
+"""Sub-agents / delegation. `spawn_agent` runs an ISOLATED nested run_agent_events (fresh system +
+the subtask, no parent transcript), inherits owner/scope + the permission approver, bounds recursion via
 agent.maxAgentDepth, propagates parent cancel to a child token, and returns a STRUCTURED summary
 (result/steps/tools_used) — never the raw sub-transcript. Gated on agent.subAgents (default off) so the
 default toolset is unchanged. A sub-run never consolidates/creates a session (run_agent_events doesn't)."""
@@ -134,7 +134,7 @@ class TestAutoRecallSuppressedAtDepth(unittest.TestCase):
 
 
 class TestParallelFanOut(unittest.TestCase):
-    """spawn_agent is NOT mutating/approval-gated, so O2 parallelizes several spawn_agent calls in one
+    """spawn_agent is NOT mutating/approval-gated, so parallel dispatch runs several spawn_agent calls in one
     step (fan-out/fan-in) with no extra loop code — this asserts the eligibility that makes that free."""
 
     def test_spawn_agent_is_parallel_eligible(self):

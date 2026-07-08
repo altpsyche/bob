@@ -1,6 +1,6 @@
-"""ONE-B4 — /voice shell mode + bob_voice capability core: speech-safe formatting, STT client, TTS synth,
+"""/voice shell mode + bob_voice capability core: speech-safe formatting, STT client, TTS synth,
 and the shell round-trip (mic→STT→_run_turn→TTS). Everything network/audio is faked; no model call, no
-whisper/piper server, no real mic. The point of B4 is that /voice wraps the SAME _run_turn as text, so the
+whisper/piper server, no real mic. The point is that /voice wraps the SAME _run_turn as text, so the
 turn path (memory/tools/persona/retry) is exercised by the existing shell tests — here we prove the loop
 glue and the STT/TTS edges."""
 import unittest
@@ -99,8 +99,8 @@ class TestSpeak(unittest.TestCase):
 
 
 class TestCliHandlers(unittest.TestCase):
-    """ONE-B5 — the bob voice/listen/transcribe/speak CLI verbs now route to Python handlers (pwsh
-    deleted). Faked bob_voice; no server, no mic, no piper."""
+    """The bob voice/listen/transcribe/speak CLI verbs route to Python handlers.
+    Faked bob_voice; no server, no mic, no piper."""
 
     def setUp(self):
         import bob_core

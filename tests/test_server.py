@@ -1,5 +1,5 @@
-"""M13 gap-close — agent HTTP server: auth (M5/M12), ownership (N1), completion recording,
-budget, and the SSE endpoint (M15) incl. cancellation/disconnect (N3). Calls the route functions
+"""Agent HTTP server: auth, ownership, completion recording,
+budget, and the SSE endpoint incl. cancellation/disconnect. Calls the route functions
 directly (no live socket) with fake registry/LLM so it stays hermetic and offline."""
 import asyncio
 import shutil
@@ -40,7 +40,7 @@ class TestServer(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp(prefix="bob-srv-"))
         srv._config = _common.fake_config()
-        srv._token_owner = {"sk-test": "alice", "sk-bob": "bob"}  # N1 — token -> owner
+        srv._token_owner = {"sk-test": "alice", "sk-bob": "bob"}  # token -> owner
         srv._registry = _common.FakeRegistry()
         srv._sessions = SessionStore(self.dir / "s.db")
 
@@ -48,7 +48,7 @@ class TestServer(unittest.TestCase):
         srv._sessions.close()
         shutil.rmtree(self.dir, ignore_errors=True)
 
-    # --- auth (M5/M12) -------------------------------------------------------
+    # --- auth -------------------------------------------------------
     def test_auth_rejects_bad_token(self):
         with self.assertRaises(HTTPException) as ctx:
             srv._require_auth("Bearer nope")
@@ -65,7 +65,7 @@ class TestServer(unittest.TestCase):
             srv.agent_completions(srv.AgentRequest(goal="hi"), authorization="")
         self.assertEqual(ctx.exception.status_code, 401)
 
-    # --- sessions (M12) ------------------------------------------------------
+    # --- sessions ------------------------------------------------------
     def test_session_lifecycle(self):
         sid = srv.create_session(srv.SessionCreate(token_budget=50), authorization=GOOD)["session_id"]
         self.assertEqual(srv.get_session(sid, authorization=GOOD)["id"], sid)
@@ -76,7 +76,7 @@ class TestServer(unittest.TestCase):
             srv.get_session("nope", authorization=GOOD)
         self.assertEqual(ctx.exception.status_code, 404)
 
-    # --- ownership (N1) ------------------------------------------------------
+    # --- ownership ------------------------------------------------------
     def _alice_session(self):
         return srv.create_session(srv.SessionCreate(), authorization=GOOD)["session_id"]
 
@@ -156,7 +156,7 @@ class TestServer(unittest.TestCase):
             srv.agent_completions(srv.AgentRequest(goal="hi", session_id=sid), authorization=GOOD)
         self.assertEqual(ctx.exception.status_code, 402)
 
-    # --- SSE endpoint (M15) + cancellation/disconnect (N3) -------------------
+    # --- SSE endpoint + cancellation/disconnect -------------------
     def test_stream_requires_auth(self):
         with self.assertRaises(HTTPException):
             asyncio.run(srv.agent_completions_stream(
@@ -209,7 +209,7 @@ class TestServer(unittest.TestCase):
 
 
 class TestServerAuthO8(unittest.TestCase):
-    """O8 — DB token store (hot revoke), RBAC scopes (tool + role), per-owner rate limits."""
+    """DB token store (hot revoke), RBAC scopes (tool + role), per-owner rate limits."""
 
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp(prefix="bob-auth-srv-"))

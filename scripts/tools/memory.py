@@ -20,13 +20,13 @@ def configure(config: dict) -> None:
         sys.path.insert(0, scripts_dir)
 
 
-# MEM-6 — memory_store mutates the DB (SQLite write + best-effort dedup race). Marking it lets O2
-# serialize it within a parallel tool batch and O6 default it to `ask`. memory_recall is read-only.
+# memory_store mutates the DB (SQLite write + best-effort dedup race). Marking it lets the loop
+# serialize it within a parallel tool batch and default it to `ask`. memory_recall is read-only.
 MUTATING_TOOLS = {"memory_store"}
 
 
 def _run_ctx_attr(name):
-    """Read a field off the current run's RunContext (MEM-6/7), or None. Lets the memory tools scope
+    """Read a field off the current run's RunContext, or None. Lets the memory tools scope
     recall/store to the acting identity (owner) and project (scope) without changing tool signatures."""
     try:
         from tool_registry import get_run_context
@@ -43,7 +43,7 @@ def _memory_recall(query: str, k: int = 5) -> str:
     if not out or out.strip() in ("", "(no results)"):
         return "(no saved notes match)"
     # Frame the results as context ABOUT THE USER (not Bob's own identity). One shared frame across
-    # every memory surface (autoRecall, this tool, MEM-3 profile injection) — bob_core.MEMORY_CONTEXT_FRAME.
+    # every memory surface (autoRecall, this tool, profile injection) — bob_core.MEMORY_CONTEXT_FRAME.
     return MEMORY_CONTEXT_FRAME + "\n" + out
 
 

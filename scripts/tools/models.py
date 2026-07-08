@@ -1,8 +1,7 @@
-"""Bob model-registry capabilities (ONE-C Slice 4) — the read-only + profile verbs, built on the neutral
-registry (config/models.json via bob_models.py, C0c). Functional grouping (D6): one module, several
+"""Bob model-registry capabilities — the read-only + profile verbs, built on the neutral
+registry (config/models.json via bob_models.py). Functional grouping: one module, several
 related tool fns, each reached three ways (agent tool / `bob <verb>` / `bob --run`) with no duplicated
-logic. Ports the bob.ps1 models/show/profiles/profile/verify-urls/bench cases + Get-Models/Get-GpuVramGB/
-Get-SuggestedProfile.
+logic. Provides the models/show/profiles/profile/verify-urls/bench verbs.
 
 A profile switch regenerates the runtime configs via the single-sourced best-effort
 bob_models.regenerate_configs (the Python generators — shared with the stack bring-up)."""
@@ -14,7 +13,7 @@ _cfg: dict = {}
 REPO = Path(__file__).resolve().parent.parent.parent
 SCRIPTS = REPO / "scripts"
 
-# Stable role order so output is deterministic regardless of dict enumeration (mirrors Get-Models).
+# Stable role order so output is deterministic regardless of dict enumeration.
 _ROLE_ORDER = ["planner", "coder", "chat", "fim", "embed"]
 
 
@@ -43,14 +42,14 @@ def _model_path(gguf: str) -> Path:
 
 def gpu_vram_gb():
     """Total VRAM of GPU 0 in whole GB, or None (no GPU / nvidia-smi absent). Delegates to the single
-    source osenv.gpu_vram_gb (ONE-D consolidated the former per-module copies)."""
+    source osenv.gpu_vram_gb (the former per-module copies were consolidated here)."""
     import osenv
     return osenv.gpu_vram_gb()
 
 
 def suggested_profile(vram_gb=None, config=None):
     """Largest '<N>gb' profile whose N <= detected VRAM (else the smallest sized one). None with no GPU
-    info. Port of Get-SuggestedProfile."""
+    info."""
     import bob_models
 
     if vram_gb is None:
@@ -168,7 +167,7 @@ def profiles_list(config: dict) -> str:
 
 def profile_switch(name: str, config: dict) -> str:
     """Switch the active profile (name or 'auto' = detect VRAM), persist via bob_models.set_active_profile
-    (data/active-profile.json, D4), regenerate configs best-effort, and report on-disk status. Port of
+    (data/active-profile.json), regenerate configs best-effort, and report on-disk status. Port of
     the `profile` case."""
     import bob_models
 
@@ -213,8 +212,7 @@ _VERIFY_ROLES = ["planner", "coder", "chat", "fim", "embed", "vision", "agent"]
 
 def verify_urls(profile: str, config: dict) -> str:
     """HEAD every HuggingFace resolve URL for a profile (or all profiles). Reports OK/REDIRECT/GATED/
-    MISSING/ERROR per model. Port of verify-urls.ps1 (extended to cover vision/agent too). Set HF_TOKEN
-    for gated repos."""
+    MISSING/ERROR per model; covers vision/agent too. Set HF_TOKEN for gated repos."""
     import os
 
     import bob_models
@@ -291,10 +289,10 @@ def bench(role: str, config: dict) -> str:
 
 def eval_model(role: str = "coder", task: str = "mmlu", shots: int = 0, limit: int = 0,
                config: dict = None, now: str = None) -> int:
-    """Benchmark a role's quality with lm-evaluation-harness (DD3: the isolated venv-eval). CLI-only + very
+    """Benchmark a role's quality with lm-evaluation-harness (in the isolated venv-eval). CLI-only + very
     long (minutes→hours), so it inherits stdio and returns the process exit code — NOT an agent tool, not
     on --run. Reads the tokenizer from the active profile (config/models.json) and checks the endpoint
-    first. Port of scripts/eval.ps1. `now` is an injectable timestamp for tests."""
+    first. `now` is an injectable timestamp for tests."""
     import os
     import subprocess
     from datetime import datetime
@@ -307,8 +305,8 @@ def eval_model(role: str = "coder", task: str = "mmlu", shots: int = 0, limit: i
     config = config if config is not None else _cfg
     lm_eval = osenv.venv_exe("venv-eval", "lm_eval")
     if not lm_eval.exists():
-        # DD3 — the isolated eval venv is provisioned lazily via the shared osenv.new_bob_venv (Slice D8,
-        # replacing the retired bootstrap-eval.ps1); lm-eval + transformers are heavy so it's kept off the
+        # The isolated eval venv is provisioned lazily via the shared osenv.new_bob_venv;
+        # lm-eval + transformers are heavy so it's kept off the
         # default bootstrap. Best-effort: a provisioning failure surfaces the actionable hint.
         print("lm-eval venv not found — provisioning tools/venv-eval (lm-eval + transformers)...",
               file=sys.stderr)

@@ -1,5 +1,5 @@
-"""O7 — MCP client seam: connect to configured MCP servers, translate their tools to Bob tool_schemas
-namespaced mcp:<server>:<tool>, route dispatch to a live round-trip, and default remote tools to O6
+"""MCP client seam: connect to configured MCP servers, translate their tools to Bob tool_schemas
+namespaced mcp:<server>:<tool>, route dispatch to a live round-trip, and default remote tools to
 'ask'. Hermetic: the `mcp` package + a live transport are only touched by _RealConnection; every test
 here injects a fake in-process connector, so the whole seam runs under bare python3 (no deps)."""
 import json
@@ -172,7 +172,7 @@ class TestRegistryRegistration(unittest.TestCase):
         # the connected client is stashed on the registry so its connections outlive build()
         self.assertIsInstance(getattr(reg, "_mcp_client", None), mc.McpClient)
         self.assertEqual(reg._mcp_client.servers(), ["fs"])
-        # dispatch routes through the registry's normal path (so M7 truncation/O6 policy apply for free)
+        # dispatch routes through the registry's normal path (so truncation/policy apply for free)
         out = reg.dispatch_call("mcp:fs:echo", json.dumps({"x": "hi"}))
         self.assertEqual(out, "REMOTE OK")
         self.assertEqual(conn.calls, [("echo", {"x": "hi"}, 30)])
@@ -187,7 +187,7 @@ class TestRegistryRegistration(unittest.TestCase):
         self.assertIn("not available", view.dispatch_call("mcp:fs:echo", "{}"))
 
 
-# --------------------------------------------------------------------------- O6 policy default = ask
+# --------------------------------------------------------------------------- policy default = ask
 
 class TestPolicyDefault(unittest.TestCase):
     """A remote tool defaults to 'ask' end-to-end through the real loop; a local tool stays 'allow'."""
@@ -238,7 +238,7 @@ class TestPolicyDefault(unittest.TestCase):
         self.assertIn("denied", result)
 
     def test_local_tool_does_not_prompt(self):
-        # same setup WITHOUT remote_tools -> allow, byte-identical to pre-O7 (no approval event).
+        # same setup WITHOUT remote_tools -> allow, matches the prior path (no approval event).
         reg, events = self._run(remote=False, approve=None)
         self.assertIn("mcp:fs:echo", reg.dispatched)
         self.assertFalse(any(e["type"] == "approval_required" for e in events))

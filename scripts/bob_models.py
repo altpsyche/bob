@@ -1,13 +1,12 @@
-"""ONE-C C0c — the Python reader for the neutral model registry (config/models.json).
+"""The Python reader for the neutral model registry (config/models.json).
 
-The registry (model selection: profiles, roles, repos/ggufs, defaults, peers) is now neutral JSON, read
-identically here and by PowerShell (Get-ModelsConfig via ConvertFrom-Json -AsHashtable). This module is
-the Python door onto it — the model/show/profiles/profile verbs (ONE-C Slice 4) build on these functions.
+The registry (model selection: profiles, roles, repos/ggufs, defaults, peers) is neutral JSON. This module is
+the Python reader onto it — the model/show/profiles/profile verbs build on these functions.
 
-Resolution mirrors the pwsh exactly:
+Resolution order:
   registry (models.json)  <- read-only, version-controlled
   + user.json overlay     <- per-machine, deep-merged (config/user.json, gitignored)
-  activeProfile: env BOB_PROFILE  >  data/active-profile.json (writable, D4)  >  models.json default
+  activeProfile: env BOB_PROFILE  >  data/active-profile.json (writable)  >  models.json default
 """
 import json
 import os
@@ -23,15 +22,15 @@ USER_FILE = REPO / "config" / "user.json"
 
 
 def _active_profile_file() -> Path:
-    """The writable activeProfile override (D4) — under the data dir, mirroring the pwsh
-    $script:ActiveProfileFile. osenv.data_dir() honors BOB_DATA_DIR."""
+    """The writable activeProfile override — under the data dir.
+    osenv.data_dir() honors BOB_DATA_DIR."""
     return osenv.data_dir() / "active-profile.json"
 
 
 def load_models_config(models_file: Optional[Path] = None, user_file: Optional[Path] = None) -> dict:
     """The resolved registry: models.json deep-merged with config/user.json, with `activeProfile`
     overridden by data/active-profile.json when present (env BOB_PROFILE is applied at resolve time,
-    not here — matching Get-ModelsConfig, whose result Resolve-ProfileName then reads)."""
+    not here — profile-name resolution reads the result later)."""
     mf = models_file or MODELS_FILE
     if not mf.exists():
         raise RuntimeError(f"models config not found: {mf}")
@@ -69,8 +68,8 @@ def profile_roles(name: Optional[str] = None, config: Optional[dict] = None) -> 
 
 
 def set_active_profile(name: str, config: Optional[dict] = None) -> str:
-    """Persist the writable activeProfile to data/active-profile.json (D4) — the same file pwsh
-    Set-ActiveProfile writes. Validates against known profiles. Returns the resolved name."""
+    """Persist the writable activeProfile to data/active-profile.json.
+    Validates against known profiles. Returns the resolved name."""
     config = config if config is not None else load_models_config()
     profiles = config.get("profiles", {})
     if name not in profiles:
@@ -89,8 +88,7 @@ def list_profiles(config: Optional[dict] = None) -> dict:
 
 def regenerate_configs() -> bool:
     """Regenerate the runtime configs (llama-swap.yaml + litellm.yaml) the running stack needs, from
-    models.json via the Python generators (ONE-C Slice 6 — the interim pwsh bridge is retired; this was
-    the last pwsh in the lifecycle hot path). Best-effort: True on success, False if generation raised
+    models.json via the Python generators. Best-effort: True on success, False if generation raised
     (leaving the existing configs in place). Single-sourced here so the stack bring-up
     (scripts/tools/stack.py) and profile switch (scripts/tools/models.py) share ONE regen. `bob gen`
     regenerates all four (adds Continue + WebUI); the hot path only needs these two."""

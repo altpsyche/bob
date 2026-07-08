@@ -16,7 +16,7 @@ exercises `/health` + an owner-scoped session turn + an SSE stream as the end-to
 ## Security
 
 - **Bind:** loopback (`127.0.0.1`) by default. Set `agent.serveHost` to `"0.0.0.0"` (via
-  `config/user.json`, or `config/bob.psd1` on Windows) to expose on the LAN, and **only** with
+  `config/user.json`) to expose on the LAN, and **only** with
   `agent.allowPrivateFetch` left `false` (the default), so a remote caller can't use `web_fetch` for
   SSRF against your private network. `bob agent serve` prints a warning when it binds `0.0.0.0`.
 - **Auth:** every endpoint except `/health` requires `Authorization: Bearer <token>`, where `<token>`
@@ -30,8 +30,8 @@ exercises `/health` + an owner-scoped session turn + an SSE stream as the end-to
 
 ## Config
 
-All under the `agent` block of the runtime config — override in `config/user.json` (or
-`config/bob.psd1` on Windows); defaults live in `config/defaults.json` under `runtime.agent`:
+All under the `agent` block of the runtime config — override in `config/user.json`;
+defaults live in `config/defaults.json` under `runtime.agent`:
 `serveHost`, `agentPort`, `apiTokens`, `defaultOwner`, `sessionDbPath`, `maxSessionTokens`,
 `gitAllowedRoots`, `logMaxBytes`/`logBackupCount`, `mcpEnabled`. See [TUNING.md](TUNING.md).
 

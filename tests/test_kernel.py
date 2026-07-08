@@ -1,9 +1,9 @@
-"""ONE-D Slice D8 — the cold-start kernel (scripts/bob/kernel.py + scripts/bob/install_prereqs.py) +
+"""The cold-start kernel (scripts/bob/kernel.py + scripts/bob/install_prereqs.py) +
 the Tier-0 osenv provisioning seams (PACKAGE_MAP / resolve_package_name / resolve_package_cmd /
 install_package / python_at_least / new_bob_venv). The kernel runs pre-venv under system python3 and
 IMPORTS the ported capabilities (build/provision/generate/stack/health), so these tests exercise the
 pure resolvers + the dispatch/normalization/wiring with the heavy work (cmake/go/pip/network) mocked.
-Ports the both-OS parity coverage the retired pwsh test-platform.ps1 provided (Resolve-PackageCmd/Name)."""
+Covers both-OS package-family resolution (resolve_package_cmd / resolve_package_name)."""
 import os
 import subprocess
 import sys
@@ -19,7 +19,7 @@ from bob import install_prereqs, kernel
 REPO = Path(__file__).resolve().parent.parent
 
 
-# --- Tier-0 osenv seams: package family (the test-platform.ps1 parity) ---------------------------
+# --- Tier-0 osenv seams: package family ---------------------------------------------------------
 
 class TestPackageSeams(unittest.TestCase):
     def test_resolve_name_per_manager(self):
@@ -189,7 +189,7 @@ class TestKernelArgvNormalize(unittest.TestCase):
 
 
 class TestOfferOnboard(unittest.TestCase):
-    """#6 — onboarding reach: a fresh interactive `bob` offers to seed a profile (not only setup).
+    """Onboarding reach: a fresh interactive `bob` offers to seed a profile (not only setup).
     No-op when a profile exists, on a non-TTY, or once declined; a 'yes' runs the same onboard()."""
 
     def _offer(self, *, tty=True, needs=True, declined=False, answer="y"):
@@ -274,7 +274,7 @@ class TestKernelWiring(unittest.TestCase):
             kernel._wire(target, link)
 
     def test_needs_onboard(self):
-        # POST-ONE: the real signal is a durable profile row, not just the config `bob` marker (onboard()
+        # the real signal is a durable profile row, not just the config `bob` marker (onboard()
         # writes that marker even when the profile save failed — the "Bob doesn't know me" bug).
         with tempfile.TemporaryDirectory() as d, \
              mock.patch.object(kernel, "REPO", Path(d)), \

@@ -2,7 +2,7 @@
 OpenAI-compatible TTS server wrapping piper CLI.
 Exposes POST /v1/audio/speech so Open WebUI can use piper as its TTS engine.
 
-Config (set by start-piper-server.ps1 via env vars):
+Config (set via env vars):
   PIPER_EXE   — absolute path to bin/piper.exe
   PIPER_VOICE — absolute path to bin/voices/<voice>.onnx
   PIPER_PORT  — port to listen on (default 8083)
@@ -19,7 +19,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 
-from bob_core import _port   # ONE-A Finding 4 — the TTS port default lives in config/defaults.json (NB1)
+from bob_core import _port   # the TTS port default lives in config/defaults.json
 
 PIPER_EXE   = os.environ.get("PIPER_EXE", "")
 PIPER_VOICE = os.environ.get("PIPER_VOICE", "")

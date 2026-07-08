@@ -1,4 +1,4 @@
-"""O10 — the agent-capability eval harness: fixtures score stably (100%) and a regressed loop drops the
+"""The agent-capability eval harness: fixtures score stably (100%) and a regressed loop drops the
 score. Records-based (no live model), so it runs under bare python3 on the CPU CI tier."""
 import os
 import sys

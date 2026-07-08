@@ -49,7 +49,7 @@ def _require_deps() -> None:
 _DEFAULT_DB = Path(__file__).parent.parent / "data" / "bob.db"
 EMBED_MODEL = "embed"
 
-# --- Schema (MEM-0 v2 typed/owner-scoped; MEM-10 v3 provenance) ---------------
+# --- Schema (v2 typed/owner-scoped; v3 provenance) ---------------
 # `get_db` migrates a legacy DB in place (additive ALTERs + one-time backfill), gated by PRAGMA
 # user_version so the common path is a cheap version read. Migrations run as an incremental ladder
 # (v1→v2→v3), each step idempotent and column-presence-guarded.
@@ -57,10 +57,10 @@ SCHEMA_VERSION = 3
 
 # Columns added to the v1 `memories` table (id/content/embedding/source/created_at/last_used/
 # use_count already exist). NOT NULL columns carry a literal default so ALTER ADD COLUMN is legal
-# on a populated table; owner_id's 'local' matches agent.defaultOwner's default (MEM-6 threads the
-# real owner into NEW writes — this backfill just stamps legacy rows).
+# on a populated table; owner_id's 'local' matches agent.defaultOwner's default (the write path
+# threads the real owner into NEW writes — this backfill just stamps legacy rows).
 _V2_COLUMNS = [
-    ("content_hash", "TEXT"),                          # sha256(normalized) — exact-dedup fast path (MEM-1)
+    ("content_hash", "TEXT"),                          # sha256(normalized) — exact-dedup fast path
     ("type", "TEXT NOT NULL DEFAULT 'fact'"),          # profile|preference|project|fact|episodic
     ("subject", "TEXT NOT NULL DEFAULT 'user'"),
     ("owner_id", "TEXT NOT NULL DEFAULT 'local'"),
@@ -73,7 +73,7 @@ _V2_COLUMNS = [
     ("expires_at", "TEXT"),
 ]
 
-# v3 (MEM-10) — per-row provenance: the originating session id, stamped by consolidation.
+# v3 — per-row provenance: the originating session id, stamped by consolidation.
 _V3_COLUMNS = [
     ("source_session", "TEXT"),                        # session that produced this row (audit / forget --session)
 ]
@@ -81,7 +81,7 @@ _V3_COLUMNS = [
 # §2.3 third-person normalization — deterministic, leading-pronoun-anchored, conservative. Specific
 # forms first so `I'm`/`I've`/`I am` win over the bare `I `. NOTE: this is the cheap fast path — it
 # swaps the pronoun but does NOT conjugate the verb ("I prefer" -> "User prefer", not "prefers").
-# The conjugated forms in the design doc's §7 table are the LLM/consolidation ideal (MEM-4); the
+# The conjugated forms in the design doc's §7 table are the LLM/consolidation ideal; the
 # deterministic path stays conservative and anything unmatched is stored as-is (framed at read time).
 _PRONOUN_PREFIXES = [
     ("I'm ", "User is "),
@@ -94,7 +94,7 @@ _PRONOUN_PREFIXES = [
 
 def _normalize_third_person(content: str) -> str:
     """Rewrite a first-person note to third person via the §2.3 deterministic rules. Reused by both
-    `migrate --normalize` (MEM-0) and the write path (MEM-1)."""
+    `migrate --normalize` and the write path."""
     text = content.strip()
     for prefix, repl in _PRONOUN_PREFIXES:
         if text.startswith(prefix):
@@ -104,11 +104,11 @@ def _normalize_third_person(content: str) -> str:
 
 
 def _content_hash(content: str) -> str:
-    """sha256 of the (normalized) content — the exact-dedup key (MEM-1) and a migration audit field."""
+    """sha256 of the (normalized) content — the exact-dedup key and a migration audit field."""
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
-# --- Blended ranking defaults (MEM-2) ----------------------------------------
+# --- Blended ranking defaults ----------------------------------------
 # Mirror config/defaults.json memory.ranking / memory.typeWeights. recall() reads config-supplied
 # overrides when given, else these. A near-immortal half-life (~100y) makes profile/preference decay
 # negligible; episodic decays in weeks.
@@ -117,12 +117,12 @@ _DEFAULT_TYPE_WEIGHTS = {"profile": 1.0, "preference": 0.9, "project": 0.8, "fac
 _DEFAULT_HALF_LIVES = {"profile": 36500, "preference": 36500, "project": 90, "fact": 365, "episodic": 30}
 
 
-_MAX_AGE_DAYS = 3_650_000.0   # ~10000y — a missing/unparseable timestamp ages to "ancient" (MEM-10 A3)
+_MAX_AGE_DAYS = 3_650_000.0   # ~10000y — a missing/unparseable timestamp ages to "ancient"
 
 
 def _age_days(created_at, now: datetime) -> float:
     """Age of a row in days. Tolerates both store()'s ISO8601 timestamps and SQLite's
-    'YYYY-MM-DD HH:MM:SS' default form. A3 fix: a missing/unparseable value ages to _MAX_AGE_DAYS
+    'YYYY-MM-DD HH:MM:SS' default form. A missing/unparseable value ages to _MAX_AGE_DAYS
     (ranks oldest, decay≈0) instead of 0.0 — the old 'fresh' default let corrupt rows rank as the
     freshest."""
     if not created_at:
@@ -135,7 +135,7 @@ def _age_days(created_at, now: datetime) -> float:
     except (ValueError, TypeError):
         return _MAX_AGE_DAYS
 
-# N7 — resolve the LiteLLM base URL + auth from config (single source of truth, CONTRIBUTING §8)
+# Resolve the LiteLLM base URL + auth from config (single source of truth, CONTRIBUTING §8)
 # instead of hardcoding :8081. Memoized per process; falls back to the central port default
 # if config.json isn't present yet.
 _LITELLM: dict = {}
@@ -146,7 +146,7 @@ def _litellm() -> "tuple[str, dict]":
 
     If config.json isn't readable yet (missing or corrupt), return the central default WITHOUT
     memoizing — so a later call re-reads once the real config exists, instead of poisoning the
-    process with the sk-local fallback (N-review H2)."""
+    process with the sk-local fallback."""
     cached = _LITELLM.get("v")
     if cached is not None:
         return cached
@@ -202,7 +202,7 @@ def _ensure_schema(db: sqlite_utils.Database) -> None:
             source_session TEXT
         )
     """)
-    # DEPRECATED (MEM-5): the legacy key/value profile table is no longer written or read — identity
+    # DEPRECATED: the legacy key/value profile table is no longer written or read — identity
     # now lives as type='profile' rows in `memories` (cmd_init_profile + consolidation). Kept one
     # release for back-compat on existing DBs; a later migration drops it.
     db.execute("""
@@ -249,7 +249,7 @@ def _migrate_to_v2(db: sqlite_utils.Database) -> None:
 
 
 def _migrate_to_v3(db: sqlite_utils.Database) -> None:
-    """v2 -> v3 (MEM-10): add the source_session provenance column + its index. Version stamping is
+    """v2 -> v3: add the source_session provenance column + its index. Version stamping is
     done by the caller (_ensure_schema)."""
     _add_missing_columns(db, _V3_COLUMNS)
     db.execute("CREATE INDEX IF NOT EXISTS idx_mem_session ON memories(owner_id, source_session)")
@@ -277,7 +277,7 @@ def cosine(a: list[float], b: list[float]) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Importable core (M14) — one implementation for both the CLI (cmd_*) and
+# Importable core — one implementation for both the CLI (cmd_*) and
 # bob_core.memory_store/recall. Neither prints; callers format their own output.
 # ---------------------------------------------------------------------------
 
@@ -285,13 +285,13 @@ def store(content: str, db_path: Path, source: str = "user", mem_type: str = "fa
           owner: str = "local", scope: str = None, tags: str = None, salience: float = 1.0,
           dedup_threshold: float = 0.92, source_session: str = None,
           embed_optional: bool = False) -> tuple[int, bool]:
-    """Insert a typed, owner-scoped memory (MEM-1). Returns (id, is_new).
+    """Insert a typed, owner-scoped memory. Returns (id, is_new).
 
     Content is normalized to third person (§2.3) before hashing/embedding, so recalled text never
     reads as Bob's own identity. Two-tier dedup — both return the existing id with is_new=False:
       - exact: a content_hash lookup scoped to the owner — O(1), *before* any embedding call;
       - near:  cosine >= dedup_threshold, scoped to (owner, mem_type).
-    Dedup stays best-effort (M16): read-then-insert isn't transactional — benign for a personal DB.
+    Dedup stays best-effort: read-then-insert isn't transactional — benign for a personal DB.
 
     Raises RuntimeError if the embed server is unreachable — UNLESS `embed_optional` is set, in which
     case the row is stored with a NULL embedding and near-dedup is skipped. That keeps durable identity
@@ -345,12 +345,12 @@ def store(content: str, db_path: Path, source: str = "user", mem_type: str = "fa
     return db.execute("SELECT last_insert_rowid()").fetchone()[0], True
 
 
-# --- O14: hybrid recall (dense + BM25/FTS5 + Reciprocal Rank Fusion) ----------
+# --- hybrid recall (dense + BM25/FTS5 + Reciprocal Rank Fusion) ----------
 
 def _nonsemantic_score(w, tw, hl, mtype, created_at, use_count, salience, last_used, now) -> float:
-    """The recency+type+usage+salience half of the MEM-2/9 blended score. Hybrid recall adds this on
+    """The recency+type+usage+salience half of the blended score. Hybrid recall adds this on
     top of the RRF-fused relevance; the dense path inlines the identical math (kept inline there so its
-    float arithmetic stays byte-for-byte the pre-O14 result)."""
+    float arithmetic stays byte-for-byte the dense-only result)."""
     age = _age_days(created_at, now)
     if last_used:
         age = min(age, _age_days(last_used, now))
@@ -378,7 +378,7 @@ def _fts5_available(db) -> bool:
 
 
 def _ensure_fts(db) -> bool:
-    """O14 — lazily build the external-content FTS5 index + sync triggers over memories.content and
+    """Lazily build the external-content FTS5 index + sync triggers over memories.content and
     backfill it, once, the FIRST time hybrid recall runs. Deliberately NOT in _ensure_schema, so
     dense-mode DBs are byte-unchanged (no extra table, no per-write trigger overhead). Returns False if
     this SQLite build lacks FTS5 (caller falls back to dense)."""
@@ -476,17 +476,17 @@ def recall(query: str, db_path: Path, k: int = 5, threshold: float = 0.35,
     first) and bump last_used/use_count on the hits. Raises RuntimeError if the embed server is
     unreachable. Returns [] for an empty query or no candidates.
 
-    MEM-2/9 blended score (replaces the semantic-only cosine + magic 0.3):
+    Blended score (replaces the semantic-only cosine + magic 0.3):
         score = wSemantic*cosine + wRecency*exp(-age_days/halfLife[type]) + wType*typeWeight
                 + wUsage*usage + wSalience*salience
-    MEM-9: recency ages off max(created_at, last_used) so a re-accessed fact stops decaying, and
+    Recency ages off max(created_at, last_used) so a re-accessed fact stops decaying, and
     salience (importance/10, set by consolidation) is a live ranking term. An owner/scope SQL
     prefilter closes the former cross-owner leak and skips soft-deleted (superseded) and expired
     rows before scoring.
 
-    O14: `retrieval='hybrid'` fuses dense cosine + BM25 (SQLite FTS5) via Reciprocal Rank Fusion
+    `retrieval='hybrid'` fuses dense cosine + BM25 (SQLite FTS5) via Reciprocal Rank Fusion
     (`rrf_k`) before applying the recency/type/usage/salience terms — catching lexically-exact hits a
-    dense-only scan misses. `retrieval='dense'` (**default**) is the pre-O14 path, byte-identical; it
+    dense-only scan misses. `retrieval='dense'` (**default**) is the dense-only path, byte-identical; it
     also silently backstops hybrid when this SQLite build lacks FTS5."""
     if not query.strip():
         return []
@@ -544,7 +544,7 @@ def recall(query: str, db_path: Path, k: int = 5, threshold: float = 0.35,
 
 
 def profile_block(owner: str, db_path: Path, limit: int = 5, max_chars: int = 800) -> "str | None":
-    """MEM-3 — the once-per-session profile body: up to `limit` durable identity rows
+    """The once-per-session profile body: up to `limit` durable identity rows
     (type in profile/preference) for this owner, as third-person bullets, capped at ~max_chars.
     Embedding-free (a single SQL read); returns None when there's nothing to inject. The caller
     wraps this in the shared context frame."""
@@ -566,7 +566,7 @@ def profile_block(owner: str, db_path: Path, limit: int = 5, max_chars: int = 80
     return "\n".join(lines) if lines else None
 
 
-# --- Hygiene + inspect/edit surface (MEM-5) ----------------------------------
+# --- Hygiene + inspect/edit surface ----------------------------------
 
 def list_memories(db_path: Path, owner: str = "local", type_filter: str = None,
                   limit: int = 50, include_inactive: bool = False) -> list[dict]:
@@ -626,7 +626,7 @@ def forget_by_query(query: str, db_path: Path, owner: str = "local", threshold: 
 
 
 def forget_by_session(session_id: str, db_path: Path, owner: str = "local") -> int:
-    """MEM-10 — soft-delete every active memory a given session produced (provenance-based forget).
+    """Soft-delete every active memory a given session produced (provenance-based forget).
     Rows stay for audit/export; recall skips them. Returns the count hidden."""
     db = get_db(db_path)
     stamp = datetime.now(timezone.utc).isoformat()
@@ -664,7 +664,7 @@ def edit(mem_id: int, new_content: str, db_path: Path) -> "int | None":
 
 
 def set_pinned(mem_id: int, db_path: Path, pinned: bool) -> bool:
-    """MEM-9 — pin/unpin a memory. Pinned rows are never TTL/size-pruned and rank first in the
+    """Pin/unpin a memory. Pinned rows are never TTL/size-pruned and rank first in the
     profile block. Returns False if mem_id is unknown."""
     db = get_db(db_path)
     cur = db.execute("UPDATE memories SET pinned=?, updated_at=? WHERE id=?",
@@ -675,7 +675,7 @@ def set_pinned(mem_id: int, db_path: Path, pinned: bool) -> bool:
 
 def prune(db_path: Path, owner: str = "local", forget_after_days: dict = None,
           max_rows: int = 2000) -> dict:
-    """Hygiene (MEM-5): hard-delete rows past their per-type TTL, then enforce a per-owner size cap by
+    """Hygiene: hard-delete rows past their per-type TTL, then enforce a per-owner size cap by
     dropping the lowest-salience/oldest rows. NEVER removes pinned rows or type in (profile, preference).
     Run opportunistically at end of consolidation. Returns {'ttl_pruned', 'capped'}."""
     db = get_db(db_path)
@@ -684,7 +684,7 @@ def prune(db_path: Path, owner: str = "local", forget_after_days: dict = None,
     for mtype, days in (forget_after_days or {}).items():
         if mtype in ("profile", "preference"):
             continue   # identity never TTL-expires
-        # A4 fix — compare PARSED datetimes, not raw strings: store() writes ISO 'T' timestamps but
+        # Compare PARSED datetimes, not raw strings: store() writes ISO 'T' timestamps but
         # SQLite's column default writes a space-separated form, so a naive string compare against an
         # ISO cutoff over-prunes legacy rows (space < 'T' at the date/time boundary).
         rows = db.execute(
@@ -695,7 +695,7 @@ def prune(db_path: Path, owner: str = "local", forget_after_days: dict = None,
                 db.execute("DELETE FROM memories WHERE id=?", [rid])
                 ttl_pruned += 1
     capped = 0
-    # A4 — the live size cap counts and drops ACTIVE rows only; superseded/expired rows are already
+    # The live size cap counts and drops ACTIVE rows only; superseded/expired rows are already
     # inactive and must not inflate the count or be chosen as victims.
     active = "superseded_by IS NULL AND (expires_at IS NULL OR expires_at > ?)"
     now_iso = now.isoformat()
@@ -820,12 +820,12 @@ def cmd_clear(yes: bool, db_path: Path) -> None:
     print("Memory cleared.")
 
 
-# --- Consolidation (MEM-4) ---------------------------------------------------
+# --- Consolidation ---------------------------------------------------
 _SUMMARY_SYSTEM = (
     "Summarize the following conversation into 2-5 bullet points capturing key facts, decisions, "
     "or preferences expressed by the user. Be concise."
 )
-# MEM-8 — reconcile, not just extract. The model is shown the owner's existing durable facts (by id)
+# Reconcile, not just extract. The model is shown the owner's existing durable facts (by id)
 # and tags each new fact NEW or REPLACES:<id> so contradictions supersede instead of piling up.
 _CONSOLIDATE_SYSTEM = (
     "From the conversation, extract 0-5 DURABLE facts about the USER worth remembering for future "
@@ -843,11 +843,11 @@ _CONSOLIDATE_SYSTEM = (
     "empty response."
 )
 _CONSOLIDATE_TYPES = {"profile", "preference", "project", "fact"}
-_AUTO_PIN_IMPORTANCE = 9   # MEM-9 — consolidation pins a profile fact at/above this importance
+_AUTO_PIN_IMPORTANCE = 9   # consolidation pins a profile fact at/above this importance
 
 
 def _build_reconcile_prompt(existing: list) -> str:
-    """MEM-8 — the consolidation system prompt with the owner's existing durable facts appended (as
+    """The consolidation system prompt with the owner's existing durable facts appended (as
     `<id>: <content>` lines) so the model can tag each extracted fact NEW or REPLACES:<id>."""
     if existing:
         block = "\n".join(f"{rid}: {content}" for rid, _mtype, content in existing)
@@ -858,7 +858,7 @@ def _build_reconcile_prompt(existing: list) -> str:
 def summarize_turns(turns: list, model: str = "chat", system_prompt: str = None,
                     max_tokens: int = 256, timeout: int = 60) -> str:
     """One LLM summarization call over a list of message dicts; returns the text ("" on failure or
-    no usable turns). The shared summarizer core — MEM-4 consolidation and O3 context compaction
+    no usable turns). The shared summarizer core — consolidation and context compaction
     both call this instead of re-implementing the LLM plumbing. Never raises (best-effort).
     `timeout` bounds the call so an end-of-session consolidation can't stall exit indefinitely."""
     _require_deps()
@@ -899,7 +899,7 @@ def _parse_typed_bullets(text: str) -> "list[tuple[str, str]]":
 
 
 def _parse_reconciled_bullets(text: str) -> "list[tuple[str, str, int | None, int | None]]":
-    """MEM-8/9 — parse reconciliation output into (type, statement, replaces_id, importance) quads.
+    """Parse reconciliation output into (type, statement, replaces_id, importance) quads.
     Line: `<type>: <statement> | <NEW|REPLACES:id> | <importance 1-10>`. The `|`-delimited metadata
     tokens (NEW, REPLACES:<id>, a bare 1-10 int) are consumed from the RIGHT and are order-
     independent; parsing stops at the first token that isn't recognized metadata, so a statement
@@ -941,7 +941,7 @@ def _parse_reconciled_bullets(text: str) -> "list[tuple[str, str, int | None, in
 
 
 def _active_durable_facts(db, owner: str, limit: int, scope: str = None) -> list:
-    """MEM-8 — top-K active durable facts for the reconciliation prompt: owner-scoped, not
+    """Top-K active durable facts for the reconciliation prompt: owner-scoped, not
     superseded/expired, excluding episodic recaps. Global rows plus this project's scope. Ordered
     pinned, then salience, then recency. Returns (id, type, content) rows."""
     now = datetime.now(timezone.utc).isoformat()
@@ -957,7 +957,7 @@ def _active_durable_facts(db, owner: str, limit: int, scope: str = None) -> list
 
 
 def _prose_recap(raw: str, convo: list) -> str:
-    """B6 — a prose episodic recap. Strip the `type:`/`| tag` scaffolding off the extracted facts into
+    """A prose episodic recap. Strip the `type:`/`| tag` scaffolding off the extracted facts into
     plain sentences; if extraction produced nothing (LLM down or nothing durable), fall back to a
     deterministic recap (turn count + first user line) so a session is never silently dropped."""
     if raw and raw.strip():
@@ -972,18 +972,18 @@ def consolidate_session(turns: list, db_path: Path, model: str = "chat", owner: 
                         dedup_threshold: float = 0.92, timeout: int = 60,
                         scope: str = None, reconcile_top_k: int = 20,
                         max_tokens: int = 512, source_session: str = None) -> dict:
-    """MEM-4/8/9 — extract durable typed facts from a session's turns and RECONCILE them against the
+    """Extract durable typed facts from a session's turns and RECONCILE them against the
     owner's existing facts (supersede, don't accumulate), plus one prose episodic recap. Returns
     {'facts': n_new, 'superseded': n, 'summary': text}. No-op (facts=0) for <2 turns.
 
     One LLM call: the owner's top-K active durable facts are fed into the extraction prompt so the
-    model tags each fact NEW or REPLACES:<id> and rates its importance 1-10 (MEM-9 → salience).
+    model tags each fact NEW or REPLACES:<id> and rates its importance 1-10 (→ salience).
     REPLACES invalidates the old row via superseded_by (kept for audit, like edit()); ambiguous →
     NEW (conservative). A very-high-importance profile fact is auto-pinned (survives prune, ranks
-    top). `scope` (MEM-7) tags extracted type='project' facts to the project; other types stay
-    global. B6: the episodic recap is real prose with a deterministic fallback when the summarizer
+    top). `scope` tags extracted type='project' facts to the project; other types stay
+    global. The episodic recap is real prose with a deterministic fallback when the summarizer
     returns nothing. Idempotent: re-running the same turns dedups new facts to 0. Called in-process
-    by the NE shell /exit hook, the agent server on session delete, and the CLI — no temp file, no
+    by the interactive shell /exit hook, the agent server on session delete, and the CLI — no temp file, no
     subprocess (CONTRIBUTING §2)."""
     convo = [m for m in turns if m.get("role") in ("user", "assistant")]
     if len(convo) < 2:
@@ -1000,7 +1000,7 @@ def consolidate_session(turns: list, db_path: Path, model: str = "chat", owner: 
     pin_ids: list = []
     if raw:
         for mtype, stmt, replaces, importance in _parse_reconciled_bullets(raw):
-            # MEM-9 — importance 1-10 → salience 0.1-1.0 (default 1.0 when the model omits it).
+            # Importance 1-10 → salience 0.1-1.0 (default 1.0 when the model omits it).
             salience = (importance / 10.0) if importance else 1.0
             try:
                 new_id, is_new = store(stmt, db_path, source="consolidation", mem_type=mtype,
@@ -1014,7 +1014,7 @@ def consolidate_session(turns: list, db_path: Path, model: str = "chat", owner: 
             # (store() may have deduped the "new" fact back onto the row we were asked to replace).
             if replaces is not None and replaces in valid_ids and replaces != new_id:
                 supersede_pairs.append((new_id, replaces))
-            # Auto-pin a core-identity profile fact so hygiene never prunes it (B5).
+            # Auto-pin a core-identity profile fact so hygiene never prunes it.
             if is_new and mtype == "profile" and importance and importance >= _AUTO_PIN_IMPORTANCE:
                 pin_ids.append(new_id)
         # Apply the invalidations/pins AFTER all store() writes committed (avoids two write
@@ -1029,7 +1029,7 @@ def consolidate_session(turns: list, db_path: Path, model: str = "chat", owner: 
             for pid in pin_ids:
                 db.execute("UPDATE memories SET pinned=1, updated_at=? WHERE id=?", [stamp, pid])
             db.conn.commit()
-    # B6 — a real prose recap (no type:/tag scaffolding), deterministic when extraction was empty,
+    # A real prose recap (no type:/tag scaffolding), deterministic when extraction was empty,
     # so a session is never silently dropped.
     try:
         store(_prose_recap(raw, convo), db_path, source="consolidation", mem_type="episodic",
@@ -1040,8 +1040,8 @@ def consolidate_session(turns: list, db_path: Path, model: str = "chat", owner: 
 
 
 def cmd_summarize_session(messages_file: str, model: str, db_path: Path) -> None:
-    """CLI/legacy-REPL entry: read the turns file and run consolidation (MEM-4). Kept under the old
-    'summarize-session' verb for the PowerShell REPL; the in-memory surfaces call the core directly."""
+    """CLI/legacy-REPL entry: read the turns file and run consolidation. Kept under the old
+    'summarize-session' verb; the in-memory surfaces call the core directly."""
     _require_deps()
     with open(messages_file, encoding="utf-8") as f:
         messages = json.load(f)
@@ -1053,7 +1053,7 @@ def cmd_summarize_session(messages_file: str, model: str, db_path: Path) -> None
 
 
 def cmd_init_profile(name: str, work: str, db_path: Path) -> None:
-    """Seed durable identity as type='profile' memory rows (MEM-5 cleanup) — so they rank as profile
+    """Seed durable identity as type='profile' memory rows — so they rank as profile
     and get injected at session start, instead of the dead `profile` key/value table nothing read."""
     facts = []
     if name:
@@ -1072,7 +1072,7 @@ def cmd_init_profile(name: str, work: str, db_path: Path) -> None:
 
 
 def cmd_migrate(db_path: Path, normalize: bool = False) -> None:
-    """MEM-0. Schema migration always runs (via get_db). With --normalize, additionally rewrite each
+    """Schema migration always runs (via get_db). With --normalize, additionally rewrite each
     row's content to third person (§2.3) and re-embed — backs the DB up first (needs the embed
     server up), per the backup-before-rewrite posture (CONTRIBUTING §5)."""
     db = get_db(db_path)  # triggers the v1 -> v2 schema migration

@@ -47,7 +47,7 @@ SYSTEM_PROMPTS = {
 }
 
 # Long-form drafts (PR, docs) route to the thinking role; short-form to chat. The routing
-# table itself lives in bob_core.get_role (M8) — here we only pick the task.
+# table itself lives in bob_core.get_role — here we only pick the task.
 TYPE_TASK_MAP = {"pr": "think", "doc": "think"}
 
 

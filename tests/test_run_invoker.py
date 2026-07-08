@@ -1,4 +1,4 @@
-"""ONE-C §1a — the deterministic invoker `bob --run <cap> '{json}'`.
+"""The deterministic invoker `bob --run <cap> '{json}'`.
 
 Proves `--run` routes through the EXACT agent path (ToolRegistry.dispatch_call): same capability, same
 args, no model, no parallel dispatcher. Validation (missing cap / non-JSON / non-object) short-circuits

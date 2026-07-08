@@ -1,12 +1,12 @@
-"""Bob native-build capabilities (ONE-D Slice D5, DD1) — the toolchain half of provisioning.
+"""Bob native-build capabilities — the toolchain half of provisioning.
 
-DD1: a FULL Python port of the native build (build-llama.ps1 + build-llama-swap.ps1 + setup-fabric.ps1) —
-the CUDA-root / cmake-flags / host-compiler resolution moved to osenv (§1b); cmake / nvcc / go stay
-subprocess (they always were). Per C7 native-from-source is the default and is exercised only in the
-non-gating GPU/release-tag CI tier, so this heavy code never gates a per-PR merge.
+Builds llama.cpp + llama-swap + fabric from source in Python — the CUDA-root / cmake-flags /
+host-compiler resolution lives in the osenv seam; cmake / nvcc / go stay subprocess. Native-from-source
+is the default and is exercised only in the non-gating GPU/release-tag CI tier, so this heavy code never
+gates a per-PR merge.
 
 CLI-only + long (`bob build`, `bob fabric-setup`) — not agent tools. Import-clean under a bare system
-python (no requests / venv-only deps) so the ONE-D cold-start kernel (D8) calls build_llama() directly
+python (no requests / venv-only deps) so the cold-start kernel calls build_llama() directly
 before the venv exists. Each fn returns a status string and raises RuntimeError on failure (the cli
 handler prints + exits non-zero)."""
 import shutil
@@ -80,7 +80,7 @@ def _resolve_cmake(generator: str) -> str:
 
 def build_llama(cpu: bool = False, arch: int = 0, force: bool = False, cuda_root: str = "") -> str:
     """(Re)build llama.cpp -> bin/llama-server. Auto-detects arch + CUDA root (osenv) unless given; CPU
-    build with cpu=True. Atomic bin/ swap; Windows stages CUDA runtime DLLs. Port of build-llama.ps1."""
+    build with cpu=True. Atomic bin/ swap; Windows stages CUDA runtime DLLs."""
     import os
     import osenv
 
@@ -194,7 +194,7 @@ SRC_WHISPER = REPO / "external" / "whisper.cpp"
 def build_whisper(force: bool = False, cpu_only: bool = False) -> str:
     """(Re)build whisper.cpp -> bin/whisper-server + whisper-cli (CUDA by default, CPU fallback). Shares the
     cmake resolution + CUDA seams with build_llama; skips shared libs already in bin/ (whisper + llama share
-    GGML). Port of build-whisper.ps1."""
+    GGML)."""
     import osenv
 
     win = osenv.os_name() == "windows"
@@ -265,7 +265,7 @@ def build_whisper(force: bool = False, cpu_only: bool = False) -> str:
 # --- build llama-swap (Go) ------------------------------------------------------------------------
 
 def build_llama_swap(force: bool = False) -> str:
-    """Build the llama-swap submodule (Go) -> bin/llama-swap. Port of build-llama-swap.ps1."""
+    """Build the llama-swap submodule (Go) -> bin/llama-swap."""
     import osenv
     out = osenv.bin_exe("llama-swap")
     if not force and out.exists():
@@ -283,8 +283,7 @@ def build_llama_swap(force: bool = False) -> str:
 # --- fabric setup (Go build + ~/.config/fabric wiring) --------------------------------------------
 
 def setup_fabric(force: bool = False) -> str:
-    """Build fabric (Go) -> bin/fabric and wire ~/.config/fabric (.env + patterns symlink). Port of
-    setup-fabric.ps1."""
+    """Build fabric (Go) -> bin/fabric and wire ~/.config/fabric (.env + patterns symlink)."""
     import osenv
     from bob_core import _port
 
@@ -326,7 +325,7 @@ def setup_fabric(force: bool = False) -> str:
     return "\n".join(lines)
 
 
-# --- update (ND3: release-aware, cross-platform, with build rollback) ------------------------------
+# --- update (release-aware, cross-platform, with build rollback) ------------------------------
 
 def _git_head(path: Path) -> str:
     try:
@@ -350,7 +349,7 @@ def _verify_binary(exe: Path) -> bool:
 
 def _reinstall_venv() -> None:
     """Ensure the runtime venv matches the (possibly updated) requirements lock, via the shared
-    osenv.new_bob_venv provisioner (Slice D8 — the cold-start kernel and `update` share one venv path).
+    osenv.new_bob_venv provisioner (the cold-start kernel and `update` share one venv path).
     Best-effort: a reinstall failure warns but doesn't abort the update."""
     import osenv
     print("Ensuring the Python runtime venv matches the lock...", file=sys.stderr)
@@ -363,7 +362,7 @@ def _reinstall_venv() -> None:
 def update_stack(tag: str = None) -> int:
     """Release-aware update with rollback: fetch/checkout (default: ff the current branch; tag= a release),
     submodule sync, venv reinstall, conditional rebuild (only if llama.cpp moved) with a bin/ snapshot +
-    binary verify + rollback on failure, relock, then doctor. Port of the bob.ps1 update case (ND3).
+    binary verify + rollback on failure, relock, then doctor. Port of the former update case.
     Returns 0 on success, 1 on a handled failure. CLI-only + long."""
     import osenv
 

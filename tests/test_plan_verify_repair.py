@@ -1,5 +1,5 @@
-"""O4 — planning + reflection + self-repair, three config-gated loop phases (all default off →
-byte-identical to pre-O4). Plan: a bounded planner turn injects a step list before the loop. Verify: a
+"""Planning + reflection + self-repair, three config-gated loop phases (all default off →
+identical to the plain loop). Plan: a bounded planner turn injects a step list before the loop. Verify: a
 critic turn before the final answer; on "not DONE" it injects the critique and continues. Self-repair:
 a failed tool call is retried once (catches a flaky tool)."""
 import unittest

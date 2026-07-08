@@ -1,4 +1,4 @@
-"""M13 — token-aware context management (M7 helpers)."""
+"""Token-aware context management."""
 import unittest
 
 import _common

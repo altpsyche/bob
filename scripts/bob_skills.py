@@ -1,4 +1,4 @@
-"""NE4 (contract C6) — the skills registry: discover, validate, list, and (simply) run named skills.
+"""The skills registry: discover, validate, list, and (simply) run named skills.
 
 A *skill* is a higher-level, named workflow — distinct from an atomic *tool*. Manifest lives at
 `skills/<name>/skill.yaml` with the frontier-standard shape `{name, description}` (name defaults to
@@ -6,10 +6,10 @@ the directory; only `description` is required — matching Claude Code SKILL.md 
 carry NO typed `params`), plus an optional `group` and an optional Bob extension `steps` — a list of
 `{tool, arguments}` run in order for simple tool-sequence skills.
 
-A skill WITHOUT `steps` is a prompt / sub-agent skill; its execution is Module O's job (O1 sub-agents).
-O11 wires that execution in here: `run`/`run_events` drive an isolated `run_agent_events` sub-run whose
-prompt is the manifest `description` (+ any user args), inheriting the O6 policy + O8 scopes carried by
-the tool registry and O9 tracing from config. NE still owns the registry + catalog; O owns EXECUTION.
+A skill WITHOUT `steps` is a prompt / sub-agent skill; its execution runs as a sub-agent.
+That execution is wired in here: `run`/`run_events` drive an isolated `run_agent_events` sub-run whose
+prompt is the manifest `description` (+ any user args), inheriting the permission policy + auth scopes carried by
+the tool registry and tracing from config. This module owns the registry + catalog; the sub-agent run owns EXECUTION.
 Mirrors
 ToolRegistry: build once, collect `(name, phase, message)` errors, and stay context-cheap via
 progressive disclosure (only name + description are loaded for the catalog; the body/steps load on
@@ -77,10 +77,10 @@ class SkillRegistry:
         return [dict(s) for s in self.skills.values()]
 
     def run(self, name: str, registry, config=None, context=None, args: str = "") -> str:
-        """Blocking wrapper over `run_events` — returns the final synthesized string (O11).
+        """Blocking wrapper over `run_events` — returns the final synthesized string.
 
-        A `steps` skill runs its tool sequence exactly as before (config unused → byte-identical
-        output). A no-`steps` (sub-agent) skill now runs as an isolated `run_agent_events` sub-run; it
+        A `steps` skill runs its tool sequence exactly as before (config unused → identical
+        output). A no-`steps` (sub-agent) skill runs as an isolated `run_agent_events` sub-run; it
         needs `config` and a reachable model (degrades to a clear message otherwise)."""
         result = ""
         for ev in self.run_events(name, registry, config=config, context=context, args=args):
@@ -93,10 +93,10 @@ class SkillRegistry:
 
     def run_events(self, name: str, registry, config=None, context=None, args: str = "",
                    cancel=None, approve=None, owner=None, scope=None, role=None):
-        """Generator form (O11): yields event dicts so an event consumer (the NE shell, the server)
+        """Generator form: yields event dicts so an event consumer (the shell, the server)
         renders a skill run live. A sub-agent skill re-yields `run_agent_events` events directly — so
         skill execution surfaces through the SAME event stream as any agent turn, never bespoke shell
-        code (C6). The terminal event is always a `final` (or `error`)."""
+        code. The terminal event is always a `final` (or `error`)."""
         s = self.skills.get(name)
         if s is None:
             yield {"type": "final", "result": f"Unknown skill: {name}", "skill": name}
@@ -109,8 +109,8 @@ class SkillRegistry:
                 cancel=cancel, approve=approve, owner=owner, scope=scope, role=role)
 
     def _run_steps_events(self, name: str, s: dict, registry, context):
-        """Simple tool-sequence skill (NE4): dispatch each step in order. The assembled text in the
-        terminal `final` is byte-identical to the pre-O11 `run` return value."""
+        """Simple tool-sequence skill: dispatch each step in order. The assembled text in the
+        terminal `final` is identical to the original `run` return value."""
         yield {"type": "skill_start", "skill": name, "mode": "steps", "steps": len(s["steps"])}
         out = [f"# skill: {name}"]
         for i, step in enumerate(s["steps"], 1):
@@ -128,9 +128,9 @@ class SkillRegistry:
 
     def _run_sub_agent_events(self, name: str, s: dict, registry, config, args: str, *,
                               cancel=None, approve=None, owner=None, scope=None, role=None):
-        """Sub-agent skill (O11): the skill's prompt is its `description` (+ any user args). Runs a
-        fresh, ISOLATED `run_agent_events` at depth 0 — so it can itself spawn sub-agents (O1),
-        enforces the O6 policy + O8 scopes carried by `registry`, and traces via O9 — then the
+        """Sub-agent skill: the skill's prompt is its `description` (+ any user args). Runs a
+        fresh, ISOLATED `run_agent_events` at depth 0 — so it can itself spawn sub-agents,
+        enforces the permission policy + auth scopes carried by `registry`, and traces via the tracer — then the
         synthesized answer flows through as the terminal `final`. `run_agent_events` does its own
         `check_litellm` preflight, so an unreachable model degrades to an `error` event, never a crash."""
         yield {"type": "skill_start", "skill": name, "mode": "sub_agent"}
@@ -155,7 +155,7 @@ class SkillRegistry:
     @staticmethod
     def _compose_task(s: dict, args: str) -> str:
         """The sub-agent's task prompt: the manifest `description` (the skill's intent) plus any user
-        input. There is NO prompt-body file (matches the NE4 contract) — the description IS the prompt."""
+        input. There is NO prompt-body file (matches the skill contract) — the description IS the prompt."""
         task = s["description"]
         extra = (args or "").strip()
         if extra:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ONE-E — install Bob's git hooks (port of the retired install-hooks.ps1). Copies scripts/hooks/* into
+"""Install Bob's git hooks. Copies scripts/hooks/* into
 .git/hooks (that dir isn't version-controlled) and marks them executable. Idempotent.
 
   python scripts/install_hooks.py

@@ -1,9 +1,9 @@
-"""NE3 (contract C6) — render the unified catalog (commands, tools, skills) from the registries, so
+"""Render the unified catalog (commands, tools, skills) from the registries, so
 help and the shell splash show "everything Bob can do" without a hand-maintained menu.
 
-Returns plain strings: the CLI prints them directly; the NE2 shell wraps them with rich. Honest about
-load state — tools/skills that failed to load are shown as [FAILED], not hidden (extends the N5
-observability posture into the UI). Counts come straight from the registries so they can't drift."""
+Returns plain strings: the CLI prints them directly; the interactive shell wraps them with rich. Honest
+about load state — tools/skills that failed to load are shown as [FAILED], not hidden, keeping the
+observability posture in the UI. Counts come straight from the registries so they can't drift."""
 from bob import registry
 
 _GROUP_ORDER = ["Talk", "Act", "Make", "Know", "Run", "Config"]
@@ -38,7 +38,7 @@ def render_tools(tool_registry) -> str:
 
 
 def render_skills(skill_registry) -> str:
-    """Registered skills; sub-agent skills (no steps) marked [sub-agent] — runnable via O11; failures shown."""
+    """Registered skills; sub-agent skills (no steps) marked [sub-agent] — runnable as isolated sub-runs; failures shown."""
     skills = skill_registry.list()
     lines = [f"Skills ({len(skills)}):"]
     if not skills and not skill_registry.errors:

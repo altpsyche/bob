@@ -6,7 +6,7 @@ three pieces:
 - **`scripts/osenv.py`** — the OS seam. Every OS-specific behavior (data dir, secrets, package
   install, notifications, process teardown, shell) funnels through here, so the rest of the code
   stays OS-agnostic.
-- **`scripts/bob_config.py`** (NB2) — the Python config resolver. Builds the runtime config from
+- **`scripts/bob_config.py`** — the Python config resolver. Builds the runtime config from
   neutral JSON at startup; no generated cache is required off Windows.
 - **`scripts/bob/kernel.py`** — the cold-start provisioner. Installs prerequisites, builds the
   engine, creates venvs, generates configs, downloads models, and wires clients. The two shell stubs
@@ -16,25 +16,24 @@ three pieces:
 
 Bob's runtime config is resolved live, per OS, from neutral sources:
 
-- **`config/defaults.json`** (NB1) — the neutral single source of truth: `ports`, `roleTable`, and
+- **`config/defaults.json`** — the neutral single source of truth: `ports`, `roleTable`, and
   the `runtime.*` defaults (persona, memory, vision, voice, agent). Both the Python runtime and the
   provisioner read it.
 - **`config/models.json`** — the model registry (roles, files, VRAM, SHA256, profiles).
 - **`config/user.json`** — *your* override, in the runtime-config shape, e.g.
   `{"agent": {"maxSteps": 8}}` or `{"peers": {"deepseek": {"apiKey": "…"}}}`. This is the documented
-  authoring surface off Windows. (A `config/user.toml` is also accepted on Python 3.11+.)
+  authoring surface on every OS. (A `config/user.toml` is also accepted on Python 3.11+.)
 
-`bob_core.load_config()` resolves the config live from `defaults.json` + `user.json` on Linux. On
-Windows, `config/bob.psd1` is an additional authoring source that compiles to a `data/config.json`
-cache, which `load_config()` reads there. Command dispatch and help both come from
+`bob_core.load_config()` resolves the config the same way on every OS: live from `defaults.json`
+deep-merged with `user.json`. Command dispatch and help both come from
 `scripts/bob/registry.py`, the single source.
 
 Secrets never live in a tracked file. They resolve through the seam `osenv.secret(name)` with
-precedence **env var → OS keychain → `data/secrets.json` → config default** (contract C3). See
+precedence **env var → OS keychain → `data/secrets.json` → config default**. See
 [SECURITY.md](SECURITY.md).
 
 State and data (`sessions.db`, `bob.db`, `schedules.json`, `logs/`) default to the repo-relative
-`data/` and `logs/` dirs on every OS (contract C4); set `BOB_DATA_DIR` to relocate them (with a
+`data/` and `logs/` dirs on every OS; set `BOB_DATA_DIR` to relocate them (with a
 one-time migration).
 
 ## Point Bob at any OpenAI-compatible endpoint

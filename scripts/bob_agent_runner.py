@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""Bob scheduled-agent runner (ONE-C Slice 5) — fired every minute by the OS task (cron on POSIX,
+"""Bob scheduled-agent runner — fired every minute by the OS task (cron on POSIX,
 schtasks on Windows), registered via `bob agent install`. Reads data/schedules.json, evaluates each
-cron expression, and runs due schedules in-process. Port of scripts/bob-agent.ps1 (retired).
+cron expression, and runs due schedules in-process.
 
 Thin by design: all logic lives in scripts/tools/schedule.py (importable + tested); this file only sets
 up sys.path, loads config, and delegates — the same core the `bob agent schedule` verbs and the agent

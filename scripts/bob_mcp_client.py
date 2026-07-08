@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""Bob MCP client (O7) — connect to configured MCP servers and expose THEIR tools as Bob tools.
+"""Bob MCP client — connect to configured MCP servers and expose THEIR tools as Bob tools.
 
-The client analog of the N10 server (bob_mcp_server.py). Where the server exposes Bob's registry over
+The client analog of the MCP server (bob_mcp_server.py). Where the server exposes Bob's registry over
 MCP, the client reaches OUT to other MCP servers (agent.mcpServers), lists their tools, and registers
 each as a synthetic ToolRegistry entry namespaced ``mcp:<server>:<tool>`` — so the agent calls a remote
-tool with the exact same dispatch path (and thus the same M7 truncation/retention, O6 policy, N3 timeout)
+tool with the exact same dispatch path (and thus the same truncation/retention, policy, timeout)
 as a local one, with no per-tool wiring.
 
-Same seam discipline as N10: the MCP wire protocol (the ``mcp`` package + a live transport) is touched
+Same seam discipline as the server: the MCP wire protocol (the ``mcp`` package + a live transport) is touched
 ONLY by ``_RealConnection`` when a server is actually configured. The seam below — name mapping, schema
 translation, result flattening, dispatch routing, and the fail-closed skip — is import-light and unit
 -tested (tests/test_mcp_client.py) against a fake in-process connector, no package or transport needed.
 
 Gated by ``agent.mcpServers`` (default ``{}``): with none configured, ``register_mcp_tools`` is a no-op
-and the toolset is byte-identical to pre-O7. A server that fails to connect is logged and skipped
+and the toolset is unchanged. A server that fails to connect is logged and skipped
 (loud-fail) — one bad server never crashes startup or blocks the others.
 
 Config shape (``config/defaults.json`` -> ``runtime.agent.mcpServers``; name -> spec)::
@@ -23,7 +23,7 @@ Config shape (``config/defaults.json`` -> ``runtime.agent.mcpServers``; name -> 
       "docs": { "transport": "sse",   "url": "http://127.0.0.1:9000/sse" }
     }
 
-Remote tools default to ``ask`` in the O6 policy (reaching an external server is a side effect worth a
+Remote tools default to ``ask`` in the permission policy (reaching an external server is a side effect worth a
 prompt); a configured policy can promote them to ``allow`` or ``deny`` per tool/owner/depth.
 """
 import json
@@ -58,7 +58,7 @@ def is_remote(name: str) -> bool:
 
 def tool_schemas_for(server: str, mcp_tools: list) -> list:
     """Map a server's MCP tool descriptors [{name, description, inputSchema}] to Bob OpenAI-style
-    tool_schemas with namespaced names (the mirror of N10's build_mcp_tools, inverted)."""
+    tool_schemas with namespaced names (the mirror of the server's build_mcp_tools, inverted)."""
     schemas = []
     for t in mcp_tools or []:
         tname = t.get("name")
@@ -172,7 +172,7 @@ def connect_servers(config: dict, connector=None) -> McpClient:
 
 def register_mcp_tools(registry, config: dict, connector=None, quiet: bool = False):
     """Register configured MCP servers' tools into ``registry`` as synthetic entries. No servers
-    configured -> no-op (byte-identical toolset). The connected client is stashed on the registry
+    configured -> no-op (toolset unchanged). The connected client is stashed on the registry
     (``_mcp_client``) so its connections stay alive for the registry's lifetime. Returns the registry."""
     agent_cfg = (config or {}).get("agent", {}) or {}
     servers = agent_cfg.get("mcpServers", {}) or {}

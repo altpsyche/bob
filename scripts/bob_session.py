@@ -1,11 +1,11 @@
-"""Bob session store (M12, hardened in N2) — persist agent conversations to SQLite.
+"""Bob session store — persist agent conversations to SQLite.
 
 A Session bundles an id, a rolling message history ({role, content} turns), and an optional
 token budget. The agent HTTP server uses it to support multi-turn, multi-client conversations
 and to bound spend per client; the CLI stays stateless. This is the seam for the multi-user /
-MCP work — id + history + budget persistence, with per-owner scoping added in N1.
+MCP work — id + history + budget persistence, with per-owner scoping.
 
-Concurrency (N2): FastAPI runs the sync route handlers in a threadpool, so the store is hit
+Concurrency: FastAPI runs the sync route handlers in a threadpool, so the store is hit
 from many threads at once. Each thread gets its **own** SQLite connection (`threading.local`),
 the DB runs in **WAL** mode with a **busy_timeout**, and `append_turn` does its read-modify-write
 inside a single `BEGIN IMMEDIATE` transaction — so concurrent appends can't lose turns.
@@ -25,7 +25,7 @@ def _now() -> str:
 
 
 class SessionStore:
-    """SQLite-backed session store, safe under concurrent threadpool access (N2).
+    """SQLite-backed session store, safe under concurrent threadpool access.
 
     One connection per thread (`threading.local`); WAL + busy_timeout; atomic `append_turn`.
     """
@@ -36,7 +36,7 @@ class SessionStore:
         self._local = threading.local()
         self._all_conns: list = []          # every opened conn, for close()
         self._conns_lock = threading.Lock()
-        self._default_owner = default_owner  # N1 — owner stamped when none is supplied (e.g. litellmKey)
+        self._default_owner = default_owner  # owner stamped when none is supplied (e.g. litellmKey)
         conn = self._conn()                 # opens + registers this thread's conn
         conn.execute("PRAGMA journal_mode=WAL")   # persistent DB property; concurrent readers + 1 writer
         self._ensure_schema(conn)
@@ -60,7 +60,7 @@ class SessionStore:
 
     def _ensure_schema(self, conn: sqlite3.Connection) -> None:
         """Single create+migrate site. Idempotent — safe on a fresh DB and on one that predates
-        the owner_id (N1) or client columns. Backfills owner_id from client (or the default)."""
+        the owner_id or client columns. Backfills owner_id from client (or the default)."""
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS sessions (
@@ -77,7 +77,7 @@ class SessionStore:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()}
         if "client" not in cols:                       # DB older than the client column
             conn.execute("ALTER TABLE sessions ADD COLUMN client TEXT")
-        if "owner_id" not in cols:                     # N1 — add + backfill ownership
+        if "owner_id" not in cols:                     # add + backfill ownership
             conn.execute("ALTER TABLE sessions ADD COLUMN owner_id TEXT")
             conn.execute(
                 "UPDATE sessions SET owner_id = COALESCE(NULLIF(client,''), ?) WHERE owner_id IS NULL",

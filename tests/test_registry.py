@@ -1,4 +1,4 @@
-"""M13 — ToolRegistry: real-tool discovery/config + contract validation + dispatch."""
+"""ToolRegistry: real-tool discovery/config + contract validation + dispatch."""
 import shutil
 import textwrap
 import unittest
@@ -40,8 +40,8 @@ class TestRealTools(unittest.TestCase):
         self.assertNotIn("music_stop", self.reg.exit_voice_tools)
 
     def test_mutating_tools_marked(self):
-        # MEM-6 — memory_store mutates (SQLite write); memory_recall is read-only. The mutating set is
-        # the O2/O6 seam and must never leak into the wire schema.
+        # memory_store mutates (SQLite write); memory_recall is read-only. The mutating set is
+        # the parallel-dispatch / permission seam and must never leak into the wire schema.
         on = ToolRegistry.build(_common.fake_config(memory={"enabled": True, "dbPath": "data/bob.db"}), set())
         self.assertIn("memory_store", on.mutating_tools)
         self.assertNotIn("memory_recall", on.mutating_tools)
@@ -50,7 +50,7 @@ class TestRealTools(unittest.TestCase):
 
 
 class TestContractValidation(unittest.TestCase):
-    """A TOOL_DEFS name with no DISPATCH entry is a hard error (M9) — the tool is skipped."""
+    """A TOOL_DEFS name with no DISPATCH entry is a hard error — the tool is skipped."""
 
     def _write_tool(self, body: str) -> Path:
         d = Path(_common.REPO) / "tests" / "_tmp_tools"
@@ -109,12 +109,12 @@ class TestDispatch(unittest.TestCase):
         self.assertIn("retained as", out)
         kept = out.split("\n[...", 1)[0]
         self.assertLessEqual(len(kept), 10)
-        # NE0/O3 seam: the trimmed tail is retained (not silently lost) and re-readable by handle.
+        # the trimmed tail is retained (not silently lost) and re-readable by handle.
         handle = out.split("retained as ", 1)[1].rstrip("]").strip()
         self.assertEqual(len(self.reg.read_result(handle)), 16)
 
     def test_filtered_view_denies_tool(self):
-        # NE0/O1 seam: a filtered() view hides denied tools and refuses to dispatch them, while the
+        # a filtered() view hides denied tools and refuses to dispatch them, while the
         # allowed tool still runs through the shared dispatch — no rebuild.
         self.reg.dispatch = {"echo": lambda text="": text, "danger": lambda: "boom"}
         self.reg.tool_schemas = [

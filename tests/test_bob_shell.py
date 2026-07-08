@@ -1,6 +1,6 @@
-"""NE2 (WI-5) — the interactive shell (scripts/bob/shell.py), exercised headlessly: splash string,
+"""The interactive shell (scripts/bob/shell.py), exercised headlessly: splash string,
 slash-command parsing, the event render loop against a FAKE run_agent_events (tokens/tool_call/
-tool_result/final/error), the NE0 approval handshake (worker thread ↔ main thread), and the isatty
+tool_result/final/error), the approval handshake (worker thread ↔ main thread), and the isatty
 gate. A prompt_toolkit REPL can't be validated without a real TTY, so live keystroke behaviour (Ctrl-C
 cancel, the real approval prompt) is the separate manual acceptance — here we prove everything under
 it."""
@@ -45,7 +45,7 @@ class TestSplash(unittest.TestCase):
         s = sh.splash()
         self.assertIn("Bob", s)
         self.assertIn(sh.role, s)              # agentRole from config == "agent"
-        self.assertIsNone(sh.session_id)       # WI-6: no persisted row until the first turn
+        self.assertIsNone(sh.session_id)       # no persisted row until the first turn
         self.assertIn("session: new", s)       # shown as "new" until then
         self.assertIn("commands", s)           # counts line from the catalog
 
@@ -110,7 +110,7 @@ class TestDispatch(unittest.TestCase):
 
 
 class TestVoiceMode(unittest.TestCase):
-    """ONE-B4 — /voice loop glue: mic→STT→_run_turn→TTS, faked end to end. The turn path itself is the
+    """/voice loop glue: mic→STT→_run_turn→TTS, faked end to end. The turn path itself is the
     same _run_turn the text tests cover; here we prove the round-trip wiring, exit conditions, and edges."""
 
     def _voice_shell(self, transcripts):
@@ -249,7 +249,7 @@ def _patch(target, name, value):
 
 
 class TestCockpit(unittest.TestCase):
-    """S5 — lifecycle controls from inside the shell (the cockpit): /up, /restart, /webui, all routed
+    """Lifecycle controls from inside the shell (the cockpit): /up, /restart, /webui, all routed
     to the one stack.* core so you never drop to raw `bob` verbs to manage the system."""
 
     def test_up_routes_to_stack_up(self):
@@ -477,7 +477,7 @@ class TestApprovalHandshake(unittest.TestCase):
 
 
 def _make_persistent_shell(tmpdir, owner="local", max_tokens=0):
-    """A shell wired to a real (temp) SessionStore, for the WI-6 persist/resume/budget tests."""
+    """A shell wired to a real (temp) SessionStore, for the persist/resume/budget tests."""
     import os
     from rich.console import Console
     from bob_session import SessionStore
@@ -642,8 +642,8 @@ class TestLifecycleHooks(unittest.TestCase):
             bob_core.consolidate_session = orig
         self.assertEqual(captured["turns"], sh.history)
         self.assertEqual(captured["owner"], sh.owner)
-        self.assertEqual(captured["scope"], sh.scope)      # MEM-7: exit consolidation carries scope
-        self.assertEqual(captured["session_id"], "sid")    # MEM-10: provenance stamp
+        self.assertEqual(captured["scope"], sh.scope)      # exit consolidation carries scope
+        self.assertEqual(captured["session_id"], "sid")    # provenance stamp
 
     def test_consolidate_skipped_when_disabled(self):
         import bob_core

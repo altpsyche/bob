@@ -1,9 +1,9 @@
-"""ONE-C Slice 5 — agent scheduling (scripts/tools/schedule.py + the osenv scheduler quartet + the
+"""Agent scheduling (scripts/tools/schedule.py + the osenv scheduler quartet + the
 runner). Hermetic: the schedule store + log live in a tempdir, the agent run (bob_loop.run_agent) is
 mocked, and every crontab/schtasks call is mocked, so nothing hits the network, an LLM, or the real OS
 scheduler.
 
-cron_due parity is asserted directly against the exact Test-CronDue semantics (D3): UTC, 5 fields,
+cron_due is asserted directly against the exact cron semantics: UTC, 5 fields,
 '*'/comma/'a-b' ranges only, Sunday=0, and the 60-second re-fire guard."""
 import sys
 import tempfile
@@ -13,7 +13,6 @@ from pathlib import Path
 from unittest import mock
 
 import _common  # noqa: F401 — puts scripts/ on sys.path
-from bob import cli, registry
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts" / "tools"))
 import schedule as sched  # noqa: E402
@@ -30,15 +29,7 @@ def _cfg(tmp):
             "routing": {"agentRole": "agent"}}
 
 
-class TestRegistryWiring(unittest.TestCase):
-    VERBS = ["agent schedule", "agent log", "agent install", "agent uninstall", "agent status"]
-
-    def test_flipped_to_python_with_handlers(self):
-        by_name = registry.by_name()
-        for verb in self.VERBS:
-            self.assertTrue(by_name[verb].get("handler"), verb)
-            self.assertIn(by_name[verb]["handler"], cli._HANDLERS, verb)
-
+class TestScheduleToolSurface(unittest.TestCase):
     def test_tools_and_mutation_flags(self):
         self.assertEqual(set(sched.DISPATCH), {
             "schedule_list", "schedule_add", "schedule_remove", "schedule_enable", "schedule_disable",

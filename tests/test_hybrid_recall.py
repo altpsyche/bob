@@ -1,7 +1,7 @@
-"""O14 — hybrid recall (dense + BM25/FTS5 + Reciprocal Rank Fusion). `retrieval='hybrid'` fuses the
+"""Hybrid recall (dense + BM25/FTS5 + Reciprocal Rank Fusion). `retrieval='hybrid'` fuses the
 dense cosine ranking with a SQLite FTS5 BM25 ranking so a lexically-exact hit that dense ranks poorly
 still surfaces; the recency/type/usage/salience terms apply on top of the fused set. `retrieval='dense'`
-(default) is byte-identical to pre-O14 — it doesn't even create the FTS index — and also backstops
+(default) matches the dense-only path — it doesn't even create the FTS index — and also backstops
 hybrid when the SQLite build lacks FTS5."""
 import json
 import shutil

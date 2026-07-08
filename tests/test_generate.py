@@ -1,9 +1,9 @@
-"""ONE-C Slice 6 — config generators (scripts/tools/generate.py). The four gen-*.ps1 ported to Python
-with byte-parity (verified out-of-band against pwsh snapshots across every profile incl. the cpu tier).
+"""Config generators (scripts/tools/generate.py). Emit deterministic, byte-stable output across
+every profile incl. the cpu tier.
 
 Hermetic: reads the real config/models.json (the neutral registry) and writes the generated files to
 their normal deterministic locations (idempotent — same bytes each run); gen_webui is tested against a
-minimal temp sqlite db. No pwsh, no network."""
+minimal temp sqlite db. No network."""
 import sqlite3
 import sys
 import tempfile
@@ -12,7 +12,6 @@ from pathlib import Path
 
 import _common  # noqa: F401 — puts scripts/ on sys.path
 import osenv
-from bob import cli, registry
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts" / "tools"))
 import generate as gen  # noqa: E402
@@ -22,12 +21,7 @@ CFG = bob_core.load_config()
 gen.configure(CFG)
 
 
-class TestRegistryWiring(unittest.TestCase):
-    def test_gen_flipped_to_python(self):
-        entry = registry.by_name()["gen"]
-        self.assertTrue(entry.get("handler"))
-        self.assertIn(entry["handler"], cli._HANDLERS)
-
+class TestGenerateToolSurface(unittest.TestCase):
     def test_tool_registered_and_mutating(self):
         self.assertEqual(set(gen.DISPATCH), {"gen"})
         self.assertEqual(gen.MUTATING_TOOLS, {"gen"})
@@ -40,7 +34,7 @@ class TestFmt(unittest.TestCase):
 
     def test_int_and_integral_float(self):
         self.assertEqual(gen._fmt(16384), "16384")
-        self.assertEqual(gen._fmt(1.0), "1")   # integral float drops the decimal (pwsh InvariantCulture)
+        self.assertEqual(gen._fmt(1.0), "1")   # integral float drops the decimal
         self.assertEqual(gen._fmt(30.0), "30")
 
     def test_fractional_float(self):

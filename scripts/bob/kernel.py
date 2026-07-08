@@ -1,8 +1,7 @@
-"""Tier-1 cold-start kernel (ONE-D Slice D8, the capstone) — the fresh-machine bring-up, in Python.
+"""Tier-1 cold-start kernel — the fresh-machine bring-up, in Python.
 
 "The one honest exception": an agent can't boot its own brain, so a non-conversational path survives.
-Today that path was a chain of PowerShell (setup.ps1 -> bootstrap.ps1 -> gen/fetch/build/clients); this
-module ports it. It runs under the *system* python3 with `scripts/` on sys.path, BEFORE the venvs exist —
+It runs under the *system* python3 with `scripts/` on sys.path, BEFORE the venvs exist —
 so it IMPORTS the same capability functions the agent and `bob --run` reach (provision.fetch_models,
 generate.gen_all, build.build_llama/..., stack.stack_up, health.diagnose) rather than re-implementing or
 subprocessing them. Only prereqs, the venv creation, and the *first* build are kernel-exclusive.
@@ -13,7 +12,7 @@ subprocessing them. Only prereqs, the venv creation, and the *first* build are k
   python3 -m bob.kernel venv <name...>       #          create tools/venv-<name> (litellm|aider|eval|webui)
   python3 -m bob.kernel build-swap           #          build the llama-swap proxy (Go)
 
-Flags (mirror setup.ps1): --skip-models --skip-build --skip-voice --launch --profile <p> --with-webui --cpu
+Flags: --skip-models --skip-build --skip-voice --launch --profile <p> --with-webui --cpu
 """
 import argparse
 import subprocess
@@ -52,12 +51,12 @@ def _step(current: int, total: int, name: str, hint: str = "") -> None:
         print(f"  ({hint})", file=sys.stderr)
 
 
-# --- bootstrap (port of bootstrap.ps1) -----------------------------------------------------------
+# --- bootstrap -----------------------------------------------------------------------------------
 
 def bootstrap(skip_models: bool = False, skip_build: bool = False, profile: str = None,
               with_webui: bool = False, cpu: bool = False) -> None:
     """Submodules -> build engine + proxy + fabric -> Python venvs -> gen configs -> fetch models.
-    Re-runnable; heavy steps skippable. Imports the ported capability fns (no pwsh). Port of bootstrap.ps1."""
+    Re-runnable; heavy steps skippable. Imports the capability fns directly."""
     _tools_on_path()
     import bob_models
     import build
@@ -113,7 +112,7 @@ def bootstrap(skip_models: bool = False, skip_build: bool = False, profile: str 
             print(f"\n=== Build llama.cpp ({label}) ===", file=sys.stderr)
             build.build_llama(arch=(gpu["CudaArch"] if gpu else 0))
         else:
-            # CPU tier: either forced (--cpu) or NC8 (no CUDA toolkit) — so a GPU-less box (or a user
+            # CPU tier: either forced (--cpu) or no CUDA toolkit detected — so a GPU-less box (or a user
             # who asked for it) still gets a working, if slower, llama-server.
             why = "--cpu requested" if cpu else "no CUDA toolkit found"
             print(f"\n=== Build llama.cpp (CPU-only — {why}) ===", file=sys.stderr)
@@ -167,11 +166,11 @@ def bootstrap(skip_models: bool = False, skip_build: bool = False, profile: str 
     print("\n=== Done ===\nNext: bob up   (endpoint :8080 + LiteLLM proxy :8081)", file=sys.stderr)
 
 
-# --- post-build wiring (ports of setup-clients.ps1 / install-cli.ps1 / onboard.ps1) --------------
+# --- post-build wiring (client configs / CLI install / onboarding) ------------------------------
 
 def _wire(target: Path, link: Path) -> None:
     """Symlink `link` -> `target` (edits in the repo propagate live); fall back to a copy where symlinks
-    aren't permitted. Leaves an existing link as-is. Port of setup-clients.ps1 Wire()."""
+    aren't permitted. Leaves an existing link as-is."""
     import shutil
     link.parent.mkdir(parents=True, exist_ok=True)
     if link.exists() or link.is_symlink():
@@ -188,7 +187,7 @@ def _wire(target: Path, link: Path) -> None:
 
 def setup_clients() -> None:
     """Point VS Code Continue + aider at the repo's config files (symlink, copy fallback). Generates the
-    Continue config first so the symlink target exists. Port of setup-clients.ps1."""
+    Continue config first so the symlink target exists."""
     _tools_on_path()
     import generate
     generate.configure(_load_config())
@@ -206,8 +205,7 @@ def setup_clients() -> None:
 
 def install_cli() -> None:
     """Install the `bob` command on PATH. POSIX: symlink the repo-root ./bob shim (+ fabric) into
-    ~/.local/bin. Windows: a bob.cmd shim in scoop\\shims -> scripts/bob.ps1... which no longer exists,
-    so Windows now shims to `python -m bob`. Port of install-cli.ps1 (POSIX path)."""
+    ~/.local/bin. Windows: a bob.cmd shim in scoop\\shims that points at `python -m bob`."""
     if osenv.os_name() == "windows":  # pragma: no cover — Windows path
         _install_cli_windows()
         return
@@ -237,7 +235,7 @@ def install_cli() -> None:
 
 
 def _install_cli_windows() -> None:  # pragma: no cover — Windows path
-    """Windows: a bob.cmd shim -> `python -m bob` (bob.ps1 is retired in Slice D8). Drops the shim into
+    """Windows: a bob.cmd shim -> `python -m bob`. Drops the shim into
     scoop\\shims (or ~/scoop/shims) so `bob` resolves in any shell."""
     import shutil
     shim_dir = None
@@ -343,7 +341,7 @@ def offer_onboard() -> None:
 
 def onboard() -> None:
     """First-run onboarding: name, work context, optional DeepSeek key -> SQLite profile + config/user.json.
-    Interactive — SKIPS cleanly on a non-TTY (CI/piped) so the kernel never hangs. Port of onboard.ps1."""
+    Interactive — SKIPS cleanly on a non-TTY (CI/piped) so the kernel never hangs."""
     import json
     if not sys.stdin.isatty():
         print("Bob: onboarding skipped (non-interactive). Run `bob memory init-profile` later.",
@@ -419,7 +417,7 @@ def onboard() -> None:
     print()
 
 
-# --- docker services (port of setup-docker.ps1 — best-effort, optional) --------------------------
+# --- docker services (best-effort, optional) -----------------------------------------------------
 
 def _docker_ready() -> bool:
     return subprocess.run(["docker", "info"], capture_output=True).returncode == 0
@@ -428,7 +426,7 @@ def _docker_ready() -> bool:
 def setup_docker() -> None:
     """Provision + start the optional compose services (Langfuse/SearXNG/n8n): wait for the daemon, write
     the compose .env + SearXNG settings + data dirs, then `docker compose pull && up -d`. Best-effort —
-    the kernel only calls this when docker is already present. Port of setup-docker.ps1."""
+    the kernel only calls this when docker is already present."""
     from bob_core import _port
     _tools_on_path()
     import bob_models
@@ -479,12 +477,12 @@ def setup_docker() -> None:
           f"  n8n:       http://localhost:{n8n}\nManage: bob services start|stop|status|logs", file=sys.stderr)
 
 
-# --- setup (port of setup.ps1 — the 12-step orchestrator) ----------------------------------------
+# --- setup (the 12-step orchestrator) ------------------------------------------------------------
 
 def setup(skip_models: bool = False, skip_build: bool = False, skip_voice: bool = False,
           launch: bool = False, profile: str = None, with_webui: bool = False, cpu: bool = False) -> int:
     """The fresh-machine orchestrator. Idempotent; safe to re-run. Prerequisites must be installed first
-    via `python3 -m bob.kernel prereqs`. Port of setup.ps1."""
+    via `python3 -m bob.kernel prereqs`."""
     _tools_on_path()
     import build
     import health
@@ -628,8 +626,8 @@ _VENV_REQ = {
 
 
 def make_venv(name: str) -> str:
-    """Create one Bob venv by short name (litellm|aider|eval|webui). Replaces the retired
-    bootstrap-litellm.ps1 / bootstrap-eval.ps1 for CI's granular runtime-venv step."""
+    """Create one Bob venv by short name (litellm|aider|eval|webui) — used for CI's granular
+    runtime-venv step."""
     if name not in _VENV_REQ:
         raise RuntimeError(f"unknown venv '{name}' — one of {', '.join(_VENV_REQ)}")
     vname, base = _VENV_REQ[name]
@@ -637,7 +635,7 @@ def make_venv(name: str) -> str:
 
 
 def build_swap() -> str:
-    """Build the llama-swap proxy (Go) -> bin/llama-swap. Replaces build-llama-swap.ps1 for CI."""
+    """Build the llama-swap proxy (Go) -> bin/llama-swap (used by CI)."""
     _tools_on_path()
     import build
     build.configure(_load_config())

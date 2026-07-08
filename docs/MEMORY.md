@@ -218,7 +218,7 @@ scope). See [SECURITY.md](SECURITY.md).
 ## Configuration (`memory.*`)
 
 All keys live in `config/defaults.json` under `runtime.memory` and can be overridden in
-`config/user.json` (`{"memory": {…}}`). (`config/bob.psd1` is the Windows-only authoring source.)
+`config/user.json` (`{"memory": {…}}`).
 
 | Key | Default | Effect |
 |-----|---------|--------|

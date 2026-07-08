@@ -1,8 +1,8 @@
 """Bob tool: shell_run — executes a command in the OS-native shell.
 
-NE0: approval is handled by the agent loop's event-driven approve callback (this tool sets
+Approval is handled by the agent loop's event-driven approve callback (this tool sets
 REQUIRES_APPROVAL=True), NOT a blocking stdin prompt — so it works under the TUI/server, not only
-an interactive console. Timeout: 30 seconds. Process is killed on timeout. NB3: the shell is
+an interactive console. Timeout: 30 seconds. Process is killed on timeout. The shell is
 OS-native (pwsh on Windows, bash/sh elsewhere) via osenv.default_shell().
 """
 import subprocess
@@ -13,9 +13,9 @@ import sandbox
 
 _cfg: dict = {}
 
-# NE0 — the loop asks the approve callback before dispatching shell_run (see ToolRegistry
-# .approval_required_tools). O5 — when agent.sandbox='on', the command runs under an OS sandbox
-# (scripts/sandbox.py); O6 adds richer per-command policy at the dispatch choke point.
+# The loop asks the approve callback before dispatching shell_run (see ToolRegistry
+# .approval_required_tools). When agent.sandbox='on', the command runs under an OS sandbox
+# (scripts/sandbox.py); richer per-command policy is applied at the dispatch choke point.
 REQUIRES_APPROVAL = True
 
 
@@ -25,9 +25,9 @@ def configure(config: dict) -> None:
 
 
 def _execute(argv: list):
-    """Run the command vector. O5: sandboxed when agent.sandbox='on' (fail closed via
+    """Run the command vector. Sandboxed when agent.sandbox='on' (fail closed via
     SandboxUnavailable if no backend exists — never a silent unsandboxed run under 'on'); otherwise
-    in-process, byte-identical to pre-O5. Returns a CompletedProcess; propagates TimeoutExpired."""
+    in-process, exactly as when the sandbox is off. Returns a CompletedProcess; propagates TimeoutExpired."""
     if sandbox.sandbox_mode(_cfg) == sandbox.SANDBOX_ON:
         return sandbox.run_sandboxed(argv, timeout=30, limits=sandbox.sandbox_limits(_cfg))
     return subprocess.run(argv, capture_output=True, text=True, timeout=30)
@@ -66,7 +66,7 @@ TOOL_DEFS = [
         "function": {
             "name": "shell_run",
             "description": (
-                "Run a PowerShell command and return its output. "
+                "Run a shell command (the OS-native shell) and return its output. "
                 "Always requires explicit user confirmation before executing. "
                 "Use specific tools (git, file, web) when possible."
             ),
@@ -75,7 +75,7 @@ TOOL_DEFS = [
                 "properties": {
                     "command": {
                         "type": "string",
-                        "description": "PowerShell command to execute",
+                        "description": "shell command to execute",
                     }
                 },
                 "required": ["command"],

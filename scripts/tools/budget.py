@@ -1,6 +1,6 @@
-"""Bob tool: budget_summary — token/cost usage summary (ONE-C Slice 1).
+"""Bob tool: budget_summary — token/cost usage summary.
 
-Port of scripts/bob-budget.ps1. Read-only: queries the LiteLLM proxy for spend, reads the configured
+Read-only: queries the LiteLLM proxy for spend, reads the configured
 limits from config/litellm.yaml, reports the local memory-DB size (always $0 — fully local), and links
 Langfuse if it's up. One core fn (budget_summary(config)) reached three ways: the agent tool below, the
 `bob budget` verb (cli._handle_budget), and `bob --run budget_summary` — no duplicated logic."""
@@ -22,8 +22,8 @@ def configure(config: dict) -> None:
 
 
 def _read_litellm_limits() -> tuple:
-    """(max_budget, budget_duration) from config/litellm.yaml, or (None, None). Regex-parsed to match
-    the pwsh reader exactly (no YAML dep for two scalars)."""
+    """(max_budget, budget_duration) from config/litellm.yaml, or (None, None). Regex-parsed
+    (no YAML dep for two scalars)."""
     cfg_file = REPO / "config" / "litellm.yaml"
     if not cfg_file.exists():
         return (None, None)
@@ -36,7 +36,7 @@ def _read_litellm_limits() -> tuple:
 
 def budget_summary(config: dict) -> str:
     """The core capability: a formatted budget/usage report. Never raises on an unreachable service —
-    a down LiteLLM/Langfuse degrades to a hint, matching the pwsh SilentlyContinue behavior."""
+    a down LiteLLM/Langfuse degrades to a hint."""
     import requests
     from bob_core import _get_db_path, _port
 

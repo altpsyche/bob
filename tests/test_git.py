@@ -1,4 +1,4 @@
-"""N9 — git_* is restricted to allow-listed repositories. Backs the SECURITY.md claim that the
+"""git_* is restricted to allow-listed repositories. Backs the SECURITY.md claim that the
 agent can't read the status/log/diff of an arbitrary git repo on disk (info disclosure)."""
 import shutil
 import tempfile

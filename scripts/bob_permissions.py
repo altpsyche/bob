@@ -1,13 +1,13 @@
-"""O6 — permission policy, resolved from config and enforced at the dispatch choke point.
+"""Permission policy, resolved from config and enforced at the dispatch choke point.
 
-Turns the NE0 binary approval *mechanism* (a tool self-declaring REQUIRES_APPROVAL, or the whole run
+Turns the binary approval *mechanism* (a tool self-declaring REQUIRES_APPROVAL, or the whole run
 being in ``agency='confirm'``) into a real per-tool ``allow | ask | deny`` *policy*, overridable
-per-owner (N1 identity) and per-agent-depth (an O1 sub-agent may be more restricted than the root).
+per-owner (by identity) and per-agent-depth (a sub-agent may be more restricted than the root).
 
 Default reproduces today's behavior. An **absent or empty** ``agent.permissions`` config resolves every
-tool to ``allow``, so the only thing that still prompts is the NE0 floor (``agency='confirm'`` or a
-tool's ``REQUIRES_APPROVAL``) and nothing is ever denied — byte-identical to pre-O6. A configured policy
-*adds* ``deny`` and can *promote* ``allow -> ask``; it never weakens the NE0 floor (``_dispatch_with_
+tool to ``allow``, so the only thing that still prompts is the approval floor (``agency='confirm'`` or a
+tool's ``REQUIRES_APPROVAL``) and nothing is ever denied. A configured policy
+*adds* ``deny`` and can *promote* ``allow -> ask``; it never weakens the approval floor (``_dispatch_with_
 approval`` keeps that as a lower bound).
 
 Config shape (``config/defaults.json`` -> ``runtime.agent.permissions``; all keys optional)::
@@ -16,7 +16,7 @@ Config shape (``config/defaults.json`` -> ``runtime.agent.permissions``; all key
       "read":     "allow",                       # class default for non-mutating tools
       "mutating": "ask",                          # class default for tools in registry.mutating_tools
       "tools":    { "shell_run": "ask", "x": "deny" },   # per-tool, wins over the class default
-      "perOwner": { "guest": { "mutating": "deny" } },   # same shape, per N1 owner id
+      "perOwner": { "guest": { "mutating": "deny" } },   # same shape, per owner id
       "perDepth": { "1": { "mutating": "deny" } }        # same shape, per agent_depth (str key)
     }
 
@@ -61,8 +61,8 @@ class PermissionPolicy:
     def resolve(self, tool: str, owner: str = "local", agent_depth: int = 0,
                 mutating: bool = False, default: str = ALLOW) -> str:
         """Return 'allow' | 'ask' | 'deny' for this call. ``default`` is the mode used when nothing in
-        the policy matches (and when the policy is empty) — 'allow' preserves pre-O6/O7 behavior, while
-        O7 passes 'ask' for a remote MCP tool so it prompts unless a config rule overrides it. Unknown/
+        the policy matches (and when the policy is empty) — 'allow' preserves the default behavior, while
+        a remote MCP tool passes 'ask' so it prompts unless a config rule overrides it. Unknown/
         malformed modes fall through to ``default`` (a config typo can't silently deny reads)."""
         if not self.configured:
             return default

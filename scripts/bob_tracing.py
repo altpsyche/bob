@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Bob tracing (O9) — OpenTelemetry-style spans for a run / tool / sub-agent tree.
+"""Bob tracing — OpenTelemetry-style spans for a run / tool / sub-agent tree.
 
-Seam discipline (like N10/O7): the span model + nesting + no-op-when-off logic is import-light and
+Seam discipline (like the MCP server/client): the span model + nesting + no-op-when-off logic is import-light and
 unit-tested WITHOUT the `opentelemetry` package (tests inject a fake sink). The real OTLP export bridge
 (`_otlp_sink`) is the ONLY part that touches the package and a live collector; it's smoke-validated
 against Langfuse, not unit-tested.
 
 Gated by `agent.tracing` (default false): a disabled Tracer returns a shared no-op span for every
-`span()` call — zero allocation, zero I/O, no dependency at rest — so the N5 file log is byte-identical
+`span()` call — zero allocation, zero I/O, no dependency at rest — so the file log is identical
 whether tracing is on or off. When on, each finished span is handed to a `sink` (the OTLP exporter, or a
 test recorder). Parent/child nesting is explicit (a child span inherits its parent's `trace_id`), so it
 works across the generator/thread boundaries the agent loop crosses without contextvar hazards.

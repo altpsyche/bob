@@ -30,9 +30,9 @@ New capability?
 │       └── plugins/<name>/invoke.py only   (Layer 3 only)
 ```
 
-### Functional grouping (ONE-C, decision D6)
+### Functional grouping
 
-The strict rule above is "one directory per capability." The ONE-C capability ports (former PowerShell
+The strict rule above is "one directory per capability." The capability ports (former PowerShell
 verbs → Python) **bend it deliberately**: several closely-related capabilities share one
 `scripts/tools/<group>.py` module (e.g. `budget.py`, and later `stack.py`/`models.py`/`schedule.py`),
 each exposing multiple tool fns. Rationale: ~45 verbs would otherwise mean ~40 near-empty plugin dirs.
@@ -129,11 +129,13 @@ Creating the file is the only step. The agent will include it automatically on n
 [bob] tools: draft fabric file git memory play search shell summarise web (10)
 ```
 
-To **exclude** a tool without deleting it, add its directory/stem name to `agent.disabledTools` in `config/bob.psd1`:
+To **exclude** a tool without deleting it, add its directory/stem name to `agent.disabledTools` in `config/user.json`:
 
-```powershell
-agent = @{
-    disabledTools = @('play')   # file exists, agent won't load it
+```json
+{
+  "agent": {
+    "disabledTools": ["play"]
+  }
 }
 ```
 

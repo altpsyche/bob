@@ -1,4 +1,4 @@
-"""M13 — SessionStore CRUD + budget (M12)."""
+"""SessionStore CRUD + budget."""
 import os
 import tempfile
 import unittest
@@ -55,7 +55,7 @@ class TestSessionStore(unittest.TestCase):
         self.assertTrue(self.store.delete(s["id"]))
         self.assertIsNone(self.store.get(s["id"]))
 
-    # --- ownership (N1) ------------------------------------------------------
+    # --- ownership ------------------------------------------------------
     def test_create_stamps_owner(self):
         s = self.store.create(owner_id="alice")
         self.assertEqual(self.store.get(s["id"])["owner_id"], "alice")
@@ -106,7 +106,7 @@ class TestSessionStore(unittest.TestCase):
     def test_migration_backfills_owner_from_old_schema(self):
         import sqlite3
         old = self.dir_default() / "old.db"
-        # Build a pre-N1 DB (no owner_id column), with one row carrying a legacy `client`.
+        # Build a legacy DB (no owner_id column), with one row carrying a legacy `client`.
         conn = sqlite3.connect(str(old))
         conn.execute(
             "CREATE TABLE sessions (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, "
