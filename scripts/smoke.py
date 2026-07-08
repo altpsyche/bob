@@ -22,6 +22,14 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+# Windows consoles default to cp1252, which can't encode the box-rule / em-dashes / status glyphs this
+# gate prints — force UTF-8 so the smoke doesn't die on an encode error instead of testing the stack.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):   # non-reconfigurable stream (redirected/older) — best-effort
+        pass
+
 REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "scripts"
 if str(SCRIPTS) not in sys.path:

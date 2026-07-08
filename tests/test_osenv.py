@@ -14,6 +14,12 @@ from unittest import mock
 import _common  # noqa: F401 — puts scripts/ on sys.path
 import osenv
 
+try:
+    import numpy  # noqa: F401 — optional dep of osenv.record_audio (mic capture); absent on the CI gate python
+    _HAS_NUMPY = True
+except ImportError:
+    _HAS_NUMPY = False
+
 
 class TestDefaultShell(unittest.TestCase):
     def test_windows_uses_pwsh(self):
@@ -142,6 +148,7 @@ class TestAudioSeam(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 osenv.record_audio(0.1)
 
+    @unittest.skipUnless(_HAS_NUMPY, "numpy not installed (optional mic-capture dep)")
     def test_record_audio_no_speech_returns_instead_of_hanging(self):
         # The "I speak and nothing happens" bug: a silent/too-quiet input must NOT loop forever.
         import numpy as np
@@ -156,6 +163,7 @@ class TestAudioSeam(unittest.TestCase):
             out = osenv.record_audio(silence_sec=0.1, max_wait_sec=0.3)   # 3 silent chunks -> bail
         self.assertEqual(out, b"")
 
+    @unittest.skipUnless(_HAS_NUMPY, "numpy not installed (optional mic-capture dep)")
     def test_record_audio_captures_then_stops_on_silence(self):
         import numpy as np
         n = int(osenv._AUDIO_SAMPLE_RATE * 0.1)
