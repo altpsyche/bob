@@ -612,56 +612,6 @@ class TestCtrlCExit(unittest.TestCase):
         self.assertTrue(sh._pending_exit)                # and the exit is armed
 
 
-class TestTuiMode(unittest.TestCase):
-    """/tui toggles the turn renderer between inline (default) and fullscreen; fullscreen renders on an
-    alt-screen for the turn and commits the final answer inline so scrollback is preserved."""
-
-    def test_toggle_between_modes(self):
-        sh, _ = _make_shell()
-        self.assertFalse(sh._fullscreen)                  # inline by default
-        sh.dispatch("/tui fullscreen")
-        self.assertTrue(sh._fullscreen)
-        sh.dispatch("/tui default")
-        self.assertFalse(sh._fullscreen)
-
-    def test_no_arg_reports_and_unknown_rejected(self):
-        sh, out = _make_shell()
-        sh.dispatch("/tui")
-        self.assertIn("inline", out.file.getvalue().lower())
-        sh.dispatch("/tui bogus")
-        self.assertIn("usage", out.file.getvalue().lower())
-
-    def test_inline_does_not_enter_alt_screen(self):
-        # Default mode never touches the alt-screen (is_terminal is False in tests anyway).
-        sh, out = _make_shell()
-        entered = {"n": 0}
-        sh.console.screen = lambda *a, **k: entered.__setitem__("n", entered["n"] + 1)
-
-        def factory(cancel, approve):
-            yield {"type": "final", "result": "hi", "reason": "answer"}
-
-        self.assertEqual(sh._consume(factory, on_approval=lambda a: True), "hi")
-        self.assertEqual(entered["n"], 0)
-
-    def test_fullscreen_uses_alt_screen_and_commits_answer(self):
-        from rich.console import Console
-        con = Console(file=io.StringIO(), force_terminal=True, no_color=True, width=80)
-        sh = BobShell(fake_config(), FakeRegistry(), _FakeSkillReg(), console=con)
-        sh._fullscreen = True
-        calls = {"n": 0}
-        real_screen = con.screen
-        con.screen = lambda *a, **k: (calls.__setitem__("n", calls["n"] + 1), real_screen(*a, **k))[1]
-
-        def factory(cancel, approve):
-            yield {"type": "token", "text": "the answer"}
-            yield {"type": "final", "result": "the answer", "reason": "answer"}
-
-        result = sh._consume(factory, on_approval=lambda a: True)
-        self.assertEqual(result, "the answer")
-        self.assertEqual(calls["n"], 1)                   # entered the alt-screen once for the turn
-        self.assertIn("the answer", con.file.getvalue())  # answer committed back to the buffer
-
-
 def _make_persistent_shell(tmpdir, owner="local", max_tokens=0):
     """A shell wired to a real (temp) SessionStore, for the persist/resume/budget tests."""
     import os

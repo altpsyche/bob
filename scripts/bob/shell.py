@@ -2,9 +2,9 @@
 
 Splash (header + model/role + session + tool/skill counts) + a prompt. Non-slash input is an agent
 turn; slash commands drive the shell: a turn (`/agent`, `/voice`, `/skill`), inspection (`/tools`,
-`/skills`, `/status`, `/help`), state (`/model`, `/agency`, `/session`, `/theme`, `/tui`, `/clear`),
-and the cockpit that manages the whole stack from inside (`/up`, `/restart`, `/webui`, `/services`,
-`/stop`, `/logs`). Every command is one entry in `_COMMANDS`; the completion tree, the dispatch table, and the
+`/skills`, `/status`, `/help`), state (`/model`, `/agency`, `/session`, `/theme`, `/clear`), and the
+cockpit that manages the whole stack from inside (`/up`, `/restart`, `/webui`, `/services`, `/stop`,
+`/logs`). Every command is one entry in `_COMMANDS`; the completion tree, the dispatch table, and the
 `/help` listing all derive from it, so a new command is a single edit. The turn drives
 `run_agent_events` (bob_loop) — the SAME event stream the HTTP server consumes ([bob_agent_server.py])
 — so a new event type surfaces by adding one case in `_TurnRenderer.handle`, never a shell rewrite.
@@ -107,8 +107,6 @@ _COMMANDS = [
     _Cmd("/stop", "stop local inference (frees VRAM)", "_cmd_stop"),
     _Cmd("/logs", "recent inference-server log", "_cmd_logs"),
     _Cmd("/theme", "reload the colour theme", "_cmd_theme", args="[reload]", subs=("reload",)),
-    _Cmd("/tui", "turn rendering: inline (default) or fullscreen", "_cmd_tui",
-         args="[default|fullscreen]", subs=("default", "fullscreen")),
     _Cmd("/clear", "clear the screen", "_cmd_clear"),
     _Cmd("/help", "this reference", "_cmd_help"),
     _Cmd("/exit", "leave the shell", args="", aliases=("/quit",)),   # "" handler → inline exit
@@ -228,22 +226,6 @@ def _preview(res: str, n: int = 240) -> str:
     return first[:n] + ("..." if len(first) > n or more else "")
 
 
-def _render_answer(text: str, theme, console):
-    """The assistant answer as a rich renderable: Markdown (with the theme's prose-width cap on wide
-    terminals) or plain Text when markdown is off. Shared by the live stream renderer and the
-    fullscreen commit, so answer formatting lives in one place."""
-    if not theme.markdown:
-        from rich.text import Text
-        return Text(text)
-    from rich.markdown import Markdown
-    md = Markdown(text)
-    w = theme.prose_width
-    if w and 0 < w < (console.width or 0):
-        from rich.align import Align
-        return Align.left(md, width=w)
-    return md
-
-
 class _TurnRenderer:
     """Renders one agent turn's event stream as a scrolling transcript. Assistant text streams as live
     Markdown (tables/code/lists render, not raw) via one rich.Live per text segment; tool calls appear
@@ -272,7 +254,16 @@ class _TurnRenderer:
         self._start_spin("thinking")
 
     def _renderable(self, text: str):
-        return _render_answer(text, self.t, self.console)
+        if not self.t.markdown:
+            from rich.text import Text
+            return Text(text)
+        from rich.markdown import Markdown
+        md = Markdown(text)
+        w = self.t.prose_width
+        if w and 0 < w < (self.console.width or 0):    # cap prose width for readability on wide terms
+            from rich.align import Align
+            return Align.left(md, width=w)
+        return md
 
     def _start_live(self) -> None:
         if self._live is None and self.term and self._status is None:
@@ -405,9 +396,6 @@ class BobShell:
         # Two-stage exit: a Ctrl-C at the prompt (or one that cancels a turn) arms this; a second
         # consecutive Ctrl-C at the prompt leaves. Any dispatched line clears it.
         self._pending_exit = False
-        # Turn render mode: inline (default; streams into the terminal's native scrollback) or
-        # fullscreen (a flicker-free alt-screen per turn). /tui toggles it.
-        self._fullscreen = False
         from rich.console import Console
         # highlight=False: only the theme's colours apply — rich's ReprHighlighter must not tint
         # identifiers/numbers (e.g. a magenta tool name) and fight the palette. no_color honours the
@@ -987,23 +975,6 @@ class BobShell:
             f"blank_between_turns={t.blank_between_turns} prose_width={t.prose_width}"
         )
 
-    def _cmd_tui(self, arg: str = "") -> None:
-        """/tui [default|fullscreen] — switch how a turn renders. inline (default) streams into the
-        terminal's native scrollback; fullscreen uses a flicker-free alt-screen for the turn, then
-        commits the final answer back to scrollback. No argument reports the current mode."""
-        mode = arg.strip().lower()
-        if not mode:
-            cur = "fullscreen" if self._fullscreen else "inline"
-            self.console.print(f"tui: [{self.theme.accent}]{cur}[/] "
-                               f"[{self.theme.muted}](/tui default | /tui fullscreen)[/]")
-            return
-        if mode not in ("default", "inline", "fullscreen"):
-            self.console.print("[yellow]usage: /tui [default|fullscreen][/]")
-            return
-        self._fullscreen = (mode == "fullscreen")
-        self.console.print(
-            f"[{self.theme.success}]tui → {'fullscreen' if self._fullscreen else 'inline'}[/]")
-
     # -- agent turn -----------------------------------------------------------
 
     def _run_turn(self, goal: str) -> str:
@@ -1166,55 +1137,46 @@ class BobShell:
         t = threading.Thread(target=worker, daemon=True)
         t.start()
 
-        from contextlib import nullcontext
-        # Fullscreen (/tui): render the turn on a flicker-free alt-screen, then commit the final answer
-        # inline below so it stays in scrollback. Composes with the phase-exclusive design — the prompt
-        # is never live while the screen is up. Inline (default) renders straight into the transcript.
-        fullscreen = self._fullscreen and self.console.is_terminal
-        if self.theme.blank_between_turns and not fullscreen:
+        if self.theme.blank_between_turns:
             self.console.print()
         renderer = _TurnRenderer(self.console, self.agency, self.theme)
+        renderer.begin()          # 'thinking' spinner until the first event — no dead air
         result = None
         cancelled = False
         self._exit_requested = False   # set from the final event; /voice reads it to leave voice mode
         # Poll with a short timeout rather than block forever on get(): on Windows a Ctrl-C can't
         # interrupt a lock held in C, so a bare get() would swallow the signal — the timeout returns
         # control to Python bytecode ~10×/s so a pending KeyboardInterrupt is delivered promptly.
-        with (self.console.screen() if fullscreen else nullcontext()):
-            renderer.begin()          # 'thinking' spinner until the first event — no dead air
-            try:
-                while True:
+        try:
+            while True:
+                try:
                     try:
-                        try:
-                            ev = events.get(timeout=0.1)
-                        except queue.Empty:
-                            continue
-                        if ev is _SENTINEL:
-                            break
-                        if ev.get("type") == "approval_required":
-                            renderer.quiesce()   # let the approval prompt own the terminal
-                            decision = False if cancelled else bool(on_approval(ev))
-                            self._put(answers, decision)
-                        else:
-                            if ev.get("type") == "final":
-                                result = ev.get("result")
-                                self._exit_requested = bool(ev.get("exit_requested"))
-                            renderer.handle(ev)
-                    except KeyboardInterrupt:  # Ctrl-C: trip cancel, release any pending approval
-                        cancel.cancel()
-                        cancelled = True
-                        self._unblock(answers)
-                        # Arm the two-stage exit: an immediate second Ctrl-C at the prompt now leaves.
-                        self._pending_exit = True
-            finally:
-                renderer.close()
+                        ev = events.get(timeout=0.1)
+                    except queue.Empty:
+                        continue
+                    if ev is _SENTINEL:
+                        break
+                    if ev.get("type") == "approval_required":
+                        renderer.quiesce()   # let the approval prompt own the terminal
+                        decision = False if cancelled else bool(on_approval(ev))
+                        self._put(answers, decision)
+                    else:
+                        if ev.get("type") == "final":
+                            result = ev.get("result")
+                            self._exit_requested = bool(ev.get("exit_requested"))
+                        renderer.handle(ev)
+                except KeyboardInterrupt:  # Ctrl-C: trip the run's cancel, release any pending approval
+                    cancel.cancel()
+                    cancelled = True
+                    self._unblock(answers)
+                    # Arm the two-stage exit: an immediate second Ctrl-C at the prompt now leaves.
+                    self._pending_exit = True
+        finally:
+            renderer.close()
         t.join(timeout=10)
         if cancelled:
             self.console.print(f"[{self.theme.warn}]cancelled[/]")
-            return None
-        if fullscreen and result:      # the alt-screen is gone; land the answer in scrollback
-            self.console.print(_render_answer(result, self.theme, self.console))
-        return result
+        return None if cancelled else result
 
     # -- approval -------------------------------------------------------------
 
