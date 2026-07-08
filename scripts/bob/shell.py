@@ -2,9 +2,9 @@
 
 Splash (header + model/role + session + tool/skill counts) + a prompt. Non-slash input is an agent
 turn; slash commands drive the shell: a turn (`/agent`, `/voice`, `/skill`), inspection (`/tools`,
-`/skills`, `/status`, `/help`), state (`/model`, `/agency`, `/session`, `/theme`, `/clear`), and the
-cockpit that manages the whole stack from inside (`/up`, `/restart`, `/webui`, `/services`, `/stop`,
-`/logs`). Every command is one entry in `_COMMANDS`; the completion tree, the dispatch table, and the
+`/skills`, `/status`, `/help`), state (`/model`, `/agency`, `/session`, `/theme`, `/clear`, `/reset`),
+and the cockpit that manages the whole stack from inside (`/up`, `/restart`, `/webui`, `/services`,
+`/stop`, `/logs`). Every command is one entry in `_COMMANDS`; the completion tree, the dispatch table, and the
 `/help` listing all derive from it, so a new command is a single edit. The turn drives
 `run_agent_events` (bob_loop) — the SAME event stream the HTTP server consumes ([bob_agent_server.py])
 — so a new event type surfaces by adding one case in `_TurnRenderer.handle`, never a shell rewrite.
@@ -93,8 +93,8 @@ _COMMANDS = [
     _Cmd("/agency", "tool-approval mode: show | confirm | silent", "_cmd_agency",
          args="[level]", subs=("show", "confirm", "silent")),
     _Cmd("/session", "persisted conversation history", "_cmd_session",
-         args="[new|list|resume <ref>|name <text>|show]",
-         subs=("new", "list", "resume", "name", "show")),
+         args="[new|list|resume <ref>|name <text>|delete <ref>|show]",
+         subs=("new", "list", "resume", "name", "delete", "show")),
     _Cmd("/skill", "list or run a skill", "_cmd_skill", args="[name]"),
     _Cmd("/tools", "list the agent's tools", "_cmd_tools"),
     _Cmd("/skills", "list available skills", "_cmd_skills"),
@@ -107,8 +107,10 @@ _COMMANDS = [
     _Cmd("/webui", "open the Open WebUI browser tab", "_cmd_webui"),
     _Cmd("/stop", "stop local inference (frees VRAM)", "_cmd_stop"),
     _Cmd("/logs", "recent inference-server log", "_cmd_logs"),
-    _Cmd("/theme", "reload the colour theme", "_cmd_theme", args="[reload]", subs=("reload",)),
+    _Cmd("/theme", "switch the colour theme or reload it", "_cmd_theme",
+         args="[<preset>|reload]", subs=("reload",)),
     _Cmd("/clear", "clear the conversation context (keeps the saved session)", "_cmd_clear"),
+    _Cmd("/reset", "wipe ALL local data and return to first-run", "_cmd_reset"),
     _Cmd("/help", "this reference", "_cmd_help"),
     _Cmd("/exit", "leave the shell", args="", aliases=("/quit",)),   # "" handler → inline exit
 ]
@@ -211,6 +213,39 @@ def _compact_args(arguments: str) -> str:
             parts.append(f"{k}={vs[:48] + '...' if len(vs) > 48 else vs}")
         return ", ".join(parts)
     return (s[:80] + "...") if len(s) > 80 else s
+
+
+def _wipe_all_data(data_dir=None, user_cfg=None) -> int:
+    """Delete every local data store and clear the onboarding markers, so the next launch is a fresh
+    first-run. Removes everything under `data_dir()` (sessions.db, bob.db memory, secrets.json,
+    schedules.json, .onboarded, shell-history, WAL/SHM sidecars, caches) and strips the `bob`
+    onboarding key from config/user.json (which, with the wiped memory profile, re-arms onboarding).
+    Best-effort per item so one locked/missing file doesn't abort the wipe. Paths are injectable so
+    tests never touch real data. Returns the count of items removed."""
+    import osenv
+    removed = 0
+    d = Path(data_dir) if data_dir else osenv.data_dir()
+    for p in list(d.glob("*")):
+        try:
+            if p.is_dir():
+                import shutil
+                shutil.rmtree(p, ignore_errors=True)
+            else:
+                p.unlink()
+            removed += 1
+        except OSError:
+            pass
+    cfg_path = Path(user_cfg) if user_cfg else (_SCRIPTS.parent / "config" / "user.json")
+    if cfg_path.exists():
+        try:
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            if isinstance(cfg, dict) and "bob" in cfg:
+                cfg.pop("bob", None)
+                cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+                removed += 1
+        except (OSError, ValueError):
+            pass
+    return removed
 
 
 def _derive_session_name(text: str, limit: int = 48) -> str:
@@ -430,6 +465,8 @@ class BobShell:
         # A session name set (via /session name) BEFORE the first turn, applied when the row is
         # created lazily. None once applied / for auto-naming from the first message.
         self._pending_name = None
+        # Runtime theme-preset override from /theme <preset>; None = use config/ui.json's choice.
+        self._theme_preset = None
         from rich.console import Console
         # highlight=False: only the theme's colours apply — rich's ReprHighlighter must not tint
         # identifiers/numbers (e.g. a magenta tool name) and fight the palette. no_color honours the
@@ -587,6 +624,7 @@ class BobShell:
             bottom_toolbar=toolbar,
             **self._session_kwargs(),
         )
+        self._session = session   # so /theme can recolour the live prompt, not just the transcript
         while True:
             try:
                 with patch_stdout():
@@ -645,6 +683,8 @@ class BobShell:
             ("/services", "start"): self._service_names,
             ("/services", "stop"): self._service_names,
             ("/session", "resume"): self._session_refs,
+            ("/session", "delete"): lambda: ["all"] + self._session_refs(),
+            ("/theme",): lambda: theme_mod.preset_names() + ["reload"],
         }
 
     def _service_names(self) -> list:
@@ -702,8 +742,9 @@ class BobShell:
         if handler is None:
             self.console.print(f"[yellow]Unknown command: {cmd}[/]  (try /help)")
             return True
-        handler(arg)
-        return True
+        # A handler may return False to leave the REPL (e.g. /reset, after wiping). Everything else
+        # (None, or a turn's answer string) keeps looping.
+        return handler(arg) is not False
 
     def _handlers(self) -> dict:
         """The cmd → bound-method table, derived from `_COMMANDS` (name + aliases → its handler)."""
@@ -955,11 +996,46 @@ class BobShell:
             self._session_resume(rest)
         elif sub == "name":
             self._session_name(rest)
+        elif sub == "delete":
+            self._session_delete(rest)
         elif sub in ("show", ""):
             self._session_show(rest)
         else:
             self.console.print(
-                f"[yellow]/session {sub}?[/]  (new | list | resume <ref> | name <text> | show [ref])")
+                f"[yellow]/session {sub}?[/]  "
+                f"(new | list | resume <ref> | name <text> | delete <ref> | show [ref])")
+
+    def _session_delete(self, ref: str) -> None:
+        """/session delete <ref> | all — remove one owned session (by id/prefix/name) or, with 'all',
+        every session for this owner (confirmed). Dropping the active session returns to a fresh one."""
+        if self.sessions is None:
+            self.console.print("[dim]sessions unavailable[/]")
+            return
+        ref = ref.strip()
+        if not ref:
+            self.console.print("[yellow]usage: /session delete <ref> | all[/]")
+            return
+        if ref.lower() == "all":
+            ids = self.sessions.list_owned(self.owner)
+            if not ids:
+                self.console.print("[dim]no sessions to delete[/]")
+                return
+            if not self._confirm(f"Delete ALL {len(ids)} session(s)? This can't be undone."):
+                self.console.print("[dim]cancelled[/]")
+                return
+            n = self.sessions.delete_all_owned(self.owner)
+            self.session_id = None            # the active one is gone → back to a pending session
+            self.history = []
+            self.console.print(f"[green]deleted {n} session(s)[/]")
+            return
+        target = self._match_session_id(ref)
+        if target is None or not self.sessions.delete_owned(target, self.owner):
+            self.console.print(f"[yellow]no such session for this owner: {ref}[/]")
+            return
+        if target == self.session_id:
+            self.session_id = None
+            self.history = []
+        self.console.print(f"[green]deleted[/] {target[:8]}")
 
     def _session_name(self, name: str) -> None:
         """/session name <text> — rename the current session. Before the first turn there is no row
@@ -1074,6 +1150,40 @@ class BobShell:
         self.history = []
         self.console.print("[green]context cleared[/] [dim](the saved session is unchanged)[/]")
 
+    def _confirm(self, question: str, expect: str = None) -> bool:
+        """A blocking confirmation prompt for a destructive action. With `expect`, require typing that
+        exact word (type-to-confirm); otherwise a y/N. A cancelled/aborted prompt is a No. Split out so
+        tests can stub it without a TTY."""
+        try:
+            from prompt_toolkit import prompt as ptk_prompt
+            if expect:
+                return ptk_prompt(f"{question} type '{expect}' to confirm: ").strip() == expect
+            return ptk_prompt(f"{question} [y/N] ").strip().lower() in ("y", "yes")
+        except (EOFError, KeyboardInterrupt):
+            return False
+
+    def _cmd_reset(self, _arg: str = ""):
+        """/reset — DESTRUCTIVE. Wipe ALL local data (conversations, memory, API keys, schedules,
+        history) and the onboarding markers, then leave the shell so the next `bob` starts at first-run.
+        Requires typing 'reset' to confirm. Returns False to exit the REPL once done."""
+        if not self._confirm(
+                f"[{self.theme.error}]This deletes ALL Bob data on this machine "
+                f"(chats, memory, keys, schedules) and returns to first-run.[/]", expect="reset"):
+            self.console.print("[dim]reset cancelled[/]")
+            return True
+        if self.sessions is not None:
+            try:
+                self.sessions.close()     # release the DB lock so the file can be removed (Windows)
+            except Exception:
+                pass
+        removed = _wipe_all_data()
+        self.session_id = None            # nothing left to consolidate on exit
+        self.history = []
+        self.console.print(
+            f"[{self.theme.success}]reset complete[/] "
+            f"[{self.theme.muted}]({removed} item(s) removed) · restart bob to begin fresh[/]")
+        return False                      # leave the REPL
+
     def _cmd_skill(self, arg: str) -> None:
         parts = arg.split(maxsplit=1) if arg else []
         name = parts[0] if parts else ""
@@ -1097,17 +1207,33 @@ class BobShell:
         self._consume(factory)
 
     def _cmd_theme(self, arg: str) -> None:
-        """Show the active theme and where to edit it. `/theme reload` re-reads config/ui.json after you
-        edit it. The look is configured in that file — there are no in-shell style tweaks."""
-        t = self.theme
-        if arg.strip().lower() == "reload":
-            self.theme = Theme.load(self.config, self.console)
+        """/theme [<preset>|reload] — no arg shows the active theme + where to edit it; a preset name
+        (mauve, dark, light, daltonized, ansi) switches the palette live; `reload` re-reads
+        config/ui.json (picking up file edits and dropping any live preset override)."""
+        low = arg.strip().lower()
+        if low == "reload":
+            self._theme_preset = None
+            self._apply_theme(Theme.load(self.config, self.console))
             self.console.print(f"[{self.theme.success}]theme reloaded from {self.theme.source}[/]")
             theme_mod.render_header(self.theme, self.console)
             return
+        if low in theme_mod.preset_names():
+            self._theme_preset = low
+            self._apply_theme(Theme.load(self.config, self.console, preset=low))
+            self.console.print(f"[{self.theme.success}]theme → {low}[/]")
+            theme_mod.render_header(self.theme, self.console)
+            return
+        if low:
+            self.console.print(
+                f"[{self.theme.warn}]unknown theme '{arg.strip()}'[/]  "
+                f"[{self.theme.muted}](presets: {', '.join(theme_mod.preset_names())} · or 'reload')[/]")
+            return
+        t = self.theme
         h = t.header
+        active = self._theme_preset or theme_mod.load_ui(self.config).get("theme", "mauve")
         self.console.print(
-            f"[bold]theme[/]  edit [{t.accent}]{t.source}[/] then [bold]/theme reload[/]\n"
+            f"[bold]theme[/] [{t.accent}]{active}[/]  ·  /theme <preset> to switch "
+            f"({', '.join(theme_mod.preset_names())})  ·  edit [{t.accent}]{t.source}[/] then /theme reload\n"
             f"  header : {h.text!r}  font={h.font!r}  align={h.align}  dir={h.gradient_dir}\n"
             f"           gradient={list(h.gradient)}\n"
             f"  colors : accent={t.accent} success={t.success} error={t.error} "
@@ -1116,6 +1242,19 @@ class BobShell:
             f"  layout : markdown={t.markdown} meta_panel={t.meta_panel} rule={t.rule} "
             f"blank_between_turns={t.blank_between_turns} prose_width={t.prose_width}"
         )
+
+    def _apply_theme(self, theme: Theme) -> None:
+        """Swap in a freshly loaded Theme and recolour the live prompt/toolbar too (not just the
+        transcript). The prompt style is captured by the PromptSession at build time, so update it in
+        place when a session is active."""
+        self.theme = theme
+        session = getattr(self, "_session", None)
+        if session is not None:
+            try:
+                from prompt_toolkit.styles import Style
+                session.style = Style.from_dict(theme.prompt_style)
+            except Exception:
+                pass
 
     # -- agent turn -----------------------------------------------------------
 

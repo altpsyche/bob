@@ -190,6 +190,12 @@ class SessionStore:
         cur = self._conn().execute("DELETE FROM sessions WHERE id=? AND owner_id=?", [sid, owner_id])
         return cur.rowcount > 0
 
+    def delete_all_owned(self, owner_id: str) -> int:
+        """Delete every session for one owner. Returns how many were removed (owner-scoped, so it can't
+        wipe another owner's history)."""
+        cur = self._conn().execute("DELETE FROM sessions WHERE owner_id=?", [owner_id])
+        return cur.rowcount
+
     def list_ids(self) -> list:
         return [
             r[0]

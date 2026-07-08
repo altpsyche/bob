@@ -45,6 +45,14 @@ class TestSessionStore(unittest.TestCase):
         self.store.set_name_owned(s["id"], "local", "renamed")
         self.assertEqual(self.store.get(s["id"])["updated_at"], before)   # rename isn't activity
 
+    def test_delete_all_owned_is_scoped(self):
+        self.store.append_turn(self.store.create(owner_id="alice")["id"], "x", "y")
+        self.store.create(owner_id="alice")
+        keep = self.store.create(owner_id="bob")
+        self.assertEqual(self.store.delete_all_owned("alice"), 2)
+        self.assertEqual(self.store.list_owned("alice"), [])
+        self.assertEqual(self.store.list_owned("bob"), [keep["id"]])      # other owner untouched
+
     def test_append_turn_and_spend(self):
         s = self.store.create()
         self.store.append_turn(s["id"], "hello", "hi there", tokens_used=40)

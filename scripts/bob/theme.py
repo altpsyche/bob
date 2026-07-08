@@ -91,12 +91,18 @@ _MONO = {"accent": "bold", "success": "bold", "error": "bold", "warn": "bold",
 
 # --- merge + load ----------------------------------------------------------------------------------
 
-def load_ui(config=None) -> dict:
-    """Merged theme dict: `_DEFAULT_UI` ← `_PRESETS[ui.theme]` ← `config/ui.json` ← `config['ui']`.
+def preset_names() -> list:
+    """The selectable theme preset names (for /theme completion + validation)."""
+    return list(_PRESETS)
+
+
+def load_ui(config=None, theme_override=None) -> dict:
+    """Merged theme dict: `_DEFAULT_UI` ← `_PRESETS[theme]` ← `config/ui.json` ← `config['ui']`.
 
     The selected preset (`ui.theme`) lives inside the merged dict, so it's resolved in two passes: a
     first merge finds the name; the real merge then slots the preset UNDER the file/config overrides so
-    an explicit swatch still wins. An unknown name falls back to `mauve` (the identity preset)."""
+    an explicit swatch still wins. `theme_override` (from a live `/theme <preset>`) takes precedence
+    over `ui.theme` for picking the preset. An unknown name falls back to `mauve` (the identity)."""
     base = dict(_DEFAULT_UI)
     file_ui = {}
     try:
@@ -106,7 +112,7 @@ def load_ui(config=None) -> dict:
         file_ui = {}
     cfg_ui = (config or {}).get("ui", {})
     probe = _deep_merge(_deep_merge(base, file_ui), cfg_ui)       # pass 1: which preset?
-    preset = _PRESETS.get(probe.get("theme", "mauve"), {})
+    preset = _PRESETS.get(theme_override or probe.get("theme", "mauve"), {})
     ui = _deep_merge(_deep_merge(base, preset), file_ui)          # pass 2: preset under the overrides
     return _deep_merge(ui, cfg_ui)
 
@@ -251,8 +257,8 @@ class Theme:
         }
 
     @classmethod
-    def load(cls, config=None, console=None) -> "Theme":
-        ui = load_ui(config)
+    def load(cls, config=None, console=None, preset=None) -> "Theme":
+        ui = load_ui(config, theme_override=preset)
         h, c, sp = ui["header"], ui["colors"], ui["spacing"]
         g = resolve_glyphs(ui, console)
         # Under NO_COLOR the palette collapses to weight-only tokens; the console/prompt also render

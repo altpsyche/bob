@@ -149,7 +149,8 @@ class TestSlashSource(unittest.TestCase):
 
     def test_subcommands_nested_under_parent(self):
         self.assertEqual(set(shellmod._SLASH["/agency"]), {"show", "confirm", "silent"})
-        self.assertEqual(set(shellmod._SLASH["/session"]), {"new", "list", "resume", "name", "show"})
+        self.assertEqual(set(shellmod._SLASH["/session"]),
+                         {"new", "list", "resume", "name", "delete", "show"})
         self.assertEqual(set(shellmod._SLASH["/services"]), {"start", "stop"})
         self.assertEqual(set(shellmod._SLASH["/theme"]), {"reload"})
         self.assertIsNone(shellmod._SLASH["/tools"])     # no subs → a leaf
@@ -758,6 +759,113 @@ class TestSessionNames(unittest.TestCase):
         self.assertIn(s["id"][:8], refs)
 
 
+class TestSessionDelete(unittest.TestCase):
+    def setUp(self):
+        import shutil
+        import tempfile
+        self.tmp = tempfile.mkdtemp(prefix="bob-sessdel-")
+        self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+
+    def test_delete_one_by_ref(self):
+        sh, store, out = _make_persistent_shell(self.tmp)
+        s = store.create(owner_id="local")
+        store.append_turn(s["id"], "q", "a")
+        sh.dispatch(f"/session delete {s['id'][:8]}")
+        self.assertEqual(store.list_owned("local"), [])
+        self.assertIn("deleted", out.file.getvalue())
+
+    def test_delete_active_resets_to_pending(self):
+        sh, store, _ = _make_persistent_shell(self.tmp)
+        sh._consume = lambda fac, on_approval=None: "ok"
+        sh._run_turn("hello")
+        sh.dispatch(f"/session delete {sh.session_id}")
+        self.assertIsNone(sh.session_id)                   # dropped the active one → pending
+        self.assertEqual(sh.history, [])
+
+    def test_delete_all_confirmed(self):
+        sh, store, _ = _make_persistent_shell(self.tmp)
+        for _ in range(3):
+            store.append_turn(store.create(owner_id="local")["id"], "q", "a")
+        sh._confirm = lambda *a, **k: True
+        sh.dispatch("/session delete all")
+        self.assertEqual(store.list_owned("local"), [])
+
+    def test_delete_all_declined_keeps(self):
+        sh, store, out = _make_persistent_shell(self.tmp)
+        store.append_turn(store.create(owner_id="local")["id"], "q", "a")
+        sh._confirm = lambda *a, **k: False
+        sh.dispatch("/session delete all")
+        self.assertEqual(len(store.list_owned("local")), 1)   # nothing removed
+        self.assertIn("cancelled", out.file.getvalue())
+
+    def test_delete_unknown_reports(self):
+        sh, _, out = _make_persistent_shell(self.tmp)
+        sh.dispatch("/session delete nope")
+        self.assertIn("no such session", out.file.getvalue().lower())
+
+    def test_delete_completion_offers_all_and_refs(self):
+        sh, store, _ = _make_persistent_shell(self.tmp)
+        s = store.create(owner_id="local")
+        store.append_turn(s["id"], "q", "a")
+        store.set_name_owned(s["id"], "local", "proj")
+        refs = sh._completion_providers()[("/session", "delete")]()
+        self.assertIn("all", refs)
+        self.assertIn("proj", refs)
+
+
+class TestReset(unittest.TestCase):
+    def test_wipe_removes_data_and_strips_onboarding_marker(self):
+        import json
+        import os
+        import shutil
+        import tempfile
+        d = tempfile.mkdtemp(prefix="bob-reset-data-")
+        cfgd = tempfile.mkdtemp(prefix="bob-reset-cfg-")
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        self.addCleanup(lambda: shutil.rmtree(cfgd, ignore_errors=True))
+        for name in ("sessions.db", "bob.db", "secrets.json", ".onboarded", "shell-history.txt"):
+            with open(os.path.join(d, name), "w") as f:
+                f.write("x")
+        cfg = os.path.join(cfgd, "user.json")
+        with open(cfg, "w") as f:
+            json.dump({"bob": {"onboardDeclined": True}, "litellmPort": 8081}, f)
+        removed = shellmod._wipe_all_data(data_dir=d, user_cfg=cfg)
+        self.assertEqual(os.listdir(d), [])                    # every data store gone
+        with open(cfg) as f:
+            left = json.load(f)
+        self.assertNotIn("bob", left)                          # onboarding marker stripped → FTUE
+        self.assertIn("litellmPort", left)                     # unrelated config preserved
+        self.assertGreaterEqual(removed, 6)
+
+    def test_reset_confirmed_wipes_and_exits(self):
+        sh, _ = _make_shell()
+        calls = {"n": 0}
+        orig = shellmod._wipe_all_data
+        shellmod._wipe_all_data = lambda *a, **k: (calls.__setitem__("n", calls["n"] + 1), 5)[1]
+        try:
+            sh._confirm = lambda *a, **k: True
+            self.assertFalse(sh.dispatch("/reset"))            # returns False → leaves the REPL
+        finally:
+            shellmod._wipe_all_data = orig
+        self.assertEqual(calls["n"], 1)
+        self.assertIsNone(sh.session_id)
+
+    def test_reset_declined_does_not_wipe(self):
+        sh, out = _make_shell()
+        orig = shellmod._wipe_all_data
+
+        def boom(*a, **k):
+            raise AssertionError("must not wipe when declined")
+
+        shellmod._wipe_all_data = boom
+        try:
+            sh._confirm = lambda *a, **k: False
+            self.assertTrue(sh.dispatch("/reset"))             # declined → keep looping
+        finally:
+            shellmod._wipe_all_data = orig
+        self.assertIn("cancelled", out.file.getvalue())
+
+
 class TestSessionPersistence(unittest.TestCase):
     def setUp(self):
         import shutil
@@ -928,13 +1036,35 @@ class TestLifecycleHooks(unittest.TestCase):
 
 
 class TestTheme(unittest.TestCase):
-    def test_theme_command_is_readonly_inspector(self):
-        # /theme shows the active theme + file path; it must NOT mutate the theme (no live levers).
+    def test_theme_no_arg_is_readonly_inspector(self):
+        # bare /theme shows the active theme + file path; it must NOT mutate the theme.
         sh, out = _make_shell()
         before = sh.theme
         sh.dispatch("/theme")
         self.assertIs(sh.theme, before)                 # unchanged
         self.assertIn("ui.json", out.file.getvalue())   # points the user at the editable file
+
+    def test_theme_switches_preset_live(self):
+        sh, out = _make_shell()
+        sh.dispatch("/theme dark")
+        self.assertEqual(sh._theme_preset, "dark")      # runtime override recorded
+        self.assertIsNot(sh.theme, None)
+        self.assertIn("theme → dark", out.file.getvalue())
+
+    def test_theme_unknown_preset_warns_and_keeps(self):
+        sh, out = _make_shell()
+        before = sh.theme
+        sh.dispatch("/theme neonpink")
+        self.assertIs(sh.theme, before)                 # unchanged on a bad name
+        self.assertIsNone(sh._theme_preset)
+        self.assertIn("unknown theme", out.file.getvalue().lower())
+
+    def test_theme_reload_drops_preset_override(self):
+        sh, _ = _make_shell()
+        sh.dispatch("/theme dark")
+        self.assertEqual(sh._theme_preset, "dark")
+        sh.dispatch("/theme reload")
+        self.assertIsNone(sh._theme_preset)             # reload returns to the file's choice
 
 
 class TestFirstRun(unittest.TestCase):

@@ -129,6 +129,13 @@ class TestArgCompletion(unittest.TestCase):
         texts = {c.text for c in _completions(comp, "/services start ")}
         self.assertTrue({s["name"] for s in stack.SERVICES}.issubset(texts))
 
+    def test_theme_completes_presets_and_reload(self):
+        comp = _make_shell()._session_kwargs()["completer"]
+        texts = {c.text for c in _completions(comp, "/theme ")}
+        self.assertIn("dark", texts)
+        self.assertIn("daltonized", texts)
+        self.assertIn("reload", texts)
+
     def test_plain_command_still_lists_subcommands(self):
         # a command with static subs and no dynamic provider still completes its sub-commands
         comp = _make_shell()._session_kwargs()["completer"]
