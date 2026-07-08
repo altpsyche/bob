@@ -1,10 +1,13 @@
 """The interactive REPL/TUI: the no-arg `bob` front door on an interactive TTY.
 
 Splash (header + model/role + session + tool/skill counts) + a prompt. Non-slash input is an agent
-turn; slash commands drive the shell (`/agent`, `/tools`, `/skills`, `/model`, `/status`, `/session`,
-`/agency`, `/theme`, `/clear`, `/help`, `/exit`). The turn drives `run_agent_events` (bob_loop) — the
-SAME event stream the HTTP server consumes ([bob_agent_server.py]) — so a new event type surfaces by
-adding one case in `_TurnRenderer.handle`, never a shell rewrite.
+turn; slash commands drive the shell: a turn (`/agent`, `/voice`, `/skill`), inspection (`/tools`,
+`/skills`, `/status`, `/help`), state (`/model`, `/agency`, `/session`, `/theme`, `/tui`, `/clear`),
+and the cockpit that manages the whole stack from inside (`/up`, `/restart`, `/webui`, `/services`,
+`/stop`, `/logs`). Every command is one entry in `_COMMANDS`; the completion tree, the dispatch table, and the
+`/help` listing all derive from it, so a new command is a single edit. The turn drives
+`run_agent_events` (bob_loop) — the SAME event stream the HTTP server consumes ([bob_agent_server.py])
+— so a new event type surfaces by adding one case in `_TurnRenderer.handle`, never a shell rewrite.
 
 Rendering aims at frontier-grade *inline* UX (like Claude Code / aider), NOT a full-screen TUI: a
 scrolling transcript where assistant text streams as live Markdown (code/tables render), tool calls are
@@ -35,6 +38,8 @@ import json
 import queue
 import sys
 import threading
+import time
+from dataclasses import dataclass
 from pathlib import Path
 
 # The runtime modules live in scripts/ and scripts/tools/ (tool_registry, bob_core, bob_loop, …). Under
@@ -51,33 +56,104 @@ from bob.theme import Theme
 
 _SENTINEL = object()
 
+# Streamed-Markdown refresh rate. Used BOTH for rich.Live's redraw cadence and to throttle how often
+# the growing buffer is re-parsed: a full Markdown parse is O(buffer), so parsing on every token makes
+# a long answer O(n^2). Rebuilding the renderable at most this many times/second keeps it ~linear while
+# staying visually smooth; the final buffer is always rendered once the segment completes.
+_STREAM_HZ = 8
+
 # Spoken words that leave /voice mode (matched after stripping trailing punctuation). Ctrl-C while
 # listening does the same.
 _VOICE_EXIT_WORDS = {"exit", "quit", "stop", "goodbye", "bye"}
 
-# Slash-command completion tree (NestedCompleter): each key may map to a sub-map or None.
-_SLASH = {
-    "/help": None,
-    "/tools": None,
-    "/skills": None,
-    "/status": None,
-    "/model": None,
-    "/agency": {"show": None, "confirm": None, "silent": None},
-    "/session": {"new": None, "list": None, "resume": None, "show": None},
-    "/theme": {"reload": None},
-    "/agent": None,
-    "/voice": None,
-    "/skill": None,
-    "/services": {"start": None, "stop": None},
-    "/up": None,
-    "/restart": None,
-    "/webui": None,
-    "/stop": None,
-    "/logs": None,
-    "/clear": None,
-    "/exit": None,
-    "/quit": None,
-}
+# The shell's slash commands, defined ONCE. The completion tree (`_SLASH`), the dispatch handler
+# table (BobShell.dispatch), and the /help listing (_cmd_help) all derive from this list, so adding a
+# command is a single entry here. `handler` is a BobShell method name (bound via getattr at dispatch);
+# "" marks a command handled inline (only /exit — it returns False to leave the REPL). `args` is the
+# help-display argument syntax; `subs` are completion-only sub-commands; `aliases` are extra names that
+# complete + dispatch but aren't listed in /help (e.g. /quit for /exit). It stays the TUI's OWN
+# surface — what you can DO from inside `bob` — deliberately NOT the CLI verb catalog (`bob help`).
+@dataclass(frozen=True)
+class _Cmd:
+    name: str
+    desc: str
+    handler: str = ""
+    args: str = ""
+    subs: tuple = ()
+    aliases: tuple = ()
+
+    def names(self) -> tuple:
+        return (self.name, *self.aliases)
+
+
+_COMMANDS = [
+    _Cmd("/agent", "run the agent loop on a one-shot goal", "_run_turn", args="<goal>"),
+    _Cmd("/voice", "spoken conversation (mic → loop → speech)", "_cmd_voice"),
+    _Cmd("/model", "show or switch the role (chat, coder, planner, …)", "_cmd_model", args="[role]"),
+    _Cmd("/agency", "tool-approval mode: show | confirm | silent", "_cmd_agency",
+         args="[level]", subs=("show", "confirm", "silent")),
+    _Cmd("/session", "persisted conversation history", "_cmd_session",
+         args="[new|list|resume <id>|show]", subs=("new", "list", "resume", "show")),
+    _Cmd("/skill", "list or run a skill", "_cmd_skill", args="[name]"),
+    _Cmd("/tools", "list the agent's tools", "_cmd_tools"),
+    _Cmd("/skills", "list available skills", "_cmd_skills"),
+    _Cmd("/status", "system dashboard — every service, up/down", "_cmd_status"),
+    _Cmd("/services", "service dashboard; toggle a service in place", "_cmd_services",
+         args="[start|stop [name]]", subs=("start", "stop")),
+    _Cmd("/up", "start the stack in the background (endpoint + proxy + WebUI)", "_cmd_up",
+         args="[--with-services]"),
+    _Cmd("/restart", "restart the inference endpoint", "_cmd_restart"),
+    _Cmd("/webui", "open the Open WebUI browser tab", "_cmd_webui"),
+    _Cmd("/stop", "stop local inference (frees VRAM)", "_cmd_stop"),
+    _Cmd("/logs", "recent inference-server log", "_cmd_logs"),
+    _Cmd("/theme", "reload the colour theme", "_cmd_theme", args="[reload]", subs=("reload",)),
+    _Cmd("/tui", "turn rendering: inline (default) or fullscreen", "_cmd_tui",
+         args="[default|fullscreen]", subs=("default", "fullscreen")),
+    _Cmd("/clear", "clear the screen", "_cmd_clear"),
+    _Cmd("/help", "this reference", "_cmd_help"),
+    _Cmd("/exit", "leave the shell", args="", aliases=("/quit",)),   # "" handler → inline exit
+]
+
+
+def _slash_tree() -> dict:
+    """The NestedCompleter tree derived from `_COMMANDS`: each name (and alias) maps to a sub-map of
+    its sub-commands or None."""
+    tree = {}
+    for c in _COMMANDS:
+        node = {s: None for s in c.subs} if c.subs else None
+        for nm in c.names():
+            tree[nm] = node
+    return tree
+
+
+# Commands with no handler are handled inline by dispatch (just /exit + its /quit alias → leave).
+_EXIT_CMDS = frozenset(nm for c in _COMMANDS if not c.handler for nm in c.names())
+_SLASH = _slash_tree()
+
+
+def _slash_completer():
+    """A completer that makes `/` self-documenting: at the top level it lists every slash command with
+    its one-line description (from `_COMMANDS`) in the menu, and for a sub-command context it defers to
+    the derived `_SLASH` tree. Wrapped in FuzzyCompleter by the caller for typo-tolerance (which
+    preserves the descriptions). prompt_toolkit is imported lazily so shell.py stays importable
+    without it."""
+    from prompt_toolkit.completion import Completer, Completion, NestedCompleter
+
+    meta = {nm: c.desc for c in _COMMANDS for nm in c.names()}   # name + aliases → its description
+    nested = NestedCompleter.from_nested_dict(_SLASH)
+
+    class _SlashCompleter(Completer):
+        def get_completions(self, document, complete_event):
+            text = document.text_before_cursor
+            if " " in text.lstrip():        # past the command word → sub-command completion (no meta)
+                yield from nested.get_completions(document, complete_event)
+                return
+            word = text.lstrip()
+            for name, desc in meta.items():
+                if name.startswith(word):
+                    yield Completion(name, start_position=-len(word), display_meta=desc)
+
+    return _SlashCompleter()
 
 # A tool result is an error/refusal (colour it ✗, not ✓) when it starts with one of these markers —
 # both the dispatcher's own errors and the tools' in-band refusals (file sandbox, approval denial).
@@ -129,6 +205,19 @@ def _compact_args(arguments: str) -> str:
     return (s[:80] + "...") if len(s) > 80 else s
 
 
+def _looks_like_diff(res: str) -> bool:
+    """Conservative unified-diff detection: a hunk header (`@@ -`) or the `--- `/`+++ ` file-header
+    pair. Anchored to those markers so ordinary tool output (which may start with a stray + or -) is
+    never mistaken for a diff and mis-rendered."""
+    head = (res or "").lstrip()
+    if not head:
+        return False
+    lines = head.splitlines()
+    if lines[0].startswith("@@ -"):
+        return True
+    return len(lines) >= 2 and lines[0].startswith("--- ") and lines[1].startswith("+++ ")
+
+
 def _preview(res: str, n: int = 240) -> str:
     """First non-empty line of a tool result, clipped — enough to see what happened, not a data dump."""
     text = (res or "").strip()
@@ -137,6 +226,22 @@ def _preview(res: str, n: int = 240) -> str:
     first = text.splitlines()[0]
     more = len(text) > len(first)
     return first[:n] + ("..." if len(first) > n or more else "")
+
+
+def _render_answer(text: str, theme, console):
+    """The assistant answer as a rich renderable: Markdown (with the theme's prose-width cap on wide
+    terminals) or plain Text when markdown is off. Shared by the live stream renderer and the
+    fullscreen commit, so answer formatting lives in one place."""
+    if not theme.markdown:
+        from rich.text import Text
+        return Text(text)
+    from rich.markdown import Markdown
+    md = Markdown(text)
+    w = theme.prose_width
+    if w and 0 < w < (console.width or 0):
+        from rich.align import Align
+        return Align.left(md, width=w)
+    return md
 
 
 class _TurnRenderer:
@@ -157,6 +262,7 @@ class _TurnRenderer:
         self._buf = ""
         self._live = None
         self._status = None
+        self._last_update = 0.0   # monotonic time of the last live re-parse (throttle to _STREAM_HZ)
 
     # -- streamed assistant text (Markdown) --------------------------------
 
@@ -166,23 +272,15 @@ class _TurnRenderer:
         self._start_spin("thinking")
 
     def _renderable(self, text: str):
-        if not self.t.markdown:
-            from rich.text import Text
-            return Text(text)
-        from rich.markdown import Markdown
-        md = Markdown(text)
-        w = self.t.prose_width
-        if w and 0 < w < (self.console.width or 0):    # cap prose width for readability on wide terms
-            from rich.align import Align
-            return Align.left(md, width=w)
-        return md
+        return _render_answer(text, self.t, self.console)
 
     def _start_live(self) -> None:
         if self._live is None and self.term and self._status is None:
             from rich.live import Live
             self._live = Live(self._renderable(self._buf), console=self.console,
-                              refresh_per_second=8, vertical_overflow="visible")
+                              refresh_per_second=_STREAM_HZ, vertical_overflow="visible")
             self._live.start()
+            self._last_update = time.monotonic()
 
     def _flush_text(self) -> None:
         """Commit the current streamed text segment (rendered), then reset the buffer."""
@@ -220,8 +318,13 @@ class _TurnRenderer:
             self._buf += ev.get("text", "")
             if self.term:
                 self._start_live()
-                if self._live is not None:
+                # Re-parse at most _STREAM_HZ times/second (not per token) so a long answer stays
+                # ~linear, not O(n^2). Live keeps redrawing the last renderable between updates, and
+                # _flush_text renders the complete buffer when the segment ends, so nothing is lost.
+                now = time.monotonic()
+                if self._live is not None and (now - self._last_update) >= 1.0 / _STREAM_HZ:
                     self._live.update(self._renderable(self._buf))
+                    self._last_update = now
         elif t == "tool_call":
             self._stop_spin()
             self._flush_text()
@@ -238,6 +341,11 @@ class _TurnRenderer:
                 res = ev.get("result") or ""
                 if _is_error_result(res):
                     self.console.print(f"    [{self.t.error}]{self.t.bad}[/] [{self.t.error}]{_preview(res)}[/]")
+                elif _looks_like_diff(res):
+                    from rich.padding import Padding
+                    from bob import render
+                    self.console.print(f"    [{self.t.success}]{self.t.ok}[/] [{self.t.muted}]diff[/]")
+                    self.console.print(Padding(render.diff_view(res, self.t), (0, 0, 0, 4)))
                 else:
                     self.console.print(f"    [{self.t.success}]{self.t.ok}[/] [{self.t.muted}]{_preview(res)}[/]")
         elif t == "error":
@@ -294,10 +402,17 @@ class BobShell:
         self.session_id = None           # persisted id once created; None = no row yet
         self.history: list = []          # [{role, content}] — the live context; mirrors the store
         self._always: set = set()        # tools the user chose "always" for this session
+        # Two-stage exit: a Ctrl-C at the prompt (or one that cancels a turn) arms this; a second
+        # consecutive Ctrl-C at the prompt leaves. Any dispatched line clears it.
+        self._pending_exit = False
+        # Turn render mode: inline (default; streams into the terminal's native scrollback) or
+        # fullscreen (a flicker-free alt-screen per turn). /tui toggles it.
+        self._fullscreen = False
         from rich.console import Console
         # highlight=False: only the theme's colours apply — rich's ReprHighlighter must not tint
-        # identifiers/numbers (e.g. a magenta tool name) and fight the palette.
-        self.console = console or Console(highlight=False)
+        # identifiers/numbers (e.g. a magenta tool name) and fight the palette. no_color honours the
+        # NO_COLOR convention (strips every hue; the transcript still reads via weight + glyphs).
+        self.console = console or Console(highlight=False, no_color=theme_mod.no_color_active())
         self.theme = Theme.load(config, self.console)   # parsed once; renderer/splash read its fields
 
     # -- construction ---------------------------------------------------------
@@ -419,7 +534,6 @@ class BobShell:
             return 0
 
         from prompt_toolkit import PromptSession
-        from prompt_toolkit.completion import NestedCompleter
         from prompt_toolkit.formatted_text import HTML
         from prompt_toolkit.history import FileHistory
         from prompt_toolkit.patch_stdout import patch_stdout
@@ -429,6 +543,9 @@ class BobShell:
         self._print_splash()
         if self._first_run_pending():
             self._print_first_run()
+        if self.theme.input_multiline:
+            self.console.print(f"[{self.theme.muted}]multiline input on: Enter for a new line, "
+                               f"Meta (or Esc) then Enter to send[/]")
         style = Style.from_dict(self.theme.prompt_style)
         message = HTML(f"<prompt>{self.theme.prompt}</prompt> <arrow>{self.theme.arrow}</arrow> ")
 
@@ -440,16 +557,17 @@ class BobShell:
 
         session = PromptSession(
             history=FileHistory(str(osenv.data_dir() / "shell-history.txt")),
-            completer=NestedCompleter.from_nested_dict(_SLASH),
-            complete_while_typing=False,
             style=style,
             bottom_toolbar=toolbar,
+            **self._session_kwargs(),
         )
         while True:
             try:
                 with patch_stdout():
                     line = session.prompt(message)
-            except KeyboardInterrupt:      # Ctrl-C at an empty prompt: clear the line, stay in the shell
+            except KeyboardInterrupt:      # Ctrl-C at the prompt: first press arms exit, second leaves
+                if self._on_prompt_interrupt():
+                    break
                 continue
             except EOFError:               # Ctrl-D: leave cleanly
                 break
@@ -463,9 +581,48 @@ class BobShell:
         self._on_exit()
         return 0
 
+    def _session_kwargs(self) -> dict:
+        """The prompt_toolkit input options this shell configures: fuzzy slash completion (the menu
+        opens and live-filters on '/'), fish-style history ghost-text, colour depth aligned to Rich's,
+        and optional multiline input. Split out of run() so it's inspectable without a live TTY."""
+        from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+        from prompt_toolkit.completion import FuzzyCompleter
+        from prompt_toolkit.output import ColorDepth
+        kw = {
+            "completer": FuzzyCompleter(_slash_completer()),
+            # '/' opens + live-filters the menu; a normal message matches no key, so no menu appears.
+            "complete_while_typing": True,
+            "auto_suggest": AutoSuggestFromHistory(),
+            # Match Rich's colour fidelity, or 1-bit (monochrome) when NO_COLOR is in effect.
+            "color_depth": (ColorDepth.DEPTH_1_BIT if self.theme.no_color
+                            else theme_mod.ptk_color_depth(self.console)),
+        }
+        if self.theme.input_multiline:
+            # Enter inserts a newline; Meta/Esc+Enter submits — for pasting code / long prompts.
+            kw["multiline"] = True
+            kw["prompt_continuation"] = self._continuation
+        return kw
+
+    def _continuation(self, width, line_number, is_soft_wrap):
+        """The dim gutter drawn on each continued line of a multiline prompt: an ellipsis right-aligned
+        under the prompt so the input column stays visually anchored."""
+        from prompt_toolkit.formatted_text import HTML
+        return HTML("<continuation>%s</continuation>") % ("… ".rjust(max(width, 2)))
+
+    def _on_prompt_interrupt(self) -> bool:
+        """Ctrl-C at the prompt. The first press arms exit (and says so); a second consecutive press
+        confirms it. Returns True when the shell should leave. Any dispatched line clears the arm, so a
+        lone Ctrl-C never exits by surprise."""
+        if self._pending_exit:
+            return True
+        self._pending_exit = True
+        self.console.print(f"[{self.theme.muted}]press Ctrl-C again to exit[/]")
+        return False
+
     def dispatch(self, line: str) -> bool:
         """Route one input line. Returns False to exit the REPL, True to keep looping. A leading '/'
         is a shell command; anything else is an agent turn."""
+        self._pending_exit = False        # the user acted → disarm any pending two-stage exit
         line = (line or "").strip()
         if not line:
             return True
@@ -476,61 +633,27 @@ class BobShell:
         parts = line.split(maxsplit=1)
         cmd = parts[0].lower()
         arg = parts[1].strip() if len(parts) > 1 else ""
-        if cmd in ("/exit", "/quit"):
+        if cmd in _EXIT_CMDS:
             return False
-        handler = {
-            "/help": self._cmd_help,
-            "/tools": self._cmd_tools,
-            "/skills": self._cmd_skills,
-            "/status": self._cmd_status,
-            "/model": self._cmd_model,
-            "/agency": self._cmd_agency,
-            "/session": self._cmd_session,
-            "/theme": self._cmd_theme,
-            "/clear": self._cmd_clear,
-            "/agent": self._run_turn,
-            "/voice": self._cmd_voice,
-            "/skill": self._cmd_skill,
-            "/services": self._cmd_services,
-            "/up": self._cmd_up,
-            "/restart": self._cmd_restart,
-            "/webui": self._cmd_webui,
-            "/stop": self._cmd_stop,
-            "/logs": self._cmd_logs,
-        }.get(cmd)
+        handler = self._handlers().get(cmd)
         if handler is None:
             self.console.print(f"[yellow]Unknown command: {cmd}[/]  (try /help)")
             return True
         handler(arg)
         return True
 
-    # -- slash commands -------------------------------------------------------
+    def _handlers(self) -> dict:
+        """The cmd → bound-method table, derived from `_COMMANDS` (name + aliases → its handler)."""
+        table = {}
+        for c in _COMMANDS:
+            if not c.handler:
+                continue
+            fn = getattr(self, c.handler)
+            for nm in c.names():
+                table[nm] = fn
+        return table
 
-    # Slash-command reference for the shell. This is the TUI's OWN surface — what you can DO from inside
-    # `bob`. It is deliberately NOT the CLI verb catalog (`bob help`): the shell is the home base, and the
-    # CLI verbs are the scripting / outside-terminal surface. The footer points at each other.
-    _SLASH_HELP = [
-        ("(type a message)", "chat with Bob, or describe a task to run"),
-        ("/agent <goal>", "run the agent loop on a one-shot goal"),
-        ("/voice", "spoken conversation (mic → loop → speech)"),
-        ("/model [role]", "show or switch the role (chat, coder, planner, …)"),
-        ("/agency [level]", "tool-approval mode: show | confirm | silent"),
-        ("/session [new|list|resume <id>|show]", "persisted conversation history"),
-        ("/skill [name]", "list or run a skill"),
-        ("/tools", "list the agent's tools"),
-        ("/skills", "list available skills"),
-        ("/status", "system dashboard — every service, up/down"),
-        ("/services [start|stop [name]]", "service dashboard; toggle a service in place"),
-        ("/up [--with-services]", "start the stack in the background (endpoint + proxy + WebUI)"),
-        ("/restart", "restart the inference endpoint"),
-        ("/webui", "open the Open WebUI browser tab"),
-        ("/stop", "stop local inference (frees VRAM)"),
-        ("/logs", "recent inference-server log"),
-        ("/theme [reload]", "reload the colour theme"),
-        ("/clear", "clear the screen"),
-        ("/help", "this reference"),
-        ("/exit", "leave the shell"),
-    ]
+    # -- slash commands -------------------------------------------------------
 
     def _cmd_help(self, _arg: str = "") -> None:
         from rich.table import Table
@@ -538,8 +661,10 @@ class BobShell:
         tbl = Table(show_header=False, box=None, pad_edge=False)
         tbl.add_column(style=t.accent, no_wrap=True)
         tbl.add_column(style=t.muted)
-        for cmd, desc in self._SLASH_HELP:
-            tbl.add_row(cmd, desc)
+        # Lead with the primary affordance (typing a message), then every command from the one source.
+        tbl.add_row("(type a message)", "chat with Bob, or describe a task to run")
+        for c in _COMMANDS:
+            tbl.add_row(f"{c.name} {c.args}".strip(), c.desc)
         self.console.print(tbl)
         self.console.print(
             f"\n[italic {self.theme.muted}]This is the shell. For scripting / outside the terminal "
@@ -862,6 +987,23 @@ class BobShell:
             f"blank_between_turns={t.blank_between_turns} prose_width={t.prose_width}"
         )
 
+    def _cmd_tui(self, arg: str = "") -> None:
+        """/tui [default|fullscreen] — switch how a turn renders. inline (default) streams into the
+        terminal's native scrollback; fullscreen uses a flicker-free alt-screen for the turn, then
+        commits the final answer back to scrollback. No argument reports the current mode."""
+        mode = arg.strip().lower()
+        if not mode:
+            cur = "fullscreen" if self._fullscreen else "inline"
+            self.console.print(f"tui: [{self.theme.accent}]{cur}[/] "
+                               f"[{self.theme.muted}](/tui default | /tui fullscreen)[/]")
+            return
+        if mode not in ("default", "inline", "fullscreen"):
+            self.console.print("[yellow]usage: /tui [default|fullscreen][/]")
+            return
+        self._fullscreen = (mode == "fullscreen")
+        self.console.print(
+            f"[{self.theme.success}]tui → {'fullscreen' if self._fullscreen else 'inline'}[/]")
+
     # -- agent turn -----------------------------------------------------------
 
     def _run_turn(self, goal: str) -> str:
@@ -1024,44 +1166,55 @@ class BobShell:
         t = threading.Thread(target=worker, daemon=True)
         t.start()
 
-        if self.theme.blank_between_turns:
+        from contextlib import nullcontext
+        # Fullscreen (/tui): render the turn on a flicker-free alt-screen, then commit the final answer
+        # inline below so it stays in scrollback. Composes with the phase-exclusive design — the prompt
+        # is never live while the screen is up. Inline (default) renders straight into the transcript.
+        fullscreen = self._fullscreen and self.console.is_terminal
+        if self.theme.blank_between_turns and not fullscreen:
             self.console.print()
         renderer = _TurnRenderer(self.console, self.agency, self.theme)
-        renderer.begin()          # 'thinking' spinner until the first event — no dead air
         result = None
         cancelled = False
         self._exit_requested = False   # set from the final event; /voice reads it to leave voice mode
         # Poll with a short timeout rather than block forever on get(): on Windows a Ctrl-C can't
         # interrupt a lock held in C, so a bare get() would swallow the signal — the timeout returns
         # control to Python bytecode ~10×/s so a pending KeyboardInterrupt is delivered promptly.
-        try:
-            while True:
-                try:
+        with (self.console.screen() if fullscreen else nullcontext()):
+            renderer.begin()          # 'thinking' spinner until the first event — no dead air
+            try:
+                while True:
                     try:
-                        ev = events.get(timeout=0.1)
-                    except queue.Empty:
-                        continue
-                    if ev is _SENTINEL:
-                        break
-                    if ev.get("type") == "approval_required":
-                        renderer.quiesce()   # let the approval prompt own the terminal
-                        decision = False if cancelled else bool(on_approval(ev))
-                        self._put(answers, decision)
-                    else:
-                        if ev.get("type") == "final":
-                            result = ev.get("result")
-                            self._exit_requested = bool(ev.get("exit_requested"))
-                        renderer.handle(ev)
-                except KeyboardInterrupt:  # Ctrl-C: trip the run's cancel, release any pending approval
-                    cancel.cancel()
-                    cancelled = True
-                    self._unblock(answers)
-        finally:
-            renderer.close()
+                        try:
+                            ev = events.get(timeout=0.1)
+                        except queue.Empty:
+                            continue
+                        if ev is _SENTINEL:
+                            break
+                        if ev.get("type") == "approval_required":
+                            renderer.quiesce()   # let the approval prompt own the terminal
+                            decision = False if cancelled else bool(on_approval(ev))
+                            self._put(answers, decision)
+                        else:
+                            if ev.get("type") == "final":
+                                result = ev.get("result")
+                                self._exit_requested = bool(ev.get("exit_requested"))
+                            renderer.handle(ev)
+                    except KeyboardInterrupt:  # Ctrl-C: trip cancel, release any pending approval
+                        cancel.cancel()
+                        cancelled = True
+                        self._unblock(answers)
+                        # Arm the two-stage exit: an immediate second Ctrl-C at the prompt now leaves.
+                        self._pending_exit = True
+            finally:
+                renderer.close()
         t.join(timeout=10)
         if cancelled:
             self.console.print(f"[{self.theme.warn}]cancelled[/]")
-        return None if cancelled else result
+            return None
+        if fullscreen and result:      # the alt-screen is gone; land the answer in scrollback
+            self.console.print(_render_answer(result, self.theme, self.console))
+        return result
 
     # -- approval -------------------------------------------------------------
 

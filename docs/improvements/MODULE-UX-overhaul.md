@@ -21,9 +21,10 @@ What Bob already does well (keep):
 - **Splash** — pyfiglet wordmark + per-char gradient, tagline, health pill, accent counts, rule, tip ([theme.py](../../scripts/bob/theme.py) `render_header`, [shell.py](../../scripts/bob/shell.py) `_print_splash`).
 - **Streaming** — `rich.Live(Markdown)` per text segment at `refresh_per_second=8`, `transient` left default so each message stays in scrollback ([shell.py](../../scripts/bob/shell.py) `_TurnRenderer`). This matches the verified inline-transcript pattern.
 - **Coexistence done right** — `patch_stdout()` wraps `session.prompt()`; `Live` runs only during a turn (prompt idle). This already honors the research caveat that Rich `Live` redirect and prompt_toolkit `patch_stdout` must be **mutually exclusive per phase**.
-- **Fallbacks** — `_force_utf8()`, `_unicode_ok()` glyph/ASCII fallback, ASCII figlet font on non-UTF-8.
+- **Fallbacks** — `_force_utf8()` ([shell.py](../../scripts/bob/shell.py)), `unicode_ok()` glyph/ASCII fallback ([theme.py](../../scripts/bob/theme.py) `unicode_ok`), ASCII figlet font on non-UTF-8.
 - **Approval** — risk-colored panel + `y/N/a`, session-scoped "always" set ([shell.py](../../scripts/bob/shell.py) `_approve`).
 - **Slash tree** — `NestedCompleter` over `_SLASH`.
+- **Cockpit (added by POST-ONE-2, landed 2026-07-07; not in the original audit)** — the shell now manages the whole stack from inside: `/up`, `/restart`, `/webui`, `/services [start|stop [name]]`, `/stop`, `/logs`, driven by a `_render_dashboard` + in-place re-render feedback loop (each toggle re-renders the dashboard so the changed row flips ●/○) ([shell.py](../../scripts/bob/shell.py) `_render_dashboard` at :579-699, re-render calls at :633/:665/:671/:693). This is now the primary "home base" surface, so the slash set has grown to ~20 commands (see UX-2) and the dashboard re-render pattern is a foundation UX-4's transcript polish can build on.
 
 Gaps the research flags (build these):
 
@@ -73,8 +74,8 @@ Gaps the research flags (build these):
 - *Tests:* completer wraps fuzzy + nested; autosuggest object attached; multiline flag threads from config; `_SLASH` unchanged. (prompt_toolkit interaction itself stays manual-acceptance — no TTY in CI.)
 
 ### UX-2 — Slash discovery + command meta
-- Replace the plain `NestedCompleter` values with a custom completer (or `NestedCompleter` + a `meta_dict`) that shows a one-line **description per command** in the completion menu (pulled from the command registry summaries), so `/` is self-documenting. Keep `/help` as the full catalog.
-- *Tests:* every `_SLASH` entry resolves to a description; unknown `/x` still routes to the "unknown command" path.
+- Replace the plain `NestedCompleter` values with a custom completer (or `NestedCompleter` + a `meta_dict`) that shows a one-line **description per command** in the completion menu, so `/` is self-documenting. There are now ~20 slash commands to describe (the cockpit set — `/up`, `/restart`, `/webui`, `/services`, `/stop`, `/logs` — plus `/session`, `/skill`, etc.), not the ~10 of the original audit. Source the descriptions from the hand-maintained `_SLASH_HELP` list ([shell.py](../../scripts/bob/shell.py) `_SLASH_HELP` at :512-533), which `/help` already renders — this is the shell's OWN surface. Do NOT pull from the `bob.registry` command catalog: that is the separate outside-terminal CLI-verb surface (rendered by `render.commands_view`), deliberately distinct from the in-shell slash set. Keep `/help` as the full catalog.
+- *Tests:* every `_SLASH_HELP` entry resolves to a description; the completer meta matches `_SLASH_HELP`; unknown `/x` still routes to the "unknown command" path.
 
 ### UX-3 — Theming: adaptive + accessible (biggest visual-identity win)
 - Extend the theme to **named presets**: `mauve` (current), `light`, `dark`, `daltonized` (colorblind-safe), `ansi` (uses the terminal's 16 colors — doubles as the truecolor fallback). Selected via `ui.theme` (name) with `config/ui.json` still overriding individual keys. Optional `auto` that picks light/dark from the terminal background.
@@ -111,8 +112,8 @@ Gaps the research flags (build these):
 ## 5. Open questions (research gaps — need a dedicated pass or first-principles design)
 No primary-sourced claims survived verification on these (they were asked but under-covered), though relevant docs exist as starting points:
 - **Tool-approval / trust UX** beyond the current session `y/N/a`: persistent per-command allowlists, `ask/allow/deny` tiers, argument-pattern matching. Sources to mine: [Claude Code permissions](https://code.claude.com/docs/en/permissions), [Codex agent approvals](https://developers.openai.com/codex/agent-approvals-security). (Overlaps Module O6.)
-- **Session & memory affordances in the UI**: context/compaction indicators, resume, memory surfacing. Source: [Claude Code memory](https://code.claude.com/docs/en/memory). (Overlaps WI-6/NE5 + [MODULE-MEM](MODULE-MEM-memory-redesign.md).)
-- **Splash/onboarding & wordmark** best practices, and **prose width / diff presentation** specifics — no verified guidance; design from the frontier-observed patterns above.
+- **Session & memory affordances in the UI** — *partially answered by shipped work.* `/session new|list|resume|show` shipped ([shell.py](../../scripts/bob/shell.py) `_cmd_session` at :723-814), and end-of-session memory consolidation now surfaces indicators in the transcript ("saving session memory…", "remembered N fact(s) from this session"; [shell.py](../../scripts/bob/shell.py) `_consolidate_session` at :1141-1158). Remaining gap: in-turn **context / compaction indicators** (how full the window is, when a compaction happened). Source: [Claude Code memory](https://code.claude.com/docs/en/memory). (Overlaps WI-6/NE5 + [MODULE-MEM](MODULE-MEM-memory-redesign.md).)
+- **Splash/onboarding & wordmark** — *partially answered by shipped work.* A one-time first-run welcome panel shipped ([shell.py](../../scripts/bob/shell.py) `_print_first_run` at :1110-1128), plus profile-seeding onboarding. Remaining gap: **prose width / diff presentation** specifics (no verified guidance) — design from the frontier-observed patterns above.
 
 ---
 

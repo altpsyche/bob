@@ -68,6 +68,42 @@ def skills_view(reg, theme):
     return Group(Text(f"Skills ({len(skills)})", style=f"bold {theme.accent}"), tbl)
 
 
+def _diff_line_style(line: str, theme) -> str:
+    """The style for one unified-diff line: added green, removed red, hunk headers accent, file headers
+    and context muted. File-header prefixes (+++/---) are checked before the +/- content prefixes."""
+    if line.startswith(("+++", "---")):
+        return theme.muted
+    if line.startswith("@@"):
+        return theme.accent
+    if line.startswith("+"):
+        return theme.success
+    if line.startswith("-"):
+        return theme.error
+    return theme.muted
+
+
+def diff_view(diff_text: str, theme, path: str = None, max_lines: int = 40):
+    """Render a unified diff: +/- lines coloured success/error (the leading sign IS the gutter), hunk
+    headers in the accent, context/file-headers muted. A diff longer than `max_lines` collapses to the
+    first `max_lines` with a '... (N more)' footer. One renderer for tool results now and a future
+    coding-agent file-edit result later, so there is never a second diff path."""
+    lines = (diff_text or "").splitlines()
+    shown = lines[:max_lines]
+    body = Text()
+    for i, ln in enumerate(shown):
+        if i:
+            body.append("\n")
+        body.append(ln, style=_diff_line_style(ln, theme))
+    parts = []
+    if path:
+        parts.append(Text(path, style=f"bold {theme.accent}"))
+    parts.append(body)
+    hidden = len(lines) - len(shown)
+    if hidden > 0:
+        parts.append(Text(f"... ({hidden} more)", style=theme.muted))
+    return Group(*parts)
+
+
 def plugins_view(theme, plugins_dir: Path = None):
     """Drop-in plugins (plugins/<name>/) with their one-line description.txt — the `bob <name>` verbs
     that live outside the command registry. Returns None if there are none."""

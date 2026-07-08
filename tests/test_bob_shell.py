@@ -109,6 +109,50 @@ class TestDispatch(unittest.TestCase):
         self.assertIn("Skills", text)
 
 
+class TestSlashSource(unittest.TestCase):
+    """Slash commands are defined once in _COMMANDS; the completion tree, the dispatch handler table,
+    and /help all derive from it, so a new command is a single entry."""
+
+    def test_every_handler_resolves_to_a_method(self):
+        sh, _ = _make_shell()
+        table = sh._handlers()
+        for c in shellmod._COMMANDS:
+            if not c.handler:                       # only /exit has no handler (inline exit)
+                self.assertIn(c.name, shellmod._EXIT_CMDS)
+                continue
+            self.assertTrue(callable(getattr(sh, c.handler)))
+            self.assertIn(c.name, table)            # dispatchable by name
+
+    def test_completion_tree_covers_names_and_aliases(self):
+        names = set()
+        for c in shellmod._COMMANDS:
+            names.update(c.names())
+        self.assertEqual(set(shellmod._SLASH), names)
+
+    def test_subcommands_nested_under_parent(self):
+        self.assertEqual(set(shellmod._SLASH["/agency"]), {"show", "confirm", "silent"})
+        self.assertEqual(set(shellmod._SLASH["/session"]), {"new", "list", "resume", "show"})
+        self.assertEqual(set(shellmod._SLASH["/services"]), {"start", "stop"})
+        self.assertEqual(set(shellmod._SLASH["/theme"]), {"reload"})
+        self.assertIsNone(shellmod._SLASH["/tools"])     # no subs → a leaf
+
+    def test_every_command_has_help_text(self):
+        for c in shellmod._COMMANDS:
+            self.assertTrue(c.desc.strip())
+
+    def test_alias_dispatches_and_completes_like_primary(self):
+        sh, _ = _make_shell()
+        self.assertFalse(sh.dispatch("/quit"))           # alias of /exit → leaves the REPL
+        self.assertIn("/quit", shellmod._SLASH)          # and is completable
+
+    def test_help_lists_every_command(self):
+        sh, out = _make_shell()
+        sh.dispatch("/help")
+        text = out.file.getvalue()
+        for c in shellmod._COMMANDS:
+            self.assertIn(c.name, text)
+
+
 class TestVoiceMode(unittest.TestCase):
     """/voice loop glue: mic→STT→_run_turn→TTS, faked end to end. The turn path itself is the
     same _run_turn the text tests cover; here we prove the round-trip wiring, exit conditions, and edges."""
@@ -442,6 +486,28 @@ class TestRenderLoop(unittest.TestCase):
         self.assertNotIn("shell_run", out.file.getvalue())
 
 
+class TestStreamingThrottle(unittest.TestCase):
+    """A growing answer is re-parsed at most a few times per second, not once per token, so a long
+    stream stays ~linear instead of O(n^2). The complete buffer is still rendered at the segment end."""
+
+    def test_reparse_throttled_but_final_complete(self):
+        from rich.console import Console
+        theme = _make_shell()[0].theme
+        con = Console(file=io.StringIO(), force_terminal=True, no_color=True, width=80)
+        r = shellmod._TurnRenderer(con, "show", theme)
+        parses = {"n": 0}
+        orig = r._renderable
+        r._renderable = lambda text: (parses.__setitem__("n", parses["n"] + 1), orig(text))[1]
+        r.begin()
+        for _ in range(200):
+            r.handle({"type": "token", "text": "word "})    # arrive faster than the refresh cadence
+        r.handle({"type": "final", "result": "x", "reason": "answer"})
+        r.close()
+        self.assertLess(parses["n"], 50)             # throttled — nowhere near 200 parses
+        self.assertGreaterEqual(parses["n"], 1)      # but the buffer was parsed at least once
+        self.assertEqual(r.answer, "word " * 200)    # and the complete text is captured
+
+
 class TestApprovalHandshake(unittest.TestCase):
     def _run(self, decision):
         sh, _ = _make_shell()
@@ -474,6 +540,126 @@ class TestApprovalHandshake(unittest.TestCase):
         sh._always.add("shell_run")
         # _approve returns True from the always-set WITHOUT importing/using prompt_toolkit.
         self.assertTrue(sh._approve({"tool": "shell_run", "arguments": "{}"}))
+
+
+class TestDiffTranscript(unittest.TestCase):
+    """A tool result that is a unified diff renders through render.diff_view; ordinary output keeps
+    the one-line preview. Detection is conservative so normal text is never mistaken for a diff."""
+    _DIFF = "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-old line\n+new line\n"
+
+    def test_diff_result_renders_as_diff(self):
+        sh, out = _make_shell()
+
+        def factory(cancel, approve):
+            yield {"type": "tool_result", "call_id": "0.0", "name": "file_edit", "result": self._DIFF}
+            yield {"type": "final", "result": "done", "reason": "answer"}
+
+        sh._consume(factory, on_approval=lambda a: True)
+        text = out.file.getvalue()
+        self.assertIn("+new line", text)
+        self.assertIn("-old line", text)
+
+    def test_plain_result_uses_preview(self):
+        sh, out = _make_shell()
+
+        def factory(cancel, approve):
+            yield {"type": "tool_result", "call_id": "0.0", "name": "web_search",
+                   "result": "just some ordinary text"}
+            yield {"type": "final", "result": "done", "reason": "answer"}
+
+        sh._consume(factory, on_approval=lambda a: True)
+        self.assertIn("just some ordinary text", out.file.getvalue())
+
+    def test_looks_like_diff_is_conservative(self):
+        self.assertTrue(shellmod._looks_like_diff("@@ -1,2 +1,2 @@\n ctx"))
+        self.assertTrue(shellmod._looks_like_diff("--- a/x\n+++ b/x\n"))
+        self.assertFalse(shellmod._looks_like_diff("+1 for that idea"))   # stray + is not a diff
+        self.assertFalse(shellmod._looks_like_diff("done"))
+        self.assertFalse(shellmod._looks_like_diff(""))
+
+
+class TestCtrlCExit(unittest.TestCase):
+    """Two-stage exit: a Ctrl-C at the prompt (or one that cancels a turn) arms exit; a second
+    consecutive prompt Ctrl-C leaves; any dispatched line disarms it."""
+
+    def test_first_arms_second_exits(self):
+        sh, out = _make_shell()
+        self.assertFalse(sh._on_prompt_interrupt())      # first press: arm, don't exit
+        self.assertTrue(sh._pending_exit)
+        self.assertIn("again to exit", out.file.getvalue())
+        self.assertTrue(sh._on_prompt_interrupt())       # second consecutive press: exit
+
+    def test_dispatch_disarms(self):
+        sh, _ = _make_shell()
+        sh._pending_exit = True
+        sh.dispatch("/help")
+        self.assertFalse(sh._pending_exit)               # acting on the prompt clears the arm
+
+    def test_turn_cancel_arms_exit(self):
+        sh, _ = _make_shell()
+        sh._pending_exit = False
+
+        def factory(cancel, approve):
+            yield {"type": "approval_required", "call_id": "0.0", "tool": "shell_run",
+                   "arguments": "{}", "risk": "high"}
+            yield {"type": "final", "result": "x", "reason": "answer"}
+
+        def boom(_ev):
+            raise KeyboardInterrupt      # user hits Ctrl-C at the approval prompt
+
+        result = sh._consume(factory, on_approval=boom)
+        self.assertIsNone(result)                        # cancelled → no answer
+        self.assertTrue(sh._pending_exit)                # and the exit is armed
+
+
+class TestTuiMode(unittest.TestCase):
+    """/tui toggles the turn renderer between inline (default) and fullscreen; fullscreen renders on an
+    alt-screen for the turn and commits the final answer inline so scrollback is preserved."""
+
+    def test_toggle_between_modes(self):
+        sh, _ = _make_shell()
+        self.assertFalse(sh._fullscreen)                  # inline by default
+        sh.dispatch("/tui fullscreen")
+        self.assertTrue(sh._fullscreen)
+        sh.dispatch("/tui default")
+        self.assertFalse(sh._fullscreen)
+
+    def test_no_arg_reports_and_unknown_rejected(self):
+        sh, out = _make_shell()
+        sh.dispatch("/tui")
+        self.assertIn("inline", out.file.getvalue().lower())
+        sh.dispatch("/tui bogus")
+        self.assertIn("usage", out.file.getvalue().lower())
+
+    def test_inline_does_not_enter_alt_screen(self):
+        # Default mode never touches the alt-screen (is_terminal is False in tests anyway).
+        sh, out = _make_shell()
+        entered = {"n": 0}
+        sh.console.screen = lambda *a, **k: entered.__setitem__("n", entered["n"] + 1)
+
+        def factory(cancel, approve):
+            yield {"type": "final", "result": "hi", "reason": "answer"}
+
+        self.assertEqual(sh._consume(factory, on_approval=lambda a: True), "hi")
+        self.assertEqual(entered["n"], 0)
+
+    def test_fullscreen_uses_alt_screen_and_commits_answer(self):
+        from rich.console import Console
+        con = Console(file=io.StringIO(), force_terminal=True, no_color=True, width=80)
+        sh = BobShell(fake_config(), FakeRegistry(), _FakeSkillReg(), console=con)
+        sh._fullscreen = True
+        calls = {"n": 0}
+        real_screen = con.screen
+        con.screen = lambda *a, **k: (calls.__setitem__("n", calls["n"] + 1), real_screen(*a, **k))[1]
+
+        def factory(cancel, approve):
+            yield {"type": "token", "text": "the answer"}
+            yield {"type": "final", "result": "the answer", "reason": "answer"}
+
+        result = sh._consume(factory, on_approval=lambda a: True)
+        self.assertEqual(result, "the answer")
+        self.assertEqual(calls["n"], 1)                   # entered the alt-screen once for the turn
+        self.assertIn("the answer", con.file.getvalue())  # answer committed back to the buffer
 
 
 def _make_persistent_shell(tmpdir, owner="local", max_tokens=0):

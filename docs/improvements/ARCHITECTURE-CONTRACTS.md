@@ -9,189 +9,162 @@ it *here* and notes it — never silently in-module.
 
 Read this before implementing any NB–P module.
 
+> **Migration note (current).** The MODULE-ONE migration is complete: Bob is now **one word, one
+> engine (Python), zero PowerShell orchestration**. The contracts below were written during the
+> two-runtime era; each has been updated to the shipped code. Where a contract once described a
+> `pwsh`/`python` split, a generated verb table, or a `.psd1` config source, that machinery is
+> **deleted** — the current reality is stated in each contract body and its Status note. The only
+> tracked `.ps1` left is the sample plugin `plugins/play/invoke.ps1`.
+
 ---
 
 ## C1 — The `bob` dispatch contract (front door)
 
-**Problem it resolves:** who runs `bob <cmd>` on each OS, given that (a) some commands are Python
-runtime, (b) some are PowerShell orchestration, (c) **bootstrap commands run before the Python venv
-exists**, and (d) the split is **per fully-qualified command, not per top-level verb** — e.g.
-`bob agent serve` (Python) vs `bob agent install` (pwsh scheduled task) live under the same `agent`.
+**Problem it resolves:** who runs `bob <cmd>` and how, given that (a) commands split into
+fully-qualified paths, not just top-level verbs (e.g. `bob agent serve` vs `bob agent install` both
+live under `agent`), and (b) **bootstrap commands run before the Python venv exists.**
+
+*Historical:* the split used to be per-command across two runtimes (PowerShell orchestration +
+Python runtime). That is gone — **every verb is Python** now.
 
 **Contract:**
-1. `bob` is a **dumb shim** (`.cmd` on Windows, a POSIX `bob` script elsewhere) — no logic beyond
-   routing, and no hand-maintained command list.
-2. **Routing is per fully-qualified command via `config/verbs.json`** (checked-in plain JSON, read by
-   the shim *without* Python so bootstrap works, and generated from / kept in sync with the C6 command
-   registry). Each entry declares `runtime: pwsh | python`. The shim looks up the command path
-   (`<verb>` or `<verb> <sub>`) and routes accordingly; unknown → `python -m bob` (the default) which
-   prints help.
-3. **`pwsh` (orchestration/bootstrap)** — these stay PowerShell (they're OS-native or pre-venv):
-   `setup, install, up, down, restart, start, serve, stop, services, build, gen, fetch, doctor,
-   update, status, profile, mlock, models`, plus the orchestration **sub**commands of `agent`
-   (`install, status, schedule, log`). **Note:** `bob serve` = the **inference stack** (start.ps1,
-   llama-swap + LiteLLM) — a stable user-facing verb; it is **not** the agent server (see naming).
-4. **`python -m bob` (runtime)** — the agent brain + tools: `agent "<goal>"`, `agent serve`
-   (the FastAPI **agent** HTTP server), `agent mcp`, `skill`, and **no-arg on an interactive TTY**
-   (the NE interactive shell; a non-interactive/piped/CI no-arg prints help, so scripts are
-   unaffected — NE Decision C). Plus any runtime verb that has a Python entry (`clip`, and the plugin
-   verbs `summarise, draft, search, play`). `python -m bob` is a **real importable package**
-   (`scripts/bob/`) exposing `run_agent_events` et al. as an API, so NE's REPL consumes events
-   in-process. The event API is **bidirectional** (NE0): it carries an `approval_required`
-   request/`approve`-callback response and `call_id`-correlated tool events, so the shell renders
-   approvals without a blocking `input()`.
-5. **Phased migration (do NOT rewrite working code in NB4).** Several *conceptually-runtime* verbs are
-   **implemented in PowerShell today** (`chat` via Invoke-BobStream, `voice` loop, `describe` vision,
-   and the `recall` wrapper). NB4 ships the **mechanism** (shim + `verbs.json` + `scripts/bob/`
-   package + registry) and routes only the verbs that **already have a Python entry** to
-   `python -m bob`; the pwsh-implemented runtime verbs keep `runtime: pwsh` in `verbs.json` and are
-   migrated to Python by a **later** module (naturally, when NE builds the interactive shell). This is
-   non-regressing and honors "switch thinned, not rewritten." The phased state is tracked in this
-   contract, not silently in a module.
-6. **Naming (no collision).** `bob serve` = inference stack (pwsh). The agent HTTP server is
-   `bob agent serve` everywhere; on Linux/CI it is `python -m bob agent serve`. There is **no** bare
-   `python -m bob serve` (it would mean something different from `bob serve`).
-7. Orchestration *logic* stays in the existing PowerShell scripts; `bob.ps1`'s `switch` is **thinned
-   to a dispatcher** over `verbs.json`, not rewritten (per-verb logic/scripts stay). pwsh commands may
-   be invoked directly by the shim or via `python -m bob` exec'ing `pwsh`; `verbs.json` is authoritative.
+1. `bob` is a **dumb shim** (`bob.cmd` on Windows written by the kernel's `install_cli`, a POSIX `bob`
+   script elsewhere) — no logic beyond resolving the repo dir and handing off to `python -m bob`
+   (see `/home/siva/dev/bob/bob`). It carries **no command list**.
+2. **Dispatch is data-driven from ONE source:** `scripts/bob/registry.py`'s `COMMANDS` list. There is
+   **no** generated verb table (`config/verbs.json` and all its machinery are **deleted**) and **no**
+   per-command `runtime` field (every verb is Python). `cli.py:_resolve()` matches a 2-token path
+   (e.g. `agent serve`) before the bare verb, looks the name up in `registry.by_name()`, and calls the
+   matching `_HANDLERS[...]` entry (`scripts/bob/cli.py:17,46,1004`). An unknown command prints help
+   and exits 2. Adding a command = **one entry in `COMMANDS` + one `_HANDLERS` handler** — no regen,
+   no sync gate.
+3. **Bootstrap (pre-venv)** goes through the shell stubs (`setup.sh`/`install_prereqs.sh`) →
+   `python -m bob.kernel` (Tier 1, `scripts/bob/kernel.py`), which itself sits on
+   `scripts/bob/install_prereqs.py` (Tier 0, stdlib-only). `bob setup` therefore works with no venv;
+   the normal Python entry (`python -m bob`) is reached for everything after provisioning.
+4. **The whole catalog is `python -m bob`** — `setup, up, serve, stop/restart, build, gen, fetch,
+   doctor, models, profile, agent` + its subcommands, `chat/code/think, voice/listen/transcribe/speak,
+   describe/screenshot, memory/recall/remember, skill, tools`, etc. There is **no PowerShell
+   orchestration layer and no `bob.ps1` front door.**
+5. `python -m bob` is a **real importable package** (`scripts/bob/`) exposing `run_agent_events` et al.
+   as an API, so NE's REPL consumes events in-process. The event API is **bidirectional**: it carries
+   an `approval_required` request / `approve`-callback response and `call_id`-correlated tool events,
+   so the shell renders approvals without a blocking `input()`.
+6. **No-arg on an interactive TTY launches the shell** (`cli.py:main` → `bob.shell.is_interactive()` →
+   `_handle_shell`); a non-interactive/piped/CI no-arg prints help, so scripts are unaffected. The
+   **deterministic invoker** `bob --run <cap> '{json}'` dispatches one capability through the exact
+   agent path (`ToolRegistry.dispatch_call`) — a mode flag, **not** a registered verb / catalog entry.
+7. **Naming (no collision).** `bob serve` = the **inference stack** (llama-swap + LiteLLM), foreground;
+   `bob up` = background bring-up (endpoint + proxy + WebUI). The **agent HTTP server** is
+   `bob agent serve` (FastAPI, Bearer auth). There is **no** bare `python -m bob serve` meaning the
+   agent server.
+8. **The one remaining PowerShell touchpoint is intentional and is *not* a front door:** the OS-native
+   *tool* shell used to execute command strings is `pwsh` on Windows via `osenv.default_shell()`
+   (`scripts/osenv.py:47` — bash/sh elsewhere). That is a tool-execution seam, not orchestration.
 
-**Owner:** **NB4** builds the shim, `config/verbs.json`, the `scripts/bob/` package, and the command
-registry (C6). NC makes the `pwsh` side cross-platform. NE adds the interactive shell + catalog and
-(later) migrates the pwsh-implemented runtime verbs to Python — it does **not** redefine the front door.
+**Owner:** **NB4** built the shim, the `scripts/bob/` package, and the command registry (C6). ND/NC
+made provisioning cross-platform. ONE-D ported the cold-start kernel to Python
+(`scripts/bob/kernel.py` + `install_prereqs.py`). **ONE-E deleted the verb table and the last
+PowerShell** (see Status).
 
-**Bootstrap note:** `bob setup` is `runtime: pwsh` and works with no venv. The Python entry is only
-reached for runtime commands, which by definition run after setup.
-
-**Status (NB4, ✅ 2026-07-02):** `config/verbs.json` (generated from `scripts/bob/registry.py`),
-`scripts/bob/` package (`python -m bob`), POSIX `bob` shim, and the `bob.ps1` dispatcher prologue
-all landed. `bob serve` = inference stack (pwsh); agent server = `bob agent serve` /
-`python -m bob agent serve`. `check.ps1` enforces verbs.json↔registry sync.
-
-**Status (NC, ✅ 2026-07-02):** the pwsh side is now cross-platform. `scripts/_platform.ps1`
-(`Get-BobOS` + resolvers/executors) makes the orchestration OS-aware; Linux services start via
-`nohup`+pidfile and the agent task registers as a crontab line (`Register-AgentTask`). New pwsh verb
-`bob build` (registry + verbs.json). Front door contract unchanged.
-
-**Status (NE0 + NE1, ✅ 2026-07-02):** NE0 made the runtime event API bidirectional (approval event +
-`approve` callback, fail-closed; `call_id` on tool events; `RunContext` into `dispatch_call`; linked
-`CancelToken`; `ToolRegistry.filtered`). NE1 made `scripts/bob/registry.py` the **true catalog**: every
-top-level `bob.ps1` switch verb is registered and grouped (Talk/Act/Make/Know/Run/Config), with an
-opt-in `hidden` flag for dispatchable-but-uncatalogued verbs (Decision B's sanctioned exception). A
-`test_command_registry` parity test fails if a switch verb is missing from the registry; `verbs.json`
-regenerated. The no-arg→shell routing (TTY-gated) is reserved here; the shell itself lands in NE2.
+**Status (current, post ONE-E):** `scripts/bob/registry.py` `COMMANDS` is the **sole** dispatch + help
++ catalog source. `config/verbs.json` and its generator/sync-gate are **gone**; the `runtime` field is
+**gone**. `python -m bob` (via the POSIX `bob` shim / `bob.cmd`) is the only front door; cold-start is
+shim → `python -m bob.kernel` → `install_prereqs.py`. **Zero orchestration PowerShell remains** —
+`git ls-files '*.ps1'` = only `plugins/play/invoke.ps1`.
 
 ---
 
-## C2 — The config contract (neutral `config.json` is the boundary)
+## C2 — The config contract (neutral `defaults.json` + `user.json`, resolved in Python on every OS)
 
-**Problem it resolves:** the runtime must run without PowerShell, but re-implementing the full
-PowerShell `Get-BobConfig` merge in Python re-creates logic drift.
+**Problem it resolves:** the runtime must run on any OS without re-implementing a PowerShell config
+merge in Python and drifting from it.
+
+*Historical:* Windows once compiled `config/bob.psd1` → `data/config.json` via `Get-BobConfig`, while
+non-Windows used a Python resolver. **Both `bob.psd1` and the compiled `data/config.json` step are
+retired**, and `Get-BobConfig` no longer exists — there is now **one** resolve path.
 
 **Contract:**
-1. `data/config.json` (neutral JSON) is the **only** thing the Python runtime reads. It already is
-   (`bob_core.load_config`). Nothing in the runtime parses `.psd1`.
-2. **Split config by consumer:**
-   - **Runtime keys** (the ~15 the Python core reads): `port`, `litellmPort`, `agentPort`,
-     `searxngPort`, `litellmKey`, `routing.*`, `persona.systemPrompt`, `agent.*`, `memory.*`,
-     `vision.*`. These must resolve on any OS.
-   - **Provisioner keys** (profiles, peers, model file paths, build flags, `toastAppId`): consumed
-     only by the PowerShell orchestration; never required by the runtime.
-3. **Who writes `config.json`:**
-   - Windows: `Get-BobConfig` writes the full file. It **seeds the runtime layer from
-     `config/defaults.json.runtime`** (the neutral default source), then deep-overlays `config/bob.psd1`
-     (the Windows-only overlay, which carries just its unique keys: `persona.name/style`, `routing`,
-     `voice`, `agent.toastAppId`), then `user.psd1`, then the port/`litellmKey` injects. So both OSes now
-     take runtime defaults from the *same* neutral file; psd1 is a thin overlay, no longer a second copy.
-   - Non-Windows: a **small Python resolver** (`bob_config.py`) merges `config/defaults.json` (C6) +
-     a neutral user override (`config/user.json`/`user.toml`) into the **runtime-subset** of the same
-     `config.json` shape. It does **not** reproduce the provisioner keys and is **not** required to be
-     byte-identical to `Get-BobConfig`.
-4. **Shared constants** (ports, routing table) live in one neutral file `config/defaults.json`, read
-   by both PowerShell (`ConvertFrom-Json`) and Python (`json.load`). No mirrored dicts. **`defaults.json.ports`
-   is the sole port source** — `models.psd1`/`bob.psd1` carry no port literals; every reader resolves via
-   `Get-BobPortDefault`, and a parity gate (`test_defaults_parity`) fails the build if a shadow port copy
-   is reintroduced anywhere (including `bob.psd1.voice`).
+1. **One resolve path, every OS:** `config/defaults.json` **deep-merged** with an optional
+   `config/user.json` (or `user.toml` if present), in pure Python via
+   `scripts/bob_config.py:resolve_runtime_config()`. `bob_core.load_config()` calls it
+   **unconditionally** (`scripts/bob_core.py:87`) — nothing reads a `.psd1`, nothing compiles or reads
+   `data/config.json`, and the runtime never *requires* `bob gen`.
+2. **Runtime subset only.** The resolver produces the ~15 keys the Python core reads: `port`,
+   `litellmPort`, `agentPort` (nested under `agent`), `searxngPort`, `litellmKey`, `routing.*`,
+   `persona.*`, `agent.*`, `memory.*`, `vision.*`, `voice.*`. It never reproduces provisioner keys
+   (profiles, model file paths, build flags) — those live in `config/models.json` and are consumed by
+   the provisioner, never required by the runtime.
+3. **Shared constants live once.** Ports and the `roleTable` live only in `config/defaults.json`, read
+   by Python (`json.load`). Routing default *values* are **derived** from the `roleTable`
+   (`bob_config._routing_from_role_table`), not mirrored. `defaults.json.ports` is the sole port
+   source; a parity test fails the build if a shadow port copy is reintroduced.
+4. **User overrides are top-level, deep-merged.** `config/user.json` is the runtime-config shape (e.g.
+   `{"agent": {"maxSteps": 3}}`), **not** wrapped under a `bob` key, deep-merged over the defaults via
+   the single `load_user_overlay` loader (`scripts/bob_config.py:45`). A malformed overlay is
+   **ignored**, never fatal.
 
-**Owner:** **NB1** (`config/defaults.json` + both sides read it), **NB2** (the runtime-subset Python
-resolver). NB7 (optional) unifies *authoring* to a neutral format so both sides merge the same source
-files; until then, Windows authors `.psd1`, non-Windows authors `user.json`, both emit the same
-runtime `config.json`.
+**Owner:** **NB1** (`config/defaults.json`), **NB2** (the Python resolver `bob_config.py`).
 
-**Acceptance rule:** parity is "the runtime receives every runtime key it needs, correctly," proven
-by a resolver test — **not** "byte-identical to the PowerShell merge."
+**Acceptance rule:** parity is "the runtime receives every runtime key it needs, correctly," proven by
+a resolver test — there is no longer a PowerShell merge to be byte-identical to.
 
-**Status (NB1+NB2, ✅ 2026-07-02):** `config/defaults.json` is the neutral single source (`ports` +
-`roleTable` shared by both languages; `runtime` for the resolver). `scripts/bob_config.py`
-`resolve_runtime_config()` produces the runtime subset; `bob_core.load_config()` falls back to it
-when `data/config.json` is absent.
-
-**Status (NB7 + ports single-source, ✅ 2026-07-02):** Windows `Get-BobConfig` no longer duplicates the
-runtime defaults — it seeds `$base` from `(Get-BobDefaults).runtime` and deep-overlays `bob.psd1` (which
-now keeps only `persona.name/style`, `routing`, `voice`, `agent.toastAppId`), so `defaults.json.runtime`
-is the single default source on both OSes (NB7 done via **Option A**, superseding the deferred TOML plan).
-Ports are likewise single-sourced to `defaults.json.ports`: no port literals remain in `models.psd1`/
-`bob.psd1`, and `test_defaults_parity` fails on any reintroduced shadow copy. A resolver-parity test
-asserts the Windows `config.json` runtime keys equal the Python `resolve_runtime_config()` keys.
+**Status (current):** `config/defaults.json` is the neutral single source (`ports` + `roleTable`
+shared, `runtime` for the resolver). `scripts/bob_config.py:resolve_runtime_config()` produces the
+runtime subset; `bob_core.load_config()` calls it on every OS. `config/bob.psd1`, the compiled
+`data/config.json` step, and `Get-BobConfig` are all retired.
 
 ---
 
 ## C3 — The secrets contract
 
-**Problem it resolves:** API keys (DeepSeek/HF/Langfuse), `litellmKey`, and per-client `apiTokens`
-have no cross-platform home, and the N9 `file_read` denylist is Windows-path-shaped.
+**Problem it resolves:** API keys (DeepSeek/HF/Langfuse), `litellmKey`, and per-client `apiTokens` need
+a cross-platform home that is never a git-tracked file.
 
 **Contract:**
-1. A single resolver seam — `osenv.secret(name)` (Python) / `Get-Secret` (PowerShell) — resolves in
-   this precedence: **process env → OS keychain (Keychain/Credential Manager/`secret-tool`) →
-   `<config-dir>/secrets.json` (chmod 600 / ACL'd) → default**. No secret is ever read from a
-   git-tracked file.
-2. `litellmKey` and `apiTokens` are **secrets**, not plain config — they live via the secret seam
-   (env or `secrets.json`), never inlined in a checked-in `user.json`/`config.json`. `config.json` may
-   carry a *reference*, not the value.
-3. The **N9 `file_read`/`file_write` denylist is OS-aware and data-dir-relative**: it denies the
-   resolved secrets file, the data dir DBs, config/`.psd1`, `logs/`, `.env*`, **plus** platform secret
+1. A single resolver seam — `osenv.secret(name)` (`scripts/osenv.py:118`) — resolves in this
+   precedence: **process env (exact name, then `BOB_<UPPER>`) → OS keychain (`keyring`, optional:
+   Keychain / Credential Manager / `secret-tool`) → `<data-dir>/secrets.json` → default**. No secret is
+   ever read from a git-tracked file. `bob_core._litellm_key` resolves through it
+   (`scripts/bob_core.py:104`).
+2. `litellmKey` and `apiTokens` are **secrets**, not plain config — they live via the secret seam (env
+   or `secrets.json`), never inlined in a checked-in `user.json`/config. Config may carry a
+   *reference*, not the value.
+3. The **`file_read`/`file_write` denylist is OS-aware and data-dir-relative** (`scripts/tools/file.py`):
+   it denies the resolved `secrets.json`, the data-dir DBs, `logs/`, `.env*`, **plus** platform secret
    dirs (`~/.ssh`, `~/.aws`, `~/.config/bob`, `~/.gnupg`, and the systemd `EnvironmentFile` path on
    Linux; the DPAPI/credential store paths on Windows).
 
-**Owner:** **NB3** (the `secret()` seam + OS-aware denylist upgrade to `file.py`). **O8** (token store)
-builds on this seam; **NC4/NC5** wire provider secrets into services via it (e.g. systemd
-`EnvironmentFile` fed from the secret seam).
+**Owner:** **NB3** (the `secret()` seam + OS-aware denylist in `file.py`). **O8** (token store) builds
+on this seam; **NC** wires provider secrets into services via it (e.g. a systemd `EnvironmentFile` fed
+from the secret seam).
 
-**Status (NB3, ✅ 2026-07-02):** `osenv.secret(name)` resolves env → keychain (`keyring`, optional)
-→ `data/secrets.json` → default; `bob_core._litellm_key` uses it. `file.py` denylist is now OS-aware
-(adds `secrets.json`, `~/.ssh`/`.aws`/`.gnupg`/`.config/bob`, resolved secrets file). PowerShell
-mirror (`Get-Secret`) is NC1's job.
-
-**Status (NC1, ✅ 2026-07-02):** `Get-Secret` (`scripts/_platform.ps1`) mirrors the precedence exactly —
-env (exact name, then `BOB_<UPPER>`) → OS keychain (`secret-tool` on Linux; no-op on Windows) →
-`<data_dir>/secrets.json` → default.
+**Status (current):** `osenv.secret(name)` resolves env → keychain → `data/secrets.json` → default
+on every OS; there is **no** separate PowerShell mirror (the former `Get-Secret` seam is retired with
+the rest of the pwsh layer). `file.py`'s denylist is OS-aware.
 
 ---
 
 ## C4 — Data & state location policy
 
-**Problem it resolves:** `sessions.db`, `bob.db`, `schedules.json`, `logs/` are repo-relative Windows
-paths today; NB3/NC gesture at XDG dirs but nothing decides, and nothing migrates.
+**Problem it resolves:** `sessions.db`, `bob.db`, `schedules.json`, `logs/` need a defined home that is
+portable and requires no migration in the common single-checkout case.
 
 **Contract:**
 1. **Default: repo-relative `data/` and `logs/`** on all OSes (the local-first, single-checkout case —
-   simplest, zero migration). Paths are stored POSIX-relative and resolved with `pathlib`.
-2. `osenv.data_dir()` / `Get-DataDir` return the repo-relative dirs by default, and an XDG/`%LOCALAPPDATA%`
-   location **only** when `BOB_DATA_DIR` (or a config key) is set — reserved for a future
-   system-install / multi-user mode.
-3. When the non-default dir is used, a **one-time migration** copies existing `data/*` on first run.
-   Not needed for the default path.
+   simplest, zero migration). Paths are resolved with `pathlib`.
+2. `osenv.data_dir()` / `osenv.cache_dir()` (`scripts/osenv.py`) return the repo-relative dirs by
+   default, and an XDG / `%LOCALAPPDATA%` location **only** when `BOB_DATA_DIR` (or a config key) is set
+   — reserved for a future system-install / multi-user mode.
+3. When the non-default dir is used, a **one-time migration** copies existing `data/*` on first run
+   (stamped, never re-copies). Not needed for the default path.
 
-**Owner:** **NB3** defines `data_dir()`/`Get-DataDir` and the policy; NC/ND inherit it (no migration on
+**Owner:** **NB3** defines `data_dir()`/`cache_dir()` and the policy; NC/ND inherit it (no migration on
 the default path).
 
-**Status (NB3, ✅ 2026-07-02):** `osenv.data_dir()`/`cache_dir()` return repo-relative `data/`/`logs/`
-by default; `BOB_DATA_DIR` relocates them with a one-time copy migration (stamped, never re-copies).
-PowerShell `Get-DataDir` is NC1's job.
-
-**Status (NC1, ✅ 2026-07-02):** `Get-DataDir`/`Get-CacheDir` (`scripts/_platform.ps1`) mirror the policy —
-repo-relative `data/`/`logs/` by default, `BOB_DATA_DIR` override with a one-time `.migrated`-stamped
-copy (`Invoke-DataDirMigration`). `bob doctor`'s writable-dir checks resolve through them.
+**Status (current):** `osenv.data_dir()`/`cache_dir()` return repo-relative `data/`/`logs/` by default;
+`BOB_DATA_DIR` relocates them with a one-time, stamped copy migration. There is **no** PowerShell
+`Get-DataDir` mirror — the policy is Python-only, used by `bob doctor`'s writable-dir checks.
 
 ---
 
@@ -201,18 +174,22 @@ copy (`Invoke-DataDirMigration`). `bob doctor`'s writable-dir checks resolve thr
 shapes.
 
 **Contract:** there is **one** `.github/workflows/ci.yml`, extended (never recreated) in order:
-1. **NB6** creates it: the Python **core suite** on `ubuntu-latest` **and** `windows-latest`, plus
-   `check.ps1` (py_compile + PS AST parse + unittest). Runs on every PR. No GPU.
-2. **ND2** extends it: a **fresh-install acceptance matrix** — a **CPU tier** (no GPU, uses the NC CPU
-   build, C-per H3) on both OSes every PR, and a **GPU tier** (self-hosted) on release tags.
+1. **NB6** creates it: the Python **core suite** on `ubuntu-latest` **and** `windows-latest`, plus the
+   **`scripts/check.py` gate** (py_compile + `versions.lock` sync + entrypoint exec-bits + unittest).
+   Runs on every PR. No GPU.
+2. **ND2** extends it: a **fresh-install acceptance matrix** — a **CPU tier** (no GPU, `bob build --cpu`
+   / `python -m bob.kernel`) on both OSes every PR, plus an **end-to-end smoke** (`scripts/smoke.py`),
+   and a **GPU tier** (self-hosted) on release tags.
 3. **O10** extends it: the **agent-capability eval** job, running on the existing matrix (not a new
    Windows-only runner).
 
 **Owner:** NB6 creates; ND2 and O10 add jobs to the same file.
 
-**Status (NB6, ✅ 2026-07-02):** `.github/workflows/ci.yml` created — `core-suite` job on
-`ubuntu-latest` + `windows-latest` runs `check.ps1` (py_compile + PS AST parse + verbs sync +
-unittest) via a `BOB_PYTHON` override. ND2/O10 extend this file (do not recreate).
+**Status (current):** `.github/workflows/ci.yml` runs `core-suite` (the `python scripts/check.py`
+gate) on `ubuntu-latest` + `windows-latest`, plus `acceptance-cpu` (fresh-install + `scripts/smoke.py`
+on the CPU tier, both OSes, gating) and a non-gating GPU/release-tag tier. The gate is
+**`scripts/check.py`** (the former `check.ps1`/`smoke.ps1` were ported to `scripts/check.py` /
+`scripts/smoke.py` in ONE-E). There is **no** verbs-table sync gate (the table is deleted).
 
 ---
 
@@ -222,16 +199,15 @@ unittest) via a `BOB_PYTHON` override. ND2/O10 extend this file (do not recreate
 hand-maintained menu, and O's new capabilities must appear without a UI rewrite.
 
 **Contract:**
-1. **Tools** — already auto-discovered by `ToolRegistry`. Unchanged.
-2. **Commands** — a **command registry** (`{name, group, summary, args, handler, runtime, hidden?}`
-   where `runtime ∈ {python, pwsh}` and optional `hidden` keeps a command dispatchable but out of the
-   catalog) is the single source for dispatch (C1), help, and the catalog. Built in **NB4**;
-   reconciled to cover **every** verb + grouped by **NE1**. A parity test forbids a switch verb that
-   isn't registered, so the catalog can't drift from what dispatch accepts.
+1. **Tools** — auto-discovered by `ToolRegistry`. Unchanged.
+2. **Commands** — a **command registry** (`{name, group, summary, args, handler}` + optional `hidden`
+   to keep a command dispatchable but out of the catalog) is the **single source for dispatch (C1),
+   help, and the catalog** (`scripts/bob/registry.py`). There is **no `runtime` field** (every verb is
+   Python) and **no generated verb table** to keep in sync. A parity test forbids a dispatchable verb
+   that isn't registered, so the catalog can't drift from what dispatch accepts.
 3. **Skills** — a **skills registry** parallel to the tool registry (auto-discovered, contract-
    validated). **NE** builds the registry + catalog rendering (skills appear in the splash). **O**
-   builds skill *execution* (a skill may spawn a sub-agent — an O1 consumer). NE never executes a
-   sub-agent-backed skill; it lists it and hands execution to the runtime.
+   builds skill *execution* (a skill may spawn a sub-agent — an O1 consumer).
 4. The interactive shell (NE) and every UI surface render **from these registries** and from the
    `run_agent_events` event stream — so O's new event types (sub-agent spawned, permission required,
    parallel-tool progress) surface by being emitted, not by editing the shell.
@@ -239,52 +215,44 @@ hand-maintained menu, and O's new capabilities must appear without a UI rewrite.
 **Owner:** command registry → **NB4**; tool registry → existing; skills registry/catalog → **NE**;
 skill execution → **O**.
 
-**Status (NB4, ✅ 2026-07-02):** command registry landed in `scripts/bob/registry.py`
-(`{name, group, summary, args, runtime, handler}`; `commands()` enumerable); `config/verbs.json` is
-generated from it and kept in sync by the `check.ps1` gate.
-
-**Status (NE1, ✅ 2026-07-02):** the command registry is now the **true catalog** — every top-level
-`bob.ps1` switch verb is registered and grouped into the six human buckets (Talk/Act/Make/Know/Run/
-Config), with an opt-in `hidden` flag; `commands(include_hidden=False)` feeds help. Parity enforced by
-`test_command_registry.TestSwitchParity`. **Skills registry/catalog (NE4) and the catalog renderer
-(NE3) are still pending;** skill execution stays with **O**.
+**Status (current):** the command registry (`scripts/bob/registry.py` `COMMANDS`) is the true catalog —
+every verb is registered and grouped into six buckets (Talk/Act/Make/Know/Run/Config), with an opt-in
+`hidden` flag; `commands(include_hidden=False)` feeds help. It is now the **sole** dispatch source too:
+no generated `verbs.json`, no `runtime` field, no sync gate. Skills registry/catalog and execution stay
+per the owners above.
 
 ---
 
 ## C7 — Provisioner backend strategy (native default now; portable when Linux/mac get real users)
 
-> **Decision (2026-07-02): keep native-from-source as today's default; do NOT build a `provisionMode`
-> multi-backend abstraction now. Portable backends (prebuilt binary → `docker compose` inference →
-> BYO OpenAI-compatible endpoint) become the Linux/macOS default *when those platforms get real
-> daily-driver users* — added behind the existing NB5/NC1 seam, with zero caller changes. Native-from-
-> source stays the opt-in max-control tier. macOS, when it comes, is scoped portable-first.**
+> **Decision: keep native-from-source as today's default; do NOT build a `provisionMode` multi-backend
+> abstraction now.** Portable backends (prebuilt binary → `docker compose` inference → BYO
+> OpenAI-compatible endpoint) become the Linux/macOS default *when those platforms get real
+> daily-driver users* — added behind the existing provisioner seam, with zero caller changes.
+> Native-from-source stays the opt-in max-control tier. macOS, when it comes, is scoped portable-first.
 
-**Problem it resolves:** the review floated flipping NC's Linux default from native-from-source to a
-portable provisioner. The question is *timing*, not architecture — should the extra backends be built
-before ND, or deferred?
+**Problem it resolves:** whether to flip the Linux default from native-from-source to a portable
+provisioner *now* — a *timing* question, not architecture.
 
 **Why defer (YAGNI on a zero-user platform).** The expensive, hard-to-retrofit part — the provisioner
-*seam* (NB5's "runtime only needs a resolvable config + a reachable OpenAI-compatible endpoint" +
-NC1's `_platform.ps1` + `capability_probe`) — **already exists**. The additional backends are cheap to
-add later and speculative now: Linux/macOS have **zero daily-driver users today** (CI proves the core
-is OS-agnostic; nobody runs Bob natively on Linux in anger, and macOS doesn't exist yet). A 4-backend
-selector built for zero users is premature abstraction — designed against imagined usage, reworked when
-the first real user surfaces with real requirements. Deferring lets the backends be designed against
-real needs, behind a seam that already supports them.
+*seam* ("runtime only needs a resolvable config + a reachable OpenAI-compatible endpoint") — **already
+exists**, now entirely in Python: the OS seams in `scripts/osenv.py`, the cold-start
+`scripts/bob/kernel.py` (+ `install_prereqs.py`), and `capability_probe`. The additional backends are
+cheap to add later and speculative now. Deferring lets the backends be designed against real needs,
+behind a seam that already supports them.
 
 **What this contract fixes for the modules below it:**
-- **NC** — native-from-source is the shipped default (as built) *and* the opt-in max-control tier. No
-  churn to committed NC1–NC8 work. When portable backends are added, they slot behind the NC1 seam as
-  `Resolve-*` alternatives; callers are unchanged.
-- **ND** — the per-PR **gating** acceptance path is the portable/CPU tier (NC8 CPU build), **not**
+- **NC** — native-from-source is the shipped default (via `python -m bob build` / `bob.kernel`) *and*
+  the opt-in max-control tier. When portable backends are added, they slot behind the existing Python
+  seam; callers are unchanged.
+- **ND** — the per-PR **gating** acceptance path is the portable/CPU tier (`bob build --cpu`), **not**
   native-from-source CUDA. Native-from-source builds are exercised only in the non-gating GPU/release-
-  tag tier, so a fragile native build can never red the per-PR gate (see ND2).
-- **macOS (future module)** — scoped **portable-first** (prebuilt/BYO), never native-from-source-first,
-  recorded here so that module starts from the right default.
+  tag tier, so a fragile native build can never red the per-PR gate (see ND2 / C5).
+- **macOS (future module)** — scoped **portable-first** (prebuilt/BYO), never native-from-source-first.
 
 **Owner:** policy recorded here; NC honors it (native default, seam ready); ND2 honors it (portable/CPU
-gates, native non-gating); the future macOS module inherits portable-first. Adding the portable backends
-later is an additive change behind the NB5/NC1 seam — it **fulfills** this contract, it does not reopen it.
+gates, native non-gating); the future macOS module inherits portable-first. Adding the portable
+backends later is an additive change behind the Python provisioner seam — it **fulfills** this contract.
 
 ---
 
@@ -292,13 +260,17 @@ later is an additive change behind the NB5/NC1 seam — it **fulfills** this con
 
 ```
 N ✓
-└─ NB ✓ portable core        — C1 dispatch, C2 config, C3 secrets, C4 data, C6 command registry, NB6 creates CI (C5)  [NB1–NB6 done; NB7 deferred]
-    └─ NC ✓ provisioner        — cross-platform pwsh (_platform.ps1); CUDA + CPU build tiers; degrades w/o GPU; native default, portable-later behind seam (C7)  [NC1–NC8 done]
+└─ NB ✓ portable core        — C1 dispatch, C2 config, C3 secrets, C4 data, C6 command registry, NB6 creates CI (C5)
+    └─ NC ✓ provisioner        — cross-platform (osenv seams + bob.kernel); CUDA + CPU build tiers; degrades w/o GPU; native default, portable-later behind seam (C7)
         └─ ND  release          — reproducible; extends CI with the fresh-install matrix (C5)
             └─ NE  interface     — one `bob`; extends the command registry (C6); skills catalog only
                 └─ O  capability — depends NB+NC+ND; dual-OS sandbox; extends CI eval (C5); skill execution
                     └─ P  frontier product — durable/resumable runs, deep multimodal, computer-use
 ```
+
+**Note (post ONE-E):** the NB–NE portability + interface work is complete and the two-runtime split it
+mediated is gone — Bob is one Python engine. The contracts above are kept as shared vocabulary (C1..C7
+are referenced by later plans) and describe the shipped code, not a plan.
 
 **Rule:** a module may only *extend* a lower module's contract, never redefine it. Contract changes
 land here first.

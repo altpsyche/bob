@@ -11,6 +11,7 @@ renderer then read typed fields (`theme.accent`, `theme.gear`, …), never the r
 rendering does no parsing.
 """
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -49,23 +50,71 @@ _DEFAULT_UI = {
     "meta_panel": False,                             # box the meta line (False = cleaner: bare + a rule)
     "rule": True,                                    # a faint accent rule under the splash
     "prose_width": 92,                               # cap assistant-answer width for readability (0 = full)
+    "input": {"multiline": False},                   # multiline input (Enter=newline, Meta/Esc+Enter=submit)
 }
 
 _ASCII_GLYPHS = {"gear": "*", "ok": "+", "bad": "x", "dot": "*", "arrow": ">", "spinner": "line"}
 _ANSI_NAMES = {"black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"}
 
+# Named palettes selectable via `ui.theme`. Each is a partial UI dict deep-merged OVER the built-in
+# mauve default; `config/ui.json` / `config['ui']` still override individual swatches on top, so a
+# preset is a starting point, not a lock. `mauve` is the identity (the built-in palette); `ansi` uses
+# the terminal's own 16 colours (and so doubles as the truecolor fallback); `daltonized` is a
+# colour-blind-safe (Okabe-Ito) palette that keeps success/error distinct under deuteranopia.
+_PRESETS = {
+    "mauve": {},
+    "dark": {
+        "colors": {"accent": "#7AA2F7", "success": "#9ECE6A", "error": "#F7768E",
+                   "warn": "#E0AF68", "tool": "#7AA2F7", "muted": "grey58"},
+        "header": {"gradient": ["#C0CAF5", "#7AA2F7", "#5A7FD6", "#3B5BA5"]},
+    },
+    "light": {
+        "colors": {"accent": "#8250DF", "success": "#1A7F37", "error": "#CF222E",
+                   "warn": "#9A6700", "tool": "#8250DF", "muted": "grey42"},
+        "header": {"gradient": ["#8250DF", "#6639BA", "#512A97", "#3B1E70"]},
+    },
+    "daltonized": {
+        "colors": {"accent": "#56B4E9", "success": "#009E73", "error": "#D55E00",
+                   "warn": "#E69F00", "tool": "#0072B2", "muted": "grey58"},
+        "header": {"gradient": ["#56B4E9", "#0072B2", "#005B8F", "#00436B"]},
+    },
+    "ansi": {
+        "colors": {"accent": "magenta", "success": "green", "error": "red",
+                   "warn": "yellow", "tool": "cyan", "muted": "bright_black"},
+    },
+}
+
+# NO_COLOR: a structure-only palette — no hues; emphasis is carried by weight so it still reads.
+_MONO = {"accent": "bold", "success": "bold", "error": "bold", "warn": "bold",
+         "tool": "bold", "muted": "dim"}
+
 
 # --- merge + load ----------------------------------------------------------------------------------
 
 def load_ui(config=None) -> dict:
-    """Merged theme dict: `_DEFAULT_UI` ← `config/ui.json` ← `config['ui']`."""
-    ui = dict(_DEFAULT_UI)
+    """Merged theme dict: `_DEFAULT_UI` ← `_PRESETS[ui.theme]` ← `config/ui.json` ← `config['ui']`.
+
+    The selected preset (`ui.theme`) lives inside the merged dict, so it's resolved in two passes: a
+    first merge finds the name; the real merge then slots the preset UNDER the file/config overrides so
+    an explicit swatch still wins. An unknown name falls back to `mauve` (the identity preset)."""
+    base = dict(_DEFAULT_UI)
+    file_ui = {}
     try:
         if UI_FILE.exists():
-            ui = _deep_merge(ui, json.loads(UI_FILE.read_text(encoding="utf-8")))
+            file_ui = json.loads(UI_FILE.read_text(encoding="utf-8"))
     except Exception:
-        pass
-    return _deep_merge(ui, (config or {}).get("ui", {}))
+        file_ui = {}
+    cfg_ui = (config or {}).get("ui", {})
+    probe = _deep_merge(_deep_merge(base, file_ui), cfg_ui)       # pass 1: which preset?
+    preset = _PRESETS.get(probe.get("theme", "mauve"), {})
+    ui = _deep_merge(_deep_merge(base, preset), file_ui)          # pass 2: preset under the overrides
+    return _deep_merge(ui, cfg_ui)
+
+
+def no_color_active() -> bool:
+    """True when the NO_COLOR convention is in effect: the env var is set AND non-empty (an empty value
+    does NOT disable colour). The single place this concept lives. See no-color.org."""
+    return bool(os.environ.get("NO_COLOR"))
 
 
 # --- colour / gradient -----------------------------------------------------------------------------
@@ -100,10 +149,28 @@ def gradient(stops: list, n: int) -> list:
 
 
 def ptk_color(name: str) -> str:
-    """Map a rich colour name/hex to a prompt_toolkit colour token (ansi names need an 'ansi' prefix)."""
+    """Map a rich colour name/hex to a prompt_toolkit colour token (ansi names need an 'ansi' prefix;
+    rich's `bright_x` becomes prompt_toolkit's `ansibrightx`)."""
     if name in _ANSI_NAMES:
         return f"ansi{name}"
+    if name.startswith("bright_") and name[len("bright_"):] in _ANSI_NAMES:
+        return f"ansibright{name[len('bright_'):]}"
     return name if name.startswith("#") else "ansicyan"
+
+
+def ptk_color_depth(console):
+    """The prompt_toolkit `ColorDepth` matching Rich's detected `color_system`, so the input line
+    renders at the same colour fidelity as the transcript. Falls back to 8-bit (256) when Rich can't
+    detect a system (e.g. a non-terminal). Imported lazily so theme.py stays importable without
+    prompt_toolkit."""
+    from prompt_toolkit.output import ColorDepth
+    system = getattr(console, "color_system", None)
+    return {
+        "truecolor": ColorDepth.DEPTH_24_BIT,
+        "256": ColorDepth.DEPTH_8_BIT,
+        "standard": ColorDepth.DEPTH_4_BIT,
+        "windows": ColorDepth.DEPTH_4_BIT,
+    }.get(system, ColorDepth.DEPTH_8_BIT)
 
 
 # --- glyphs (unicode-aware) ------------------------------------------------------------------------
@@ -163,6 +230,8 @@ class Theme:
     meta_panel: bool
     rule: bool
     prose_width: int
+    input_multiline: bool  # Enter inserts a newline; Meta/Esc+Enter submits (off = Enter submits)
+    no_color: bool        # NO_COLOR in effect: monochrome palette + Rich/prompt_toolkit colour off
     source: str           # path to the editable ui.json (for /theme + docs)
 
     @property
@@ -176,6 +245,7 @@ class Theme:
         return {
             "prompt": f"bold {ptk_color(self.accent)}",
             "arrow": ptk_color(self.success),
+            "continuation": ptk_color(self.muted),   # dim gutter under a multiline prompt
             "bottom-toolbar": f"bg:{lerp_color([self.accent, '#000000'], 0.82)} "
                               f"{lerp_color([self.accent, '#ffffff'], 0.5)}",
         }
@@ -185,6 +255,10 @@ class Theme:
         ui = load_ui(config)
         h, c, sp = ui["header"], ui["colors"], ui["spacing"]
         g = resolve_glyphs(ui, console)
+        # Under NO_COLOR the palette collapses to weight-only tokens; the console/prompt also render
+        # colour-off, so hues never reach the terminal — the ●/○ glyphs still carry state.
+        no_color = no_color_active()
+        cols = _MONO if no_color else c
         return cls(
             header=Header(
                 enabled=bool(h.get("enabled", True)),
@@ -194,8 +268,8 @@ class Theme:
                 gradient=tuple(h.get("gradient", ["#FFFFFF"])),
                 gradient_dir=h.get("gradient_dir", "diagonal"),
             ),
-            accent=c["accent"], success=c["success"], error=c["error"],
-            warn=c["warn"], tool=c["tool"], muted=c["muted"],
+            accent=cols["accent"], success=cols["success"], error=cols["error"],
+            warn=cols["warn"], tool=cols["tool"], muted=cols["muted"],
             gear=g["gear"], ok=g["ok"], bad=g["bad"], dot=g["dot"], arrow=g["arrow"], spinner=g["spinner"],
             panel_padding=tuple(sp.get("panel_padding", [0, 1])),
             header_margin=int(sp.get("header_margin", 1)),
@@ -206,6 +280,8 @@ class Theme:
             meta_panel=bool(ui.get("meta_panel", False)),
             rule=bool(ui.get("rule", True)),
             prose_width=int(ui.get("prose_width", 92)),
+            input_multiline=bool(ui.get("input", {}).get("multiline", False)),
+            no_color=no_color,
             source=str(UI_FILE),
         )
 

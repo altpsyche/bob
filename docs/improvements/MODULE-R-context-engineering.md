@@ -1,23 +1,26 @@
 # Module R — Context Engineering (rerank, self-editing memory, conversation paging)
 
-**Status:** draft / not scheduled — backlog from the Module O gap review. **Depends on:** **O — all
-shipped**, especially **O3** compaction, **O13** prefix-cache-aware context, **O14** hybrid recall
-(dense + BM25/FTS5 + RRF), and **O15** tool-result clearing (`read_result` retention seam), plus
-NE6-MEM / MEM2 (the typed, owner/project-scoped memory + persisted-session layer). **Read first:**
+**Status:** draft / not scheduled — backlog from the Module O gap review. **Depends on features that
+have all shipped:** summarize-compaction (`scripts/bob_loop.py:809`, frame at `667-677`),
+prefix-cache-aware layout (`scripts/bob_loop.py:678`), hybrid dense+BM25/RRF recall
+(`scripts/bob_memory.py:463`, RRF fusion in `_recall_hybrid` `bob_memory.py:421-460`, FTS5 in
+`_ensure_fts` `bob_memory.py:372`), the tool-result retention seam (`scripts/bob_loop.py:780`,
+`scripts/tools/tool_registry.py:287`, `scripts/tools/read_result.py`), and the typed,
+owner/project-scoped memory + persisted-session layer. **Read first:**
 [MODULE-O-frontier-class.md](MODULE-O-frontier-class.md)'s "Beyond O/P" section (Domain 4) and
 [docs/MEMORY.md](../MEMORY.md).
 
 **Why this module exists.** Bob's long-term memory *storage/ranking* is already strong — typed facts
 with recency·importance·type·usage·salience weighting and per-type half-life decay
 ([scripts/bob_memory.py](../../scripts/bob_memory.py)), and `memory_store`/`memory_recall` are
-model-callable, so Bob is already "MemGPT-lite." O14 added hybrid **retrieval** (dense + BM25 via RRF)
-and O15 added **tool-result clearing**. What remains — the *heavy tail* of the context-engineering
+model-callable, so Bob is already "MemGPT-lite." Hybrid **retrieval** (dense + BM25 via RRF) and the
+**tool-result retention seam** already shipped. What remains — the *heavy tail* of the context-engineering
 frontier (Anthropic's context-editing work, MemGPT/Letta, Manus) — is the expensive, higher-risk part
 that O deliberately deferred:
 - **retrieval quality** past hybrid: a cross-encoder **rerank** and **contextual-chunk** embeddings
   (Anthropic reports hybrid alone cuts failed retrievals ~49%, **~67% with rerank**);
 - **agent-managed context**: MemGPT/Letta **self-editing memory blocks** the model edits in its loop,
-  and **conversation paging** (`conversation_search`) to pull back turns O3 dropped — the OS-inspired
+  and **conversation paging** (`conversation_search`) to pull back turns compaction dropped from context — the OS-inspired
   main / recall / archival hierarchy.
 
 R turns Bob's context from *well-stored but statically-retrieved* into *agent-managed and
@@ -40,7 +43,8 @@ its own always-in-context notes, and no compacted turn is ever truly lost — it
 ## R1 — Cross-encoder rerank + contextual-chunk embeddings
 
 ### Problem
-O14 fused dense + BM25 via Reciprocal Rank Fusion — the "hybrid" tier. Anthropic's Contextual Retrieval
+Recall fuses dense + BM25 via Reciprocal Rank Fusion — the "hybrid" tier
+(`_recall_hybrid` `scripts/bob_memory.py:421-460`). Anthropic's Contextual Retrieval
 shows two more levers close most of the remaining gap: a **cross-encoder rerank** of the fused
 candidates (hybrid → hybrid+rerank takes failed-retrieval reduction from ~49% to ~67%), and
 **contextual-chunk embeddings** (prepend a short chunk-situating context before embedding so a chunk
@@ -49,19 +53,20 @@ stands alone). Bob's recall stops at RRF today.
 ### Change
 - **Rerank pass** in the recall path ([scripts/bob_memory.py](../../scripts/bob_memory.py)): take the
   top-N RRF candidates and re-score with a cross-encoder (a small local reranker served alongside the
-  embed model, or a scored LLM pass) → top-K. Gated by `memory.rerank` (default off; O14 already ships
-  the config seam `retrieval` + `rrfK`).
+  embed model, or a scored LLM pass) → top-K. Gated by a new `memory.rerank` key (default off; the
+  `memory.retrieval` + `memory.rrfK` config seams already ship in `config/defaults.json`, the new
+  `memory.rerank` key does not exist yet).
 - **Contextual-chunk embeddings**: when a stored memory is a chunk of a larger source (project docs,
   future code-RAG for **Module Q**), prepend a one-line context before embedding so retrieval doesn't
   depend on the chunk being self-contained. Atomic typed facts (today's memories) already stand alone,
-  so this matters most once chunked sources exist — build the seam here, exploit it in Q1's code index.
+  so this matters most once chunked sources exist — build the seam here, exploit it in Module Q's code index.
 - Reranker/model resolves via the existing role routing; absent → clean fallback to hybrid (loud-fail).
 - Config: `memory.rerank` (default off), `memory.rerankTopN`.
 
-### Effort: 5–7 h (reuses O14's fused candidate set + the embed server).
+### Effort: 5–7 h (reuses the hybrid recall fused candidate set + the embed server).
 ### Acceptance
 Tests: rerank reorders a fused candidate set so a semantically-best-but-lexically-weak hit rises;
-`rerank` off reproduces O14 hybrid exactly; a missing reranker falls back to hybrid with a logged
+`rerank` off reproduces today's hybrid recall exactly; a missing reranker falls back to hybrid with a logged
 warning; a contextual-chunk embed round-trips. Live (GPU tier): a query that hybrid ranks 4th is
 reranked to 1st.
 
@@ -70,7 +75,7 @@ reranked to 1st.
 ## R2 — Self-editing memory blocks (MemGPT/Letta core memory)
 
 ### Problem
-Bob's memory is *auto*-recalled (O14) and *auto*-consolidated at session end — the model doesn't
+Bob's memory is *auto*-recalled (hybrid recall) and *auto*-consolidated at session end — the model doesn't
 directly curate what stays in its context. MemGPT/Letta give the agent **editable core-memory blocks**
 (e.g. a "persona" block and a "user/task" block) it rewrites *in its loop* via tool calls, always
 present in context and bounded by a character budget. That's how a Letta agent decides what's worth
@@ -79,17 +84,18 @@ keeping without waiting for end-of-session consolidation.
 ### Change
 - **Core-memory blocks**: a small set of named, size-capped blocks (e.g. `task`, `user`) persisted per
   owner/scope (reuse the memory store), **always injected** into context (via the existing injection
-  path + O13 stable-prefix so an edited block re-freezes cleanly into the prefix).
+  path + the prefix-cache-aware layout `scripts/bob_loop.py:678` so an edited block re-freezes cleanly
+  into the prefix).
 - Layer-1 **`memory_block` tool** (`append` / `replace` / `read`): the model edits a block mid-run;
-  edits are mutating → O6 `ask`/policy applies, and audited (O6 audit line). Bounded so a block can't
+  edits are mutating → the mutating-tool `ask`/policy applies, and audited. Bounded so a block can't
   grow the prefix unboundedly.
-- Blocks are owner/scope-scoped (MEM-6/7) and survive across sessions; they complement — don't replace —
+- Blocks are owner/scope-scoped and survive across sessions; they complement — don't replace —
   auto-consolidation (which still fires on real session end only).
 - Config: `memory.coreBlocks` (default off), block name → token cap.
 
 ### Effort: 6–9 h.
 ### Acceptance
-Tests: the model appends to a block and it persists + re-injects next turn; a block edit is O6-gated +
+Tests: the model appends to a block and it persists + re-injects next turn; a block edit is policy-gated +
 audited; a block respects its token cap (oldest trimmed / rejected); off = no blocks injected
 (byte-identical). Live: across two turns the agent writes a fact to its `task` block and uses it later
 without re-deriving it.
@@ -99,30 +105,36 @@ without re-deriving it.
 ## R3 — Conversation paging (`conversation_search` over dropped turns)
 
 ### Problem
-O3 compaction summarizes the dropped span into one note, and O15 clears stale tool results to a
-`read_result` stub — but the *original* older turns themselves are gone from context once compacted.
-MemGPT/Letta keep an OS-style **recall/archival** tier the agent can search on demand
-(`conversation_search`) to page a specific earlier exchange back in. Bob can't retrieve a compacted
-turn verbatim.
+Summarize-compaction (`scripts/bob_loop.py:809`) trims the older span out of the *in-context* message
+list per request, and the tool-result retention seam clears stale tool results to a `read_result` stub
+— so the model can't see those older turns in its current context window. Two gaps remain: (1) the
+compaction only trims what a single request carries, but the loop's intermediate tool turns (and every
+CLI run — the CLI path is **stateless**, it has no session store at all) are never persisted as a
+searchable transcript; and (2) even where `bob_session` persists the full final user/assistant history
+(`append_turn` `scripts/bob_session.py:137-164`), there's no way for the agent to search it and page a
+specific earlier exchange back into context. MemGPT/Letta keep an OS-style **recall/archival** tier the
+agent searches on demand (`conversation_search`). Bob has no such retrieval path.
 
 ### Change
-- **Persist the full transcript** for a run/session (the N2 `bob_session` store already holds session
-  history — [scripts/bob_session.py](../../scripts/bob_session.py); extend to retain the pre-compaction
-  turns O3 drops, owner-scoped).
-- Layer-1 **`conversation_search` tool**: semantic/keyword search over the run's *dropped/older* turns
-  (reuse the O14 hybrid retriever over transcript rows), returning matching exchanges the model can pull
-  back into context on demand — the read side mirrors O15's `read_result`
-  ([scripts/tools/tool_registry.py](../../scripts/tools/tool_registry.py) retention seam), but over
-  turns rather than tool outputs.
-- Bounded: a paged-in result is itself subject to O3/O15 so it can't re-overflow; paging is opt-in and
-  metered (N5) / traced (O9).
+- **Persist the full transcript** for a run/session including the intermediate tool turns and CLI runs.
+  `bob_session` (`scripts/bob_session.py:137-164`, `append_turn`) already persists the full final
+  user/assistant turn history — but compaction only trims the per-request message list, it doesn't
+  delete stored turns, and the CLI path is stateless. So the work is to capture the complete
+  transcript (intermediate tool turns + stateless CLI runs) into an owner-scoped store.
+- Layer-1 **`conversation_search` tool**: semantic/keyword search over the persisted transcript
+  (reuse the hybrid retriever over transcript rows), returning matching exchanges the model can page
+  back into context on demand — the read side mirrors the `read_result` retention seam
+  ([scripts/tools/tool_registry.py](../../scripts/tools/tool_registry.py):287, `scripts/tools/read_result.py`),
+  but over turns rather than tool outputs.
+- Bounded: a paged-in result is itself subject to compaction / tool-result clearing so it can't
+  re-overflow; paging is opt-in and metered / traced.
 - Config: `agent.conversationPaging` (default off).
 
 ### Effort: 5–7 h.
 ### Acceptance
 Tests: a compacted-away turn is retrievable by `conversation_search`; the retriever is owner-scoped
-(no cross-owner leak, per N1); a paged-in result is re-subject to compaction; off = no persistence of
-dropped turns beyond today. Live: a long run compacts an early decision, and the agent pages it back
+(no cross-owner leak); a paged-in result is re-subject to compaction; off = no transcript persistence
+beyond today. Live: a long run compacts an early decision, and the agent pages it back
 verbatim when it becomes relevant again.
 
 ---
@@ -140,27 +152,28 @@ verbatim when it becomes relevant again.
 | File | Sub-items |
 |------|-----------|
 | `scripts/bob_memory.py` (rerank pass, contextual-chunk embed) | R1 |
-| new `scripts/tools/memory_block.py`; `scripts/bob_loop.py` (block injection + O13 prefix) | R2 |
-| new `scripts/tools/conversation_search.py`; `scripts/bob_session.py` (retain dropped turns) | R3 |
+| new `scripts/tools/memory_block.py`; `scripts/bob_loop.py` (block injection + stable prefix `bob_loop.py:678`) | R2 |
+| new `scripts/tools/conversation_search.py`; `scripts/bob_session.py` (persist full transcript incl. tool turns + CLI runs) | R3 |
 | `config/defaults.json` (`runtime.memory.*` / `runtime.agent.*` keys), `tests/*` | all |
 
 ## Verification
 
-- Python `py_compile` + unittest; `scripts\check.ps1` gate (N8); the CI matrix (C5); the O10 eval gains
+- Python `py_compile` + unittest; the `scripts/check.py` gate; the CI matrix; the eval suite gains
   a compaction-recall / retrieval-quality task.
 - New config keys under `config/defaults.json` `runtime.memory.*` / `runtime.agent.*`, read via
-  `.get(default)`, defaulting to today's behavior (R off = O14/O3/O15 behavior unchanged).
+  `.get(default)`, defaulting to today's behavior (R off = current hybrid-recall / compaction /
+  tool-result-clearing behavior unchanged).
 - Live: rerank lift on a GPU-tier query (R1); a cross-turn core-memory edit (R2); page back a compacted
   decision (R3).
 - Cite `file:line` for every claim.
 
 ## Non-goals
 
-Replacing O14 hybrid recall (R1 *extends* it) or O3/O15 (R3 *complements* them — it doesn't stop
-compaction, it makes it reversible). A separate vector database or memory service (everything stays on
-the existing SQLite + embed-server infra, local-first). The prefix-cache mechanics themselves
-(O13 owns them; R2 reuses the stable-prefix seam). Code-specific retrieval (repo map / code index is
-**Module Q**; R1's contextual-chunk seam is what Q's index consumes).
+Replacing hybrid recall (R1 *extends* it) or compaction / tool-result clearing (R3 *complements* them —
+it doesn't stop compaction, it makes it reversible). A separate vector database or memory service
+(everything stays on the existing SQLite + embed-server infra, local-first). The prefix-cache mechanics
+themselves (`scripts/bob_loop.py:678` owns them; R2 reuses the stable-prefix seam). Code-specific
+retrieval (repo map / code index is **Module Q**; R1's contextual-chunk seam is what Q's index consumes).
 
 ## Sources
 

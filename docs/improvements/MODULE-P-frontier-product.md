@@ -1,8 +1,9 @@
 # Module P — Frontier Product (durable autonomy, multimodal, computer-use)
 
-**Status:** draft / not implemented. **Depends on:** O (sub-agents, sandbox, permissions, tracing,
-eval) + NB–ND (portable/reliable base) + NE (interface) + **NE6-MEM / MEM2** (the persisted-session +
-typed/scoped-memory layer P1/P2 build directly on). **Read first:**
+**Status:** draft / not implemented. **Depends on:** sub-agents, the sandbox, the permission model,
+tracing, and eval; the portable/reliable base; the unified interface; and the SQLite session + memory
+layer (persisted, owner-scoped sessions plus typed/scoped memory) that P1/P2 build directly on — all
+shipped. **Read first:**
 [ARCHITECTURE-CONTRACTS.md](ARCHITECTURE-CONTRACTS.md) and MODULE-O's "Already-built seams" section.
 This is the **last** module — the one that takes Bob from a frontier *harness* to a frontier *product*.
 
@@ -13,16 +14,19 @@ do three things O doesn't:
 - **Durable, long-horizon autonomy** — a task that runs for *hours across restarts*, checkpointed and
   resumable, not a single in-memory loop that dies with the process.
 - **Deep multimodal *in the loop*** — vision and voice as first-class inside the agent loop and the
-  interface, not standalone `bob describe` / `bob voice` side-doors.
+  interface. This has shipped: images now thread through `run_agent_events` and `/voice` is a shell
+  mode of the unified session (see P3), rather than living only in a standalone `bob describe` /
+  `bob voice` command.
 - **Computer-use** — driving the desktop (screen + input) as a sandboxed, permission-gated tool.
 
-P closes those, deliberately last, because each is only *safe* on top of O (sandbox O5, permissions
-O6, scopes O8, tracing O9) and only *reliable* on top of NB–ND. It is the most speculative module;
+P closes those, deliberately last, because each is only *safe* on top of the sandbox, the permission
+model, scopes, and the tracer, and only *reliable* on top of the portable base. It is the most
+speculative module;
 some of it (computer-use) is genuinely risky and is gated hard.
 
 **Scope note.** P is opt-in and gated throughout — nothing here runs by default. Computer-use in
-particular is off unless explicitly enabled, sandboxed (O5), and permission-gated (O6). P targets
-Windows + Linux; macOS follows the NC/O deferral.
+particular is off unless explicitly enabled, sandboxed, and permission-gated. P targets
+Windows + Linux; macOS follows the deferral.
 
 ## Overview
 
@@ -30,7 +34,7 @@ Windows + Linux; macOS follows the NC/O deferral.
 |-----|------|----------------------|--------|--------|
 | P1 | Durable & resumable runs (checkpoint/resume) | runs die with the process | HIGH | 8–12 h |
 | P2 | Background / detached long-running tasks | no hours-long, disconnect-surviving jobs | HIGH | 6–8 h |
-| P3 | Deep multimodal *in the loop* (vision + voice) | multimodal is side-doors, not in-loop | MED | 8–12 h |
+| P3 | Deep multimodal *in the loop* (vision + voice) | **SHIPPED (ONE-B)** — vision + voice now thread through the loop | MED | done — verify/harden |
 | P4 | Computer-use / desktop automation (gated) | can't drive a GUI | MED | 12–18 h |
 | P5 | Long-horizon eval + safety review | unproven + computer-use unreviewed | MED | 5–7 h |
 
@@ -41,26 +45,29 @@ Windows + Linux; macOS follows the NC/O deferral.
 ## P1 — Durable & resumable runs (checkpoint / resume)
 
 ### Problem
-`run_agent_events` holds all state in memory: `messages`, step count, tool results, the sub-agent
-tree (O1). If the process dies (crash, restart, `bob update`, machine reboot) mid-task, the whole run
-is lost. Frontier products checkpoint and resume — a task can span restarts.
+The persisted, owner-scoped `SessionStore` already exists ([bob_session.py](../../scripts/bob_session.py))
+and carries the transcript, `owner_id`, and token budget/spend across restarts. What's missing is
+*run*-state durability: `run_agent_events` still holds the live run in memory — step count, in-flight
+tool results, the sub-agent tree. If the process dies (crash, restart, `bob update`, machine reboot)
+mid-task, that run is lost. There is no run-state / checkpoint table yet — that's the real work here.
+Frontier products checkpoint and resume — a task can span restarts.
 
 ### Change
-> **Seam note (NE6-MEM / MEM2):** the "session store" is `bob_session.SessionStore`
-> ([bob_session.py](../../scripts/bob_session.py), N2) — which since WI-6 also backs the NE shell's persisted sessions and
+> **Seam note:** the session store is `bob_session.SessionStore`
+> ([bob_session.py](../../scripts/bob_session.py)) — it already backs the shell's persisted sessions and
 > carries `owner_id` + token budget/spend. Checkpoint run-state alongside it (a *run* ≠ a *session
 > transcript* — keep them distinct rows/tables). Crucially, the checkpoint must persist and a resume
-> must **restore `RunContext.owner`, `agent_depth`, and `scope`** (MEM-6/7), or a resumed run's memory
+> must **restore `RunContext.owner`, `agent_depth`, and `scope`**, or a resumed run's memory
 > recall/store lands under the wrong identity/project. Don't re-consolidate on resume — consolidation
 > fires on real session end, not on a run checkpoint.
 - **Checkpoint** the run state (messages, step, `exit_requested`, per-sub-agent state, metrics)
-  to the session store (N2, already SQLite/WAL) at each step boundary — cheap, atomic, owner-scoped.
+  to the session store (already SQLite/WAL) at each step boundary — cheap, atomic, owner-scoped.
 - **Resume**: `run_agent_events(..., resume=<run_id>)` rehydrates from the last checkpoint and
-  continues; the SSE server and NE shell expose `resume`. Idempotent tool re-execution is avoided by
+  continues; the SSE server and shell expose `resume`. Idempotent tool re-execution is avoided by
   recording tool results in the checkpoint (a resumed run replays results, doesn't re-run side
   effects).
-- Sub-agent trees (O1) checkpoint recursively; a resumed parent resumes its children.
-- Config: `agent.checkpoint = $true` (default on for long runs / `--deep`, off for one-shots).
+- Sub-agent trees checkpoint recursively; a resumed parent resumes its children.
+- Config: `agent.checkpoint: true` (default on for long runs / `--deep`, off for one-shots).
 
 ### Effort: 8–12 h.
 ### Acceptance
@@ -74,19 +81,22 @@ finishes it.
 ## P2 — Background / detached long-running tasks
 
 ### Problem
-Every run is foreground and tied to the invoking process/connection. N3 made a *disconnect cancel*
-the run; frontier products let a task **detach and keep running** for hours, with status/resume, and
-survive the client leaving. There is no task queue or worker.
+Every run is foreground and tied to the invoking process/connection; a disconnect currently cancels
+the run. Frontier products let a task **detach and keep running** for hours, with status/resume, and
+survive the client leaving. The detach primitives partly exist — `osenv.start_detached`
+([osenv.py:445](../../scripts/osenv.py)) launches a process off the caller, and cron/interval
+scheduling lives in [schedule.py](../../scripts/tools/schedule.py) — but there is no ad-hoc,
+owner-scoped, resumable task surface over them. P2 is that surface, not greenfield infra.
 
 ### Change
 - A lightweight **task runner**: `bob task start "<goal>"` enqueues a durable run (P1) executed by a
-  background worker (a `bob agent serve` worker thread/process, or a systemd/scheduled worker via
-  NC4); returns a `task_id` immediately.
-- `bob task status|logs|resume|cancel <id>` and REST/SSE equivalents; the NE shell shows running
-  tasks. Status/metrics from N5; owner-scoped (N1); resumable (P1).
+  detached background worker (over `osenv.start_detached` / a `bob agent serve` worker thread, or a
+  scheduled worker via `schedule.py`); returns a `task_id` immediately.
+- `bob task status|logs|resume|cancel <id>` and REST/SSE equivalents; the shell shows running
+  tasks. Status/metrics from the run tracker; owner-scoped; resumable (P1).
 - Disconnect no longer cancels a *detached* task (unlike an attached stream) — it keeps running; only
   an explicit cancel or the cancel token stops it.
-- Memory (NE6-MEM/MEM2): a detached task is still owner-scoped (N1) — its recall/store use the task
+- Memory: a detached task is still owner-scoped — its recall/store use the task
   owner's memory, and end-of-run consolidation follows the same rule as any run (only a real session
   lifecycle consolidates, not each background task tick).
 
@@ -99,28 +109,35 @@ finished (or resume it).
 
 ---
 
-## P3 — Deep multimodal *in the loop* (vision + voice)
+## P3 — Deep multimodal *in the loop* (vision + voice) — SHIPPED (verify / harden)
 
-### Problem
-Bob has vision (`bob describe`) and voice (`bob voice`) as **standalone side-doors**, not inside the
-agent loop or the NE interface. A frontier agent can *see* a screenshot mid-task and *speak/listen*
-as a mode of the same session.
+### Problem (resolved)
+Vision and voice used to live only in the standalone `bob describe` / `bob voice` commands. They now
+thread through the agent loop and the unified interface: the agent can *see* an image mid-task and
+*speak/listen* as a mode of the same session. What remains is verification and hardening, not initial
+build.
 
-### Change
-- **Vision in the loop:** tools may return images (e.g. a future screen-capture tool, P4; a chart
-  generator); the loop passes them to the vision role (`get_role("vision")`) as image content in the
-  messages, so the agent can reason over what it sees mid-run. Reuses the existing vision model
-  routing (Module G) — the new part is threading image content through `run_agent_events` messages.
-- **Voice as an NE shell mode:** `/voice` in the interactive shell (NE2) turns the current session
-  into a spoken loop (Whisper STT in, Piper TTS out — the existing engines), so voice is a *mode of
-  the unified interface*, not a separate command. Streamed (N3/N6), cancellable.
-- Config-gated; degrades cleanly where a vision model or audio devices are absent (NC/NB `osenv`).
+### What shipped
+- **Vision in the loop:** image content threads through `run_agent_events` via the
+  `{"__images__": [...], "text": ...}` contract — `_image_content_block` / `_split_tool_result_images`
+  ([bob_loop.py:55-85](../../scripts/bob_loop.py)) build and unpack it. Goal images are attached at
+  [bob_loop.py:1354](../../scripts/bob_loop.py); images returned by a tool are consumed on the next
+  turn at [bob_loop.py:1575-1602](../../scripts/bob_loop.py); a turn carrying an image auto-routes to
+  the vision role at [bob_loop.py:1172-1174](../../scripts/bob_loop.py). This reuses the existing
+  vision model routing.
+- **Voice as a shell mode:** `/voice` in the interactive shell turns the current session into a spoken
+  loop (Whisper STT in, Piper TTS out — the existing engines), a *mode of the unified interface*
+  rather than a separate command — [shell.py:899-937](../../scripts/bob/shell.py). Streamed and
+  cancellable.
+- Config-gated; degrades cleanly where a vision model or audio devices are absent (via `osenv`).
 
-### Effort: 8–12 h.
-### Acceptance
+### Effort: shipped (remaining: verify / harden).
+### Acceptance (met — regression coverage in place)
 Tests: the loop accepts image content and routes a vision turn; a tool returning an image is consumed
-by the next model turn; `/voice` mode round-trips STT→loop→TTS in the shell. Live: an agent task that
-captures + reasons over a screenshot; a spoken conversation inside `bob`.
+by the next model turn ([tests/test_vision.py](../../tests/test_vision.py)); `/voice` mode round-trips
+STT→loop→TTS in the shell ([tests/test_voice.py](../../tests/test_voice.py)). Live: an agent task that
+reasons over an image; a spoken conversation inside `bob`. Hardening to still confirm: robustness of
+the voice loop under device/engine failure, and the (P4) screen-capture tool feeding the same path.
 
 ---
 
@@ -129,43 +146,46 @@ captures + reasons over a screenshot; a spoken conversation inside `bob`.
 ### Problem
 Bob cannot drive a GUI — the frontier "computer use" / Operator capability (screen capture + mouse/
 keyboard control for apps without an API). This is powerful *and dangerous*, so it is built last, on
-top of the sandbox (O5), permission model (O6), and scopes (O8).
+top of the sandbox, the permission model, and scopes. Note screen *capture* already exists
+([bob_vision.py:67](../../scripts/bob_vision.py), behind `bob describe` / `screenshot`) but is
+CLI-only — not yet an agent tool. The vision-in-loop consumer (P3) is already built and ready to
+receive those frames; P4 adds the input/control half and exposes capture as a gated tool.
 
 ### Change
-- A **`computer` tool surface** (opt-in, `agent.computerUse = $true`, default off): `screenshot`,
+- A **`computer` tool surface** (opt-in, `agent.computerUse: true`, default off): `screenshot`,
   `click`, `type`, `key`, `scroll` — Windows via UI Automation / SendInput, Linux via the appropriate
-  X11/Wayland tooling (`xdotool`/`ydotool`), behind NB3's `osenv`.
-- **Hard gating:** every `computer` action is `ask` by default (O6), scoped per owner (O8), runs
-  under the O5 sandbox where feasible, is traced (O9), and is rate-limited. Screenshots feed the
+  X11/Wayland tooling (`xdotool`/`ydotool`), behind `osenv`.
+- **Hard gating:** every `computer` action is `ask` by default, scoped per owner, runs
+  under the sandbox where feasible, is traced, and is rate-limited. Screenshots feed the
   vision-in-loop path (P3) so the agent can *see* what it's doing.
 - **Kill switch + audit:** a global `bob computer stop`, an on-screen indicator while active, and an
-  append-only audit of every action (O6 audit line). Never enabled in unattended/detached tasks (P2)
+  append-only audit of every action. Never enabled in unattended/detached tasks (P2)
   without an explicit `--allow-computer` flag.
 
 ### Effort: 12–18 h (the OS input/automation layer is the bulk; Windows + Linux backends).
 ### Acceptance
 Tests (headless/mocked input backend): `computer` actions are permission-gated (`ask`/`deny`
 enforced), scoped, audited, and refused when `computerUse` is off. Live (attended): the agent takes a
-screenshot, sees it (P3), clicks a target, types text — each action prompting per O6 — with a working
-kill switch. Security-reviewed in P5.
+screenshot, sees it (P3), clicks a target, types text — each action prompting through the permission
+model — with a working kill switch. Security-reviewed in P5.
 
 ---
 
 ## P5 — Long-horizon eval + safety review
 
 ### Problem
-O10's eval covers bounded agent tasks; P adds *long-horizon* (checkpoint/resume, hours-long) and
+The existing eval covers bounded agent tasks; P adds *long-horizon* (checkpoint/resume, hours-long) and
 *computer-use* — neither is proven, and computer-use especially needs a security review before it
 ships enabled.
 
 ### Change
-- **Extend the O10 eval** with long-horizon tasks: multi-hour / multi-restart scenarios scored for
+- **Extend the eval** with long-horizon tasks: multi-hour / multi-restart scenarios scored for
   correctness + resumption integrity (does a resumed run reach the same result?); run on the release
-  (GPU) tier of the CI matrix (C5).
-- **Security review** (`docs/SECURITY.md` extension, test-backed like N9/O): the computer-use threat
+  (GPU) tier of the CI matrix.
+- **Security review** (`docs/SECURITY.md` extension, test-backed): the computer-use threat
   model (prompt-injection → GUI actions), the gating chain (off-by-default → `ask` → sandbox → scope
   → audit → kill switch), and the detached-task risk (P2 + P4 interaction). Each claim backed by a
-  test, as in N9.
+  test.
 - Document the "autonomy dial": one-shot → `--deep` → detached task → computer-use, each a bigger
   grant requiring a bigger opt-in.
 
@@ -181,7 +201,7 @@ review is complete with every claim test-backed; the autonomy dial is documented
 | Gap (vs frontier products, not just harnesses) | Sub-item(s) |
 |-----------------------------------------------|-------------|
 | Runs die with the process; no long-horizon autonomy | **P1** (durable/resumable), **P2** (detached tasks) |
-| Multimodal is side-doors, not in the loop/interface | **P3** |
+| Multimodal in the loop/interface (vision + voice) | **P3** (SHIPPED) |
 | Can't drive a GUI (computer-use) | **P4** |
 | Long-horizon + computer-use unproven/unreviewed | **P5** |
 
@@ -192,14 +212,14 @@ review is complete with every claim test-backed; the autonomy dial is documented
 | `scripts/bob_loop.py` (checkpoint/resume, image content), `scripts/bob_session.py` (checkpoint store) | P1, P3 |
 | new `scripts/bob_tasks.py` (task runner); `scripts/bob_agent_server.py`, `scripts/bob/` (task verbs) | P2 |
 | `scripts/bob/shell.py` (`/voice` mode), vision routing in the loop | P3 |
-| new `scripts/tools/computer.py` (+ `osenv` input backends); `config/bob.psd1` (`computerUse`) | P4 |
+| new `scripts/tools/computer.py` (+ `osenv` input backends); `config/defaults.json` (`computerUse`; resolver `scripts/bob_config.py`) | P4 |
 | `tests/eval/` (long-horizon), `docs/SECURITY.md` | P5 |
 | `tests/*` | every sub-item |
 
 ## Verification
 
-- Python `py_compile` + unittest; `check.ps1` gate (N8); the CI matrix (C5) incl. the P5 long-horizon
-  eval on the GPU tier.
+- Python `py_compile` + unittest; the `python scripts/check.py gate`; the CI matrix incl. the P5
+  long-horizon eval on the GPU tier.
 - Live: kill+resume a `--deep` task (P1); detach+reconnect a task (P2); screenshot-reason-act with
   per-action approval + kill switch (P3/P4); spoken session in `bob` (P3).
 - Cite `file:line` for every claim.
@@ -207,6 +227,6 @@ review is complete with every claim test-backed; the autonomy dial is documented
 ## Non-goals
 
 A general RPA/automation platform (computer-use is an agent tool, opt-in and gated — not a macro
-recorder). Unattended destructive computer-use without explicit opt-in. macOS (follows the NC/O
+recorder). Unattended destructive computer-use without explicit opt-in. macOS (follows the platform
 deferral). Cloud task orchestration (tasks run on the local worker; local-first stays). Replacing the
 model or the OpenAI-compatible protocol.

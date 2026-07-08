@@ -65,5 +65,42 @@ class TestRender(unittest.TestCase):
         self.assertIn("sub-agent", out)      # no-steps skill tagged runnable
 
 
+_DIFF = "\n".join([
+    "--- a/foo.py",
+    "+++ b/foo.py",
+    "@@ -1,3 +1,3 @@",
+    " unchanged",
+    "-was this",
+    "+now this",
+])
+
+
+class TestDiffView(unittest.TestCase):
+    def test_renders_every_diff_line(self):
+        out = _render(render.diff_view(_DIFF, _theme()))
+        for frag in ("--- a/foo.py", "@@ -1,3 +1,3 @@", "-was this", "+now this", " unchanged"):
+            self.assertIn(frag, out)
+
+    def test_optional_path_header(self):
+        out = _render(render.diff_view(_DIFF, _theme(), path="foo.py"))
+        self.assertIn("foo.py", out)
+
+    def test_long_diff_collapses_with_footer(self):
+        big = "\n".join([f"+line {i}" for i in range(10)])
+        out = _render(render.diff_view(big, _theme(), max_lines=3))
+        self.assertIn("+line 0", out)
+        self.assertNotIn("+line 9", out)          # beyond the cap
+        self.assertIn("... (7 more)", out)        # 10 - 3 hidden
+
+    def test_line_styles_distinguish_add_remove(self):
+        t = _theme()
+        self.assertEqual(render._diff_line_style("+added", t), t.success)
+        self.assertEqual(render._diff_line_style("-removed", t), t.error)
+        self.assertEqual(render._diff_line_style("+++ b/x", t), t.muted)   # header, not an addition
+        self.assertEqual(render._diff_line_style("--- a/x", t), t.muted)
+        self.assertEqual(render._diff_line_style("@@ -1 +1 @@", t), t.accent)
+        self.assertEqual(render._diff_line_style(" context", t), t.muted)
+
+
 if __name__ == "__main__":
     unittest.main()
