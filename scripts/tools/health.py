@@ -180,7 +180,7 @@ def health_check(config: dict, doctor: bool = False) -> str:
     if venv_ok:
         try:
             errs = _tool_load_errors()
-            check("Agent tools load without error", not errs, "run: bob agent tools")
+            check("Agent tools load without error", not errs, "run: bob tools")
             for name, kind, msg in errs:
                 lines.append(f"     load error [{name}/{kind}]: {msg}")
         except Exception as e:

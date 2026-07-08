@@ -259,6 +259,52 @@ def _install_cli_windows() -> None:  # pragma: no cover — Windows path
     print("Open a NEW terminal, then try:  bob help", file=sys.stderr)
 
 
+# Reset copy + confirm word — one place, shared by `bob reset` (CLI) and the shell's /reset, so the
+# danger text and the type-to-confirm keyword can't drift between the two front doors.
+RESET_WARNING = ("This deletes ALL Bob data on this machine (chats, memory, keys, schedules) and "
+                 "returns to first-run.")
+RESET_CONFIRM = "reset"
+
+
+def reset_done_line(removed: int) -> str:
+    """The one-line confirmation shown after a successful reset (both front doors)."""
+    return f"reset complete ({removed} item(s) removed). Run `bob` to begin fresh."
+
+
+def reset_all_data(data_dir=None, user_cfg=None) -> int:
+    """Factory reset: delete every local data store and clear the onboarding markers so the next launch
+    is a fresh first-run. The inverse of onboard(). Removes everything under `data_dir()` (sessions.db,
+    bob.db memory, secrets.json, schedules.json, .onboarded, shell-history, WAL/SHM sidecars, caches)
+    and strips the `bob` onboarding key from config/user.json (which, with the wiped memory profile,
+    re-arms onboarding). Best-effort per item so one locked/missing file doesn't abort the wipe. Paths
+    are injectable so tests never touch real data. Returns the count of items removed. The SINGLE wipe
+    core — both `bob reset` (CLI) and the shell's `/reset` call it."""
+    import json
+    import shutil
+    removed = 0
+    d = Path(data_dir) if data_dir else osenv.data_dir()
+    for p in list(d.glob("*")):
+        try:
+            if p.is_dir():
+                shutil.rmtree(p, ignore_errors=True)
+            else:
+                p.unlink()
+            removed += 1
+        except OSError:
+            pass
+    cfg_path = Path(user_cfg) if user_cfg else (REPO / "config" / "user.json")
+    if cfg_path.exists():
+        try:
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            if isinstance(cfg, dict) and "bob" in cfg:
+                cfg.pop("bob", None)
+                cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+                removed += 1
+        except (OSError, ValueError):
+            pass
+    return removed
+
+
 def _has_profile_rows() -> bool:
     """True if the memory DB already holds a durable identity (type='profile') row. Stdlib sqlite3 only
     (no venv deps) — this runs on the kernel path. A missing DB/table means no profile yet."""

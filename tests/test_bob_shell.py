@@ -819,6 +819,7 @@ class TestReset(unittest.TestCase):
         import os
         import shutil
         import tempfile
+        from bob import kernel
         d = tempfile.mkdtemp(prefix="bob-reset-data-")
         cfgd = tempfile.mkdtemp(prefix="bob-reset-cfg-")
         self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
@@ -829,7 +830,7 @@ class TestReset(unittest.TestCase):
         cfg = os.path.join(cfgd, "user.json")
         with open(cfg, "w") as f:
             json.dump({"bob": {"onboardDeclined": True}, "litellmPort": 8081}, f)
-        removed = shellmod._wipe_all_data(data_dir=d, user_cfg=cfg)
+        removed = kernel.reset_all_data(data_dir=d, user_cfg=cfg)   # the one shared wipe core
         self.assertEqual(os.listdir(d), [])                    # every data store gone
         with open(cfg) as f:
             left = json.load(f)
@@ -837,33 +838,52 @@ class TestReset(unittest.TestCase):
         self.assertIn("litellmPort", left)                     # unrelated config preserved
         self.assertGreaterEqual(removed, 6)
 
-    def test_reset_confirmed_wipes_and_exits(self):
+    def test_slash_reset_confirmed_wipes_and_exits(self):
+        from bob import kernel
         sh, _ = _make_shell()
         calls = {"n": 0}
-        orig = shellmod._wipe_all_data
-        shellmod._wipe_all_data = lambda *a, **k: (calls.__setitem__("n", calls["n"] + 1), 5)[1]
+        orig = kernel.reset_all_data
+        kernel.reset_all_data = lambda *a, **k: (calls.__setitem__("n", calls["n"] + 1), 5)[1]
         try:
             sh._confirm = lambda *a, **k: True
             self.assertFalse(sh.dispatch("/reset"))            # returns False → leaves the REPL
         finally:
-            shellmod._wipe_all_data = orig
+            kernel.reset_all_data = orig
         self.assertEqual(calls["n"], 1)
         self.assertIsNone(sh.session_id)
 
-    def test_reset_declined_does_not_wipe(self):
+    def test_slash_reset_declined_does_not_wipe(self):
+        from bob import kernel
         sh, out = _make_shell()
-        orig = shellmod._wipe_all_data
+        orig = kernel.reset_all_data
 
         def boom(*a, **k):
             raise AssertionError("must not wipe when declined")
 
-        shellmod._wipe_all_data = boom
+        kernel.reset_all_data = boom
         try:
             sh._confirm = lambda *a, **k: False
             self.assertTrue(sh.dispatch("/reset"))             # declined → keep looping
         finally:
-            shellmod._wipe_all_data = orig
+            kernel.reset_all_data = orig
         self.assertIn("cancelled", out.file.getvalue())
+
+    def test_cli_reset_verb_yes_flag_wipes(self):
+        from bob import cli, kernel
+        calls = {"n": 0}
+        orig = kernel.reset_all_data
+        kernel.reset_all_data = lambda *a, **k: (calls.__setitem__("n", calls["n"] + 1), 3)[1]
+        try:
+            rc = cli._handle_reset(["--yes"])                  # non-interactive, confirmed via flag
+        finally:
+            kernel.reset_all_data = orig
+        self.assertEqual(rc, 0)
+        self.assertEqual(calls["n"], 1)
+
+    def test_cli_reset_verb_wired_in_registry(self):
+        from bob import cli, registry
+        self.assertEqual(registry.by_name()["reset"]["handler"], "reset")
+        self.assertIn("reset", cli._HANDLERS)
 
 
 class TestSessionPersistence(unittest.TestCase):

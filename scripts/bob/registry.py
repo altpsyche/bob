@@ -44,8 +44,6 @@ COMMANDS = [
      "args": "", "handler": "agent_serve"},
     {"name": "agent mcp", "group": "Act", "summary": "Expose Bob's tools over MCP (stdio)",
      "args": "", "handler": "agent_mcp"},
-    {"name": "agent tools", "group": "Act", "summary": "List the agent's discovered tools",
-     "args": "", "handler": "agent_tools"},
     {"name": "agent schedule", "group": "Act", "summary": "Manage scheduled agent goals",
      "args": "<add|list|run|remove|enable|disable|install|status>", "handler": "agent_schedule"},
     {"name": "agent log", "group": "Act", "summary": "Tail the agent log (live)",
@@ -118,6 +116,8 @@ COMMANDS = [
     # --- Config: setup + models + provisioning ------------------------------------------------
     {"name": "setup", "group": "Config", "summary": "Pre-flight health check / first-run setup",
      "args": "[check]", "handler": "setup"},
+    {"name": "reset", "group": "Config", "summary": "Wipe ALL local data and return to first-run",
+     "args": "[--yes]", "handler": "reset"},
     {"name": "setup-voice", "group": "Config", "summary": "Download piper + whisper, build whisper-server",
      "args": "[--force]", "handler": "setup-voice"},
     {"name": "fabric-setup", "group": "Config", "summary": "Install Fabric and point it at the local endpoint",

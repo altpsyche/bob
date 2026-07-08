@@ -215,39 +215,6 @@ def _compact_args(arguments: str) -> str:
     return (s[:80] + "...") if len(s) > 80 else s
 
 
-def _wipe_all_data(data_dir=None, user_cfg=None) -> int:
-    """Delete every local data store and clear the onboarding markers, so the next launch is a fresh
-    first-run. Removes everything under `data_dir()` (sessions.db, bob.db memory, secrets.json,
-    schedules.json, .onboarded, shell-history, WAL/SHM sidecars, caches) and strips the `bob`
-    onboarding key from config/user.json (which, with the wiped memory profile, re-arms onboarding).
-    Best-effort per item so one locked/missing file doesn't abort the wipe. Paths are injectable so
-    tests never touch real data. Returns the count of items removed."""
-    import osenv
-    removed = 0
-    d = Path(data_dir) if data_dir else osenv.data_dir()
-    for p in list(d.glob("*")):
-        try:
-            if p.is_dir():
-                import shutil
-                shutil.rmtree(p, ignore_errors=True)
-            else:
-                p.unlink()
-            removed += 1
-        except OSError:
-            pass
-    cfg_path = Path(user_cfg) if user_cfg else (_SCRIPTS.parent / "config" / "user.json")
-    if cfg_path.exists():
-        try:
-            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-            if isinstance(cfg, dict) and "bob" in cfg:
-                cfg.pop("bob", None)
-                cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
-                removed += 1
-        except (OSError, ValueError):
-            pass
-    return removed
-
-
 def _derive_session_name(text: str, limit: int = 48) -> str:
     """A short, human-readable session name from its first message: whitespace collapsed to one line,
     clipped to `limit`. Used to auto-name a session the moment it gets its first turn."""
@@ -771,9 +738,9 @@ class BobShell:
             tbl.add_row(f"{c.name} {c.args}".strip(), c.desc)
         self.console.print(tbl)
         self.console.print(
-            f"\n[italic {self.theme.muted}]This is the shell. For scripting / outside the terminal "
-            f"(one-shots, Open WebUI, editors, API), run [bold]bob help[/] · [bold]/tools[/] · "
-            f"[bold]/skills[/] for full lists[/]"
+            f"\n[italic {self.theme.muted}]These [bold]/[/]commands drive the shell; type anything "
+            f"else to ask Bob, which can run any task for you. Catalogs: [bold]/tools[/] · "
+            f"[bold]/skills[/]. For scripting from a terminal, [bold]bob help[/] is the CLI reference.[/]"
         )
 
     def _cmd_tools(self, _arg: str = "") -> None:
@@ -1166,9 +1133,8 @@ class BobShell:
         """/reset — DESTRUCTIVE. Wipe ALL local data (conversations, memory, API keys, schedules,
         history) and the onboarding markers, then leave the shell so the next `bob` starts at first-run.
         Requires typing 'reset' to confirm. Returns False to exit the REPL once done."""
-        if not self._confirm(
-                f"[{self.theme.error}]This deletes ALL Bob data on this machine "
-                f"(chats, memory, keys, schedules) and returns to first-run.[/]", expect="reset"):
+        from bob import kernel
+        if not self._confirm(f"[{self.theme.error}]{kernel.RESET_WARNING}[/]", expect=kernel.RESET_CONFIRM):
             self.console.print("[dim]reset cancelled[/]")
             return True
         if self.sessions is not None:
@@ -1176,12 +1142,10 @@ class BobShell:
                 self.sessions.close()     # release the DB lock so the file can be removed (Windows)
             except Exception:
                 pass
-        removed = _wipe_all_data()
+        removed = kernel.reset_all_data()
         self.session_id = None            # nothing left to consolidate on exit
         self.history = []
-        self.console.print(
-            f"[{self.theme.success}]reset complete[/] "
-            f"[{self.theme.muted}]({removed} item(s) removed) · restart bob to begin fresh[/]")
+        self.console.print(f"[{self.theme.success}]{kernel.reset_done_line(removed)}[/]")
         return False                      # leave the REPL
 
     def _cmd_skill(self, arg: str) -> None:

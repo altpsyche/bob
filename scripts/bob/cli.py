@@ -141,16 +141,6 @@ def _handle_agent_mcp(rest: list) -> int:
     return bob_mcp_server.main() or 0
 
 
-def _handle_agent_tools(rest: list) -> int:
-    # tool_loader's CLI logic lives in its __main__ block and imports its siblings (tool_registry),
-    # so scripts/tools must be importable; run it with the right argv.
-    tools_dir = str(SCRIPTS / "tools")
-    if tools_dir not in sys.path:
-        sys.path.insert(0, tools_dir)
-    sys.argv = ["tool_loader.py", "--list"] + rest
-    runpy.run_path(str(SCRIPTS / "tools" / "tool_loader.py"), run_name="__main__")
-    return 0
-
 
 # --- agent scheduling (scripts/tools/schedule.py) ------------------------------------------------
 # schedule CRUD + the OS-task lifecycle + the runner core. install/uninstall are CLI-only (they touch
@@ -982,6 +972,31 @@ def _handle_shell(rest: list) -> int:
     return run()
 
 
+def _handle_reset(rest: list) -> int:
+    """bob reset [--yes] — factory reset: wipe ALL local data (chats, memory, keys, schedules, history)
+    and the onboarding markers, returning to first-run. Irreversible. Prompts for confirmation unless
+    --yes is given; refuses a non-interactive run without --yes (never wipes unattended by accident).
+    Shares the one wipe core with the shell's /reset (kernel.reset_all_data)."""
+    from bob import kernel
+
+    if not any(f in rest for f in ("--yes", "-y", "--force")):
+        if not sys.stdin.isatty():
+            print("bob reset: refusing to wipe without confirmation — pass --yes for non-interactive use.",
+                  file=sys.stderr)
+            return 1
+        print(kernel.RESET_WARNING, file=sys.stderr)
+        try:
+            answer = input(f"Type '{kernel.RESET_CONFIRM}' to confirm: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            answer = ""
+        if answer != kernel.RESET_CONFIRM:
+            print("reset cancelled.", file=sys.stderr)
+            return 1
+    removed = kernel.reset_all_data()
+    print(kernel.reset_done_line(removed))
+    return 0
+
+
 def _handle_help(rest: list) -> int:
     """bob help — the single generated command catalog, rendered from the registry so it can't
     drift. Grouped commands + drop-in plugins."""
@@ -996,8 +1011,10 @@ def _handle_help(rest: list) -> int:
     plugins = render.plugins_view(theme)
     if plugins is not None:
         console.print(plugins)
-    console.print(f"\n[{theme.muted}]bob <command> [args] · run [bold]bob[/] with no args for the "
-                  f"interactive shell · bob tools · bob skills[/]")
+    console.print(f"\n[{theme.muted}]This is the command-line reference (scripting, automation, other "
+                  f"terminals). Run [bold]bob[/] with no args for the interactive shell — inside it, "
+                  f"[bold]/help[/] lists the shell commands and you just talk to Bob. · bob tools · "
+                  f"bob skills[/]")
     return 0
 
 
@@ -1005,7 +1022,6 @@ _HANDLERS = {
     "agent_run": _handle_agent_run,
     "agent_serve": _handle_agent_serve,
     "agent_mcp": _handle_agent_mcp,
-    "agent_tools": _handle_agent_tools,
     "agent_schedule": _handle_agent_schedule,   # scheduling (scripts/tools/schedule.py)
     "agent_log": _handle_agent_log,
     "agent_install": _handle_agent_install,
@@ -1059,6 +1075,7 @@ _HANDLERS = {
     "mlock": _handle_mlock,           # mlock privilege status/grant (osenv)
     "gen": _handle_gen,               # config generators (scripts/tools/generate.py)
     "setup": _handle_setup,           # health / diagnostics (scripts/tools/health.py)
+    "reset": _handle_reset,           # factory reset (kernel.reset_all_data; shared with /reset)
     "doctor": _handle_doctor,
     "version": _handle_version,
     "diagnose": _handle_diagnose,
@@ -1072,7 +1089,7 @@ _GROUP_ORDER = ["Talk", "Act", "Make", "Know", "Run", "Config"]
 
 
 def _print_help() -> None:
-    print("bob — local AI assistant\n", file=sys.stderr)
+    print("bob — local AI assistant (command-line reference)\n", file=sys.stderr)
     groups: dict = {}
     for c in registry.commands(include_hidden=False):  # hidden verbs stay out of the catalog
         groups.setdefault(c["group"], []).append(c)
@@ -1084,3 +1101,5 @@ def _print_help() -> None:
             usage = f"{c['name']} {c['args']}".strip()
             print(f"  {usage:<34} {c['summary']}", file=sys.stderr)
         print("", file=sys.stderr)
+    print("Run `bob` with no args for the interactive shell; inside it, /help lists the shell commands.",
+          file=sys.stderr)
