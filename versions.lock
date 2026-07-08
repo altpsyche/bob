@@ -41,7 +41,7 @@
       "repo": "gpustack/bge-m3-GGUF",
       "path": "bge-m3-Q8_0.gguf",
       "revision": "main",
-      "sha256": null,
+      "sha256": "950f4a8e5e19477a6d3c26d2f162233c20002c601f75e4b002e3239997821167",
       "sizeGB": 0.6
     },
     "qwen-coder-1.5b-q8_0.gguf": {
@@ -55,7 +55,7 @@
       "repo": "Qwen/Qwen3-14B-GGUF",
       "path": "Qwen3-14B-Q4_K_M.gguf",
       "revision": "main",
-      "sha256": null,
+      "sha256": "500a8806e85ee9c83f3ae08420295592451379b4f8cf2d0f41c15dffeb6b81f0",
       "sizeGB": 8.4
     },
     "hermes-3-8b-q5_k_m.gguf": {
@@ -69,21 +69,21 @@
       "repo": "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF",
       "path": "Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf",
       "revision": "main",
-      "sha256": null,
+      "sha256": "2946d28c9e1bb2bcae6d42e8678863a31775df6f740315c7d7e6d6b6411f5937",
       "sizeGB": 8.4
     },
     "qwen-coder-3b-q8_0.gguf": {
       "repo": "Qwen/Qwen2.5-Coder-3B-Instruct-GGUF",
       "path": "qwen2.5-coder-3b-instruct-q8_0.gguf",
       "revision": "main",
-      "sha256": null,
+      "sha256": "f648c25dfd5a0870c4ad76724a745124ab5667ff97b664534fcbe46089b75ab8",
       "sizeGB": 3.4
     },
     "qwen3-30b-a3b-q4.gguf": {
       "repo": "Qwen/Qwen3-30B-A3B-GGUF",
       "path": "Qwen3-30B-A3B-Q4_K_M.gguf",
       "revision": "main",
-      "sha256": null,
+      "sha256": "0d003f6662faee786ed5da3e31b29c978de5ae5d275c8794c606a7f3c01aa8f5",
       "sizeGB": 17.3
     },
     "qwen2-vl-7b-q4_k_m.gguf": {
