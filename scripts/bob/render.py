@@ -12,7 +12,7 @@ from rich.text import Text
 
 from bob import registry
 
-_GROUP_ORDER = ["Talk", "Act", "Make", "Know", "Run", "Config"]
+_GROUP_ORDER = registry.GROUP_ORDER   # single-sourced in the registry
 _PLUGINS_DIR = Path(__file__).resolve().parent.parent.parent / "plugins"  # repo/plugins
 
 

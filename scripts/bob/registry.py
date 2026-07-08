@@ -4,7 +4,7 @@ one entry here plus its cli.py handler — no generated table to regenerate, no 
 is Python), no sync gate.
 
   name     fully-qualified command path ("agent", "agent serve", "setup")
-  group    catalog grouping for help/splash (Talk/Act/Make/Know/Run/Config)
+  group    catalog grouping for help/splash (one of GROUP_ORDER)
   summary  one-line description
   args     usage hint ("" if none)
   handler  cli.py handler key
@@ -13,9 +13,16 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent.parent  # scripts/bob/registry.py -> repo
 
-# Grouped mental-model catalog. `group` is one of the six below; `hidden` (optional, default
-# False) keeps a command dispatchable but out of the human catalog (a sanctioned exception,
-# e.g. an internal dev utility). This registry is the sole catalog — help/dispatch both read it.
+# The order + membership of the help/splash buckets, authored HERE once. The plain-string catalog
+# (catalog.py), the rich views (render.py), and the CLI help fallback (cli.py) all read this — so the
+# grouping is single-sourced and a re-bucket is one edit. Every command's `group` must be one of these
+# (unknown groups still render, appended last, but the group test guards against typos). Daily surfaces
+# (Run/Services) stay small; the larger provisioning/model catalog is split so no bucket is a wall.
+GROUP_ORDER = ["Talk", "Act", "Make", "Know", "Run", "Services", "Models", "Diagnose", "Setup"]
+
+# Grouped mental-model catalog, authored in GROUP_ORDER order. `group` is one of GROUP_ORDER; `hidden`
+# (optional, default False) keeps a command dispatchable but out of the human catalog (a sanctioned
+# exception, e.g. an internal dev utility). This registry is the sole catalog — help/dispatch both read it.
 COMMANDS = [
     # --- Talk: converse + senses --------------------------------------------------------------
     {"name": "chat", "group": "Talk", "summary": "Chat with Bob — one-shot or REPL, routed role (on the agent loop)",
@@ -64,6 +71,8 @@ COMMANDS = [
      "args": "<list|test|info> [name]", "handler": "tools"},
     {"name": "plugins", "group": "Act", "summary": "List installed plugins",
      "args": "list", "handler": "plugins"},
+    {"name": "aider", "group": "Act", "summary": "Start aider in the current folder",
+     "args": "[args]", "handler": "aider"},
 
     # --- Make: generate via the local models --------------------------------------------------
     {"name": "fabric", "group": "Make", "summary": "Run Fabric patterns against the local endpoint",
@@ -79,9 +88,9 @@ COMMANDS = [
     {"name": "budget", "group": "Know", "summary": "Token and cost usage summary",
      "args": "", "handler": "budget"},
 
-    # --- Run: lifecycle + status --------------------------------------------------------------
+    # --- Run: run the stack day-to-day (also available live in the shell as /up, /stop, …) -----
     {"name": "up", "group": "Run", "summary": "Start endpoint + Open WebUI silently",
-     "args": "[-NoOpen] [-WithServices]", "handler": "up"},
+     "args": "[--no-open] [--with-services]", "handler": "up"},
     {"name": "serve", "group": "Run", "summary": "Start the inference stack (llama-swap + LiteLLM), interactive",
      "args": "", "handler": "serve"},
     {"name": "restart", "group": "Run", "summary": "Stop then start the endpoint",
@@ -98,56 +107,60 @@ COMMANDS = [
      "args": "<start|stop|status|logs>", "handler": "services"},
     {"name": "webui", "group": "Run", "summary": "Launch Open WebUI only",
      "args": "", "handler": "webui"},
-    {"name": "aider", "group": "Run", "summary": "Start aider in the current folder",
-     "args": "[args]", "handler": "aider"},
-    {"name": "litellm", "group": "Run", "summary": "Manage the LiteLLM proxy",
-     "args": "[start|stop|status]", "handler": "litellm"},
-    {"name": "whisper", "group": "Run", "summary": "Manage the whisper STT server (:8082)",
-     "args": "[start|stop|status]", "handler": "whisper"},
-    {"name": "piper", "group": "Run", "summary": "Manage the piper TTS server (:8083)",
-     "args": "[start|stop|status]", "handler": "piper"},
-    {"name": "doctor", "group": "Run", "summary": "Full pre-flight diagnostics",
-     "args": "", "handler": "doctor"},
-    {"name": "diagnose", "group": "Run", "summary": "System and model health check",
-     "args": "", "handler": "diagnose"},
-    {"name": "bench", "group": "Run", "summary": "Throughput benchmark",
-     "args": "[role]", "handler": "bench"},
 
-    # --- Config: setup + models + provisioning ------------------------------------------------
-    {"name": "setup", "group": "Config", "summary": "Pre-flight health check / first-run setup",
-     "args": "[check]", "handler": "setup"},
-    {"name": "reset", "group": "Config", "summary": "Wipe ALL local data and return to first-run",
-     "args": "[--yes]", "handler": "reset"},
-    {"name": "setup-voice", "group": "Config", "summary": "Download piper + whisper, build whisper-server",
-     "args": "[--force]", "handler": "setup-voice"},
-    {"name": "fabric-setup", "group": "Config", "summary": "Install Fabric and point it at the local endpoint",
-     "args": "[--force]", "handler": "fabric-setup"},
-    {"name": "gen", "group": "Config", "summary": "Regenerate runtime configs from models.json",
-     "args": "[profile]", "handler": "gen"},
-    {"name": "fetch", "group": "Config", "summary": "Download models for a profile",
-     "args": "[--list] [profile]", "handler": "fetch"},
-    {"name": "models", "group": "Config", "summary": "List models with backing names and state",
+    # --- Services: start/stop/status one inference or voice daemon ----------------------------
+    {"name": "litellm", "group": "Services", "summary": "Manage the LiteLLM proxy",
+     "args": "[start|stop|status]", "handler": "litellm"},
+    {"name": "whisper", "group": "Services", "summary": "Manage the whisper STT server (:8082)",
+     "args": "[start|stop|status]", "handler": "whisper"},
+    {"name": "piper", "group": "Services", "summary": "Manage the piper TTS server (:8083)",
+     "args": "[start|stop|status]", "handler": "piper"},
+
+    # --- Models: the model registry, profiles, and downloads ----------------------------------
+    {"name": "models", "group": "Models", "summary": "List models with backing names and state",
      "args": "", "handler": "models"},
-    {"name": "show", "group": "Config", "summary": "Model info: file, VRAM, SHA256, disk status",
+    {"name": "show", "group": "Models", "summary": "Model info: file, VRAM, SHA256, disk status",
      "args": "<role>", "handler": "show"},
-    {"name": "profile", "group": "Config", "summary": "Switch profile (auto = detect from VRAM)",
-     "args": "<name|auto>", "handler": "profile"},
-    {"name": "profiles", "group": "Config", "summary": "List VRAM profiles with sizes",
+    {"name": "profiles", "group": "Models", "summary": "List VRAM profiles with sizes",
      "args": "", "handler": "profiles"},
-    {"name": "build", "group": "Config", "summary": "Build llama.cpp (CUDA, or --cpu for no-GPU)",
-     "args": "[--cpu] [--force]", "handler": "build"},
-    {"name": "update", "group": "Config", "summary": "Pull latest llama.cpp and rebuild",
-     "args": "[--tag <ref>]", "handler": "update"},
-    {"name": "lock", "group": "Config", "summary": "(Re)generate versions.lock from pinned sources",
-     "args": "[--check]", "handler": "lock"},
-    {"name": "version", "group": "Config", "summary": "Show binary versions and submodule commits",
-     "args": "", "handler": "version"},
-    {"name": "mlock", "group": "Config", "summary": "Check/grant SeLockMemoryPrivilege (for --mlock)",
-     "args": "[--grant]", "handler": "mlock"},
-    {"name": "eval", "group": "Config", "summary": "Benchmark model quality (mmlu / humaneval / gsm8k)",
+    {"name": "profile", "group": "Models", "summary": "Switch profile (auto = detect from VRAM)",
+     "args": "<name|auto>", "handler": "profile"},
+    {"name": "fetch", "group": "Models", "summary": "Download models for a profile",
+     "args": "[--list] [profile]", "handler": "fetch"},
+    {"name": "eval", "group": "Models", "summary": "Benchmark model quality (mmlu / humaneval / gsm8k)",
      "args": "<role> [task] [--shots N] [--limit N]", "handler": "eval"},
-    {"name": "verify-urls", "group": "Config", "summary": "Check HuggingFace download URLs",
+    {"name": "verify-urls", "group": "Models", "summary": "Check HuggingFace download URLs",
      "args": "[profile]", "handler": "verify-urls", "hidden": True},
+
+    # --- Diagnose: health, benchmarks, versions -----------------------------------------------
+    {"name": "doctor", "group": "Diagnose", "summary": "Full pre-flight diagnostics (--quick for a fast health check)",
+     "args": "[--quick]", "handler": "doctor"},
+    {"name": "diagnose", "group": "Diagnose", "summary": "System and model health check",
+     "args": "", "handler": "diagnose"},
+    {"name": "bench", "group": "Diagnose", "summary": "Throughput benchmark",
+     "args": "[role]", "handler": "bench"},
+    {"name": "version", "group": "Diagnose", "summary": "Show binary versions and submodule commits",
+     "args": "", "handler": "version"},
+
+    # --- Setup: first-run, install, build, provisioning ---------------------------------------
+    {"name": "setup", "group": "Setup", "summary": "First-run setup + quick health check (= doctor --quick)",
+     "args": "[check]", "handler": "setup"},
+    {"name": "reset", "group": "Setup", "summary": "Wipe ALL local data and return to first-run",
+     "args": "[--yes]", "handler": "reset"},
+    {"name": "setup-voice", "group": "Setup", "summary": "Download piper + whisper, build whisper-server",
+     "args": "[--force]", "handler": "setup-voice"},
+    {"name": "fabric-setup", "group": "Setup", "summary": "Install Fabric and point it at the local endpoint",
+     "args": "[--force]", "handler": "fabric-setup"},
+    {"name": "gen", "group": "Setup", "summary": "Regenerate runtime configs from models.json",
+     "args": "[profile]", "handler": "gen"},
+    {"name": "build", "group": "Setup", "summary": "Build llama.cpp (CUDA, or --cpu for no-GPU)",
+     "args": "[--cpu] [--force]", "handler": "build"},
+    {"name": "update", "group": "Setup", "summary": "Pull latest llama.cpp and rebuild",
+     "args": "[--tag <ref>]", "handler": "update"},
+    {"name": "lock", "group": "Setup", "summary": "(Re)generate versions.lock from pinned sources",
+     "args": "[--check]", "handler": "lock"},
+    {"name": "mlock", "group": "Setup", "summary": "Check/grant SeLockMemoryPrivilege (for --mlock)",
+     "args": "[--grant]", "handler": "mlock"},
 
     # Meta — the generated help/catalog itself (hidden: it needn't list itself). Registering it routes
     # `bob help` through `python -m bob help` on both front doors.

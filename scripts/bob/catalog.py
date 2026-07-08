@@ -6,7 +6,7 @@ about load state — tools/skills that failed to load are shown as [FAILED], not
 observability posture in the UI. Counts come straight from the registries so they can't drift."""
 from bob import registry
 
-_GROUP_ORDER = ["Talk", "Act", "Make", "Know", "Run", "Config"]
+_GROUP_ORDER = registry.GROUP_ORDER   # single-sourced in the registry
 
 
 def render_commands() -> str:

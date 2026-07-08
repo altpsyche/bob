@@ -925,6 +925,8 @@ def _health_mod():
 
 
 def _handle_setup(rest: list) -> int:
+    """bob setup [check] — first-run setup + quick health check. Back-compat alias for
+    `bob doctor --quick`: both print the same fast `health_check(doctor=False)`."""
     sub = rest[0] if rest else "check"
     if sub != "check":
         print("Usage: bob setup check  (or: bob doctor for the full pre-flight)")
@@ -934,7 +936,10 @@ def _handle_setup(rest: list) -> int:
 
 
 def _handle_doctor(rest: list) -> int:
-    print(_health_mod().health_check(_cfg(), doctor=True))
+    """bob doctor [--quick] — full pre-flight diagnostics; --quick runs the fast health check
+    (identical to `bob setup check`, the back-compat alias). One core: health.health_check."""
+    full = "--quick" not in rest
+    print(_health_mod().health_check(_cfg(), doctor=full))
     return 0
 
 
@@ -1015,6 +1020,10 @@ def _handle_help(rest: list) -> int:
                   f"terminals). Run [bold]bob[/] with no args for the interactive shell — inside it, "
                   f"[bold]/help[/] lists the shell commands and you just talk to Bob. · bob tools · "
                   f"bob skills[/]")
+    shared = _shared_with_shell()
+    if shared:
+        console.print(f"[{theme.muted}]Also live in the shell as /commands: "
+                      f"{' '.join('/' + s for s in shared)}[/]")
     return 0
 
 
@@ -1085,7 +1094,16 @@ _HANDLERS = {
 
 # --- help ----------------------------------------------------------------------------------------
 
-_GROUP_ORDER = ["Talk", "Act", "Make", "Know", "Run", "Config"]
+_GROUP_ORDER = registry.GROUP_ORDER   # single-sourced in the registry
+
+
+def _shared_with_shell() -> list:
+    """Sorted names that are BOTH a `bob <verb>` and a shell /command — the cross-surface cockpit.
+    Computed from the two sources (the registry + shell's slash set) so the 'also in the shell'
+    signpost can't drift from what actually exists."""
+    from bob.shell import slash_names
+    verbs = {c["name"].split()[0] for c in registry.commands(include_hidden=True)}
+    return sorted(slash_names() & verbs)
 
 
 def _print_help() -> None:
@@ -1103,3 +1121,7 @@ def _print_help() -> None:
         print("", file=sys.stderr)
     print("Run `bob` with no args for the interactive shell; inside it, /help lists the shell commands.",
           file=sys.stderr)
+    shared = _shared_with_shell()
+    if shared:
+        print("Also live in the shell as /commands: " + " ".join("/" + s for s in shared),
+              file=sys.stderr)

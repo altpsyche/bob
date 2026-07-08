@@ -132,6 +132,13 @@ _EXIT_CMDS = frozenset(nm for c in _COMMANDS if not c.handler for nm in c.names(
 _SLASH = _slash_tree()
 
 
+def slash_names() -> set:
+    """The bare names (no leading '/') of every slash command + alias. The single source `bob help`
+    intersects with the verb catalog to name the commands shared across both surfaces — computed, so the
+    'also in the shell' signpost can never drift from the actual slash set."""
+    return {nm.lstrip("/") for c in _COMMANDS for nm in c.names()}
+
+
 def _slash_completer(dynamic=None):
     """A completer that makes `/` self-documenting AND completes argument values. At the top level it
     lists every slash command with its one-line description (from `_COMMANDS`). Past the command word
