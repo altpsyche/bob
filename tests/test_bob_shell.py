@@ -5,6 +5,7 @@ gate. A prompt_toolkit REPL can't be validated without a real TTY, so live keyst
 cancel, the real approval prompt) is the separate manual acceptance — here we prove everything under
 it."""
 import io
+import time
 import unittest
 
 import _common  # noqa: F401 — puts scripts/ on sys.path
@@ -86,6 +87,23 @@ class TestDispatch(unittest.TestCase):
         sh.dispatch("/agency bogus")            # rejected — unchanged
         self.assertEqual(sh.agency, "confirm")
 
+    def test_model_unknown_role_warns_but_switches(self):
+        sh, out = _make_shell()
+        sh.dispatch("/model definitely-not-a-role")
+        self.assertEqual(sh.role, "definitely-not-a-role")        # not blocked (custom models allowed)
+        self.assertIn("not a known role", out.file.getvalue())    # but no longer silent
+
+    def test_model_known_role_switches_cleanly(self):
+        sh, out = _make_shell()
+        sh.dispatch("/model coder")                               # a configured routing value
+        self.assertEqual(sh.role, "coder")
+        self.assertNotIn("not a known role", out.file.getvalue())
+
+    def test_clear_help_describes_context_not_screen(self):
+        sh, out = _make_shell()
+        sh.dispatch("/help")
+        self.assertIn("conversation context", out.file.getvalue())
+
     def test_session_new_resets_to_pending(self):
         sh, _ = _make_shell()
         sh.session_id = "deadbeefcafe"          # pretend a row already exists
@@ -131,7 +149,7 @@ class TestSlashSource(unittest.TestCase):
 
     def test_subcommands_nested_under_parent(self):
         self.assertEqual(set(shellmod._SLASH["/agency"]), {"show", "confirm", "silent"})
-        self.assertEqual(set(shellmod._SLASH["/session"]), {"new", "list", "resume", "show"})
+        self.assertEqual(set(shellmod._SLASH["/session"]), {"new", "list", "resume", "name", "show"})
         self.assertEqual(set(shellmod._SLASH["/services"]), {"start", "stop"})
         self.assertEqual(set(shellmod._SLASH["/theme"]), {"reload"})
         self.assertIsNone(shellmod._SLASH["/tools"])     # no subs → a leaf
@@ -508,6 +526,57 @@ class TestStreamingThrottle(unittest.TestCase):
         self.assertEqual(r.answer, "word " * 200)    # and the complete text is captured
 
 
+class TestContextLabel(unittest.TestCase):
+    """The bottom toolbar surfaces how full the context window is (estimated tokens, with a percent
+    when a session budget is set)."""
+
+    def test_counts_history_tokens(self):
+        sh, _ = _make_shell()
+        self.assertEqual(sh._context_label(), "~0 tok")          # empty history
+        sh.history = [{"role": "user", "content": "hello world " * 20}]
+        self.assertIn("tok", sh._context_label())
+        self.assertNotEqual(sh._context_label(), "~0 tok")       # grows with content
+
+    def test_shows_percent_with_budget(self):
+        sh, _ = _make_shell()
+        sh._max_tokens = 1000
+        sh.history = [{"role": "user", "content": "word " * 100}]
+        lbl = sh._context_label()
+        self.assertIn("/1000 tok", lbl)
+        self.assertIn("%", lbl)
+
+
+class TestSpinnerTimer(unittest.TestCase):
+    """The 'thinking'/'running' spinner shows a live elapsed timer, refreshed from the consume loop's
+    idle poll, so a long wait never reads as a hang."""
+
+    def _renderer(self):
+        from rich.console import Console
+        theme = _make_shell()[0].theme
+        con = Console(file=io.StringIO(), force_terminal=True, no_color=True, width=80)
+        return shellmod._TurnRenderer(con, "show", theme)
+
+    def test_tick_shows_elapsed_seconds(self):
+        r = self._renderer()
+        r._start_spin("thinking")
+        r._spin_start = time.monotonic() - 5          # pretend 5s have passed
+        seen = {}
+        r._status.update = lambda status=None, **k: seen.__setitem__("label", status)
+        r.tick()
+        r.close()
+        self.assertIn("thinking", seen["label"])
+        self.assertIn("5s", seen["label"])
+
+    def test_tick_noop_under_a_second(self):
+        r = self._renderer()
+        r._start_spin("thinking")                     # just started (~0s)
+        calls = {"n": 0}
+        r._status.update = lambda *a, **k: calls.__setitem__("n", calls["n"] + 1)
+        r.tick()
+        r.close()
+        self.assertEqual(calls["n"], 0)               # no premature '0s' flicker
+
+
 class TestApprovalHandshake(unittest.TestCase):
     def _run(self, decision):
         sh, _ = _make_shell()
@@ -625,6 +694,68 @@ def _make_persistent_shell(tmpdir, owner="local", max_tokens=0):
     cfg["agent"]["maxSessionTokens"] = max_tokens
     sh = BobShell(cfg, FakeRegistry(), _FakeSkillReg(), console=console, sessions=store)
     return sh, store, console
+
+
+class TestSessionNames(unittest.TestCase):
+    """Sessions get a human name — auto from the first message, or set manually with /session name —
+    and can be resumed / shown by that name."""
+
+    def setUp(self):
+        import shutil
+        import tempfile
+        self.tmp = tempfile.mkdtemp(prefix="bob-sessname-")
+        self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+
+    def test_first_turn_auto_names_from_the_message(self):
+        sh, store, _ = _make_persistent_shell(self.tmp)
+        sh._consume = lambda fac, on_approval=None: "ok"
+        sh._run_turn("help me refactor the theme loader")
+        self.assertEqual(store.get(sh.session_id)["name"], "help me refactor the theme loader")
+
+    def test_long_message_name_is_clipped(self):
+        self.assertEqual(shellmod._derive_session_name("x" * 100)[-1], "…")
+        self.assertLessEqual(len(shellmod._derive_session_name("x" * 100)), 49)
+
+    def test_pending_name_before_first_turn_is_applied(self):
+        sh, store, _ = _make_persistent_shell(self.tmp)
+        sh.dispatch("/session name refactor sprint")      # no row yet → queued
+        self.assertIsNone(sh.session_id)
+        sh._consume = lambda fac, on_approval=None: "ok"
+        sh._run_turn("first message")                     # creation applies the queued name
+        self.assertEqual(store.get(sh.session_id)["name"], "refactor sprint")
+
+    def test_rename_active_session(self):
+        sh, store, _ = _make_persistent_shell(self.tmp)
+        sh._consume = lambda fac, on_approval=None: "ok"
+        sh._run_turn("something")
+        sh.dispatch("/session name my nice name")
+        self.assertEqual(store.get(sh.session_id)["name"], "my nice name")
+
+    def test_resume_by_name(self):
+        _, store, _ = _make_persistent_shell(self.tmp)
+        seed = store.create(owner_id="local")
+        store.append_turn(seed["id"], "q", "a")
+        store.set_name_owned(seed["id"], "local", "billing bug")
+        sh, _, _ = _make_persistent_shell(self.tmp)
+        sh.dispatch("/session resume billing")            # unique name substring
+        self.assertEqual(sh.session_id, seed["id"])
+
+    def test_list_shows_names(self):
+        sh, store, out = _make_persistent_shell(self.tmp)
+        s = store.create(owner_id="local")
+        store.append_turn(s["id"], "hi", "yo")
+        store.set_name_owned(s["id"], "local", "distinctive-label")
+        sh.dispatch("/session list")
+        self.assertIn("distinctive-label", out.file.getvalue())
+
+    def test_resume_completion_offers_name_and_id(self):
+        sh, store, _ = _make_persistent_shell(self.tmp)
+        s = store.create(owner_id="local")
+        store.append_turn(s["id"], "q", "a")
+        store.set_name_owned(s["id"], "local", "alpha project")
+        refs = sh._session_refs()                          # the /session resume value provider
+        self.assertIn("alpha project", refs)
+        self.assertIn(s["id"][:8], refs)
 
 
 class TestSessionPersistence(unittest.TestCase):

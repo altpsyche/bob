@@ -70,7 +70,8 @@ class SessionStore:
                 history      TEXT NOT NULL DEFAULT '[]',
                 token_budget INTEGER NOT NULL DEFAULT 0,
                 tokens_spent INTEGER NOT NULL DEFAULT 0,
-                client       TEXT
+                client       TEXT,
+                name         TEXT
             )
             """
         )
@@ -83,6 +84,8 @@ class SessionStore:
                 "UPDATE sessions SET owner_id = COALESCE(NULLIF(client,''), ?) WHERE owner_id IS NULL",
                 [self._default_owner],
             )
+        if "name" not in cols:                         # human-readable session label (nullable)
+            conn.execute("ALTER TABLE sessions ADD COLUMN name TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_owner ON sessions(owner_id, updated_at DESC)")
 
@@ -112,7 +115,7 @@ class SessionStore:
 
     def get(self, sid: str):
         row = self._conn().execute(
-            "SELECT id, created_at, updated_at, history, token_budget, tokens_spent, client, owner_id"
+            "SELECT id, created_at, updated_at, history, token_budget, tokens_spent, client, owner_id, name"
             " FROM sessions WHERE id=?",
             [sid],
         ).fetchone()
@@ -127,6 +130,7 @@ class SessionStore:
             "tokens_spent": row[5],
             "client": row[6],
             "owner_id": row[7],
+            "name": row[8],
         }
 
     def get_owned(self, sid: str, owner_id: str):
@@ -162,6 +166,13 @@ class SessionStore:
                 pass
             raise
         return self.get(sid)
+
+    def set_name_owned(self, sid: str, owner_id: str, name: str) -> bool:
+        """Set a session's human-readable name, only if owner_id matches. Does NOT bump updated_at —
+        renaming isn't activity, so it must not reorder the recency-sorted list. Returns True if set."""
+        cur = self._conn().execute(
+            "UPDATE sessions SET name=? WHERE id=? AND owner_id=?", [name, sid, owner_id])
+        return cur.rowcount > 0
 
     def over_budget(self, sid: str) -> bool:
         """True if the session has a positive token_budget and has reached/exceeded it."""

@@ -31,6 +31,20 @@ class TestSessionStore(unittest.TestCase):
     def test_get_unknown_is_none(self):
         self.assertIsNone(self.store.get("does-not-exist"))
 
+    def test_name_defaults_none_and_sets_owner_scoped(self):
+        s = self.store.create(owner_id="local")
+        self.assertIsNone(self.store.get(s["id"])["name"])
+        self.assertTrue(self.store.set_name_owned(s["id"], "local", "my feature work"))
+        self.assertEqual(self.store.get(s["id"])["name"], "my feature work")
+        self.assertFalse(self.store.set_name_owned(s["id"], "someone-else", "hijack"))
+        self.assertEqual(self.store.get(s["id"])["name"], "my feature work")   # non-owner can't rename
+
+    def test_rename_does_not_bump_recency(self):
+        s = self.store.create(owner_id="local")
+        before = self.store.get(s["id"])["updated_at"]
+        self.store.set_name_owned(s["id"], "local", "renamed")
+        self.assertEqual(self.store.get(s["id"])["updated_at"], before)   # rename isn't activity
+
     def test_append_turn_and_spend(self):
         s = self.store.create()
         self.store.append_turn(s["id"], "hello", "hi there", tokens_used=40)

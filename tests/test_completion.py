@@ -19,18 +19,18 @@ from bob.shell import BobShell
 
 
 class _FakeSkillReg:
-    def __init__(self):
-        self.skills = {}
+    def __init__(self, names=()):
+        self.skills = {n: {} for n in names}
         self.errors = []
 
     def list(self):
-        return []
+        return [{"name": n} for n in self.skills]
 
 
-def _make_shell(**cfg_over):
+def _make_shell(skills=(), **cfg_over):
     from rich.console import Console
     console = Console(file=io.StringIO(), force_terminal=False, width=100, no_color=True)
-    return BobShell(fake_config(**cfg_over), FakeRegistry(), _FakeSkillReg(), console=console)
+    return BobShell(fake_config(**cfg_over), FakeRegistry(), _FakeSkillReg(skills), console=console)
 
 
 def _completions(completer, text):
@@ -99,6 +99,41 @@ class TestSlashDiscovery(unittest.TestCase):
 
     def test_unknown_slash_yields_nothing(self):
         self.assertEqual(_completions(self._comp(), "/zzq"), [])
+
+
+class TestArgCompletion(unittest.TestCase):
+    """Past the command word, the menu completes live argument values: roles, skill names, service
+    names, session refs. FuzzyCompleter strips the typed word, so each context yields its full set."""
+
+    def test_model_completes_configured_roles(self):
+        comp = _make_shell()._session_kwargs()["completer"]
+        texts = {c.text for c in _completions(comp, "/model ")}
+        self.assertIn("coder", texts)
+        self.assertIn("planner", texts)
+        self.assertIn("agent", texts)
+
+    def test_model_fuzzy_filters_roles(self):
+        comp = _make_shell()._session_kwargs()["completer"]
+        texts = {c.text for c in _completions(comp, "/model cod")}
+        self.assertIn("coder", texts)
+        self.assertNotIn("planner", texts)          # narrowed by the typed word
+
+    def test_skill_completes_names(self):
+        comp = _make_shell(skills=("deep-research", "repo-brief"))._session_kwargs()["completer"]
+        texts = {c.text for c in _completions(comp, "/skill ")}
+        self.assertEqual(texts, {"deep-research", "repo-brief"})
+
+    def test_services_start_completes_service_names(self):
+        import stack
+        comp = _make_shell()._session_kwargs()["completer"]
+        texts = {c.text for c in _completions(comp, "/services start ")}
+        self.assertTrue({s["name"] for s in stack.SERVICES}.issubset(texts))
+
+    def test_plain_command_still_lists_subcommands(self):
+        # a command with static subs and no dynamic provider still completes its sub-commands
+        comp = _make_shell()._session_kwargs()["completer"]
+        self.assertEqual({c.text for c in _completions(comp, "/agency ")},
+                         {"show", "confirm", "silent"})
 
 
 class TestMultilineFlag(unittest.TestCase):

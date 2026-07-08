@@ -93,7 +93,8 @@ _COMMANDS = [
     _Cmd("/agency", "tool-approval mode: show | confirm | silent", "_cmd_agency",
          args="[level]", subs=("show", "confirm", "silent")),
     _Cmd("/session", "persisted conversation history", "_cmd_session",
-         args="[new|list|resume <id>|show]", subs=("new", "list", "resume", "show")),
+         args="[new|list|resume <ref>|name <text>|show]",
+         subs=("new", "list", "resume", "name", "show")),
     _Cmd("/skill", "list or run a skill", "_cmd_skill", args="[name]"),
     _Cmd("/tools", "list the agent's tools", "_cmd_tools"),
     _Cmd("/skills", "list available skills", "_cmd_skills"),
@@ -107,7 +108,7 @@ _COMMANDS = [
     _Cmd("/stop", "stop local inference (frees VRAM)", "_cmd_stop"),
     _Cmd("/logs", "recent inference-server log", "_cmd_logs"),
     _Cmd("/theme", "reload the colour theme", "_cmd_theme", args="[reload]", subs=("reload",)),
-    _Cmd("/clear", "clear the screen", "_cmd_clear"),
+    _Cmd("/clear", "clear the conversation context (keeps the saved session)", "_cmd_clear"),
     _Cmd("/help", "this reference", "_cmd_help"),
     _Cmd("/exit", "leave the shell", args="", aliases=("/quit",)),   # "" handler → inline exit
 ]
@@ -129,27 +130,36 @@ _EXIT_CMDS = frozenset(nm for c in _COMMANDS if not c.handler for nm in c.names(
 _SLASH = _slash_tree()
 
 
-def _slash_completer():
-    """A completer that makes `/` self-documenting: at the top level it lists every slash command with
-    its one-line description (from `_COMMANDS`) in the menu, and for a sub-command context it defers to
-    the derived `_SLASH` tree. Wrapped in FuzzyCompleter by the caller for typo-tolerance (which
-    preserves the descriptions). prompt_toolkit is imported lazily so shell.py stays importable
-    without it."""
+def _slash_completer(dynamic=None):
+    """A completer that makes `/` self-documenting AND completes argument values. At the top level it
+    lists every slash command with its one-line description (from `_COMMANDS`). Past the command word
+    it completes live values when the context has a `dynamic` provider (e.g. `/model <role>`,
+    `/skill <name>`, `/services start <svc>`, `/session resume <ref>`), otherwise it defers to the
+    static `_SLASH` sub-command tree. `dynamic` maps a token tuple (the completed words, e.g.
+    `("/services", "start")`) to a zero-arg callable returning candidate strings. Wrapped in
+    FuzzyCompleter by the caller — which strips the word being typed, so each branch yields the FULL
+    candidate set for its context and lets the fuzzy layer filter. prompt_toolkit is imported lazily so
+    shell.py stays importable without it."""
     from prompt_toolkit.completion import Completer, Completion, NestedCompleter
 
+    dynamic = dynamic or {}
     meta = {nm: c.desc for c in _COMMANDS for nm in c.names()}   # name + aliases → its description
     nested = NestedCompleter.from_nested_dict(_SLASH)
 
     class _SlashCompleter(Completer):
         def get_completions(self, document, complete_event):
-            text = document.text_before_cursor
-            if " " in text.lstrip():        # past the command word → sub-command completion (no meta)
-                yield from nested.get_completions(document, complete_event)
+            stripped = document.text_before_cursor.lstrip()
+            if " " not in stripped:                     # completing the command word itself (+ meta)
+                for name, desc in meta.items():
+                    if name.startswith(stripped):
+                        yield Completion(name, start_position=-len(stripped), display_meta=desc)
                 return
-            word = text.lstrip()
-            for name, desc in meta.items():
-                if name.startswith(word):
-                    yield Completion(name, start_position=-len(word), display_meta=desc)
+            provider = dynamic.get(tuple(stripped.split()))    # completed words → live value provider
+            if provider is not None:
+                for val in provider():
+                    yield Completion(val, start_position=0)
+                return
+            yield from nested.get_completions(document, complete_event)   # static sub-commands
 
     return _SlashCompleter()
 
@@ -203,6 +213,13 @@ def _compact_args(arguments: str) -> str:
     return (s[:80] + "...") if len(s) > 80 else s
 
 
+def _derive_session_name(text: str, limit: int = 48) -> str:
+    """A short, human-readable session name from its first message: whitespace collapsed to one line,
+    clipped to `limit`. Used to auto-name a session the moment it gets its first turn."""
+    line = " ".join((text or "").split())
+    return (line[:limit].rstrip() + "…") if len(line) > limit else line
+
+
 def _looks_like_diff(res: str) -> bool:
     """Conservative unified-diff detection: a hunk header (`@@ -`) or the `--- `/`+++ ` file-header
     pair. Anchored to those markers so ordinary tool output (which may start with a stray + or -) is
@@ -245,6 +262,8 @@ class _TurnRenderer:
         self._live = None
         self._status = None
         self._last_update = 0.0   # monotonic time of the last live re-parse (throttle to _STREAM_HZ)
+        self._spin_label = ""     # base label of the active spinner (for the live elapsed timer)
+        self._spin_start = 0.0
 
     # -- streamed assistant text (Markdown) --------------------------------
 
@@ -291,6 +310,8 @@ class _TurnRenderer:
 
     def _start_spin(self, label: str) -> None:
         if self.term and self._status is None and self._live is None:
+            self._spin_label = label
+            self._spin_start = time.monotonic()
             self._status = self.console.status(f"[{self.t.muted}]{label}[/]", spinner=self.t.spinner)
             self._status.start()
 
@@ -298,6 +319,16 @@ class _TurnRenderer:
         if self._status is not None:
             self._status.stop()
             self._status = None
+        self._spin_start = 0.0
+
+    def tick(self) -> None:
+        """Refresh the active spinner's label with elapsed seconds, so a long wait shows a live timer
+        ('thinking · 7s') instead of a static word. Called from the consume loop's idle poll; a no-op
+        under a second, while streaming text, or on a non-terminal console."""
+        if self._status is not None and self._spin_start:
+            secs = int(time.monotonic() - self._spin_start)
+            if secs >= 1:
+                self._status.update(f"[{self.t.muted}]{self._spin_label} · {secs}s[/]")
 
     # -- event handlers ----------------------------------------------------
 
@@ -396,6 +427,9 @@ class BobShell:
         # Two-stage exit: a Ctrl-C at the prompt (or one that cancels a turn) arms this; a second
         # consecutive Ctrl-C at the prompt leaves. Any dispatched line clears it.
         self._pending_exit = False
+        # A session name set (via /session name) BEFORE the first turn, applied when the row is
+        # created lazily. None once applied / for auto-naming from the first message.
+        self._pending_name = None
         from rich.console import Console
         # highlight=False: only the theme's colours apply — rich's ReprHighlighter must not tint
         # identifiers/numbers (e.g. a magenta tool name) and fight the palette. no_color honours the
@@ -540,8 +574,12 @@ class BobShell:
         def toolbar():
             ntools = len(getattr(self.tools, "_loaded_names", []) or [])
             nskills = len(self.skills.list()) if hasattr(self.skills, "list") else 0
-            return HTML(f" <b>{self.role}</b> · {self.agency} · {self._sid_label()} · "
-                        f"{ntools} tools · {nskills} skills    ^C cancel · /help · /exit ")
+            parts = [f"<b>{self.role}</b>", self.agency, self._sid_label(),
+                     f"{ntools} tools", f"{nskills} skills"]
+            ctx = self._context_label()
+            if ctx:
+                parts.append(ctx)
+            return HTML(" " + " · ".join(parts) + "    ^C cancel · /help · /exit ")
 
         session = PromptSession(
             history=FileHistory(str(osenv.data_dir() / "shell-history.txt")),
@@ -577,7 +615,7 @@ class BobShell:
         from prompt_toolkit.completion import FuzzyCompleter
         from prompt_toolkit.output import ColorDepth
         kw = {
-            "completer": FuzzyCompleter(_slash_completer()),
+            "completer": FuzzyCompleter(_slash_completer(self._completion_providers())),
             # '/' opens + live-filters the menu; a normal message matches no key, so no menu appears.
             "complete_while_typing": True,
             "auto_suggest": AutoSuggestFromHistory(),
@@ -596,6 +634,43 @@ class BobShell:
         under the prompt so the input column stays visually anchored."""
         from prompt_toolkit.formatted_text import HTML
         return HTML("<continuation>%s</continuation>") % ("… ".rjust(max(width, 2)))
+
+    def _completion_providers(self) -> dict:
+        """Live argument-value completers, keyed by the completed-token tuple the user has typed:
+        `/model <role>`, `/skill <name>`, `/services start|stop <svc>`, `/session resume <ref>`. Each
+        value is a zero-arg callable queried at completion time so it always reflects current state."""
+        return {
+            ("/model",): self._known_roles,
+            ("/skill",): lambda: [s["name"] for s in self.skills.list()],
+            ("/services", "start"): self._service_names,
+            ("/services", "stop"): self._service_names,
+            ("/session", "resume"): self._session_refs,
+        }
+
+    def _service_names(self) -> list:
+        """Service names (and distinct labels) for /services completion, from the SERVICES registry."""
+        import stack
+        out = []
+        for s in stack.SERVICES:
+            out.append(s["name"])
+            if s.get("label") and s["label"] != s["name"]:
+                out.append(s["label"])
+        return out
+
+    def _session_refs(self) -> list:
+        """Resumable references for /session completion: each owned session's name (if any) + its
+        short id, newest first — so you can resume by a readable name or a short id."""
+        if self.sessions is None:
+            return []
+        refs = []
+        for sid in self.sessions.list_owned(self.owner):
+            s = self.sessions.get(sid)
+            if not s:
+                continue
+            if s.get("name"):
+                refs.append(s["name"])
+            refs.append(sid[:8])
+        return refs
 
     def _on_prompt_interrupt(self) -> bool:
         """Ctrl-C at the prompt. The first press arms exit (and says so); a second consecutive press
@@ -811,12 +886,28 @@ class BobShell:
         n = int(arg) if arg.strip().isdigit() else 40
         self.console.print(stack.stack_logs(self.config, n))
 
+    def _known_roles(self) -> list:
+        """The model/role names this endpoint is configured for — the VALUES in routing + vision (a
+        role is sent verbatim as the model name, [bob_loop] `_single_turn`). Sorted, de-duped. Used to
+        validate /model and to complete it. Empty when config carries no routing (tests) → no gating."""
+        routing = self.config.get("routing", {})
+        vision = self.config.get("vision", {})
+        names = {v for v in list(routing.values()) + list(vision.values()) if isinstance(v, str)}
+        return sorted(names)
+
     def _cmd_model(self, arg: str) -> None:
         if not arg:
             self.console.print(f"model/role: {self.role}")
             return
         self.role = arg.strip()
-        self.console.print(f"[green]role → {self.role}[/]")
+        known = self._known_roles()
+        if known and self.role not in known:
+            # Not a configured role — the turn would fail at the model call. Warn (don't silently
+            # accept) and point at the valid set, but still switch so a custom LiteLLM model isn't blocked.
+            self.console.print(f"[{self.theme.warn}]role → {self.role}[/]  "
+                               f"[{self.theme.muted}](not a known role: {', '.join(known)})[/]")
+        else:
+            self.console.print(f"[green]role → {self.role}[/]")
 
     def _cmd_agency(self, arg: str) -> None:
         arg = arg.strip().lower()
@@ -833,8 +924,22 @@ class BobShell:
         """Short display form of the current session (`new` before the first turn creates a row)."""
         return self.session_id[:8] if self.session_id else "new"
 
+    def _context_label(self) -> str:
+        """A compact context-window usage label for the toolbar: the estimated token count of the live
+        history, plus a percentage when a session token budget is configured — so how full the window
+        is stays visible. Empty string if the estimator is unavailable."""
+        try:
+            from bob_loop import _estimate_tokens
+            used = sum(_estimate_tokens(m.get("content", "") or "") for m in self.history)
+        except Exception:
+            return ""
+        if self._max_tokens:
+            return f"~{used}/{self._max_tokens} tok ({int(100 * used / self._max_tokens)}%)"
+        return f"~{used} tok"
+
     def _cmd_session(self, arg: str) -> None:
-        """/session new | list | resume <id> | show [id] — owner-scoped persisted sessions."""
+        """/session new | list | resume <ref> | name <text> | show [ref] — owner-scoped persisted
+        sessions. `ref` is an id, an 8-char prefix, or a session name."""
         parts = arg.split(maxsplit=1)
         sub = parts[0].lower() if parts else ""
         rest = parts[1].strip() if len(parts) > 1 else ""
@@ -842,26 +947,56 @@ class BobShell:
             self._on_session_end(self.session_id)   # consolidate the one we're leaving (memory fills)
             self.session_id = None                  # lazy — the row is created on the next message
             self.history = []
+            self._pending_name = None
             self.console.print("[green]new session[/] [dim](starts on your next message)[/]")
         elif sub == "list":
             self._session_list()
         elif sub == "resume":
             self._session_resume(rest)
+        elif sub == "name":
+            self._session_name(rest)
         elif sub in ("show", ""):
             self._session_show(rest)
         else:
-            self.console.print(f"[yellow]/session {sub}?[/]  (new | list | resume <id> | show [id])")
+            self.console.print(
+                f"[yellow]/session {sub}?[/]  (new | list | resume <ref> | name <text> | show [ref])")
+
+    def _session_name(self, name: str) -> None:
+        """/session name <text> — rename the current session. Before the first turn there is no row
+        yet, so the name is queued and applied when the session is created."""
+        name = name.strip()
+        if not name:
+            self.console.print("[yellow]usage: /session name <text>[/]")
+            return
+        if self.session_id is None:
+            self._pending_name = name
+            self.console.print(f"[green]name set[/] [dim](applies when this session starts)[/]")
+            return
+        if self.sessions is None:
+            self.console.print("[dim]sessions unavailable[/]")
+            return
+        self.sessions.set_name_owned(self.session_id, self.owner, name)
+        self.console.print(f"[green]renamed[/] {self._sid_label()} → {name}")
 
     def _match_session_id(self, ref: str):
-        """Resolve a full id or an unambiguous 8-char prefix (as shown by /session list) within the
-        current owner's sessions. Returns the full id, or None if unknown/ambiguous."""
+        """Resolve a session reference within the current owner's sessions: a full id, an unambiguous
+        8-char id prefix, an exact (case-insensitive) name, or a unique name substring. Returns the
+        full id, or None if unknown/ambiguous."""
         if self.sessions is None or not ref:
             return None
         ids = self.sessions.list_owned(self.owner)
         if ref in ids:
             return ref
-        matches = [i for i in ids if i.startswith(ref)]
-        return matches[0] if len(matches) == 1 else None
+        id_pref = [i for i in ids if i.startswith(ref)]
+        if len(id_pref) == 1:
+            return id_pref[0]
+        low = ref.lower()
+        named = [(i, (self.sessions.get(i) or {}).get("name") or "") for i in ids]
+        exact = [i for i, nm in named if nm.lower() == low]
+        if len(exact) == 1:
+            return exact[0]
+        subs = [i for i, nm in named if low in nm.lower()]
+        return subs[0] if len(subs) == 1 else None
 
     def _session_list(self) -> None:
         if self.sessions is None:
@@ -872,21 +1007,25 @@ class BobShell:
             self.console.print("[dim]no saved sessions yet[/]")
             return
         from rich.table import Table
+        from rich.text import Text
         t = self.theme
         tbl = Table(show_header=True, header_style=t.accent, box=None, pad_edge=False)
         tbl.add_column("id", style=t.muted)
+        tbl.add_column("name")
         tbl.add_column("updated", style=t.muted)
         tbl.add_column("turns", justify="right")
-        tbl.add_column("first message")
+        tbl.add_column("first message", style=t.muted)
         for sid in ids[:20]:
             s = self.sessions.get(sid)
             if not s:
                 continue
             users = [m for m in s["history"] if m.get("role") == "user"]
             first = users[0]["content"] if users else ""
+            # names are user text — pass as Text so a stray '[' can't be read as rich markup.
+            name = Text(s.get("name")) if s.get("name") else Text("(unnamed)", style=t.muted)
             marker = "→ " if sid == self.session_id else "  "
-            tbl.add_row(marker + sid[:8], (s["updated_at"] or "")[:19], str(len(users)),
-                        (first[:50] + "…") if len(first) > 50 else first)
+            tbl.add_row(marker + sid[:8], name, (s["updated_at"] or "")[:19], str(len(users)),
+                        (first[:40] + "…") if len(first) > 40 else first)
         self.console.print(tbl)
 
     def _session_resume(self, ref: str) -> None:
@@ -921,10 +1060,13 @@ class BobShell:
             return
         users = [m for m in s["history"] if m.get("role") == "user"]
         first = users[0]["content"] if users else "(empty)"
-        self.console.print(
-            f"session {s['id'][:8]}  ·  {len(users)} turns  ·  updated {(s['updated_at'] or '')[:19]}\n"
-            f"[dim]first:[/] {first[:80]}"
-        )
+        from rich.text import Text
+        line = Text()
+        line.append(f"session {s['id'][:8]}  ·  ")
+        line.append(s.get("name") or "(unnamed)", style=(None if s.get("name") else self.theme.muted))
+        line.append(f"  ·  {len(users)} turns  ·  updated {(s['updated_at'] or '')[:19]}")
+        self.console.print(line)
+        self.console.print(f"[dim]first:[/] {first[:80]}")
 
     def _cmd_clear(self, _arg: str = "") -> None:
         # Clears only the live context window; the persisted session is untouched (resuming it later
@@ -1101,6 +1243,12 @@ class BobShell:
             if self.session_id is None:
                 self.session_id = self.sessions.create(
                     token_budget=self._max_tokens, owner_id=self.owner)["id"]
+                # Name the fresh session: an explicit /session name if one was queued, else auto from
+                # this first message — so /session list and resume-by-name are useful immediately.
+                name = self._pending_name or _derive_session_name(goal)
+                if name:
+                    self.sessions.set_name_owned(self.session_id, self.owner, name)
+                self._pending_name = None
             from bob_loop import _estimate_tokens
             used = _estimate_tokens(goal) + _estimate_tokens(result or "")
             self.sessions.append_turn(self.session_id, goal, result, tokens_used=used)
@@ -1153,6 +1301,7 @@ class BobShell:
                     try:
                         ev = events.get(timeout=0.1)
                     except queue.Empty:
+                        renderer.tick()      # refresh the spinner's live elapsed timer
                         continue
                     if ev is _SENTINEL:
                         break
