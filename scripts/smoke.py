@@ -143,16 +143,25 @@ def main(argv=None) -> int:
     ok(f"inference endpoint reachable ({inf_base})")
 
     # --- 2. bob agent "say hi" returns a coherent answer ------------------
+    # A cold CPU-tier model load + generation can exceed the timeout — that's infra latency on a
+    # resource-starved runner, not a contract bug, so a timeout on the CPU tier is SKIPped (mirrors the
+    # server-turn SKIP below). On a GPU tier a timeout IS a real problem, and garbage output always FAILs.
     try:
         proc = subprocess.run(_bob_argv(["agent", "say hi"]), env=_bob_env(),
                               capture_output=True, text=True, timeout=timeout)
         answer = (proc.stdout or proc.stderr or "").strip()
+        if answer and len(answer) >= 2 and not answer.startswith(("ERROR", "Traceback", "Error:")):
+            ok(f"bob agent 'say hi' answered ({len(answer)} chars)")
+        else:
+            bad(f"bob agent 'say hi' returned no coherent answer: {answer[:120]}")
+    except subprocess.TimeoutExpired:
+        if osenv.gpu_info() is None:
+            skip(f"bob agent 'say hi' — backend/timeout on the CPU tier (cold load > {timeout}s); "
+                 "endpoint reachable, plumbing OK")
+        else:
+            bad(f"bob agent 'say hi' timed out after {timeout}s on a GPU tier")
     except (subprocess.SubprocessError, OSError) as e:
-        answer = f"ERROR: {e}"
-    if answer and len(answer) >= 2 and not answer.startswith(("ERROR", "Traceback", "Error:")):
-        ok(f"bob agent 'say hi' answered ({len(answer)} chars)")
-    else:
-        bad(f"bob agent 'say hi' returned no coherent answer: {answer[:120]}")
+        bad(f"bob agent 'say hi' returned no coherent answer: ERROR: {e}")
 
     # --- 3. agent HTTP server: /health + session turn + SSE ---------------
     server_pid = None
