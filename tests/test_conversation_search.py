@@ -78,13 +78,18 @@ class TestLoopCapture(unittest.TestCase):
     def setUp(self):
         self._orig_embed = bob_memory.embed
         self._orig_client = bob_core.get_llm_client
+        self._orig_check = bob_core.check_litellm
         bob_memory.embed = _fake_embed
+        # run_agent_events preflights the LiteLLM proxy and returns early if it's unreachable; stub it
+        # True so the loop actually runs offline (no live endpoint in CI), mirroring test_agent_loop.
+        bob_core.check_litellm = lambda config=None: True
         self.dir = tempfile.mkdtemp(prefix="bob-loopcap-")
         self.db = f"{self.dir}/m.db"
 
     def tearDown(self):
         bob_memory.embed = self._orig_embed
         bob_core.get_llm_client = self._orig_client
+        bob_core.check_litellm = self._orig_check
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def _cfg(self, paging):
