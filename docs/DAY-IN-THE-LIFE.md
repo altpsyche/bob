@@ -754,11 +754,11 @@ Wire into n8n with an HTTP Request node: URL `http://host.docker.internal:8084/v
 ### Check agent health
 
 ```bash
-bob setup check     # dependency + registration checks
+bob setup check     # dependency + registration checks  (same as `bob doctor --quick`)
 bob doctor          # the above + runtime: endpoint reachable, GPU/VRAM, writable dirs, config parses
 ```
 
-`bob setup check` prints yes or no for each agent dependency (venv, Python packages, model file, tool loading, services, scheduled task) with the exact fix command for anything that fails. `bob doctor` is the superset; run it first when something's off.
+`bob setup check` (equivalently `bob doctor --quick`) prints yes or no for each agent dependency (venv, Python packages, model file, tool loading, services, scheduled task) with the exact fix command for anything that fails. `bob doctor` is the superset; run it first when something's off.
 
 ---
 

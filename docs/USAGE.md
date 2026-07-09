@@ -59,7 +59,7 @@ In the shell:
 
 Type `/` to filter the command list. Gated tools (e.g. `shell_run`, or any tool under `/agency confirm`) show an inline **y/N/a** approval; **Ctrl-C** cancels the in-flight turn and returns to the prompt. Inference auto-starts on your first turn if the stack isn't already up.
 
-`bob help` (from the terminal) prints the same generated command catalog.
+**Two surfaces, one core.** The shell's `/commands` and the terminal's `bob <verb>` are *not* competing menus: use `bob <verb>` for scripting, cron, and SSH one-shots; use `/command` to drive the same thing from inside the cockpit without leaving. The lifecycle/cockpit commands live on **both** — `bob up`/`/up`, `bob stop`/`/stop`, `bob status`/`/status`, plus `restart`, `services`, `webui`, `logs` — and each is a thin front door over one shared core (e.g. [`scripts/tools/stack.py`](../scripts/tools/stack.py)), never a second implementation. Session-only state (`/model`, `/agency`, `/session`, `/theme`, `/clear`) is shell-only by design; provisioning and one-shot conversation (`chat`, `fetch`, `build`, `setup`, …) are terminal-only. `bob help` (from the terminal) prints the same generated command catalog and, at the end, lists which commands are also `/commands` in the shell.
 
 ## One-shot chat: `chat`, `think`, `code`
 
@@ -511,12 +511,12 @@ Bob's tools are also exposed over MCP (stdio) with `bob agent mcp`, for MCP-awar
 ### Check agent health
 
 ```
-bob setup check     # dependency + registration checks
+bob setup check     # dependency + registration checks  (alias of `bob doctor --quick`)
 bob doctor          # the above, plus runtime: endpoint reachable, GPU/VRAM, writable dirs, config parses
 bob diagnose        # GPU, VRAM, CUDA, and model-file health check
 ```
 
-`bob setup check` verifies agent dependencies in order (venv, Python packages, config, tools directory, schedules file, fabric, SearXNG, n8n, LiteLLM proxy, BobAgent task, agent model file, tool loading honoring `agent.disabledTools`) and prints a fix command for each failure. `bob doctor` runs all of those plus a runtime pre-flight; use it as the first thing to run when something's off.
+`bob setup check` (equivalently `bob doctor --quick`) verifies agent dependencies in order (venv, Python packages, config, tools directory, schedules file, fabric, SearXNG, n8n, LiteLLM proxy, BobAgent task, agent model file, tool loading honoring `agent.disabledTools`) and prints a fix command for each failure. `bob doctor` runs all of those plus a runtime pre-flight; use it as the first thing to run when something's off. Both are one core (`health.health_check`) behind a depth flag.
 
 ## Deterministic invocation: `bob --run`
 

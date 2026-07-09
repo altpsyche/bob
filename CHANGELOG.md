@@ -24,6 +24,19 @@ rebuilds only what changed, verifies, and rolls back on failure.
 - Setup flags are now lowercase double-dash (`--skip-models`, `--profile cpu`, `--cpu`, `--launch`); the
   gates are Python (`scripts/check.py`, `scripts/smoke.py`).
 
+### Changed — command surface tidy-up
+- **Two surfaces, clearly framed.** `bob <verb>` (scripting) and the shell's `/commands` (cockpit) are
+  kept distinct-with-overlap; `bob help` now lists which commands are also available live in the shell,
+  computed from the registry ∩ the shell's slash set so it can't drift.
+- **`bob doctor --quick`** runs the fast health check — identical to `bob setup check`, which stays as a
+  back-compat alias over the one `health.health_check` core.
+- **Help catalog re-bucketed** so no group is a wall: the former 17-verb `Run`/`Config` groups split into
+  `Run` (daily lifecycle), `Services` (per-daemon control), `Models`, `Diagnose`, and `Setup`. Dispatch is
+  unchanged — every `bob <verb>` works exactly as before.
+- **`GROUP_ORDER` single-sourced** in `scripts/bob/registry.py` (was copied in three modules); `bob up`'s
+  help now shows the POSIX `--no-open`/`--with-services` spellings (the legacy `-NoOpen`/`-WithServices`
+  still work).
+
 ### Added
 - **zypper / openSUSE support** across the install seam (`osenv.py` package-manager resolution)
   and `install_prereqs.sh`, with an `opensuse/tumbleweed` cell in the new CI distro matrix.
