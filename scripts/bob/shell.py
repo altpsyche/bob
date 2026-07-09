@@ -109,6 +109,8 @@ _COMMANDS = [
     _Cmd("/logs", "recent inference-server log", "_cmd_logs"),
     _Cmd("/theme", "switch the colour theme or reload it", "_cmd_theme",
          args="[<preset>|reload]", subs=("reload",)),
+    _Cmd("/rewind", "undo the last turn's file edits (restore from checkpoints)", "_cmd_rewind",
+         args="[step]"),
     _Cmd("/clear", "clear the conversation context (keeps the saved session)", "_cmd_clear"),
     _Cmd("/reset", "wipe ALL local data and return to first-run", "_cmd_reset"),
     _Cmd("/help", "this reference", "_cmd_help"),
@@ -431,6 +433,7 @@ class BobShell:
             self.scope = None
         self.sessions = sessions
         self.session_id = None           # persisted id once created; None = no row yet
+        self._last_run_id = None         # run id of the most recent turn, so /rewind can target it
         self.history: list = []          # [{role, content}] — the live context; mirrors the store
         self._always: set = set()        # tools the user chose "always" for this session
         # Two-stage exit: a Ctrl-C at the prompt (or one that cancels a turn) arms this; a second
@@ -1118,6 +1121,32 @@ class BobShell:
         self.console.print(line)
         self.console.print(f"[dim]first:[/] {first[:80]}")
 
+    def _cmd_rewind(self, arg: str = "") -> None:
+        """/rewind [step] — restore the working tree to a checkpoint of the last turn. Requires
+        agent.checkpointEdits (else there are no snapshots). No step -> the earliest checkpoint."""
+        t = self.theme
+        if not self.config.get("agent", {}).get("checkpointEdits", False):
+            self.console.print(f"[{t.muted}]checkpointing is off. Enable agent.checkpointEdits in "
+                               f"config/user.json to make edits rewindable.[/]")
+            return
+        if not self._last_run_id:
+            self.console.print(f"[{t.muted}]no turn to rewind yet.[/]")
+            return
+        import bob_checkpoint
+        db = self.config.get("agent", {}).get("checkpointDbPath") or None
+        store = bob_checkpoint.CheckpointStore(db_path=db, default_owner=self.owner)
+        steps = store.steps(self._last_run_id, self.owner)
+        if not steps:
+            self.console.print(f"[{t.muted}]the last turn made no checkpointed edits.[/]")
+            return
+        step = int(arg.strip()) if arg.strip().isdigit() else steps[0]
+        try:
+            n = store.restore(self._last_run_id, step, self.owner)
+        except (KeyError, RuntimeError) as e:
+            self.console.print(f"[{t.warn}]rewind failed: {e}[/]")
+            return
+        self.console.print(f"[green]rewound to step {step}[/] [{t.muted}](restored {n} file(s))[/]")
+
     def _cmd_clear(self, _arg: str = "") -> None:
         # Clears only the live context window; the persisted session is untouched (resuming it later
         # restores the full history). Use /session new to start a fresh persisted session.
@@ -1242,14 +1271,18 @@ class BobShell:
             self.console.print(
                 f"[{self.theme.warn}]session token budget exhausted. /session new to continue[/]")
             return None
+        import uuid
+
         from bob_loop import run_agent_events
+        rid = uuid.uuid4().hex[:8]
+        self._last_run_id = rid           # so /rewind can target this turn's checkpoints
 
         def factory(cancel, approve):
             return run_agent_events(
                 goal, self.config, role=self.role, agency=self.agency,
                 registry=self.tools, history=self.history, stream=True,
                 cancel=cancel, approve=approve, owner=self.owner, scope=self.scope,
-                no_tools=self.no_tools,
+                no_tools=self.no_tools, run_id=rid,
             )
 
         result = self._consume(factory)

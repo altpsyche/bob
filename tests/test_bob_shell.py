@@ -172,6 +172,38 @@ class TestSlashSource(unittest.TestCase):
             self.assertIn(c.name, text)
 
 
+class TestRewind(unittest.TestCase):
+    """/rewind restores the last turn's checkpointed edits; it is inert (a clear message) when
+    checkpointing is off or nothing was snapshotted."""
+
+    def test_off_reports_disabled(self):
+        sh, out = _make_shell()
+        sh.dispatch("/rewind")
+        self.assertIn("checkpointing is off", out.file.getvalue())
+
+    def test_restores_last_turn(self):
+        import shutil
+        import tempfile
+        from pathlib import Path
+
+        import bob_checkpoint
+        d = Path(tempfile.mkdtemp(prefix="bob-shell-rw-"))
+        try:
+            target = d / "f.py"
+            target.write_text("good\n", encoding="utf-8")
+            sh, out = _make_shell(agent={"checkpointEdits": True, "checkpointDbPath": str(d / "cp.db"),
+                                         "defaultOwner": "local"})
+            store = bob_checkpoint.CheckpointStore(db_path=d / "cp.db", default_owner="local")
+            store.snapshot("turn1", 0, "local", [target], prefer_git=False)
+            target.write_text("BROKEN\n", encoding="utf-8")
+            sh._last_run_id = "turn1"
+            sh.dispatch("/rewind")
+            self.assertEqual(target.read_text(), "good\n")
+            self.assertIn("rewound", out.file.getvalue())
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 class TestVoiceMode(unittest.TestCase):
     """/voice loop glue: mic→STT→_run_turn→TTS, faked end to end. The turn path itself is the
     same _run_turn the text tests cover; here we prove the round-trip wiring, exit conditions, and edges."""

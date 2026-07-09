@@ -1,17 +1,14 @@
-"""Bob tool: file_read and file_write with path allowlist + secrets denylist enforcement."""
+"""Bob tool: file_read and file_write with path allowlist + secrets denylist enforcement.
+
+The path/secret policy lives in bob_fsguard (shared with file_edit and the code index). The thin
+wrappers below pass this module's `_home()` so tests can patch it to exercise ~/.ssh denial in a
+temp tree."""
 from pathlib import Path
 
-import osenv
+import bob_fsguard
 
 _allowed_read: list = []
 _allowed_write: list = []
-
-# Secrets denylist: refuse these even when they fall inside an allowedReadPaths
-# root (which defaults to the repo root, and so would otherwise expose the litellm key / api
-# tokens in data/config.json, the resolved secrets file, the session/memory stores, logs, and .env
-# files). The osenv seam makes it OS-aware + data-dir-relative.
-_DENY_BASENAMES = {"config.json", "secrets.json"}  # carry litellmKey / apiTokens / provider keys
-_DENY_SUFFIXES = (".psd1", ".db")   # .psd1 config files; *.db session/memory stores
 
 
 def _home() -> Path:
@@ -19,25 +16,17 @@ def _home() -> Path:
     return Path.home()
 
 
-def _in_secret_dir(rp: Path) -> bool:
-    """True if the resolved path sits under a platform secret directory: the resolved
-    data-dir secrets file's dir, and the usual home credential dirs."""
-    candidates = [
-        osenv.secrets_file(),                 # <data_dir>/secrets.json (any OS)
-        _home() / ".ssh", _home() / ".aws",
-        _home() / ".gnupg", _home() / ".config" / "bob",
-    ]
-    for base in candidates:
-        try:
-            # Resolve BOTH sides: `rp` is already resolved, so the base must be too — otherwise a
-            # Windows 8.3 short-name / symlinked temp home (e.g. RUNNER~1) never matches the long
-            # resolved target and the denial silently misses (green on Linux, leaks on Windows).
-            b = base.resolve()
-            if rp == b or rp.is_relative_to(b):
-                return True
-        except (OSError, ValueError):
-            continue
-    return False
+def _abs(path: str, allowed: list) -> Path:
+    return bob_fsguard.abs_path(path, allowed)
+
+
+def _is_allowed(target: Path, allowed: list) -> bool:
+    return bob_fsguard.is_allowed(target, allowed)
+
+
+def _is_denied_secret(target: Path) -> bool:
+    """True for sensitive files that must never be read or written even inside an allowed root."""
+    return bob_fsguard.is_denied_secret(target, home=_home())
 
 
 def configure(config: dict) -> None:
@@ -55,48 +44,12 @@ def configure(config: dict) -> None:
     _allowed_write = [Path(p) for p in raw_w if p]
 
 
-def _abs(path: str, allowed: list) -> Path:
-    """Resolve a caller-supplied path to an absolute Path. A RELATIVE path resolves against the first
-    allowed root (the repo root by default), NOT the process cwd — so `.`/`./`/`sub/file` mean "inside
-    the workspace" regardless of where `bob` was launched from (the source of the confusing
-    approve-then-"Access denied ./" case). Absolute paths pass through unchanged."""
-    p = Path(path)
-    if p.is_absolute():
-        return p
-    base = allowed[0] if allowed else Path.cwd()
-    return base / p
-
-
-def _is_allowed(target: Path, allowed: list) -> bool:
-    try:
-        resolved = target.resolve()
-        return any(resolved.is_relative_to(a.resolve()) for a in allowed)
-    except Exception:
-        return False
-
-
 def _human(n: int) -> str:
     for unit in ("B", "K", "M", "G"):
         if n < 1024 or unit == "G":
             return f"{n}{unit}" if unit == "B" else f"{n:.1f}{unit}"
         n /= 1024
     return f"{n:.1f}G"
-
-
-def _is_denied_secret(target: Path) -> bool:
-    """True for sensitive files that must never be read even inside an allowed root."""
-    try:
-        rp = target.resolve()
-    except Exception:
-        return True
-    name = rp.name.lower()
-    if name in _DENY_BASENAMES or name.startswith(".env"):
-        return True
-    if rp.suffix.lower() in _DENY_SUFFIXES:
-        return True
-    if "logs" in (seg.lower() for seg in rp.parts):
-        return True
-    return _in_secret_dir(rp)
 
 
 def _file_list(path: str = ".") -> str:

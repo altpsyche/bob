@@ -48,6 +48,17 @@ class TestRealTools(unittest.TestCase):
         for s in on.tool_schemas:
             self.assertNotIn("mutating", s)                 # marker stays out of the LLM schema
 
+    def test_file_edit_gated_and_marked_mutating(self):
+        # file_edit is only offered when writing is enabled (allowedWritePaths non-empty), and it is the
+        # mutating edit surface (file_write is not registered mutating) so it defaults to `ask`.
+        off = ToolRegistry.build(_common.fake_config(), set())
+        self.assertNotIn("file_edit", off.dispatch)         # no allowedWritePaths -> not loaded
+        on = ToolRegistry.build(
+            _common.fake_config(agent={"toolFormat": "hermes", "maxSteps": 5, "maxToolResultTokens": 1000,
+                                       "allowedWritePaths": ["."]}), set())
+        self.assertIn("file_edit", on.dispatch)
+        self.assertIn("file_edit", on.mutating_tools)
+
 
 class TestContractValidation(unittest.TestCase):
     """A TOOL_DEFS name with no DISPATCH entry is a hard error — the tool is skipped."""

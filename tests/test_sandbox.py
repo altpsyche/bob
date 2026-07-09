@@ -114,55 +114,82 @@ class TestArgBuilders(unittest.TestCase):
         self.assertEqual(argv[-1], "true")
 
 
+class TestRunCommand(unittest.TestCase):
+    """sandbox.run_command is the shared seam: sandboxed when on, in-process when off, fail-closed."""
+
+    def setUp(self):
+        self._orig_run = sandbox.subprocess.run
+        self._orig_sb = sandbox.run_sandboxed
+
+    def tearDown(self):
+        sandbox.subprocess.run = self._orig_run
+        sandbox.run_sandboxed = self._orig_sb
+
+    def test_off_uses_subprocess(self):
+        calls = {"run": 0, "sb": 0}
+        sandbox.subprocess.run = lambda argv, **kw: (calls.__setitem__("run", calls["run"] + 1)
+                                                     or subprocess.CompletedProcess(argv, 0, "OUT", ""))
+        sandbox.run_sandboxed = lambda *a, **k: calls.__setitem__("sb", calls["sb"] + 1)
+        r = sandbox.run_command(["echo", "hi"], {"agent": {"sandbox": "off"}})
+        self.assertEqual(r.stdout, "OUT")
+        self.assertEqual(calls, {"run": 1, "sb": 0})
+
+    def test_on_uses_sandbox(self):
+        seen = {}
+        sandbox.run_sandboxed = lambda argv, **kw: (seen.__setitem__("argv", argv)
+                                                    or subprocess.CompletedProcess(argv, 0, "SB", ""))
+        sandbox.subprocess.run = lambda *a, **k: self.fail("in-process used under sandbox=on")
+        r = sandbox.run_command(["echo", "hi"], {"agent": {"sandbox": "on"}})
+        self.assertEqual(r.stdout, "SB")
+        self.assertEqual(seen["argv"], ["echo", "hi"])
+
+    def test_on_fails_closed_without_backend(self):
+        def boom(*a, **k):
+            raise sandbox.SandboxUnavailable("no backend")
+
+        sandbox.run_sandboxed = boom
+        with self.assertRaises(sandbox.SandboxUnavailable):
+            sandbox.run_command(["echo", "hi"], {"agent": {"sandbox": "on"}})
+
+
 class TestShellWiring(unittest.TestCase):
-    """shell._execute routes to the sandbox only when on; off is in-process (no sandbox layer)."""
+    """shell._shell_run routes through sandbox.run_command; off is in-process, on is sandboxed,
+    and an unavailable backend under sandbox=on is refused (never a silent unsandboxed run)."""
 
     def setUp(self):
         import shell
         self.shell = shell
         self._orig_cfg = shell._cfg
-        self._orig_run = shell.subprocess.run
-        self._orig_sb = shell.sandbox.run_sandboxed
+        self._orig_rc = sandbox.run_command
 
     def tearDown(self):
         self.shell._cfg = self._orig_cfg
-        self.shell.subprocess.run = self._orig_run
-        self.shell.sandbox.run_sandboxed = self._orig_sb
+        sandbox.run_command = self._orig_rc
 
-    def test_off_uses_in_process(self):
-        calls = {"run": 0, "sb": 0}
-
-        def fake_run(argv, **kw):
-            calls["run"] += 1
-            return subprocess.CompletedProcess(argv, 0, stdout="OUT", stderr="")
-
+    def test_off_returns_output(self):
         self.shell._cfg = {"agent": {"sandbox": "off"}}
-        self.shell.subprocess.run = fake_run
-        self.shell.sandbox.run_sandboxed = lambda *a, **k: calls.__setitem__("sb", calls["sb"] + 1)
-        out = self.shell._shell_run("whatever")
-        self.assertEqual(out, "OUT")
-        self.assertEqual(calls, {"run": 1, "sb": 0})
+        sandbox.run_command = lambda argv, cfg, **kw: subprocess.CompletedProcess(argv, 0, "OUT", "")
+        self.assertEqual(self.shell._shell_run("whatever"), "OUT")
 
-    def test_on_uses_sandbox(self):
+    def test_on_returns_sandbox_output(self):
         seen = {}
-
-        def fake_sb(argv, **kw):
-            seen["argv"] = argv
-            return subprocess.CompletedProcess(argv, 0, stdout="SBOUT", stderr="")
-
         self.shell._cfg = {"agent": {"sandbox": "on"}}
-        self.shell.sandbox.run_sandboxed = fake_sb
-        self.shell.subprocess.run = lambda *a, **k: self.fail("in-process run used under sandbox=on")
+
+        def fake_rc(argv, cfg, **kw):
+            seen["argv"] = argv
+            return subprocess.CompletedProcess(argv, 0, "SBOUT", "")
+
+        sandbox.run_command = fake_rc
         out = self.shell._shell_run("echo hi")
         self.assertEqual(out, "SBOUT")
-        self.assertTrue(seen["argv"][-1].endswith("echo hi") or "echo hi" in seen["argv"][-1])
+        self.assertIn("echo hi", seen["argv"][-1])
 
     def test_on_fails_closed_without_backend(self):
         def boom(*a, **k):
             raise sandbox.SandboxUnavailable("no backend")
 
         self.shell._cfg = {"agent": {"sandbox": "on"}}
-        self.shell.sandbox.run_sandboxed = boom
+        sandbox.run_command = boom
         out = self.shell._shell_run("echo hi")
         self.assertIn("refused", out)
         self.assertIn("no backend", out)

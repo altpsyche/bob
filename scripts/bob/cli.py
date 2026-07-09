@@ -1027,6 +1027,141 @@ def _handle_help(rest: list) -> int:
     return 0
 
 
+def _handle_task_test(rest: list) -> int:
+    """bob task test [--lint] [--test] — run the configured lint/test commands (agent.lintCmd /
+    agent.testCmd) through the sandbox seam and print a failure summary. No flags runs both. Exit code
+    reflects whether every check passed (0) or any failed (1)."""
+    import bob_testfix
+    from bob_core import load_config
+
+    which = []
+    if "--lint" in rest:
+        which.append("lint")
+    if "--test" in rest:
+        which.append("test")
+    which = tuple(which) or ("lint", "test")
+
+    config = load_config()
+    results = bob_testfix.run_checks(config, which=which)
+    if not results:
+        print("No lint/test commands configured (set agent.testCmd / agent.lintCmd).", file=sys.stderr)
+        return 1
+    all_passed = True
+    for r in results:
+        print(r.as_feedback())
+        all_passed = all_passed and r.passed
+    return 0 if all_passed else 1
+
+
+def _handle_task_rewind(rest: list) -> int:
+    """bob task rewind <run-id> [<step>] [--list] — restore the working tree to the snapshot taken
+    before a step of a run. --list shows the checkpointed steps. With no step, rewinds to the earliest."""
+    import bob_checkpoint
+    from bob_core import load_config
+
+    args = list(rest)
+    want_list = "--list" in args
+    if want_list:
+        args.remove("--list")
+    if not args:
+        print("usage: bob task rewind <run-id> [<step>] [--list]", file=sys.stderr)
+        return 1
+    run_id = args[0]
+    config = load_config()
+    owner = config.get("agent", {}).get("defaultOwner", "local")
+    db = config.get("agent", {}).get("checkpointDbPath") or None
+    store = bob_checkpoint.CheckpointStore(db_path=db, default_owner=owner)
+    steps = store.steps(run_id, owner)
+    if not steps:
+        print(f"No checkpoints found for run '{run_id}'.", file=sys.stderr)
+        return 1
+    if want_list:
+        print(f"Checkpointed steps for {run_id}: " + ", ".join(str(s) for s in steps))
+        return 0
+    step = int(args[1]) if len(args) > 1 else steps[0]
+    try:
+        n = store.restore(run_id, step, owner)
+    except (KeyError, RuntimeError) as e:
+        print(f"rewind failed: {e}", file=sys.stderr)
+        return 1
+    print(f"Rewound run {run_id} to step {step}: restored {n} file(s).")
+    return 0
+
+
+def _handle_code_index(rest: list) -> int:
+    """bob code index — build the semantic code index (embeddings) over allowedReadPaths into data/code.db,
+    for code_search action=semantic. Needs the embed server (bob up)."""
+    import bob_repomap
+    from bob_core import load_config
+
+    config = load_config()
+    roots = [p for p in config.get("agent", {}).get("allowedReadPaths", []) if p]
+    if not roots:
+        print("No allowedReadPaths configured; nothing to index.", file=sys.stderr)
+        return 1
+    _ensure_endpoint(config)   # embeddings need the inference stack
+    repo = bob_repomap.RepoMap(roots)
+    try:
+        n = bob_repomap.index_semantic(repo)
+    except Exception as e:
+        print(f"code index failed: {e} (is the embed server up? try 'bob up')", file=sys.stderr)
+        return 1
+    print(f"Indexed {n} code chunk(s) into {bob_repomap.CODE_DB}.")
+    return 0
+
+
+def _handle_edit(rest: list) -> int:
+    """bob edit <path> (--search S --replace R | --diff FILE|-) [--apply]
+
+    Previews a precise edit by default (prints the unified diff, writes nothing); --apply commits it.
+    Shares the bob_edit core and the allowedWritePaths guard with the file_edit tool."""
+    import bob_edit
+    from bob_core import load_config
+
+    args = list(rest)
+    if not args:
+        print("usage: bob edit <path> (--search S --replace R | --diff FILE|-) [--apply]",
+              file=sys.stderr)
+        return 1
+
+    def _take(flag):
+        if flag in args:
+            i = args.index(flag)
+            val = args[i + 1] if i + 1 < len(args) else None
+            del args[i:i + 2]
+            return val
+        return None
+
+    apply = "--apply" in args
+    if apply:
+        args.remove("--apply")
+    search = _take("--search")
+    replace = _take("--replace")
+    diff_src = _take("--diff")
+    positional = [a for a in args if not a.startswith("--")]
+    if not positional:
+        print("bob edit: missing <path>", file=sys.stderr)
+        return 1
+    path = positional[0]
+
+    if diff_src is not None:
+        diff_text = sys.stdin.read() if diff_src == "-" else Path(diff_src).read_text(encoding="utf-8")
+        spec = {"path": path, "diff": diff_text}
+    elif search is not None:
+        spec = {"path": path, "edits": [{"search": search, "replace": replace or ""}]}
+    else:
+        print("bob edit: provide --search/--replace or --diff", file=sys.stderr)
+        return 1
+
+    allowed = [Path(p) for p in load_config().get("agent", {}).get("allowedWritePaths", []) if p]
+    res = bob_edit.apply_edits(spec, allowed) if apply else bob_edit.preview_edits(spec, allowed)
+    if not res.ok:
+        print(res.message, file=sys.stderr)
+        return 1
+    print(res.message if apply else (res.diff or "(no textual change)"))
+    return 0
+
+
 _HANDLERS = {
     "agent_run": _handle_agent_run,
     "agent_serve": _handle_agent_serve,
@@ -1055,6 +1190,10 @@ _HANDLERS = {
     "tools": _handle_tools,
     "plugins": _handle_plugins,
     "fabric": _handle_fabric,
+    "edit": _handle_edit,
+    "task_test": _handle_task_test,
+    "task_rewind": _handle_task_rewind,
+    "code_index": _handle_code_index,
     "aider": _handle_aider,
     "up": _handle_up,                 # lifecycle (scripts/tools/stack.py)
     "serve": _handle_serve,

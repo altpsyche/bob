@@ -25,12 +25,10 @@ def configure(config: dict) -> None:
 
 
 def _execute(argv: list):
-    """Run the command vector. Sandboxed when agent.sandbox='on' (fail closed via
-    SandboxUnavailable if no backend exists — never a silent unsandboxed run under 'on'); otherwise
-    in-process, exactly as when the sandbox is off. Returns a CompletedProcess; propagates TimeoutExpired."""
-    if sandbox.sandbox_mode(_cfg) == sandbox.SANDBOX_ON:
-        return sandbox.run_sandboxed(argv, timeout=30, limits=sandbox.sandbox_limits(_cfg))
-    return subprocess.run(argv, capture_output=True, text=True, timeout=30)
+    """Run the command vector through the shared sandbox/fail-closed seam (sandbox.run_command):
+    sandboxed when agent.sandbox='on', in-process otherwise. Returns a CompletedProcess; propagates
+    TimeoutExpired."""
+    return sandbox.run_command(argv, _cfg, timeout=30)
 
 
 def _shell_run(command: str) -> str:

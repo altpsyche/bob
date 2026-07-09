@@ -249,3 +249,14 @@ def run_sandboxed(argv, cwd: str | None = None, timeout: int = 30,
     if backend == "windows":
         return _run_windows(argv, cwd, timeout, limits)
     return _run_linux(argv, cwd, timeout, limits, backend)
+
+
+def run_command(argv, config: dict, timeout: int = 30,
+                cwd: str | None = None) -> subprocess.CompletedProcess:
+    """Run `argv` under the configured policy: sandboxed when agent.sandbox='on' (fail closed via
+    SandboxUnavailable if no backend exists -- never a silent unsandboxed run under 'on'); otherwise
+    in-process. The single sandbox/fail-closed seam shared by the shell tool and the test-fix runner.
+    Returns a CompletedProcess; propagates subprocess.TimeoutExpired."""
+    if sandbox_mode(config) == SANDBOX_ON:
+        return run_sandboxed(argv, cwd=cwd, timeout=timeout, limits=sandbox_limits(config))
+    return subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout)

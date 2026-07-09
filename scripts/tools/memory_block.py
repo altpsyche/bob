@@ -49,7 +49,7 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "memory_block",
-            "description": ("Update one of your core-memory blocks — short notes you keep in context "
+            "description": ("Update one of your core-memory blocks: short notes you keep in context "
                             "across turns (e.g. the current task or key facts about the user). Use "
                             "'append' to add a line, 'replace' to rewrite the whole block. The blocks "
                             "are always shown to you, so you never need to read them back."),

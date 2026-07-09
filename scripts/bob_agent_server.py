@@ -23,6 +23,7 @@ Wire into n8n:
 """
 import json
 import sys
+import threading
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -53,6 +54,17 @@ class AgentResponse(BaseModel):
 
 class SessionCreate(BaseModel):
     token_budget: int = 0  # 0 = unlimited; else reject once tokens_spent reaches it
+
+
+class SteerRequest(BaseModel):
+    run_id: str            # the id emitted in the stream's run_started event
+    message: str           # injected into the running loop at its next step boundary
+
+
+# Live streaming runs, keyed by run id, so an owner can steer a run in flight (POST /v1/agent/steer).
+# Registered when a stream starts, removed when it ends. Owner-scoped on lookup (no cross-owner steer).
+_live_runs: dict = {}     # run_id -> (owner, CancelToken)
+_live_runs_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -364,11 +376,19 @@ async def agent_completions_stream(
     async def _sse():
         final_result = None
         got_final = False
+        with _live_runs_lock:
+            _live_runs[rid] = (owner, cancel)      # register so the owner can steer this run in flight
         gen = run_agent_events(
             req.goal, _config, role=req.role, agency=req.agency,
             registry=scoped, stream=True, history=history, cancel=cancel, run_id=rid, owner=owner,
         )
         try:
+            # Tell the client its run id up front so it can POST /v1/agent/steer while the run is live.
+            # Guarded by the disconnect check so nothing is emitted into an already-dead socket.
+            if await request.is_disconnected():
+                cancel.cancel()
+                return
+            yield f"data: {json.dumps({'type': 'run_started', 'run_id': rid})}\n\n"
             while True:
                 if await request.is_disconnected():
                     cancel.cancel()
@@ -385,6 +405,8 @@ async def agent_completions_stream(
         except Exception as e:  # exactly one terminal error event; never a raw traceback
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
         finally:
+            with _live_runs_lock:
+                _live_runs.pop(rid, None)          # run over -> no longer steerable
             cancel.cancel()
             try:  # drain in a worker thread so the generator's finally runs (SIGINT restore)
                 await anyio.to_thread.run_sync(lambda: _drain(gen))
@@ -394,6 +416,20 @@ async def agent_completions_stream(
                 _record_turn(req.session_id, req.goal, final_result)
 
     return StreamingResponse(_sse(), media_type="text/event-stream")
+
+
+@app.post("/v1/agent/steer")
+def agent_steer(req: SteerRequest, authorization: str = Header(default="")):
+    """Inject a user message into a live streaming run WITHOUT cancelling it. The message is queued and
+    picked up at the run's next step boundary. Owner-scoped: an unknown id or another owner's run both
+    return 404 (no cross-owner existence leak)."""
+    identity = _authenticate(authorization)
+    with _live_runs_lock:
+        entry = _live_runs.get(req.run_id)
+    if entry is None or entry[0] != identity.owner:
+        raise HTTPException(status_code=404, detail="no live run with that id")
+    entry[1].steer(req.message)
+    return {"status": "queued", "run_id": req.run_id}
 
 
 if __name__ == "__main__":

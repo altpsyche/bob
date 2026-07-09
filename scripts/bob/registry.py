@@ -61,6 +61,12 @@ COMMANDS = [
      "args": "", "handler": "agent_uninstall"},
     {"name": "agent status", "group": "Act", "summary": "Show BobAgent task status + recent log",
      "args": "", "handler": "agent_status"},
+    {"name": "task test", "group": "Act", "summary": "Run the configured lint/test commands and summarize failures",
+     "args": "[--lint] [--test]", "handler": "task_test"},
+    {"name": "code index", "group": "Act", "summary": "Build the semantic code index (embeddings) for code_search",
+     "args": "", "handler": "code_index"},
+    {"name": "task rewind", "group": "Act", "summary": "Restore the working tree to a checkpointed step of a run",
+     "args": "<run-id> [<step>] [--list]", "handler": "task_rewind"},
     {"name": "clip", "group": "Act", "summary": "Fetch a URL, summarize, and save to memory",
      "args": "<url> [--note <text>]", "handler": "clip"},
     {"name": "skill", "group": "Act", "summary": "List or run a skill (tool-sequence or sub-agent)",
@@ -77,6 +83,8 @@ COMMANDS = [
     # --- Make: generate via the local models --------------------------------------------------
     {"name": "fabric", "group": "Make", "summary": "Run Fabric patterns against the local endpoint",
      "args": "[pattern] [args]", "handler": "fabric"},
+    {"name": "edit", "group": "Make", "summary": "Apply a precise search/replace or unified-diff edit (preview by default)",
+     "args": "<path> (--search S --replace R | --diff FILE|-) [--apply]", "handler": "edit"},
 
     # --- Know: memory -------------------------------------------------------------------------
     {"name": "recall", "group": "Know", "summary": "Search memory",

@@ -166,5 +166,58 @@ class TestRegistryGating(unittest.TestCase):
         self.assertNotIn("spawn_agent", off.dispatch)
 
 
+class TestTypedRoles(unittest.TestCase):
+    """agent.subAgentRoles gives a role a distinct prompt + per-role tool whitelist; an unknown role
+    still works as a plain model-role override (back-compat)."""
+
+    def test_resolve_profile_known_and_unknown(self):
+        cfg = {"subAgentRoles": {"reviewer": {"prompt": "You are a strict reviewer.",
+                                              "tools": ["file_read"], "modelRole": "coder"}}}
+        prof = spawn_tool.resolve_profile("reviewer", cfg)
+        self.assertEqual(prof["prompt"], "You are a strict reviewer.")
+        self.assertEqual(prof["tools"], ["file_read"])
+        self.assertEqual(prof["modelRole"], "coder")
+        plain = spawn_tool.resolve_profile("coder-pro", cfg)
+        self.assertEqual(plain, {"prompt": None, "tools": None, "modelRole": "coder-pro"})
+
+    def _drive(self, cfg, role):
+        seen = {}
+
+        class _Reg(_SpawnableRegistry):
+            def filtered(self, deny=None, allow=None):
+                seen["allow"] = allow
+                return self
+
+        def fake_events(goal, config, **kw):
+            seen["role"] = kw.get("role")
+            seen["system_prompt"] = kw.get("system_prompt")
+            yield {"type": "final", "result": "ok"}
+
+        ctx = _ctx(cfg, registry=_Reg())
+        orig = bob_loop.run_agent_events
+        bob_loop.run_agent_events = fake_events
+        tok = tool_registry._RUN_CONTEXT.set(ctx)
+        try:
+            out = spawn_tool._spawn_agent("do it", role=role)
+        finally:
+            bob_loop.run_agent_events = orig
+            tool_registry._RUN_CONTEXT.reset(tok)
+        return seen, out
+
+    def test_typed_role_passes_prompt_and_tool_view(self):
+        cfg = _cfg(subAgents=True, subAgentRoles={
+            "reviewer": {"prompt": "Be a reviewer.", "tools": ["file_read"], "modelRole": "coder"}})
+        seen, out = self._drive(cfg, "reviewer")
+        self.assertEqual(seen["allow"], ["file_read"])              # per-role tool whitelist
+        self.assertEqual(seen["system_prompt"], "Be a reviewer.")  # distinct prompt
+        self.assertEqual(seen["role"], "coder")                    # profile model role
+        self.assertIn("ok", out)
+
+    def test_unknown_role_is_model_override_only(self):
+        seen, _ = self._drive(_cfg(subAgents=True), "coder-pro")
+        self.assertEqual(seen["role"], "coder-pro")                # role still means model-role
+        self.assertIsNone(seen["system_prompt"])                    # persona unchanged
+
+
 if __name__ == "__main__":
     unittest.main()

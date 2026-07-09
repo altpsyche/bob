@@ -32,6 +32,19 @@ def configure(config: dict) -> None:
     _cfg = config
 
 
+def resolve_profile(role: str, agent_cfg: dict) -> dict:
+    """Resolve a sub-agent `role` to a typed profile. When `role` names a key in agent.subAgentRoles,
+    return that profile: {prompt, tools, modelRole}. Otherwise fall back to today's behavior, where
+    `role` is only a model-role override (prompt/tools left to the defaults)."""
+    roles = agent_cfg.get("subAgentRoles", {}) or {}
+    profile = roles.get(role) if role else None
+    if isinstance(profile, dict):
+        return {"prompt": profile.get("prompt"),
+                "tools": profile.get("tools"),
+                "modelRole": profile.get("modelRole")}
+    return {"prompt": None, "tools": None, "modelRole": role}
+
+
 def _spawn_agent(task: str, role: str = None) -> str:
     from tool_registry import get_run_context
 
@@ -53,8 +66,11 @@ def _spawn_agent(task: str, role: str = None) -> str:
     base_registry = getattr(ctx, "registry", None)
     if base_registry is None or not hasattr(base_registry, "filtered"):
         return "spawn_agent: no tool registry available for the sub-run."
-    # Optional whitelist for the sub-agent's toolset; None = inherit the full (already-restricted) view.
-    allow = agent_cfg.get("subAgentTools") or None
+    # A typed role (agent.subAgentRoles) gives a distinct prompt + per-role tool whitelist; otherwise
+    # `role` is just a model-role override (back-compat). Per-role tools win when a profile is used, else
+    # the flat agent.subAgentTools whitelist applies (None = inherit the full, already-restricted view).
+    profile = resolve_profile(role, agent_cfg)
+    allow = profile["tools"] or agent_cfg.get("subAgentTools") or None
     sub_registry = base_registry.filtered(allow=allow)
 
     from bob_loop import run_agent_events, CancelToken
@@ -67,12 +83,13 @@ def _spawn_agent(task: str, role: str = None) -> str:
     result, error, tools_used = None, None, []
     try:
         for ev in run_agent_events(
-            task, config, role=role, agency=agent_cfg.get("agency", "show"),
+            task, config, role=profile["modelRole"], agency=agent_cfg.get("agency", "show"),
             registry=sub_registry, stream=False, history=None,
             cancel=child_cancel, run_id=child_rid, approve=getattr(ctx, "approve", None),
             owner=getattr(ctx, "owner", None), agent_depth=parent_depth + 1,
             scope=getattr(ctx, "scope", None),
             trace_parent=getattr(ctx, "trace_span", None),   # nest the sub-run under the parent
+            system_prompt=profile["prompt"],                 # typed role -> distinct persona (else None)
         ):
             t = ev.get("type")
             if t == "tool_call":

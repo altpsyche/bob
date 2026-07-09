@@ -162,6 +162,46 @@ class TestServer(unittest.TestCase):
             asyncio.run(srv.agent_completions_stream(
                 srv.AgentRequest(goal="hi"), _FakeRequest(), authorization=""))
 
+    def test_stream_emits_run_started_with_id(self):
+        orig = bob_loop.run_agent_events
+        bob_loop.run_agent_events = lambda *a, **k: iter(
+            [{"type": "final", "result": "ok", "exit_requested": False, "reason": "answer"}])
+        try:
+            resp = asyncio.run(srv.agent_completions_stream(
+                srv.AgentRequest(goal="hi"), _FakeRequest(), authorization=GOOD))
+            lines = asyncio.run(_collect_sse(resp))
+        finally:
+            bob_loop.run_agent_events = orig
+        started = [ln for ln in lines if '"type": "run_started"' in ln]
+        self.assertEqual(len(started), 1)
+        self.assertIn('"run_id"', started[0])
+
+    def test_steer_queues_into_live_run(self):
+        tok = bob_loop.CancelToken()
+        srv._live_runs["run9"] = ("alice", tok)
+        try:
+            out = srv.agent_steer(srv.SteerRequest(run_id="run9", message="add tests"), authorization=GOOD)
+            self.assertEqual(out["status"], "queued")
+            self.assertEqual(tok.drain_steer(), ["add tests"])
+        finally:
+            srv._live_runs.pop("run9", None)
+
+    def test_steer_unknown_run_is_404(self):
+        with self.assertRaises(HTTPException) as ctx:
+            srv.agent_steer(srv.SteerRequest(run_id="nope", message="x"), authorization=GOOD)
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_steer_other_owner_is_404(self):
+        tok = bob_loop.CancelToken()
+        srv._live_runs["run9"] = ("alice", tok)
+        try:
+            with self.assertRaises(HTTPException) as ctx:   # bob cannot steer alice's run
+                srv.agent_steer(srv.SteerRequest(run_id="run9", message="x"), authorization=GOOD_B)
+            self.assertEqual(ctx.exception.status_code, 404)
+            self.assertEqual(tok.drain_steer(), [])          # nothing queued
+        finally:
+            srv._live_runs.pop("run9", None)
+
     def test_stream_returns_event_stream(self):
         orig = bob_loop.run_agent_events
         bob_loop.run_agent_events = lambda *a, **k: iter(

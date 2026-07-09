@@ -349,6 +349,75 @@ def _approval_required(tool_name: str, agency: str, registry) -> bool:
     return agency == "confirm" or tool_name in getattr(registry, "approval_required_tools", set())
 
 
+def _render_preview(registry, name: str, args: str):
+    """A human-readable preview of a call from the tool's PREVIEW renderer (e.g. file_edit's diff), or
+    None. Fail-safe: any error (no renderer, bad JSON, renderer raises) yields None so approvals never
+    break on a preview bug."""
+    render = getattr(registry, "previews", {}).get(name)
+    if render is None:
+        return None
+    try:
+        return render(json.loads(args) if args else {})
+    except Exception:
+        return None
+
+
+def _fire_pre_hooks(registry, name, args, context, log, rid):
+    """Run PreToolUse hooks. Each may return {'decision': 'deny'|'ask', 'updatedInput': dict}. Hooks may
+    only TIGHTEN (force deny/ask) -- an 'allow' never loosens the approval floor. Returns
+    (decision_override, new_args): decision_override in {None,'deny','ask'}; new_args is the (possibly
+    rewritten) argument JSON string. A hook that raises is caught + logged (a bad hook can't strand a run)."""
+    hooks = getattr(registry, "hooks", {}).get("PreToolUse", [])
+    decision, cur_args = None, args
+    for hook in hooks:
+        try:
+            out = hook(name, cur_args, context)
+        except Exception as e:
+            log.warning(f"[{rid}] PreToolUse hook error (ignored): {e}")
+            continue
+        if not out:
+            continue
+        d = out.get("decision")
+        if d == "deny":
+            decision = "deny"                         # strongest tightening wins; stop
+            break
+        if d == "ask" and decision != "deny":
+            decision = "ask"
+        if out.get("updatedInput") is not None:
+            try:
+                cur_args = json.dumps(out["updatedInput"])
+            except (TypeError, ValueError):
+                log.warning(f"[{rid}] PreToolUse updatedInput not serializable (ignored)")
+    return decision, cur_args
+
+
+def _fire_post_hooks(registry, name, args, result, context, log, rid):
+    """Run PostToolUse hooks; each may return {'result': str} to rewrite the tool result. Fail-safe."""
+    for hook in getattr(registry, "hooks", {}).get("PostToolUse", []):
+        try:
+            out = hook(name, args, result, context)
+        except Exception as e:
+            log.warning(f"[{rid}] PostToolUse hook error (ignored): {e}")
+            continue
+        if out and isinstance(out.get("result"), str):
+            result = out["result"]
+    return result
+
+
+def _fire_stop_hooks(registry, final, context, log, rid):
+    """Run Stop hooks; each may return {'inject': str} to nudge the run to continue. Returns the first
+    injected string, or None to finalize. Fail-safe."""
+    for hook in getattr(registry, "hooks", {}).get("Stop", []):
+        try:
+            out = hook(final, context)
+        except Exception as e:
+            log.warning(f"[{rid}] Stop hook error (ignored): {e}")
+            continue
+        if out and isinstance(out.get("inject"), str) and out["inject"].strip():
+            return out["inject"]
+    return None
+
+
 def _resolve_approval(approve, action: dict) -> bool:
     """Ask the injected approve callback for a decision. Fail-closed: no approver wired (server,
     scheduler, tests, non-TTY) → deny, so a dangerous tool never runs unattended by default."""
@@ -392,6 +461,17 @@ def _dispatch_with_approval(tc, call_id, *, registry, context, agency, approve, 
                                mutating=mutating, default=tool_default)
                 if policy is not None else tool_default)
 
+    # PreToolUse hooks may TIGHTEN the decision (force deny/ask) and rewrite the arguments; they never
+    # loosen below the policy/approval floor. A hook-forced deny short-circuits like a policy deny.
+    pre_decision, args = _fire_pre_hooks(registry, name, args, context, log, rid)
+    if pre_decision == "deny":
+        _audit(log, rid, name, args, "deny(hook)", owner)
+        denied = f"Tool call to '{name}' was blocked by a PreToolUse hook; it did not run."
+        yield {"type": "tool_result", "call_id": call_id, "name": name, "result": denied}
+        return denied
+    if pre_decision == "ask" and decision != "deny":
+        decision = "ask"
+
     # deny — never dispatches; the model gets a clean refusal it can read and react to.
     if decision == "deny":
         _audit(log, rid, name, args, "deny", owner)
@@ -403,10 +483,15 @@ def _dispatch_with_approval(tc, call_id, *, registry, context, agency, approve, 
     # REQUIRES_APPROVAL). The floor is a lower bound the config can tighten but never loosen.
     if decision == "ask" or _approval_required(name, agency, registry):
         risk = "high" if name in getattr(registry, "approval_required_tools", set()) else "confirm"
-        yield {"type": "approval_required", "call_id": call_id, "tool": name,
-               "arguments": args, "risk": risk}
-        if not _resolve_approval(approve, {"call_id": call_id, "tool": name,
-                                           "arguments": args, "risk": risk}):
+        # If the tool supplies a preview renderer (e.g. file_edit renders the diff), surface it so the
+        # operator approves the actual change, not raw args. Fail-safe: a preview that raises falls back
+        # to no preview -- a rendering bug must never break approvals. Raw args are always kept.
+        preview = _render_preview(registry, name, args)
+        action = {"call_id": call_id, "tool": name, "arguments": args, "risk": risk}
+        if preview is not None:
+            action["preview"] = preview
+        yield {"type": "approval_required", **action}
+        if not _resolve_approval(approve, action):
             _audit(log, rid, name, args, "deny(unapproved)", owner)
             log.info(f"[{rid}] tool {name} denied (call_id={call_id})")
             denied = f"Tool call to '{name}' was denied by the user; it did not run."
@@ -429,6 +514,8 @@ def _dispatch_with_approval(tc, call_id, *, registry, context, agency, approve, 
                 log.info(f"[{rid}] self-repair: {name} succeeded on retry (call_id={call_id})")
                 result, is_err = retried, False
         _sp.set("result_chars", len(result)).set_status("error" if is_err else "ok")
+    # PostToolUse hooks may rewrite/redact the result before it enters the transcript.
+    result = _fire_post_hooks(registry, name, args, result, context, log, rid)
     log.log(
         logging.WARNING if is_err else logging.INFO,
         f"[{rid}] tool {name} -> {len(result)}c (call_id={call_id})"
@@ -959,6 +1046,8 @@ class CancelToken:
     def __init__(self, parent: "CancelToken" = None):
         self._e = threading.Event()
         self._parent = parent
+        self._inbox = []                  # queued mid-run steer messages (see steer/drain_steer)
+        self._lock = threading.Lock()
 
     def cancel(self) -> None:
         self._e.set()
@@ -966,8 +1055,22 @@ class CancelToken:
     def cancelled(self) -> bool:
         return self._e.is_set() or (self._parent is not None and self._parent.cancelled())
 
+    def steer(self, message: str) -> None:
+        """Queue a user message to be injected at the next step boundary WITHOUT cancelling the run.
+        A driver holding this token (shell/server) can nudge a running loop. Thread-safe."""
+        if message and message.strip():
+            with self._lock:
+                self._inbox.append(message)
+
+    def drain_steer(self) -> list:
+        """Return and clear all queued steer messages (called at the step boundary). Thread-safe."""
+        with self._lock:
+            msgs, self._inbox = self._inbox, []
+        return msgs
+
     def child(self) -> "CancelToken":
-        """A new token linked to this one — cancelling this (parent) cancels the child too."""
+        """A new token linked to this one — cancelling this (parent) cancels the child too. The steer
+        inbox is NOT inherited: steering targets the root conversation, not sub-agent runs."""
         return CancelToken(parent=self)
 
 
@@ -1144,6 +1247,7 @@ def run_agent_events(
     no_tools: bool = False,
     max_tokens: int = None,
     images: list = None,
+    system_prompt: str = None,
 ):
     """Generator core of the agent loop. Yields event dicts:
         {"type": "token",             "text": str}                          # final-answer deltas (stream=True)
@@ -1203,6 +1307,13 @@ def run_agent_events(
     # All default false → the loop is byte-identical to the plain (no plan/verify) path. `bob agent --deep` flips them on.
     plan_enabled = bool(agent_cfg.get("plan", False))
     verify_enabled = bool(agent_cfg.get("verify", False))
+    # Objective lint/test-fix gate: after a would-be final answer, run the configured check command(s),
+    # and on failure feed the parsed failures back so the model fixes and re-runs. Default off, and inert
+    # unless a testCmd/lintCmd is configured; distinct from the goal-satisfaction verify critic above.
+    autofix_enabled = bool(agent_cfg.get("autoFix", False)) and bool(
+        (agent_cfg.get("testCmd") or "").strip() or (agent_cfg.get("lintCmd") or "").strip())
+    autofix_max_rounds = int(agent_cfg.get("autoFixRounds", 3))
+    checkpoint_edits = bool(agent_cfg.get("checkpointEdits", False))
     # Goal recitation: re-emit the goal + open TODO at the context TAIL each step (default off ==
     # no recitation; the block is appended only to the per-step request, never stored in `messages`).
     recite_enabled = bool(agent_cfg.get("recite", False))
@@ -1265,7 +1376,9 @@ def run_agent_events(
         yield {"type": "error", "message": msg}
         return
 
-    system_prompt = config.get("persona", {}).get(
+    # A caller (e.g. a typed sub-agent) may override the persona; default None reads the configured
+    # persona so the plain path is byte-identical.
+    system_prompt = system_prompt or config.get("persona", {}).get(
         "systemPrompt", "You are Bob, a helpful AI assistant."
     )
 
@@ -1445,7 +1558,21 @@ def run_agent_events(
             messages.insert(1, {"role": "system", "content": f"Plan for this task:\n{plan_text.strip()}"})
             log.info(f"[{rid}] plan injected ({len(plan_text)}c)")
 
+    # Per-step checkpoint store: snapshot the files a mutating step will touch, before it runs, so a bad
+    # edit can be rewound. Default off -> no store, no snapshots (byte-identical).
+    checkpoint_store = None
+    if checkpoint_edits:
+        try:
+            import bob_checkpoint
+            checkpoint_store = bob_checkpoint.CheckpointStore(
+                db_path=agent_cfg.get("checkpointDbPath") or None, default_owner=owner or "local")
+        except Exception as _e:
+            log.warning(f"[{rid}] checkpoint store unavailable ({_e}); edits will not be snapshotted")
+
     verified = False   # verify pass runs at most once per run (bounded)
+    stop_hook_fired = False   # Stop hooks may nudge the run to continue, at most once (bounded)
+    autofix_rounds = 0        # objective test-fix gate: bounded by autofix_max_rounds
+    autofix_last_sig = None   # forward-progress guard: same failure twice in a row -> stop re-running
     call_counts: dict = {}   # loop-guard: tool-call signature -> times dispatched this run
     force_answer = False      # set after a fully-repeated step: next turn must answer, not call tools
     prev_sigint = _install_interrupt_handler(cancel)
@@ -1456,6 +1583,13 @@ def run_agent_events(
                 yield {"type": "final", "result": _final_answer(last_content, hermes_mode),
                        "exit_requested": exit_requested, "reason": "cancelled"}
                 return
+
+            # Mid-run steering: inject any queued steer messages as user turns at this step boundary
+            # (never mid-tool-batch), so an operator can nudge the run without cancelling it.
+            for _msg in cancel.drain_steer():
+                log.info(f"[{rid}] steer injected ({len(_msg)}c)")
+                messages.append({"role": "user", "content": _msg})
+                yield {"type": "steer", "message": _msg}
 
             # Clear old bulky tool results (context editing) BEFORE the window trims, so the
             # freed budget lets more conversational turns survive. Only fires past the token trigger.
@@ -1558,6 +1692,40 @@ def run_agent_events(
             # No tool calls — final answer.
             if not tool_calls:
                 final = _strip_tool_calls(content) if hermes_mode else content
+                # Objective lint/test-fix gate (before the subjective verify critic): run the configured
+                # check command(s) through the sandbox seam; on failure feed the parsed failures back so
+                # the model fixes and re-runs. Bounded by autofix_max_rounds, with a forward-progress
+                # guard that stops if the same failure repeats. This checks exit codes + output, NOT goal
+                # satisfaction -- it is distinct from the verify critic below.
+                if autofix_enabled and autofix_rounds < autofix_max_rounds and step + 1 < max_steps:
+                    import bob_testfix
+                    cid = f"autofix.{autofix_rounds}"
+                    cmds = {"lintCmd": (agent_cfg.get("lintCmd") or "").strip(),
+                            "testCmd": (agent_cfg.get("testCmd") or "").strip()}
+                    action = {"call_id": cid, "tool": "run_checks",
+                              "arguments": json.dumps(cmds), "risk": "confirm"}
+                    yield {"type": "approval_required", **action}
+                    if _resolve_approval(approve, action):
+                        yield {"type": "tool_call", "call_id": cid, "name": "run_checks",
+                               "arguments": json.dumps(cmds)}
+                        summaries = bob_testfix.run_checks(config)
+                        failed = [s for s in summaries if not s.passed]
+                        feedback = ("\n\n".join(s.as_feedback() for s in failed) if failed
+                                    else "All configured checks passed.")
+                        yield {"type": "tool_result", "call_id": cid, "name": "run_checks",
+                               "result": feedback}
+                        if failed:
+                            sig = "|".join(s.signature for s in failed)
+                            if sig == autofix_last_sig:
+                                log.info(f"[{rid}] test-fix: no forward progress (same failure) — stopping")
+                            else:
+                                autofix_rounds += 1
+                                autofix_last_sig = sig
+                                log.info(f"[{rid}] test-fix: checks failed (round {autofix_rounds}) — continuing")
+                                messages.append({"role": "user", "content":
+                                    f"Automated checks failed:\n{feedback}\n"
+                                    "Fix the cause and continue; the checks will run again."})
+                                continue
                 # Verify pass (once): a critic turn checks the answer satisfies the goal / no tool
                 # silently failed. On "not done" (and steps remain) inject the critique and continue.
                 if verify_enabled and not verified and step + 1 < max_steps:
@@ -1571,6 +1739,15 @@ def run_agent_events(
                         messages.append({"role": "user", "content":
                             f"A reviewer flagged issues with your answer:\n{critique.strip()}\n"
                             "Address them, using tools if needed, then give the corrected final answer."})
+                        continue
+                # Stop hooks may nudge the run to keep going (inject context) instead of finalizing --
+                # at most once, so a hook can't strand the run in a loop.
+                if not stop_hook_fired and step + 1 < max_steps:
+                    stop_hook_fired = True
+                    inject = _fire_stop_hooks(registry, final, run_ctx, log, rid)
+                    if inject:
+                        log.info(f"[{rid}] Stop hook injected -- continuing")
+                        messages.append({"role": "user", "content": inject})
                         continue
                 log.info(f"[{rid}] final len={len(final)}")
                 yield {"type": "final", "result": final,
@@ -1590,6 +1767,25 @@ def run_agent_events(
             for tc, cid in zip(tool_calls, call_ids):
                 yield {"type": "tool_call", "call_id": cid,
                        "name": tc.function.name, "arguments": tc.function.arguments}
+
+            # Per-step checkpoint: before any mutating call in this step runs, snapshot the files it will
+            # touch (via each tool's AFFECTS declaration) so the step can be rewound. One checkpoint per
+            # (run_id, step); no-op when checkpointing is off or the step has no mutating calls.
+            if checkpoint_store is not None:
+                affected = []
+                for tc in tool_calls:
+                    if tc.function.name in getattr(registry, "mutating_tools", set()):
+                        fn = getattr(registry, "affects", {}).get(tc.function.name)
+                        if fn:
+                            try:
+                                affected += fn(json.loads(tc.function.arguments or "{}"))
+                            except Exception:
+                                pass
+                if affected:
+                    try:
+                        checkpoint_store.snapshot(rid, step, owner or "local", affected)
+                    except Exception as _e:
+                        log.warning(f"[{rid}] checkpoint snapshot failed (continuing): {_e}")
 
             # Approval is per-tool-call and event-driven (see _dispatch_with_approval); the loop
             # may run side-effect-free 'allow' calls concurrently (maxParallelTools). _run_tool_calls

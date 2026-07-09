@@ -51,6 +51,16 @@ class ToolRegistry:
         # by bob_mcp_client.register_mcp_tools. The loop defaults these to 'ask' (a remote call is a
         # side effect worth a prompt). Empty unless agent.mcpServers is configured -> no change.
         self.remote_tools: set = set()
+        # name -> render(args:dict) -> str. A tool (module sets PREVIEW = {name: fn}) supplies a
+        # human-readable preview of a call (e.g. file_edit renders the diff) so the approval prompt can
+        # show the actual change, not raw args. Consulted by the loop's approval path; empty by default.
+        self.previews: dict = {}
+        # Lifecycle hooks (module sets HOOKS = {"PreToolUse":[fn], "PostToolUse":[fn], "Stop":[fn]}).
+        # The loop fires them to block/annotate a call or nudge the run. Empty -> inert (byte-identical).
+        self.hooks: dict = {"PreToolUse": [], "PostToolUse": [], "Stop": []}
+        # name -> affects(args:dict) -> [paths]. A mutating tool (module sets AFFECTS = {name: fn})
+        # declares which files a call will touch, so the loop can snapshot them before the step (Q4).
+        self.affects: dict = {}
         # (tool_name, phase, message) — phase: "import" | "contract" | "configure"
         self.errors: list[tuple[str, str, str]] = []
         self._loaded_names: set = set()
@@ -231,6 +241,18 @@ class ToolRegistry:
         for fn_name in getattr(mod, "MUTATING_TOOLS", ()) or ():
             self.mutating_tools.add(fn_name)
 
+        for fn_name, render in (getattr(mod, "PREVIEW", {}) or {}).items():
+            if callable(render):
+                self.previews[fn_name] = render
+
+        for event, fns in (getattr(mod, "HOOKS", {}) or {}).items():
+            if event in self.hooks:
+                self.hooks[event].extend(f for f in (fns or []) if callable(f))
+
+        for fn_name, affects in (getattr(mod, "AFFECTS", {}) or {}).items():
+            if callable(affects):
+                self.affects[fn_name] = affects
+
     def _print_startup_summary(self) -> None:
         names = sorted(self._loaded_names)
         if names:
@@ -353,6 +375,10 @@ class _RegistryView:
         self.approval_required_tools = {n for n in base.approval_required_tools if visible(n)}
         self.mutating_tools = {n for n in base.mutating_tools if visible(n)}
         self.remote_tools = {n for n in getattr(base, "remote_tools", set()) if visible(n)}
+        self.previews = {n: r for n, r in getattr(base, "previews", {}).items() if visible(n)}
+        # Hooks are lifecycle-scoped, not per-tool-name -> carried through unchanged to the sub-view.
+        self.hooks = getattr(base, "hooks", {"PreToolUse": [], "PostToolUse": [], "Stop": []})
+        self.affects = {n: f for n, f in getattr(base, "affects", {}).items() if visible(n)}
         self.errors = base.errors
         self._loaded_names = base._loaded_names  # informational count reflects the underlying registry
 
