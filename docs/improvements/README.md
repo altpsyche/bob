@@ -31,6 +31,7 @@ Modules A–N plus the portability→memory track (NB, NC, ND, NE, NE6-MEM, MEM2
 | 21 | **P** — Frontier Product (durable autonomy, multimodal, computer-use) — draft | [MODULE-P-frontier-product.md](MODULE-P-frontier-product.md) | ~39–57 h | O |
 | 22 | **S** — Front-Door Unification (text doors on the loop) ✓ Tier-1 done (7388527) | [MODULE-S-front-door-unification.md](MODULE-S-front-door-unification.md) | ~6–9 h | O, NE, MEM2 |
 | 23 | **ONE** — Just `bob` (one word, one harness, one language) — draft (north star) | [MODULE-ONE-bob.md](MODULE-ONE-bob.md) | ONE-B/C/D large | S, P, NB, NC |
+| 24 | **R** — Context Engineering (rerank, self-editing memory, conversation paging) ✓ implemented (2026-07-09) | [MODULE-R-context-engineering.md](MODULE-R-context-engineering.md) | ~16–23 h | O, MEM2 |
 | — | **Architecture Contracts** (cross-module seams — read before building NB–P) | [ARCHITECTURE-CONTRACTS.md](ARCHITECTURE-CONTRACTS.md) | — | — |
 
 **Total estimated effort:** ~56–67 h (A–L) + ~47 h (M) + ~31 h (N) + the post-N roadmap: ~25–34 h (NB)

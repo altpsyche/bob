@@ -304,6 +304,12 @@ bob memory clear --yes              # wipe all memories
 
 Injected memory is capped at `memory.maxInjectedTokens` so it can't overflow the context window. Memory is always local: even with `--pro`, recall and embedding stay on BGE-M3 at `:8081`. Memory DB defaults to `data/bob.db` (gitignored); override with `memory.dbPath`.
 
+**Optional context-engineering upgrades** (all off by default — see [MEMORY.md](MEMORY.md)):
+
+- **Cross-encoder rerank** (`memory.rerank`): a second-stage reranker sharpens recall relevance and filters noise (needs a local `reranking` model in the stack).
+- **Core-memory blocks** (`memory.coreBlocks`): named, always-injected notes the agent curates for itself with the `memory_block` tool (MemGPT/Letta style).
+- **Conversation paging** (`agent.conversationPaging`): persists the full transcript so the agent can `conversation_search` and page back turns that compaction dropped.
+
 ### First run: onboarding
 
 Setup runs an interactive onboarding flow at the end if `config/user.json` has no `bob` section yet:
@@ -942,12 +948,14 @@ Switching profiles does not delete models from previous profiles; they stay in `
 
 ## Keeping the stack current
 
-**Inference engine (llama.cpp):**
+**Update everything:**
 ```
-bob update            # pull latest llama.cpp submodule commit and rebuild
-bob update --tag <ref> # build a specific tag/commit
+bob update            # pull code + configs, sync submodules, reinstall the venv,
+                      #   rebuild llama.cpp only if it moved, relock, fetch any new
+                      #   models, then doctor
+bob update --tag <ref> # update to a specific release tag/commit
 ```
-See [TUNING.md](TUNING.md#bumping-the-llamacpp-submodule) for verifying performance didn't regress after an update. `bob build [--cpu] [--force]` rebuilds without bumping the submodule; `bob version` shows binary versions and submodule commits; `bob lock --check` verifies the pinned, checksum-verified build in `versions.lock`.
+`bob update` is the one command to get the latest: it fast-forwards the repo, then **downloads any models a release just added** (resume + checksum-verify; already-present GGUFs are skipped, so a code-only update downloads nothing). New default-off features arrive ready to enable — flip the flag in `config/user.json`. See [TUNING.md](TUNING.md#bumping-the-llamacpp-submodule) for verifying performance didn't regress. `bob build [--cpu] [--force]` rebuilds without bumping the submodule; `bob version` shows binary versions and submodule commits; `bob lock --check` verifies the pinned, checksum-verified build in `versions.lock`.
 
 **Docker services (Langfuse, SearXNG, n8n):** bump image tags in `tools/compose/docker-compose.yml` and re-pull (see [Updating Docker service images](#updating-docker-service-images)).
 

@@ -98,7 +98,7 @@ _COMMANDS = [
     _Cmd("/skill", "list or run a skill", "_cmd_skill", args="[name]"),
     _Cmd("/tools", "list the agent's tools", "_cmd_tools"),
     _Cmd("/skills", "list available skills", "_cmd_skills"),
-    _Cmd("/status", "system dashboard — every service, up/down", "_cmd_status"),
+    _Cmd("/status", "system dashboard: every service, up/down", "_cmd_status"),
     _Cmd("/services", "service dashboard; toggle a service in place", "_cmd_services",
          args="[start|stop [name]]", subs=("start", "stop")),
     _Cmd("/up", "start the stack in the background (endpoint + proxy + WebUI)", "_cmd_up",

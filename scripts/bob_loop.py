@@ -1164,8 +1164,8 @@ def run_agent_events(
     on a TTY, and the interactive shell will pass one that drives the TUI. `call_id` correlates
     tool_call↔approval_required↔tool_result (forward-compat for parallel tools)."""
     from bob_core import (MEMORY_CONTEXT_FRAME, _port, budget_injection, check_litellm,
-                          get_llm_client, get_role, memory_profile_block, memory_recall,
-                          project_memory_block)
+                          core_blocks_block, get_llm_client, get_role, memory_profile_block,
+                          memory_recall, project_memory_block)
 
     agent_cfg = config.get("agent", {})
     effective_role = role or config.get("routing", {}).get("agentRole", "chat")
@@ -1282,7 +1282,7 @@ def run_agent_events(
 
     # Gather every injected-memory block, then fit them into memory.maxInjectedTokens before
     # concatenating into the one system message truncate_history always keeps (so injected memory can't
-    # overflow the context window). Priority (kept longest): BOB.md > profile > autoRecall.
+    # overflow the context window). Priority (kept longest): coreBlocks > BOB.md > profile > autoRecall.
     inject_blocks: list = []   # (label, text, priority)
     inject_budget = int(mem_cfg.get("maxInjectedTokens", 1200))
 
@@ -1324,6 +1324,17 @@ def run_agent_events(
             except Exception as e:
                 log.warning(f"[{rid}] project memory skipped: {e}")
 
+    # Agent-editable core-memory blocks: unlike profile/BOB.md these inject on EVERY root turn (not just
+    # session start) since the agent rewrites them mid-run and must keep seeing the current text. Top
+    # priority so they survive budget trimming ahead of profile/BOB.md. Off (empty coreBlocks) → no-op.
+    if agent_depth == 0:
+        try:
+            cb = core_blocks_block(owner=owner, scope=scope, config=config)
+            if cb:
+                inject_blocks.append(("coreBlocks", cb, 4))
+        except Exception as e:
+            log.warning(f"[{rid}] core-memory blocks skipped: {e}")
+
     if inject_blocks:
         joined, kept, dropped = budget_injection(inject_blocks, inject_budget)
         if joined:
@@ -1354,6 +1365,31 @@ def run_agent_events(
         goal_content = [{"type": "text", "text": goal}] + [_image_content_block(s) for s in images]
     goal_msg = {"role": "user", "content": goal_content}
     messages.append(goal_msg)
+
+    # Conversation-paging capture (opt-in): persist every turn — user, assistant, AND intermediate tool
+    # turns — to the owner-scoped transcript store AS IT HAPPENS, before compaction can drop it, so
+    # conversation_search can page it back. Runs on the stateless CLI path too (rid always set; owner
+    # defaults to 'local'), closing the "CLI persists nothing" gap. Best-effort + deduped: never breaks a run.
+    paging_on = bool(agent_cfg.get("conversationPaging", False))
+    cap_owner = owner or "local"
+    _capped: set = set()
+
+    def _cap(role, content, tool_name=None):
+        if not paging_on or content is None or not str(content).strip():
+            return
+        key = (role, tool_name, str(content))
+        if key in _capped:
+            return
+        _capped.add(key)
+        try:
+            from bob_core import _get_db_path
+            import bob_memory  # type: ignore
+            bob_memory.transcript_append(rid, role, str(content), _get_db_path(config),
+                                         owner=cap_owner, scope=scope, tool_name=tool_name)
+        except Exception as e:
+            log.warning(f"[{rid}] transcript capture skipped: {e}")
+
+    _cap("user", goal)
 
     client = get_llm_client(config)
     exit_requested = False
@@ -1510,6 +1546,7 @@ def run_agent_events(
 
             content = msg.content or ""
             last_content = content
+            _cap("assistant", content)      # every model turn, incl. the final answer (not appended to messages)
             steps_done += 1
             tokens_est += _estimate_tokens(content)
             tool_calls = msg.tool_calls
@@ -1591,6 +1628,8 @@ def run_agent_events(
                     text, imgs = _split_tool_result_images(result)
                     step_images += imgs
                     messages.append(build_tool_message(tc, text))
+            for (tc, _cid, result) in step["results"]:      # capture tool turns before compaction sees them
+                _cap("tool", _split_tool_result_images(result)[0], tool_name=tc.function.name)
             # A tool that returned image(s) threads them into the next turn as image_url blocks and
             # flips the run to the vision role so the model can actually see them (image_url in a user
             # message is the portable form — works for both hermes and openai tool-result modes).

@@ -58,6 +58,13 @@
       "sha256": "500a8806e85ee9c83f3ae08420295592451379b4f8cf2d0f41c15dffeb6b81f0",
       "sizeGB": 8.4
     },
+    "bge-reranker-v2-m3-q8_0.gguf": {
+      "repo": "gpustack/bge-reranker-v2-m3-GGUF",
+      "path": "bge-reranker-v2-m3-Q8_0.gguf",
+      "revision": "main",
+      "sha256": "a43c7c9b11a4c1517e5bf95151960e1621d1b72f7a493364b01e386cf1aaa1d3",
+      "sizeGB": 0.6
+    },
     "hermes-3-8b-q5_k_m.gguf": {
       "repo": "NousResearch/Hermes-3-Llama-3.1-8B-GGUF",
       "path": "Hermes-3-Llama-3.1-8B.Q5_K_M.gguf",

@@ -61,6 +61,22 @@ class TestResolver(unittest.TestCase):
         self.assertEqual(cfg["routing"]["proRole"], "chat-pro")   # base kept
         self.assertEqual(cfg["litellmKey"], "sk-override")
 
+    def test_user_overlay_catalog_sections_do_not_leak_into_runtime(self):
+        # user.json is shared with the model-registry resolver, so it may carry catalog-only sections
+        # (profiles/peers/defaults/...). Those must NOT appear in the runtime config; the runtime keys
+        # alongside them still apply.
+        d = Path(tempfile.mkdtemp(prefix="bob-user-cat-"))
+        user = d / "user.json"
+        user.write_text(json.dumps({
+            "memory": {"rerank": True},
+            "profiles": {"16gb": {"rerank": {"reranking": True, "gguf": "x.gguf"}}},
+            "peers": {"deepseek": {}}, "defaults": {"ngl": 80}, "prompts": {"chat": "hi"},
+        }), encoding="utf-8")
+        cfg = bob_config.resolve_runtime_config(user_path=user)
+        for k in ("profiles", "peers", "defaults", "prompts"):
+            self.assertNotIn(k, cfg, f"catalog section {k} leaked into runtime cfg")
+        self.assertTrue(cfg["memory"]["rerank"])                  # runtime key alongside them still applied
+
 
 class TestUserOverlayLoader(unittest.TestCase):
     """The ONE user-overlay loader (bob_config.load_user_overlay), shared by the runtime resolver

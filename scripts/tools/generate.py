@@ -139,6 +139,8 @@ def gen_llama_swap(profile: str = None) -> str:
             parts.append("${kv}")
         if m.get("embedding"):
             parts.append("--embedding")
+        if m.get("reranking"):
+            parts.append("--reranking")   # enable llama.cpp's /v1/rerank endpoint (rank-pooling model)
         for f in (m.get("flags") or []):
             _assert_no_quote(f, f"model '{m['role']}' flag")
             parts.append(str(f))
@@ -230,6 +232,10 @@ def gen_litellm(profile: str = None) -> str:
     out = ["# GENERATED - DO NOT EDIT.  Source: config/models.json",
            "# Regenerate: bob gen  (also runs on `bob serve`)", "", "model_list:"]
     for m in models:
+        # Rerankers aren't OpenAI chat/embedding models — LiteLLM's /rerank expects a cohere/jina/infinity
+        # provider, not openai/. The rerank call goes straight to llama-swap's native /v1/rerank instead.
+        if m.get("reranking"):
+            continue
         out += [f"  - model_name: {m['role']}", "    litellm_params:",
                 f"      model: openai/{m['role']}", f"      api_base: http://localhost:{port}/v1",
                 f"      api_key: {litellm_key}"]
@@ -343,7 +349,7 @@ def gen_continue(profile: str = None) -> str:
             out.append(f"    systemMessage: {_yaml_str(prompt)}")
 
     for m in models:
-        if m["role"] == "agent":
+        if m["role"] == "agent" or m.get("reranking"):
             continue
         name = _NAME_FOR.get(m["role"], m["role"])
         ctx = 0 if m.get("embedding") else int(m.get("ctx") or 0)
@@ -396,7 +402,7 @@ def gen_webui(profile: str = None) -> str:
 
     entries = []
     for m in models:
-        if m.get("embedding") or m["role"] in ("fim", "embed"):
+        if m.get("embedding") or m.get("reranking") or m["role"] in ("fim", "embed"):
             continue
         entries.append({"id": m["role"], "prompt": str(prompts.get(m["role"], "")) if prompts else ""})
     for peer in peers:

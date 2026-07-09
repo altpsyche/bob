@@ -98,6 +98,14 @@
         "sizeGB": 0.6,
         "gguf": "bge-m3-q8_0.gguf"
       },
+      "rerank": {
+        "ttl": 600,
+        "repo": "gpustack/bge-reranker-v2-m3-GGUF",
+        "path": "bge-reranker-v2-m3-Q8_0.gguf",
+        "reranking": true,
+        "sizeGB": 0.6,
+        "gguf": "bge-reranker-v2-m3-q8_0.gguf"
+      },
       "chat": {
         "kv": true,
         "repo": "Qwen/Qwen3-14B-GGUF",
@@ -231,6 +239,14 @@
         "sizeGB": 0.6,
         "gguf": "bge-m3-q8_0.gguf"
       },
+      "rerank": {
+        "ttl": 600,
+        "repo": "gpustack/bge-reranker-v2-m3-GGUF",
+        "path": "bge-reranker-v2-m3-Q8_0.gguf",
+        "reranking": true,
+        "sizeGB": 0.6,
+        "gguf": "bge-reranker-v2-m3-q8_0.gguf"
+      },
       "planner": {
         "kv": true,
         "repo": "bartowski/Qwen3-30B-A3B-GGUF",
@@ -265,6 +281,14 @@
         "embedding": true,
         "sizeGB": 0.6,
         "gguf": "bge-m3-q8_0.gguf"
+      },
+      "rerank": {
+        "ttl": 600,
+        "repo": "gpustack/bge-reranker-v2-m3-GGUF",
+        "path": "bge-reranker-v2-m3-Q8_0.gguf",
+        "reranking": true,
+        "sizeGB": 0.6,
+        "gguf": "bge-reranker-v2-m3-q8_0.gguf"
       },
       "chat": {
         "kv": true,
@@ -387,6 +411,14 @@
         "sizeGB": 0.6,
         "gguf": "bge-m3-q8_0.gguf"
       },
+      "rerank": {
+        "ttl": 600,
+        "repo": "gpustack/bge-reranker-v2-m3-GGUF",
+        "path": "bge-reranker-v2-m3-Q8_0.gguf",
+        "reranking": true,
+        "sizeGB": 0.6,
+        "gguf": "bge-reranker-v2-m3-q8_0.gguf"
+      },
       "planner": {
         "kv": true,
         "repo": "bartowski/Qwen3-30B-A3B-GGUF",
@@ -421,6 +453,14 @@
         "embedding": true,
         "sizeGB": 0.6,
         "gguf": "bge-m3-q8_0.gguf"
+      },
+      "rerank": {
+        "ttl": 600,
+        "repo": "gpustack/bge-reranker-v2-m3-GGUF",
+        "path": "bge-reranker-v2-m3-Q8_0.gguf",
+        "reranking": true,
+        "sizeGB": 0.6,
+        "gguf": "bge-reranker-v2-m3-q8_0.gguf"
       },
       "chat": {
         "kv": true,

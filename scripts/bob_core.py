@@ -193,6 +193,92 @@ def memory_store(content: str, tags: str = "", mem_type: str = "fact",
     return f"Stored (id={mid}): {content[:80]}" if is_new else f"Already stored (similar id={mid})"
 
 
+# One shared frame for the agent-editable core-memory blocks (MemGPT/Letta), injected alongside the
+# recalled notes through the single budget_injection seam.
+CORE_BLOCKS_FRAME = (
+    "Your core memory blocks (you maintain these across turns; edit with the memory_block tool):"
+)
+
+
+def _core_block_caps(config: dict) -> dict:
+    """name -> char cap for the configured core-memory blocks. Empty dict == the feature is off."""
+    return (config.get("memory", {}) or {}).get("coreBlocks") or {}
+
+
+def memory_block_edit(action: str, name: str, content: str = "",
+                      owner: Optional[str] = None, scope: Optional[str] = None,
+                      config: Optional[dict] = None) -> str:
+    """Append to / replace a named core-memory block. Only names declared in memory.coreBlocks
+    (name -> char cap) are editable; the cap keeps a block from growing the prefix unboundedly (oldest
+    chars trimmed). Owner/scope come from RunContext so a block is scoped to the acting identity/project,
+    matching how it's injected."""
+    cfg = config or load_config()
+    caps = _core_block_caps(cfg)
+    if name not in caps:
+        known = ", ".join(sorted(caps)) or "(none configured)"
+        return f"Unknown core-memory block '{name}'. Configured blocks: {known}."
+    db_path = _get_db_path(cfg)
+    _ensure_memory_importable()
+    import bob_memory  # type: ignore
+    owner = owner or cfg.get("agent", {}).get("defaultOwner", "local")
+    current = bob_memory.block_get(name, db_path, owner=owner, scope=scope) or ""
+    if action == "append":
+        new = (current + "\n" + content).strip() if current else content.strip()
+    elif action == "replace":
+        new = content.strip()
+    else:
+        return f"Unknown action '{action}' (use 'append' or 'replace')."
+    _stored, trimmed = bob_memory.block_set(name, new, db_path, owner=owner, scope=scope,
+                                            cap=int(caps[name]))
+    return f"Updated core-memory block '{name}'." + (" (oldest content trimmed to fit the cap)"
+                                                      if trimmed else "")
+
+
+def core_blocks_block(owner: Optional[str] = None, scope: Optional[str] = None,
+                      config: Optional[dict] = None) -> Optional[str]:
+    """The always-injected core-memory section (framed), or None when memory is off or no blocks are
+    configured. Lists every configured block name in a STABLE (sorted) order so an unedited turn yields
+    byte-identical output — preserving the prefix cache. Best-effort: any failure yields None."""
+    cfg = config or load_config()
+    mem = cfg.get("memory", {})
+    caps = _core_block_caps(cfg)
+    if not mem.get("enabled", False) or not caps:
+        return None
+    db_path = _get_db_path(cfg)
+    _ensure_memory_importable()
+    owner = owner or cfg.get("agent", {}).get("defaultOwner", "local")
+    try:
+        import bob_memory  # type: ignore
+        blocks = bob_memory.block_list(db_path, owner=owner, scope=scope)
+    except Exception:
+        return None
+    lines = []
+    for name in sorted(caps):
+        body = (blocks.get(name) or "").strip()
+        lines.append(f"[{name}]\n{body}" if body else f"[{name}]\n(empty)")
+    return CORE_BLOCKS_FRAME + "\n" + "\n\n".join(lines)
+
+
+def conversation_search(query: str, k: int = 5, config: Optional[dict] = None,
+                        owner: Optional[str] = None, scope: Optional[str] = None) -> str:
+    """Search the persisted conversation transcript (recall storage) and return the matching earlier
+    turns as a formatted block the model can read back into context. Owner/scoped to the acting run.
+    Returns a '(no matching earlier turns)' sentinel when nothing matches."""
+    cfg = config or load_config()
+    db_path = _get_db_path(cfg)
+    _ensure_memory_importable()
+    import bob_memory  # type: ignore
+    owner = owner or cfg.get("agent", {}).get("defaultOwner", "local")
+    hits = bob_memory.transcript_search(query, db_path, owner=owner, scope=scope, k=k)
+    if not hits:
+        return "(no matching earlier turns)"
+    lines = []
+    for h in hits:
+        who = h["role"] if not h.get("tool_name") else f"tool:{h['tool_name']}"
+        lines.append(f"[{who}] {h['content']}")
+    return "\n".join(lines)
+
+
 def memory_recall(query: str, k: int = 5, config: Optional[dict] = None,
                   owner: Optional[str] = None, scope: Optional[str] = None) -> str:
     """Recall top-k results from bob.db. Returns newline-joined content strings. Threads the
@@ -206,6 +292,10 @@ def memory_recall(query: str, k: int = 5, config: Optional[dict] = None,
     mem = cfg.get("memory", {})
     owner = owner or cfg.get("agent", {}).get("defaultOwner", "local")
     ranking = mem.get("ranking") or {}
+    # The reranker is served by llama-swap (LiteLLM's /rerank wants a cloud provider, not local llama.cpp),
+    # so the rerank call targets the endpoint port directly; memory.rerankBaseUrl overrides for a remote one.
+    rerank_on = bool(_mem(mem, "rerank"))
+    rerank_url = (mem.get("rerankBaseUrl") or f"http://localhost:{_port(cfg, 'port')}/v1") if rerank_on else None
     results = bob_memory.recall(
         query, k=k, db_path=db_path,
         threshold=float(_mem(mem, "recallThreshold")),
@@ -214,6 +304,8 @@ def memory_recall(query: str, k: int = 5, config: Optional[dict] = None,
         half_lives=ranking.get("halfLifeDays"),
         # Hybrid recall (dense + BM25/FTS5 + RRF). Default 'dense' is the dense-only path.
         retrieval=_mem(mem, "retrieval"), rrf_k=int(_mem(mem, "rrfK")),
+        # Optional cross-encoder second stage over the fused candidates (default off -> hybrid unchanged).
+        rerank=rerank_on, rerank_top_n=int(_mem(mem, "rerankTopN")), rerank_url=rerank_url,
     )
     if not results:
         return "(no results)"

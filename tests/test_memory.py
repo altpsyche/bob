@@ -912,5 +912,35 @@ class TestInjectionBudget(unittest.TestCase):
         self.assertEqual(kept, ["profile"])
 
 
+@unittest.skipUnless(bob_memory._DEPS_ERROR is None,
+                     f"memory deps (sqlite-utils/requests) not installed: {bob_memory._DEPS_ERROR}")
+class TestContextualChunk(unittest.TestCase):
+    """The contextual-chunk embedding seam: a situating `context` rides into the embedder input only,
+    leaving the stored content unchanged. No context == byte-identical to before."""
+    def setUp(self):
+        self._orig = bob_memory.embed
+        self.seen = []
+        bob_memory.embed = lambda text: (self.seen.append(text), _fake_embed(text))[1]
+        self.dir = Path(tempfile.mkdtemp(prefix="bob-ctx-"))
+        self.db = self.dir / "m.db"
+
+    def tearDown(self):
+        bob_memory.embed = self._orig
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_context_situates_embedding_not_content(self):
+        bob_memory.store("shard tuning knobs", self.db, mem_type="project",
+                         context="From the Elasticsearch ops runbook, cluster sizing section:")
+        db = bob_memory.get_db(self.db)
+        stored = db.execute("SELECT content FROM memories").fetchone()[0]
+        self.assertEqual(stored, "shard tuning knobs")            # stored text is clean
+        self.assertTrue(self.seen[0].startswith("From the Elasticsearch ops runbook"))
+        self.assertIn("shard tuning knobs", self.seen[0])         # embedder saw the situated text
+
+    def test_no_context_embeds_bare_content(self):
+        bob_memory.store("shard tuning knobs", self.db, mem_type="project")
+        self.assertEqual(self.seen[0], "shard tuning knobs")      # byte-identical to pre-seam behavior
+
+
 if __name__ == "__main__":
     unittest.main()

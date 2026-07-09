@@ -65,6 +65,32 @@ score = wSemantic·cosine + wRecency·decay + wType·typeWeight + wUsage·usage 
 All weights are tunable (`memory.ranking.*`). Only results at or above `memory.recallThreshold` are
 returned, top `memory.recallK` first.
 
+### Hybrid retrieval & cross-encoder rerank
+
+Recall runs dense (BGE-M3 cosine) by default. Set `memory.retrieval = "hybrid"` to also fuse a
+lexical BM25 ranking (SQLite FTS5) via Reciprocal Rank Fusion, so a lexically-exact hit a dense scan
+ranks poorly still surfaces.
+
+On top of hybrid, `memory.rerank = true` adds a **cross-encoder rerank** — the second stage of the
+standard retrieve-then-rerank pipeline. The top `memory.rerankTopN` fused candidates are re-scored by
+a reranker model that reads each (query, candidate) pair jointly, and that score (min-max normalized)
+replaces the semantic term before the recency/type/salience blend. This sharpens relevance and, under
+a `recallThreshold`, filters out the embedding-similarity noise floor that hybrid alone would inject.
+
+The reranker (`bge-reranker-v2-m3`, ~0.6 GB) **ships with every GPU profile**, but it is **loaded only
+on demand** — it is not pinned and not in the swap group, so nothing runs it and it costs no VRAM until a
+recall actually reranks; it unloads after an idle window (`ttl`). Turn it on with one flag:
+
+```json
+{ "memory": { "rerank": true } }
+```
+
+On a fresh install the model is already downloaded; when **updating an existing install**, pull it once
+with `bob fetch`, then `bob gen && bob restart`. The rerank call goes straight to the endpoint's
+`/v1/rerank` (LiteLLM's `/rerank` expects a cloud provider); override with `memory.rerankBaseUrl` for a
+remote reranker. **Loud-fail:** if no reranker is reachable, recall logs one warning and falls back to
+the hybrid order. Default off = today's behavior, unchanged.
+
 ### Importance & salience
 
 When consolidation extracts a fact, the model rates its **importance 1 to 10** (mundane → core
@@ -126,6 +152,23 @@ are **scoped to that repo** (keyed by the git root, else the cwd). Recall in pro
 project facts plus all global facts, never project B's. Identity and preferences stay global. Turn it
 off to put everything in one global pool.
 
+### Core-memory blocks (agent-curated, always in context)
+
+Separate from the auto-recalled DB facts, Bob can keep a small set of named, size-capped **core-memory
+blocks** the agent rewrites *in its own loop* (the MemGPT/Letta pattern). Each block is always injected
+into context, so the model keeps seeing it without a recall call, and it persists across sessions.
+
+Enable by declaring blocks and their character caps in `config/user.json`:
+
+```json
+{ "memory": { "coreBlocks": { "task": 800, "user": 800 } } }
+```
+
+The agent edits them with the **`memory_block`** tool (`append` / `replace`); a block over its cap has
+its oldest characters trimmed so the newest edit is kept. Blocks are owner/scope-scoped and stored in a
+dedicated `core_blocks` table — kept out of the decaying `memories` table on purpose, since a live-edited
+note must not decay, dedup, or supersede like a fact. Empty (`{}`, the default) = off, no block injected.
+
 ---
 
 ## Sessions
@@ -153,9 +196,20 @@ session triggers memory consolidation.
 3. **Session end** (`/exit`, `/session new`, `/session resume`, or the server deleting a session):
    turns are **consolidated** into durable typed facts (gated on `memory.autoConsolidate`).
 
-Injected memory (profile + autoRecall + `BOB.md`) is fit into `memory.maxInjectedTokens` before it
-goes into the system prompt, trimming autoRecall first, then profile, then `BOB.md`, so injected
-memory can't overflow the context window.
+Injected memory (core blocks + profile + autoRecall + `BOB.md`) is fit into `memory.maxInjectedTokens`
+before it goes into the system prompt, trimming autoRecall first, then profile, then `BOB.md`, then
+core blocks (kept longest), so injected memory can't overflow the context window.
+
+### Conversation paging (recall over dropped turns)
+
+Long runs compact older turns out of the live context window. With `agent.conversationPaging = true`,
+Bob persists the **full transcript** — every user, assistant, **and tool turn**, including one-shot
+`bob agent` runs that otherwise keep no history — to an owner-scoped `transcript` store *as it happens*,
+before compaction can drop it. The agent can then search it and page a specific earlier exchange back
+into context with the **`conversation_search`** tool (semantic + keyword, mirroring recall). A paged-in
+result is a normal tool result, so it's itself subject to compaction / tool-result clearing and can't
+re-overflow. Embedding is best-effort (the FTS keyword index is the always-present floor, so capture
+survives an embed-server outage). Off by default = no transcript persistence beyond today's sessions.
 
 ---
 
@@ -205,13 +259,18 @@ Types for `--type`: `profile`, `preference`, `project`, `fact`, `episodic`.
 
 ## Agent tools
 
-When `memory.enabled`, two tools are available to the agent loop (and over MCP):
+When `memory.enabled`, these tools are available to the agent loop (and over MCP):
 
 - **`memory_recall`**: recall the user's saved notes when the current request needs them.
 - **`memory_store`**: save a note about the user for future sessions.
+- **`memory_block`** (when `memory.coreBlocks` is configured): append to / replace an always-injected
+  core-memory block the agent curates for itself.
+- **`conversation_search`** (when `agent.conversationPaging` is on): search and page back earlier turns
+  that have scrolled out of the current context.
 
-Both operate only on the local `bob.db` via the embed server, scoped to the run's owner (and project
-scope). See [SECURITY.md](SECURITY.md).
+All operate only on the local `bob.db` via the embed server, scoped to the run's owner (and project
+scope). `memory_store` and `memory_block` are mutating (subject to the approval policy). See
+[SECURITY.md](SECURITY.md).
 
 ---
 
@@ -232,6 +291,12 @@ All keys live in `config/defaults.json` under `runtime.memory` and can be overri
 | `recallK` | `5` | Max results returned by a recall. |
 | `recallThreshold` | `0.35` | Minimum blended score to return. |
 | `dedupThreshold` | `0.92` | Cosine at/above which a new store is treated as a duplicate. |
+| `retrieval` | `"dense"` | `"dense"` (BGE-M3 cosine only) or `"hybrid"` (fuse BM25/FTS5 via RRF). |
+| `rrfK` | `60` | Reciprocal Rank Fusion constant for hybrid retrieval. |
+| `rerank` | `false` | Cross-encoder rerank of the fused candidates (implies the hybrid path). Needs a `reranking` model in the stack; loud-fails to hybrid if absent. |
+| `rerankTopN` | `20` | How many fused candidates the reranker re-scores. |
+| `rerankBaseUrl` | `""` | Override the reranker endpoint; empty = the local llama-swap endpoint's `/v1/rerank`. |
+| `coreBlocks` | `{}` | Map of `name → char cap` for agent-editable, always-injected core-memory blocks. Empty = off. |
 | `ranking.wSemantic` | `1.0` | Weight: semantic similarity. |
 | `ranking.wRecency` | `0.3` | Weight: recency decay. |
 | `ranking.wType` | `0.2` | Weight: per-type importance. |
@@ -250,12 +315,16 @@ All keys live in `config/defaults.json` under `runtime.memory` and can be overri
 | `projectFiles` | `true` | Read `BOB.md` / `AGENTS.md` project instruction files at session start. |
 | `bobMdMaxTokens` | `4000` | Cap on the concatenated project instruction files. |
 
+Conversation paging is an **`agent.*`** key: `agent.conversationPaging` (default `false`) turns on
+full-transcript persistence and the `conversation_search` tool (see [Conversation paging](#conversation-paging-recall-over-dropped-turns)).
+
 ---
 
 ## Storage & privacy
 
-- `data/bob.db`: the memory store (SQLite, gitignored). Schema is versioned; `bob memory migrate`
-  applies additive migrations in place (a legacy DB is upgraded automatically on first open).
+- `data/bob.db`: the memory store (SQLite, gitignored). Holds the typed `memories`, plus (lazily
+  created, only when used) the `core_blocks` and `transcript` tables. Schema is versioned; `bob memory
+  migrate` applies additive migrations in place (a legacy DB is upgraded automatically on first open).
 - `data/sessions.db`: persisted shell/server session transcripts (`agent.sessionDbPath`).
 - Nothing is sent to the cloud for memory: BGE-M3 runs locally. `--pro` only affects the chat
   response, never recall or embedding.

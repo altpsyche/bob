@@ -96,6 +96,11 @@ def resolve_runtime_config(user_path: Optional[Path] = None) -> dict:
     cfg["agent"].setdefault("agentPort", ports["agentPort"])
 
     cfg = _deep_merge(cfg, load_user_overlay(user_path))
+    # config/user.json is one file shared with the model-registry resolver (bob_models.load_models_config),
+    # so it may carry catalog-only sections (profiles/peers/defaults/prompts/...). Those are NOT runtime
+    # keys — drop them here so the runtime config stays clean (bob_models reads them from user.json itself).
+    for _k in ("profiles", "peers", "activeProfile", "defaults", "prompts", "macros", "group"):
+        cfg.pop(_k, None)
 
     # Default allowedReadPaths to the repo root when empty, so file_read
     # works out of the box (the secrets denylist still refuses secrets inside it).

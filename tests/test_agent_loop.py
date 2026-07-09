@@ -149,6 +149,46 @@ class TestAgentLoop(unittest.TestCase):
             for fn in ("memory_profile_block", "project_memory_block"):
                 setattr(bob_core, fn, getattr(self, f"_orig_{fn}"))
 
+    def test_core_blocks_injected_every_turn_not_just_session_start(self):
+        # Core-memory blocks must inject even when history is non-empty (unlike the once-per-session
+        # profile block), since the agent edits them mid-run and must keep seeing the current text.
+        for fn in ("memory_profile_block", "project_memory_block", "memory_recall"):
+            setattr(self, f"_orig_{fn}", getattr(bob_core, fn))
+            setattr(bob_core, fn, lambda *a, **k: "")
+        self._orig_cb = bob_core.core_blocks_block
+        bob_core.core_blocks_block = lambda owner=None, scope=None, config=None: "CORE_SENTINEL_BLOCK"
+        try:
+            cfg = _common.fake_config()
+            cfg["memory"] = {"enabled": True, "coreBlocks": {"task": 40}}
+            captured = {}
+            bob_core.get_llm_client = lambda config=None: self._capturing_client(captured)
+            list(bob_loop.run_agent_events(
+                "hi", cfg, agency="silent", registry=self._filter_reg(["echo"]),
+                history=[{"role": "user", "content": "earlier"},
+                         {"role": "assistant", "content": "ok"}]))
+            self.assertIn("CORE_SENTINEL_BLOCK", captured["system"])
+        finally:
+            bob_core.core_blocks_block = self._orig_cb
+            for fn in ("memory_profile_block", "project_memory_block", "memory_recall"):
+                setattr(bob_core, fn, getattr(self, f"_orig_{fn}"))
+
+    def test_core_blocks_absent_when_unconfigured(self):
+        # Off (real core_blocks_block, empty coreBlocks) -> nothing injected.
+        for fn in ("memory_profile_block", "project_memory_block", "memory_recall"):
+            setattr(self, f"_orig_{fn}", getattr(bob_core, fn))
+            setattr(bob_core, fn, lambda *a, **k: "")
+        try:
+            cfg = _common.fake_config()
+            cfg["memory"] = {"enabled": True}      # no coreBlocks -> feature off
+            captured = {}
+            bob_core.get_llm_client = lambda config=None: self._capturing_client(captured)
+            list(bob_loop.run_agent_events("hi", cfg, agency="silent",
+                                           registry=self._filter_reg(["echo"])))
+            self.assertNotIn("core memory blocks", captured["system"].lower())
+        finally:
+            for fn in ("memory_profile_block", "project_memory_block", "memory_recall"):
+                setattr(bob_core, fn, getattr(self, f"_orig_{fn}"))
+
     def test_hermes_tool_call_without_closing_tag_still_executes(self):
         # Small models sometimes emit <tool_call>{...} but drop the </tool_call>; the call must still
         # run (not leak as raw text in the answer).

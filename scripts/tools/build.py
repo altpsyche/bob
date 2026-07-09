@@ -362,7 +362,8 @@ def _reinstall_venv() -> None:
 def update_stack(tag: str = None) -> int:
     """Release-aware update with rollback: fetch/checkout (default: ff the current branch; tag= a release),
     submodule sync, venv reinstall, conditional rebuild (only if llama.cpp moved) with a bin/ snapshot +
-    binary verify + rollback on failure, relock, then doctor. Port of the former update case.
+    binary verify + rollback on failure, relock, fetch any newly-added models (resume + skip-present, so
+    code-only updates download nothing), then doctor. Port of the former update case.
     Returns 0 on success, 1 on a handled failure. CLI-only + long."""
     import osenv
 
@@ -404,6 +405,20 @@ def update_stack(tag: str = None) -> int:
 
     from bob import versions
     versions.write_lock()
+
+    # Pull any models a release just added to the active profile (e.g. the rerank model). Resume +
+    # SHA256-verify; already-present GGUFs are skipped, so this only downloads what's genuinely new —
+    # a code-only update stays a no-op here. Best-effort: a download hiccup must not fail the whole
+    # update (the endpoint still runs; `bob fetch` retries; an absent optional model just loud-fails
+    # to its fallback).
+    print("Fetching any new models for the active profile...", file=sys.stderr)
+    try:
+        import provision
+        provision.configure(_cfg)
+        print(provision.fetch_models(), file=sys.stderr)
+    except Exception as e:  # noqa: BLE001 — advisory; never fail the update over a model download
+        print(f"model fetch skipped ({e}); run `bob fetch` to pull any new models.", file=sys.stderr)
+
     print("Running bob doctor...", file=sys.stderr)
     import health
     health.configure(_cfg)

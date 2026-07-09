@@ -79,6 +79,7 @@ registration step. To exclude a tool without deleting it, add its name to `agent
 | `agent.maxHistoryMsgs` | `40` | Sliding window by **message count**, the first-pass overflow guard. |
 | `agent.maxContextTokens` | `6000` | Token budget for the message history. Drops the oldest non-system turns first; always keeps the system message. `0` = fall back to count-only. Keep it below the agent model's context window. |
 | `agent.maxToolResultTokens` | `1000` | Per-tool-result cap (~4 chars/token) applied before a result is appended to history, so one huge tool output can't blow the budget. |
+| `agent.conversationPaging` | `false` | Persist the full transcript (incl. tool turns + one-shot CLI runs) to an owner-scoped store and offer the `conversation_search` tool to page dropped turns back. Grows `data/bob.db`. See [MEMORY.md](MEMORY.md#conversation-paging-recall-over-dropped-turns). |
 | `agent.compactSchemasAfter` | `12` | Once more than this many tools are loaded, inject **compact** tool schemas (param descriptions dropped) so the fixed per-turn prompt doesn't grow unbounded with tool count. |
 | `agent.requestTimeout` | `600` | Client-side LLM call timeout (s). Must be **≥** the litellm proxy's `request_timeout` (600) so thinking models (planner/R1) aren't cut off mid-response. |
 | `agent.llmRetries` | `2` | Retries for a transient LLM error (5xx/timeout/conn) per step: total tries = this + 1. Covers the llama-swap model-swap race (a 500 "upstream command exited prematurely" on the first request after an idle-unload). Retried only before the first token surfaces. |
@@ -139,6 +140,12 @@ Bob's typed, owner/project-scoped memory store (SQLite + BGE-M3). On by default.
 | `memory.recallK` | `5` | Max results per recall. |
 | `memory.recallThreshold` | `0.35` | Minimum blended score to return. |
 | `memory.dedupThreshold` | `0.92` | Cosine at/above which a store is a duplicate. |
+| `memory.retrieval` | `"dense"` | `"dense"` (cosine) or `"hybrid"` (fuse BM25/FTS5 via RRF). |
+| `memory.rrfK` | `60` | Reciprocal Rank Fusion constant (hybrid). |
+| `memory.rerank` | `false` | Cross-encoder rerank of the fused candidates; needs a `reranking` model in the stack, loud-fails to hybrid if absent. |
+| `memory.rerankTopN` | `20` | Fused candidates re-scored by the reranker. |
+| `memory.rerankBaseUrl` | `""` | Reranker endpoint override; empty = the local llama-swap `/v1/rerank`. |
+| `memory.coreBlocks` | `{}` | `name → char cap` for agent-editable, always-injected core-memory blocks (the `memory_block` tool). Empty = off. |
 | `memory.ranking.{wSemantic,wRecency,wType,wUsage,wSalience}` | `1.0/0.3/0.2/0.1/0.3` | Blended-rank term weights. |
 | `memory.ranking.halfLifeDays` | `{profile/preference 36500, project 90, fact 365, episodic 30}` | Per-type recency half-lives. |
 | `memory.typeWeights` | `{profile 1.0 … episodic 0.5}` | Per-type rank weights. |

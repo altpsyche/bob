@@ -48,6 +48,15 @@ def _require_deps() -> None:
 
 _DEFAULT_DB = Path(__file__).parent.parent / "data" / "bob.db"
 EMBED_MODEL = "embed"
+RERANK_MODEL = "rerank"
+
+_warned: set = set()   # dedup one-time fallback warnings (e.g. reranker absent)
+
+
+def _warn_once(msg: str) -> None:
+    if msg not in _warned:
+        _warned.add(msg)
+        print(msg, file=sys.stderr)
 
 # --- Schema (v2 typed/owner-scoped; v3 provenance) ---------------
 # `get_db` migrates a legacy DB in place (additive ALTERs + one-time backfill), gated by PRAGMA
@@ -259,6 +268,29 @@ def embed(text: str) -> list[float]:
         raise RuntimeError(f"Embedding server unreachable or returned bad data at {url}: {e}") from e
 
 
+def _rerank_scores(query: str, docs: list[str], base_url: str = None) -> list[float]:
+    """Cross-encoder relevance of each doc to `query` via a /rerank endpoint (a reranker model served
+    by llama-swap; LiteLLM's /rerank expects a cohere/jina/infinity provider, not the local llama.cpp
+    one, so `base_url` points at the llama-swap endpoint). Returns one score per doc in input order.
+    Raises on any transport / bad-shape error so the caller can loud-fail back to the un-reranked
+    order. Overridable in tests, like `embed`."""
+    _require_deps()
+    base, headers = _litellm()
+    if base_url:
+        base = base_url
+    url = f"{base}/rerank"
+    resp = requests.post(url, json={"model": RERANK_MODEL, "query": query, "documents": docs},
+                         headers=headers, timeout=30)
+    resp.raise_for_status()
+    results = resp.json()["results"]
+    scores: list = [None] * len(docs)
+    for r in results:
+        scores[r["index"]] = r["relevance_score"]
+    if any(s is None for s in scores):
+        raise ValueError("rerank response did not score every document")
+    return scores
+
+
 def cosine(a: list[float], b: list[float]) -> float:
     dot = sum(x * y for x, y in zip(a, b))
     mag_a = math.sqrt(sum(x * x for x in a))
@@ -276,7 +308,7 @@ def cosine(a: list[float], b: list[float]) -> float:
 def store(content: str, db_path: Path, source: str = "user", mem_type: str = "fact",
           owner: str = "local", scope: str = None, tags: str = None, salience: float = 1.0,
           dedup_threshold: float = 0.92, source_session: str = None,
-          embed_optional: bool = False) -> tuple[int, bool]:
+          embed_optional: bool = False, context: str = None) -> tuple[int, bool]:
     """Insert a typed, owner-scoped memory. Returns (id, is_new).
 
     Content is normalized to third person (§2.3) before hashing/embedding, so recalled text never
@@ -289,7 +321,13 @@ def store(content: str, db_path: Path, source: str = "user", mem_type: str = "fa
     case the row is stored with a NULL embedding and near-dedup is skipped. That keeps durable identity
     persistable when inference isn't up yet (onboarding during a fresh setup): profile_block injection
     is a plain SQL read, so a NULL-embedding row is fully usable at session start; it just won't surface
-    in *semantic* recall until re-embedded (`bob memory migrate --normalize` with the server up)."""
+    in *semantic* recall until re-embedded (`bob memory migrate --normalize` with the server up).
+
+    `context` (optional): a short chunk-situating line prepended ONLY to the text sent to the embedder,
+    not to the stored content. This is the contextual-chunk seam (Anthropic's Contextual Retrieval): a
+    chunk of a larger source embeds against a vector that carries its context, so recall doesn't depend on
+    the chunk being self-contained. Atomic facts pass no context (byte-identical to before); chunked
+    sources (e.g. a future code index) pass one."""
     normalized = _normalize_third_person(content)
     chash = _content_hash(normalized)
     db = get_db(db_path)
@@ -301,8 +339,10 @@ def store(content: str, db_path: Path, source: str = "user", mem_type: str = "fa
     if hit:
         return hit[0], False
     # 2) near dedup — cosine over this owner's rows of the same type only (scoped, not a full scan).
+    # A situating `context` rides along only into the embedding input; the stored content stays clean.
+    embed_text = f"{context}\n{normalized}" if context else normalized
     try:
-        vec = embed(normalized)
+        vec = embed(embed_text)
     except RuntimeError:
         if not embed_optional:
             raise
@@ -419,11 +459,15 @@ def _bm25_ranked_ids(db, query, owner, scope, now_iso, type_filter, limit) -> li
 
 
 def _recall_hybrid(query, q_vec, rows, db, owner, scope, type_filter, now, w, tw, hl,
-                   threshold, k, rrf_k) -> list:
+                   threshold, k, rrf_k, rerank=False, rerank_top_n=20, rerank_url=None) -> list:
     """Fuse the dense (cosine) and lexical (BM25) rankings with Reciprocal Rank Fusion, then apply the
     recency/type/usage/salience terms on top of the fused candidates. Falls back to a dense scan over
     the candidate set when FTS5 is unavailable or the query has no lexical hits. `rows` already carries
-    the owner/scope/active prefilter, so every candidate id resolves here."""
+    the owner/scope/active prefilter, so every candidate id resolves here.
+
+    When `rerank` is on, a cross-encoder rescoring pass runs on the top `rerank_top_n` fused candidates
+    (the second stage of the standard retrieve-then-rerank pipeline) before the blend — no second
+    retrieval, since the candidate text is already in `meta`."""
     meta = {}   # id -> (content, mtype, created_at, use_count, salience, last_used)
     cos = {}
     for row_id, content, emb_json, mtype, created_at, use_count, salience, last_used in rows:
@@ -440,30 +484,46 @@ def _recall_hybrid(query, q_vec, rows, db, owner, scope, type_filter, now, w, tw
     def _blend(sem, i):
         return round(w["wSemantic"] * sem + _nonsemantic_score(w, tw, hl, *meta[i][1:], now), 4)
 
-    if not bm25_ranked:
-        # No lexical half -> dense over the candidate set (still returns [] to threshold like dense).
-        return [{"id": i, "content": meta[i][0], "score": _blend(cos[i], i)}
-                for i in dense_ranked if _blend(cos[i], i) >= threshold]
+    def _apply_rerank(sem_by_id):
+        """Second stage: replace the semantic term of the top-N candidates (by prelim relevance) with the
+        cross-encoder's score, min-max-normalized to 0-1 so wSemantic/threshold semantics hold and the
+        recency/type/salience terms still blend on top. Best-effort — any reranker failure leaves the
+        fused order untouched (loud-fail to hybrid)."""
+        if not rerank or not sem_by_id:
+            return sem_by_id
+        top = sorted(sem_by_id, key=lambda i: (-sem_by_id[i], i))[:rerank_top_n]
+        try:
+            raw = _rerank_scores(query, [meta[i][0] for i in top], base_url=rerank_url)
+        except Exception as e:
+            _warn_once(f"rerank unavailable, falling back to hybrid recall: {e}")
+            return sem_by_id
+        lo, hi = min(raw), max(raw)
+        span = (hi - lo) or 1.0
+        for i, s in zip(top, raw):
+            sem_by_id[i] = (s - lo) / span
+        return sem_by_id
 
-    rrf = {}
-    for rank, i in enumerate(dense_ranked):
-        rrf[i] = rrf.get(i, 0.0) + 1.0 / (rrf_k + rank)
-    for rank, i in enumerate(bm25_ranked):
-        if i in meta:
+    if not bm25_ranked:
+        # No lexical half -> dense (optionally reranked) over the candidate set; thresholds like dense.
+        sem = _apply_rerank({i: cos[i] for i in dense_ranked})
+    else:
+        rrf = {}
+        for rank, i in enumerate(dense_ranked):
             rrf[i] = rrf.get(i, 0.0) + 1.0 / (rrf_k + rank)
-    max_rrf = max(rrf.values())               # normalize so the best candidate ~= a perfect cosine (1.0)
-    scored = []
-    for i, rscore in rrf.items():
-        s = _blend(rscore / max_rrf, i)
-        if s >= threshold:
-            scored.append({"id": i, "content": meta[i][0], "score": s})
-    return scored
+        for rank, i in enumerate(bm25_ranked):
+            if i in meta:
+                rrf[i] = rrf.get(i, 0.0) + 1.0 / (rrf_k + rank)
+        max_rrf = max(rrf.values())           # normalize so the best candidate ~= a perfect cosine (1.0)
+        sem = _apply_rerank({i: rrf[i] / max_rrf for i in rrf})
+    return [{"id": i, "content": meta[i][0], "score": _blend(sem[i], i)}
+            for i in sem if _blend(sem[i], i) >= threshold]
 
 
 def recall(query: str, db_path: Path, k: int = 5, threshold: float = 0.35,
            owner: str = "local", scope: str = None, weights: dict = None,
            type_weights: dict = None, half_lives: dict = None, type_filter: str = None,
-           retrieval: str = "dense", rrf_k: int = 60) -> list[dict]:
+           retrieval: str = "dense", rrf_k: int = 60,
+           rerank: bool = False, rerank_top_n: int = 20, rerank_url: str = None) -> list[dict]:
     """Return up to k memories matching query as {id, content, score} dicts (highest blended score
     first) and bump last_used/use_count on the hits. Raises RuntimeError if the embed server is
     unreachable. Returns [] for an empty query or no candidates.
@@ -479,7 +539,11 @@ def recall(query: str, db_path: Path, k: int = 5, threshold: float = 0.35,
     `retrieval='hybrid'` fuses dense cosine + BM25 (SQLite FTS5) via Reciprocal Rank Fusion
     (`rrf_k`) before applying the recency/type/usage/salience terms — catching lexically-exact hits a
     dense-only scan misses. `retrieval='dense'` (**default**) is the dense-only path, byte-identical; it
-    also silently backstops hybrid when this SQLite build lacks FTS5."""
+    also silently backstops hybrid when this SQLite build lacks FTS5.
+
+    `rerank=True` adds a cross-encoder rescoring pass over the top `rerank_top_n` fused candidates
+    (the standard second stage after broad recall) — so it uses the hybrid candidate path regardless of
+    `retrieval`, and loud-fails back to hybrid ordering if no reranker model is reachable."""
     if not query.strip():
         return []
     w = {**_DEFAULT_WEIGHTS, **(weights or {})}
@@ -501,9 +565,10 @@ def recall(query: str, db_path: Path, k: int = 5, threshold: float = 0.35,
     if not rows:
         return []
     q_vec = embed(query)
-    if retrieval == "hybrid":
+    if retrieval == "hybrid" or rerank:   # rerank implies the broad-recall candidate path to rescore
         scored = _recall_hybrid(query, q_vec, rows, db, owner, scope, type_filter,
-                                now, w, tw, hl, threshold, k, rrf_k)
+                                now, w, tw, hl, threshold, k, rrf_k,
+                                rerank=rerank, rerank_top_n=rerank_top_n, rerank_url=rerank_url)
     else:
         scored = []
         for row_id, content, emb_json, mtype, created_at, use_count, salience, last_used in rows:
@@ -556,6 +621,186 @@ def profile_block(owner: str, db_path: Path, limit: int = 5, max_chars: int = 80
         lines.append(line)
         used += len(line) + 1
     return "\n".join(lines) if lines else None
+
+
+# --- Core-memory blocks (agent-editable, always-injected) -----------
+# Named, size-capped strings the agent rewrites in its loop (MemGPT/Letta core memory). Kept OUT of the
+# `memories` table on purpose: facts decay / dedup / supersede, a live-edited block must not. The table
+# is built lazily on first use (like the FTS index) so recall-only DBs stay byte-unchanged.
+
+def _ensure_core_blocks(db) -> None:
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS core_blocks ("
+        " owner_id TEXT NOT NULL DEFAULT 'local', scope TEXT NOT NULL DEFAULT '',"
+        " name TEXT NOT NULL, content TEXT NOT NULL DEFAULT '', updated_at TEXT,"
+        " PRIMARY KEY (owner_id, scope, name))")
+
+
+def block_get(name: str, db_path: Path, owner: str = "local", scope: str = None) -> "str | None":
+    """The current content of one named block, or None if unset. Scope None == the global block."""
+    db = get_db(db_path)
+    _ensure_core_blocks(db)
+    row = db.execute("SELECT content FROM core_blocks WHERE owner_id=? AND scope=? AND name=?",
+                     [owner, scope or "", name]).fetchone()
+    return row[0] if row else None
+
+
+def block_list(db_path: Path, owner: str = "local", scope: str = None) -> dict:
+    """All blocks for this owner/scope as {name: content}, name-ordered (deterministic for injection)."""
+    db = get_db(db_path)
+    _ensure_core_blocks(db)
+    rows = db.execute("SELECT name, content FROM core_blocks WHERE owner_id=? AND scope=? ORDER BY name",
+                      [owner, scope or ""]).fetchall()
+    return {name: content for name, content in rows}
+
+
+def block_set(name: str, content: str, db_path: Path, owner: str = "local", scope: str = None,
+              cap: int = None) -> "tuple[str, bool]":
+    """Upsert block `name` to `content`. When `cap` (max chars) is set and the content exceeds it, the
+    OLDEST leading chars are trimmed so the newest text is kept within the cap (append-friendly). Returns
+    (stored_content, was_trimmed)."""
+    trimmed = False
+    if cap and cap > 0 and len(content) > cap:
+        content = content[-cap:]
+        trimmed = True
+    db = get_db(db_path)
+    _ensure_core_blocks(db)
+    db.execute(
+        "INSERT INTO core_blocks (owner_id, scope, name, content, updated_at) VALUES (?,?,?,?,?) "
+        "ON CONFLICT(owner_id, scope, name) DO UPDATE SET content=excluded.content, "
+        "updated_at=excluded.updated_at",
+        [owner, scope or "", name, content, datetime.now(timezone.utc).isoformat()])
+    db.conn.commit()
+    return content, trimmed
+
+
+# --- Conversation transcript (recall storage; page-back over dropped turns) -----------
+# The full run transcript — user, assistant, AND intermediate tool turns — captured as it happens so a
+# turn that compaction later drops from context is still searchable and can be paged back. This is a
+# SEPARATE tier from `memories` (facts): transcript turns are voluminous and must not decay, dedup, or
+# count against the facts cap. Built lazily (like the FTS index) so recall-only DBs stay byte-unchanged.
+
+def _ensure_transcript(db) -> None:
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS transcript ("
+        " id INTEGER PRIMARY KEY, run_id TEXT, owner_id TEXT NOT NULL DEFAULT 'local', scope TEXT,"
+        " seq INTEGER, role TEXT NOT NULL, content TEXT NOT NULL, tool_name TEXT,"
+        " created_at TEXT, embedding TEXT)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_transcript_owner ON transcript(owner_id, scope, run_id, seq)")
+
+
+def _ensure_transcript_fts(db) -> bool:
+    """Lazily build an external-content FTS5 index over transcript.content (mirrors _ensure_fts). The
+    lexical index is the always-present search floor: a turn captured while the embed server was down
+    (NULL embedding) still matches by keyword. Returns False if this SQLite build lacks FTS5."""
+    try:
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='transcript_fts'").fetchone():
+            return True
+        if not _fts5_available(db):
+            return False
+        db.execute("CREATE VIRTUAL TABLE transcript_fts USING fts5(content, content='transcript', content_rowid='id')")
+        db.execute("CREATE TRIGGER transcript_fts_ai AFTER INSERT ON transcript BEGIN "
+                   "INSERT INTO transcript_fts(rowid, content) VALUES (new.id, new.content); END")
+        db.execute("CREATE TRIGGER transcript_fts_ad AFTER DELETE ON transcript BEGIN "
+                   "INSERT INTO transcript_fts(transcript_fts, rowid, content) VALUES('delete', old.id, old.content); END")
+        db.execute("INSERT INTO transcript_fts(rowid, content) SELECT id, content FROM transcript")
+        db.conn.commit()
+        return True
+    except Exception:
+        return False
+
+
+def transcript_append(run_id: str, role: str, content: str, db_path: Path, owner: str = "local",
+                      scope: str = None, tool_name: str = None, embed_optional: bool = True) -> int:
+    """Persist one transcript turn. Embedding is best-effort by default (`embed_optional`): if the embed
+    server is down the turn is still stored with a NULL vector (lexical FTS keeps it searchable), so
+    capture never blocks or breaks a run. Empty content is skipped. Returns the new row id (0 if skipped)."""
+    if not content or not content.strip():
+        return 0
+    db = get_db(db_path)
+    _ensure_transcript(db)
+    try:
+        vec = embed(content)
+    except Exception:
+        if not embed_optional:
+            raise
+        vec = None
+    seq = db.execute("SELECT COALESCE(MAX(seq), -1) + 1 FROM transcript WHERE run_id=?",
+                     [run_id]).fetchone()[0]
+    db["transcript"].insert({
+        "run_id": run_id, "owner_id": owner, "scope": scope, "seq": seq, "role": role,
+        "content": content, "tool_name": tool_name,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "embedding": json.dumps(vec) if vec is not None else "",
+    })
+    db.conn.commit()
+    return db.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+
+def _transcript_bm25_ids(db, query, owner, scope, limit) -> list:
+    match = _fts_match_query(query)
+    if not match:
+        return []
+    sql = ("SELECT f.rowid FROM transcript_fts f JOIN transcript t ON t.id = f.rowid "
+           "WHERE transcript_fts MATCH ? AND t.owner_id = ?")
+    params = [match, owner]
+    if scope is not None:
+        sql += " AND (t.scope IS NULL OR t.scope = ?)"
+        params.append(scope)
+    sql += " ORDER BY f.rank, f.rowid LIMIT ?"
+    params.append(limit)
+    try:
+        return [r[0] for r in db.execute(sql, params).fetchall()]
+    except Exception:
+        return []
+
+
+def transcript_search(query: str, db_path: Path, owner: str = "local", scope: str = None,
+                      k: int = 5, rrf_k: int = 60) -> list[dict]:
+    """Hybrid (dense + BM25) search over the persisted transcript for one owner/scope. Returns up to k
+    {run_id, seq, role, tool_name, content, created_at} dicts, best match first (recency breaks ties).
+    Owner/scope-prefiltered (no cross-owner leak). Lexical-only when the embed server is unreachable or a
+    row has no vector, so a page-back still works offline."""
+    if not query.strip():
+        return []
+    db = get_db(db_path)
+    _ensure_transcript(db)
+    sql = ("SELECT id, run_id, seq, role, content, tool_name, created_at, embedding "
+           "FROM transcript WHERE owner_id=?")
+    params = [owner]
+    if scope is not None:
+        sql += " AND (scope IS NULL OR scope = ?)"
+        params.append(scope)
+    rows = list(db.execute(sql, params).fetchall())
+    if not rows:
+        return []
+    meta, cos = {}, {}
+    try:
+        q_vec = embed(query)
+    except Exception:
+        q_vec = None            # embed server down -> lexical-only search
+    for rid_, run_id, seq, role, content, tool_name, created_at, emb in rows:
+        meta[rid_] = {"run_id": run_id, "seq": seq, "role": role, "content": content,
+                      "tool_name": tool_name, "created_at": created_at}
+        if q_vec is not None and emb:
+            try:
+                cos[rid_] = cosine(q_vec, json.loads(emb))
+            except Exception:
+                pass
+    per_list = max(k * 5, 25)
+    dense_ranked = sorted(cos, key=lambda i: (-cos[i], i))[:per_list]
+    bm25_ranked = (_transcript_bm25_ids(db, query, owner, scope, per_list)
+                   if _ensure_transcript_fts(db) else [])
+    if not dense_ranked and not bm25_ranked:
+        return []
+    rrf = {}
+    for rank, i in enumerate(dense_ranked):
+        rrf[i] = rrf.get(i, 0.0) + 1.0 / (rrf_k + rank)
+    for rank, i in enumerate(bm25_ranked):
+        if i in meta:
+            rrf[i] = rrf.get(i, 0.0) + 1.0 / (rrf_k + rank)
+    ranked = sorted(rrf, key=lambda i: (-rrf[i], meta[i]["created_at"] or "", i))[:k]
+    return [{k2: v for k2, v in meta[i].items()} for i in ranked]
 
 
 # --- Hygiene + inspect/edit surface ----------------------------------

@@ -1,7 +1,50 @@
 # Module R — Context Engineering (rerank, self-editing memory, conversation paging)
 
-**Status:** draft / not scheduled — backlog from the Module O gap review. **Depends on features that
-have all shipped:** summarize-compaction (`scripts/bob_loop.py:809`, frame at `667-677`),
+> **Status:** ✅ COMPLETE (2026-07-09). All three sub-items shipped as small, gate-green increments
+> (suite 1024 green; `scripts/check.py` exit 0) and **live-verified** on the local stack. User-facing
+> docs: [docs/MEMORY.md](../MEMORY.md). All features are config-gated, default-off (R off ==
+> pre-R behavior, byte-identical). No development-phase markers in code/tests per the hard conventions.
+>
+> **Per-item outcomes:**
+> - **R1 — rerank + contextual-chunk embeddings.** `bob_memory._rerank_scores` + a rerank pass inside
+>   `_recall_hybrid` (both the fused and dense-fallback branches), reusing the fused candidate set —
+>   no second retrieval; the cross-encoder score is min-max-normalized and re-blended so recency/type/
+>   salience still apply. `rerank` implies the hybrid path. The reranker is a local `reranking: true`
+>   model served by llama-swap (LiteLLM's `/rerank` wants a cloud provider), reached at the endpoint's
+>   `/v1/rerank`; `memory.rerankBaseUrl` overrides. Absent reranker → one warning, fall back to hybrid.
+>   Contextual-chunk seam: `store(..., context=)` situates the embedding without changing stored text
+>   (consumed later by Module Q's code index). Generator gained `reranking → --reranking`. Config:
+>   `memory.rerank` / `rerankTopN` / `rerankBaseUrl`. Live: under a recall threshold, hybrid injects
+>   noise (coffee-machine/standup at ~1.7) while hybrid+rerank returns only the real answer.
+>   **Packaging:** the reranker (`bge-reranker-v2-m3`) **ships in every GPU profile** in
+>   `config/models.json` + `versions.lock`, but as an **on-demand** model — `ttl`-based, NOT pinned and
+>   NOT in the swap group — so it loads only when a recall actually reranks and releases when idle (zero
+>   VRAM + no startup dependency by default; `memory.rerank` is off by default). Enable = one flag
+>   (`memory.rerank: true`); an existing install runs `bob fetch` once to pull it. First cut wrongly
+>   shipped it **pinned**, which force-loaded it at startup + forced the download for a default-off
+>   feature — fixed to on-demand. Also fixed a latent resolver bug found along the way: `user.json` is one
+>   file shared with the model-registry resolver, so its catalog-only sections (`profiles`/`peers`/
+>   `defaults`/…) were leaking into the runtime config; `resolve_runtime_config` now drops them (guarded
+>   by `test_config_resolver`).
+> - **R2 — self-editing memory blocks.** Dedicated `core_blocks` table + `block_get/set/list`
+>   (kept out of the decaying `memories` table); the Layer-1 `memory_block` tool (append/replace,
+>   `MUTATING_TOOLS`); injected every root turn through the **existing** `inject_blocks` +
+>   `budget_injection` seam at top priority (deterministic/sorted → prefix-cache-stable). Config:
+>   `memory.coreBlocks` (name → char cap). Live: the agent wrote a fact to its `task` block; a fresh
+>   process answered from the injected block with no tool call.
+> - **R3 — conversation paging.** Dedicated `transcript` table (lazy FTS floor + best-effort
+>   embedding) with `transcript_append`/`transcript_search`; a capture seam in `bob_loop` (gated by
+>   `agent.conversationPaging`) persists user/assistant/**tool** turns as they happen — including the
+>   stateless CLI path — before compaction can drop them; the read-only Layer-1 `conversation_search`
+>   tool pages matches back (bounded by the tool-result retention seam). P1 overlap resolved: transcript
+>   in the memory DB (needs retrieval); P1's run-checkpoint stays a separate future `sessions.db` table.
+>   Live: a paraphrase with no keyword overlap paged the earlier exchange back; owner isolation held.
+>
+> **Behavior-named tests added:** `tests/test_rerank.py`, `tests/test_core_blocks.py`,
+> `tests/test_conversation_search.py`, plus cases in `test_memory.py` / `test_agent_loop.py` /
+> `test_generate.py`. Every increment asserts "feature off == byte-identical to pre-R".
+
+**Original plan (below) — depended on features that have all shipped:** summarize-compaction (`scripts/bob_loop.py:809`, frame at `667-677`),
 prefix-cache-aware layout (`scripts/bob_loop.py:678`), hybrid dense+BM25/RRF recall
 (`scripts/bob_memory.py:463`, RRF fusion in `_recall_hybrid` `bob_memory.py:421-460`, FTS5 in
 `_ensure_fts` `bob_memory.py:372`), the tool-result retention seam (`scripts/bob_loop.py:780`,

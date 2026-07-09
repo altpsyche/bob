@@ -40,6 +40,10 @@
       "dedupThreshold": 0.92,
       "retrieval": "dense",
       "rrfK": 60,
+      "rerank": false,
+      "rerankTopN": 20,
+      "rerankBaseUrl": "",
+      "coreBlocks": {},
       "ranking": {
         "wSemantic": 1.0,
         "wRecency": 0.3,
@@ -89,6 +93,7 @@
       "stablePrefix": false,
       "clearToolResults": false,
       "clearToolResultsAfterTokens": 4000,
+      "conversationPaging": false,
       "constrainedToolCalls": false,
       "subAgents": false,
       "maxAgentDepth": 2,
