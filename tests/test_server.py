@@ -348,5 +348,68 @@ class TestServerAuthO8(unittest.TestCase):
         srv._check_role_scope(srv._Identity("a", ["file_*"], 0), "chat")  # no role: entries -> ok
 
 
+class TestTaskEndpoints(unittest.TestCase):
+    """Detached-task REST surface: create returns a run id and persists an owner-scoped row without
+    launching a real worker; list/get are owner-scoped (cross-owner 404); cancel invokes teardown."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp(prefix="bob-srvtask-"))
+        cfg = _common.fake_config()
+        cfg["agent"]["checkpointDbPath"] = str(self.dir / "cp.db")
+        cfg["agent"]["defaultOwner"] = "local"
+        srv._config = cfg
+        srv._token_owner = {"sk-test": "alice", "sk-bob": "bob"}
+        srv._token_meta = {}
+        srv._authstore = None
+        srv._registry = _common.FakeRegistry()
+        from bob import cli
+        self._cli = cli
+        self._orig_launch = cli._launch_task
+        self.launched = []
+        cli._launch_task = lambda config, rid, owner, goal, resume: self.launched.append(
+            (rid, owner, goal, resume))
+
+    def tearDown(self):
+        self._cli._launch_task = self._orig_launch
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_post_tasks_returns_run_id_and_persists_row(self):
+        resp = srv.create_task(srv.TaskCreate(goal="do the thing"), authorization=GOOD)
+        rid = resp["run_id"]
+        self.assertTrue(rid)
+        self.assertEqual(self.launched[0][3], False)   # launched with resume=False
+        row = srv._task_store().load_run(rid, "alice")
+        self.assertEqual(row["goal"], "do the thing")
+
+    def test_list_tasks_owner_scoped(self):
+        a = srv.create_task(srv.TaskCreate(goal="alice task"), authorization=GOOD)["run_id"]
+        b = srv.create_task(srv.TaskCreate(goal="bob task"), authorization=GOOD_B)["run_id"]
+        ids = [t["run_id"] for t in srv.list_tasks(authorization=GOOD)["tasks"]]
+        self.assertIn(a, ids)
+        self.assertNotIn(b, ids)
+
+    def test_get_task_cross_owner_404(self):
+        rid = srv.create_task(srv.TaskCreate(goal="alice task"), authorization=GOOD)["run_id"]
+        with self.assertRaises(HTTPException) as ctx:
+            srv.get_task(rid, authorization=GOOD_B)
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_cancel_task_invokes_teardown(self):
+        import osenv
+        rid = srv.create_task(srv.TaskCreate(goal="alice task"), authorization=GOOD)["run_id"]
+        srv._task_store().set_run_process(rid, "alice", 4321, str(self.dir / "t.log"))
+        killed = []
+        orig_alive, orig_kill = osenv.pid_alive, osenv.stop_process_tree
+        osenv.pid_alive = lambda pid: True
+        osenv.stop_process_tree = lambda pid: killed.append(pid)
+        try:
+            resp = srv.cancel_task(rid, authorization=GOOD)
+        finally:
+            osenv.pid_alive, osenv.stop_process_tree = orig_alive, orig_kill
+        self.assertEqual(resp["status"], "cancelled")
+        self.assertEqual(killed, [4321])
+        self.assertEqual(srv._task_store().load_run(rid, "alice")["status"], "cancelled")
+
+
 if __name__ == "__main__":
     unittest.main()

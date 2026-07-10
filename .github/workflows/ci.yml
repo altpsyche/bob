@@ -18,6 +18,12 @@ on:
   push:
     branches: [main]
     tags: ['v*']        # release tags additionally trigger the GPU acceptance tier
+  workflow_dispatch:
+    inputs:
+      eval_gate:
+        description: 'Fail the eval job if the capability score is below this fraction (0..1); blank = report only'
+        required: false
+        default: ''
 
 jobs:
   # Static analysis of the shell bootstrap. shellcheck catches bashisms/quoting/unset-var bugs in the
@@ -64,12 +70,13 @@ jobs:
 
   # Agent-capability eval on the Win+Linux matrix, EVERY PR but NON-GATING (continue-on-error): it
   # reports a deterministic capability score from a records-based run (scripted client + FakeRegistry,
-  # NO live model — CPU-safe, mirrors the smoke's CPU-tier tolerance). A threshold gate is added later
-  # once baselines stabilize (run_eval.py --gate).
+  # NO live model — CPU-safe, mirrors the smoke's CPU-tier tolerance). A maintainer can enforce a
+  # threshold on demand via the workflow_dispatch `eval_gate` input (run_eval.py --gate); PR runs stay
+  # report-only until baselines stabilize.
   eval:
     name: eval (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    continue-on-error: true           # non-gating first — reports the score, never reds a PR
+    continue-on-error: true           # non-gating on PRs — reports the score, never reds a PR
     strategy:
       fail-fast: false
       matrix:
@@ -87,9 +94,15 @@ jobs:
         shell: bash
         run: python -m pip install --upgrade pip fastapi uvicorn pydantic httpx requests openai sqlite-utils
 
-      - name: Agent-capability eval (records-based, non-gating)
+      - name: Agent-capability eval (records-based)
         shell: bash
-        run: python tests/eval/run_eval.py --json
+        run: |
+          gate="${{ github.event.inputs.eval_gate }}"
+          if [ -n "$gate" ]; then
+            python tests/eval/run_eval.py --json --gate "$gate"
+          else
+            python tests/eval/run_eval.py --json
+          fi
 
   # Fresh-install acceptance on the CPU tier, both OSes, EVERY PR (gates). Provisions a clean runner per
   # the documented one-command entry, builds the CPU llama.cpp, serves the tiny CPU GGUF, and runs the

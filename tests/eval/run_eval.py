@@ -57,6 +57,7 @@ def run_task(task: dict) -> tuple:
     agent = dict(_BASE_AGENT)
     agent["permissions"] = task.get("permissions", {})
     agent["maxParallelTools"] = task.get("maxParallelTools", 1)
+    agent["maxSteps"] = task.get("maxSteps", _BASE_AGENT["maxSteps"])   # per-task step budget
     cfg = _common.fake_config(agent=agent)
     reg = _common.FakeRegistry(task.get("results", {}),
                                mutating_tools=task.get("mutating"),
@@ -68,7 +69,8 @@ def run_task(task: dict) -> tuple:
     try:
         events = list(bob_loop.run_agent_events(
             task["goal"], cfg, agency=task.get("agency", "silent"), registry=reg,
-            approve=task.get("approve"), owner=task.get("owner", "local")))
+            approve=task.get("approve"), owner=task.get("owner", "local"),
+            history=task.get("history")))   # resume-integrity fixtures pre-seed prior turns
     finally:
         bob_core.check_litellm, bob_core.get_llm_client = orig_check, orig_client
 

@@ -53,7 +53,7 @@ PREVIEW = {"file_edit": _render_preview}
 
 
 def _affected_paths(args: dict) -> list:
-    """The file path(s) a file_edit call will touch, for pre-mutation checkpointing (Q4)."""
+    """The file path(s) a file_edit call will touch, for pre-mutation checkpointing."""
     try:
         return [bob_edit.bob_fsguard.abs_path(spec["path"], _allowed_write)
                 for spec in bob_edit.normalize_edits(args)]

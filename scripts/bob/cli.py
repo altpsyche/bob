@@ -1088,6 +1088,195 @@ def _handle_task_rewind(rest: list) -> int:
     return 0
 
 
+def _task_store(config):
+    import bob_checkpoint
+    owner = config.get("agent", {}).get("defaultOwner", "local")
+    db = config.get("agent", {}).get("checkpointDbPath") or None
+    return bob_checkpoint.CheckpointStore(db_path=db, default_owner=owner), owner
+
+
+def _task_paths(run_id: str):
+    import osenv
+    d = osenv.cache_dir()
+    return d / f"task-{run_id}.log", d / f"task-{run_id}.pid"
+
+
+def _launch_task(config, run_id: str, owner: str, goal: str, resume: bool,
+                 allow_computer: bool = False) -> int:
+    """Launch the detached task worker for a durable run and record its pid + log path. Shared by
+    `task start` and `task resume`. Returns the worker pid."""
+    import osenv
+    runner = Path(__file__).resolve().parent.parent / "bob_task_runner.py"
+    env_py = str(osenv.venv_exe("venv-litellm", "python"))
+    py = env_py if Path(env_py).exists() else sys.executable
+    argv = [py, str(runner), "--run-id", run_id, "--owner", owner or "local"]
+    if resume:
+        argv.append("--resume")
+    else:
+        argv += ["--goal", goal or ""]
+    if allow_computer:
+        argv.append("--allow-computer")
+    log_path, pidfile = _task_paths(run_id)
+    pid = osenv.start_detached(argv, pidfile=str(pidfile), log_path=str(log_path), append=True)
+    store, _ = _task_store(config)
+    store.set_run_process(run_id, owner, pid, str(log_path))
+    return pid
+
+
+def _handle_task_start(rest: list) -> int:
+    """bob task start "<goal>" — enqueue a durable agent run in a detached worker that survives this
+    client disconnecting, and print its run id. Inspect it with `task status`/`task logs`."""
+    import uuid
+    from bob_core import load_config
+
+    args = list(rest)
+    allow_computer = "--allow-computer" in args
+    if allow_computer:
+        args.remove("--allow-computer")
+    goal = " ".join(args).strip()
+    if not goal:
+        print('usage: bob task start "<goal>" [--allow-computer]', file=sys.stderr)
+        return 1
+    config = load_config()
+    store, owner = _task_store(config)
+    run_id = uuid.uuid4().hex[:8]
+    store.save_run(run_id, owner, "queued", goal, [], step=0)
+    _launch_task(config, run_id, owner, goal, resume=False, allow_computer=allow_computer)
+    print(run_id)
+    return 0
+
+
+def _handle_task_status(rest: list) -> int:
+    """bob task status [<run-id>] — with no id, list this owner's runs; with an id, show one run.
+    A 'running' row whose worker pid is no longer alive is reported as 'interrupted' (resume it)."""
+    import osenv
+    from bob_core import load_config
+
+    config = load_config()
+    store, owner = _task_store(config)
+
+    def _display_status(row):
+        st = row["status"]
+        if st == "running" and row.get("pid") and not osenv.pid_alive(row["pid"]):
+            return "interrupted"
+        return st
+
+    if rest:
+        row = store.load_run(rest[0], owner)
+        if row is None:
+            print(f"No run '{rest[0]}' for this owner.", file=sys.stderr)
+            return 1
+        print(f"{row['run_id']}  {_display_status(row)}  step={row['step']}  goal={row['goal'][:80]!r}")
+        if row.get("result"):
+            print(row["result"])
+        return 0
+
+    runs = store.list_runs(owner)
+    if not runs:
+        print("No tasks.")
+        return 0
+    for row in runs:
+        print(f"{row['run_id']}  {_display_status(row):<11}  step={row['step']:<3}  {row['goal'][:70]}")
+    return 0
+
+
+def _handle_task_logs(rest: list) -> int:
+    """bob task logs <run-id> [-n N] — print the tail of a detached task's log."""
+    from bob_core import load_config
+
+    if not rest:
+        print("usage: bob task logs <run-id> [-n N]", file=sys.stderr)
+        return 1
+    n = 40
+    args = list(rest)
+    if "-n" in args:
+        i = args.index("-n")
+        try:
+            n = int(args[i + 1])
+            del args[i:i + 2]
+        except (ValueError, IndexError):
+            print("usage: bob task logs <run-id> [-n N]", file=sys.stderr)
+            return 1
+    config = load_config()
+    store, owner = _task_store(config)
+    row = store.load_run(args[0], owner)
+    if row is None:
+        print(f"No run '{args[0]}' for this owner.", file=sys.stderr)
+        return 1
+    log_path = row.get("log_path")
+    if not log_path or not Path(log_path).exists():
+        print("(no log yet)")
+        return 0
+    lines = Path(log_path).read_text(encoding="utf-8", errors="replace").splitlines()[-n:]
+    print("\n".join(lines))
+    return 0
+
+
+def _handle_task_cancel(rest: list) -> int:
+    """bob task cancel <run-id> — stop a running detached task and mark it cancelled. Sends SIGTERM to the
+    worker's process group (it stops at the next step boundary); a checkpointed task can be resumed later."""
+    import osenv
+    from bob_core import load_config
+
+    if not rest:
+        print("usage: bob task cancel <run-id>", file=sys.stderr)
+        return 1
+    config = load_config()
+    store, owner = _task_store(config)
+    row = store.load_run(rest[0], owner)
+    if row is None:
+        print(f"No run '{rest[0]}' for this owner.", file=sys.stderr)
+        return 1
+    pid = row.get("pid")
+    if pid and osenv.pid_alive(pid):
+        osenv.stop_process_tree(pid)
+    store.set_status(rest[0], owner, "cancelled")
+    print(f"Cancelled {rest[0]}.")
+    return 0
+
+
+def _handle_task_resume(rest: list) -> int:
+    """bob task resume <run-id> — relaunch a checkpointed task in a fresh detached worker; the durable
+    loop continues from its last step without re-running completed tools."""
+    from bob_core import load_config
+
+    if not rest:
+        print("usage: bob task resume <run-id>", file=sys.stderr)
+        return 1
+    config = load_config()
+    store, owner = _task_store(config)
+    row = store.load_run(rest[0], owner)
+    if row is None:
+        print(f"No run '{rest[0]}' for this owner.", file=sys.stderr)
+        return 1
+    _launch_task(config, rest[0], owner, row["goal"], resume=True)
+    print(f"Resuming {rest[0]}.")
+    return 0
+
+
+def _handle_computer(rest: list) -> int:
+    """bob computer stop|status [clear] — the out-of-band kill switch for computer-use. `stop` halts all
+    computer-use actions (they refuse until resumed); `status` reports the state, and `status clear`
+    lifts the halt. The running agent checks the sentinel before every action."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import computer
+
+    sub = rest[0] if rest else "status"
+    if sub == "stop":
+        computer.set_halt(True)
+        print("computer-use halted; run `bob computer status clear` to resume.")
+        return 0
+    if sub == "status":
+        if len(rest) > 1 and rest[1] == "clear":
+            computer.set_halt(False)
+            print("computer-use resumed.")
+            return 0
+        print("halted" if computer.is_halted() else "active")
+        return 0
+    print("usage: bob computer stop | status [clear]", file=sys.stderr)
+    return 1
+
+
 def _handle_code_index(rest: list) -> int:
     """bob code index — build the semantic code index (embeddings) over allowedReadPaths into data/code.db,
     for code_search action=semantic. Needs the embed server (bob up)."""
@@ -1193,6 +1382,12 @@ _HANDLERS = {
     "edit": _handle_edit,
     "task_test": _handle_task_test,
     "task_rewind": _handle_task_rewind,
+    "task_start": _handle_task_start,
+    "task_status": _handle_task_status,
+    "task_logs": _handle_task_logs,
+    "task_cancel": _handle_task_cancel,
+    "task_resume": _handle_task_resume,
+    "computer": _handle_computer,
     "code_index": _handle_code_index,
     "aider": _handle_aider,
     "up": _handle_up,                 # lifecycle (scripts/tools/stack.py)

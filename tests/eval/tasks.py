@@ -83,4 +83,57 @@ EVAL_TASKS = [
         "expect_tools": ["spawn_agent"],
         "expect_final_contains": ["Synthesized"],
     },
+    {
+        "name": "resume_integrity",                   # prior turns pre-seeded via history reach the goal
+        "goal": "Given the earlier findings, state the conclusion.",
+        "history": [
+            {"role": "user", "content": "Research the topic."},
+            {"role": "assistant", "content": "I gathered the key facts: X and Y."},
+        ],
+        "turns": ["Conclusion: X and Y together imply Z."],
+        "expect_final": True,
+        "expect_final_contains": ["Conclusion"],
+    },
+    {
+        "name": "step_budget_exhaustion",             # over-budget run still ends with a final event;
+        "goal": "Keep calling tools past the budget.",  # the never-reached tool is not dispatched
+        "maxSteps": 2,
+        "turns": [_tc("step_one", k=1), _tc("step_two", k=2), _tc("never_reached", k=3), "done"],
+        "results": {"step_one": "1", "step_two": "2", "never_reached": "3"},
+        "expect_events": ["final"],
+        "forbid_tools": ["never_reached"],
+    },
+    {
+        "name": "computer_use_denied_when_off",       # a denied computer action never runs; agent answers
+        "goal": "Click the button on screen.",
+        "turns": [_tc("computer_click", coordinate=[10, 20]),
+                  "I could not do that; computer-use is not permitted here."],
+        "results": {"computer_click": "clicked"},
+        "permissions": {"tools": {"computer_click": "deny"}},
+        "expect_final": True,
+        "forbid_tools": ["computer_click"],
+        "expect_final_contains": ["could not"],
+    },
+    {
+        "name": "computer_use_ask_enforced",          # an approval-gated action prompts; denial blocks it
+        "goal": "Click the button on screen.",
+        "turns": [_tc("computer_click", coordinate=[10, 20]),
+                  "Understood, I will not click without approval."],
+        "results": {"computer_click": "clicked"},
+        "approval": ["computer_click"],
+        "approve": lambda action: False,             # operator denies at the prompt
+        "expect_final": True,
+        "expect_events": ["approval_required"],
+        "forbid_tools": ["computer_click"],
+    },
+    {
+        "name": "computer_use_approved_runs",         # approved at the prompt -> the action runs
+        "goal": "Click the button on screen.",
+        "turns": [_tc("computer_click", coordinate=[10, 20]), "Clicked as approved."],
+        "results": {"computer_click": "clicked"},
+        "approval": ["computer_click"],
+        "approve": lambda action: True,
+        "expect_final": True,
+        "expect_tools": ["computer_click"],
+    },
 ]

@@ -20,7 +20,7 @@ import shutil
 import sqlite3
 import subprocess
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 REPO = Path(__file__).parent.parent
@@ -50,7 +50,9 @@ def in_git_repo(path: Path) -> Path:
 
 
 class CheckpointStore:
-    """SQLite-backed, owner-scoped snapshots keyed by (run_id, step)."""
+    """SQLite-backed, owner-scoped store with two concerns sharing one DB and connection discipline:
+    per-step file snapshots keyed by (run_id, step) for rewind, and durable per-run loop state keyed by
+    run_id for resume across process death."""
 
     def __init__(self, db_path=None, shadow_dir=None, default_owner: str = "local"):
         self.path = Path(db_path or DEFAULT_DB)
@@ -83,11 +85,177 @@ class CheckpointStore:
                 created_at TEXT NOT NULL,
                 PRIMARY KEY (run_id, step)
             )""")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS runs (
+                run_id        TEXT PRIMARY KEY,
+                owner_id      TEXT NOT NULL,
+                status        TEXT NOT NULL,        -- running|paused|done|failed|cancelled|queued
+                goal          TEXT NOT NULL,
+                scope         TEXT,
+                agent_depth   INTEGER NOT NULL DEFAULT 0,
+                step          INTEGER NOT NULL DEFAULT 0,   -- next step to execute
+                exit_requested INTEGER NOT NULL DEFAULT 0,
+                messages_json TEXT NOT NULL,        -- the loop's message list, tool results embedded
+                todos_json    TEXT,
+                result        TEXT,
+                metrics_json  TEXT,
+                lease_holder  TEXT,                 -- process token holding the run (resume coordination)
+                lease_expires TEXT,                 -- ISO time the lease goes stale
+                pid           INTEGER,              -- detached worker process (P2 task supervision)
+                log_path      TEXT,                 -- detached worker's log file
+                created_at    TEXT NOT NULL,
+                updated_at    TEXT NOT NULL
+            )""")
+        self._ensure_columns(conn, "runs", {
+            "lease_holder": "TEXT", "lease_expires": "TEXT", "pid": "INTEGER", "log_path": "TEXT"})
+
+    def _ensure_columns(self, conn, table: str, cols: dict) -> None:
+        """Idempotently add any missing columns to `table` (migrates a store created before the column
+        existed). SQLite has no ADD COLUMN IF NOT EXISTS, so check PRAGMA table_info first."""
+        have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        for name, decl in cols.items():
+            if name not in have:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
     def has(self, run_id: str, step: int) -> bool:
         row = self._conn().execute(
             "SELECT 1 FROM checkpoints WHERE run_id=? AND step=?", [run_id, step]).fetchone()
         return row is not None
+
+    # --- durable run state ------------------------------------------------------------------------
+    def save_run(self, run_id: str, owner: str, status: str, goal: str, messages, step: int,
+                 exit_requested: bool = False, scope: str = None, agent_depth: int = 0,
+                 todos=None, result: str = None, metrics=None) -> None:
+        """Upsert the durable state of a run (one row per run_id, owner-scoped). Persisting `messages`
+        (which already carries tool-result turns) is what lets a resume continue without re-running
+        completed tools. `created_at` is preserved across updates; `updated_at` always advances."""
+        owner = owner or self._default_owner
+        now = _now()
+        conn = self._conn()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(
+                """INSERT INTO runs (run_id, owner_id, status, goal, scope, agent_depth, step,
+                                     exit_requested, messages_json, todos_json, result, metrics_json,
+                                     created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(run_id) DO UPDATE SET
+                     owner_id=excluded.owner_id, status=excluded.status, goal=excluded.goal,
+                     scope=excluded.scope, agent_depth=excluded.agent_depth, step=excluded.step,
+                     exit_requested=excluded.exit_requested, messages_json=excluded.messages_json,
+                     todos_json=excluded.todos_json, result=excluded.result,
+                     metrics_json=excluded.metrics_json, updated_at=excluded.updated_at""",
+                [run_id, owner, status, goal, scope, agent_depth, step,
+                 1 if exit_requested else 0, json.dumps(messages), json.dumps(todos or []),
+                 result, json.dumps(metrics or {}), now, now])
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+    def load_run(self, run_id: str, owner: str):
+        """The full durable state of a run for this owner, or None. Returns messages/todos/metrics
+        already decoded from JSON."""
+        row = self._conn().execute(
+            """SELECT status, goal, scope, agent_depth, step, exit_requested, messages_json,
+                      todos_json, result, metrics_json, created_at, updated_at, pid, log_path
+               FROM runs WHERE run_id=? AND owner_id=?""",
+            [run_id, owner or self._default_owner]).fetchone()
+        if not row:
+            return None
+        return {"run_id": run_id, "owner": owner or self._default_owner, "status": row[0],
+                "goal": row[1], "scope": row[2], "agent_depth": row[3], "step": row[4],
+                "exit_requested": bool(row[5]), "messages": json.loads(row[6]),
+                "todos": json.loads(row[7] or "[]"), "result": row[8],
+                "metrics": json.loads(row[9] or "{}"), "created_at": row[10], "updated_at": row[11],
+                "pid": row[12], "log_path": row[13]}
+
+    def set_run_process(self, run_id: str, owner: str, pid: int, log_path: str) -> None:
+        """Record the detached worker's pid + log path for a task (P2 supervision)."""
+        conn = self._conn()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(
+                "UPDATE runs SET pid=?, log_path=?, updated_at=? WHERE run_id=? AND owner_id=?",
+                [pid, log_path, _now(), run_id, owner or self._default_owner])
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+    def set_status(self, run_id: str, owner: str, status: str, result: str = None) -> None:
+        """Mark a run's terminal (or intermediate) status; optionally record its final result."""
+        conn = self._conn()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if result is None:
+                conn.execute("UPDATE runs SET status=?, updated_at=? WHERE run_id=? AND owner_id=?",
+                             [status, _now(), run_id, owner or self._default_owner])
+            else:
+                conn.execute(
+                    "UPDATE runs SET status=?, result=?, updated_at=? WHERE run_id=? AND owner_id=?",
+                    [status, result, _now(), run_id, owner or self._default_owner])
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+    def list_runs(self, owner: str) -> list:
+        """Summaries of this owner's runs, most-recently-updated first."""
+        rows = self._conn().execute(
+            """SELECT run_id, status, goal, step, created_at, updated_at, pid, log_path
+               FROM runs WHERE owner_id=? ORDER BY updated_at DESC""",
+            [owner or self._default_owner]).fetchall()
+        return [{"run_id": r[0], "status": r[1], "goal": r[2], "step": r[3],
+                 "created_at": r[4], "updated_at": r[5], "pid": r[6], "log_path": r[7]} for r in rows]
+
+    def acquire_lease(self, run_id: str, owner: str, holder: str, ttl_seconds: int = 3600) -> bool:
+        """Take (or renew) the run's lease for `holder`. Returns False if a *different* holder still has an
+        unexpired lease -- the guard against two processes resuming the same run and double-executing.
+        Returns False for a nonexistent run."""
+        owner = owner or self._default_owner
+        now = datetime.now(timezone.utc)
+        conn = self._conn()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT lease_holder, lease_expires FROM runs WHERE run_id=? AND owner_id=?",
+                [run_id, owner]).fetchone()
+            if row is None:
+                conn.execute("COMMIT")
+                return False
+            cur_holder, cur_expires = row
+            if cur_holder and cur_holder != holder and cur_expires:
+                try:
+                    live = datetime.fromisoformat(cur_expires) > now
+                except ValueError:
+                    live = False
+                if live:
+                    conn.execute("COMMIT")
+                    return False
+            expires = (now + timedelta(seconds=ttl_seconds)).isoformat()
+            conn.execute(
+                "UPDATE runs SET lease_holder=?, lease_expires=?, updated_at=? WHERE run_id=? AND owner_id=?",
+                [holder, expires, now.isoformat(), run_id, owner])
+            conn.execute("COMMIT")
+            return True
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+    def release_lease(self, run_id: str, owner: str, holder: str) -> None:
+        """Release the run's lease if `holder` still owns it (a no-op otherwise)."""
+        conn = self._conn()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(
+                "UPDATE runs SET lease_holder=NULL, lease_expires=NULL, updated_at=? "
+                "WHERE run_id=? AND owner_id=? AND lease_holder=?",
+                [_now(), run_id, owner or self._default_owner, holder])
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
     # --- snapshot ---------------------------------------------------------------------------------
     def snapshot(self, run_id: str, step: int, owner: str, paths, prefer_git: bool = True) -> bool:

@@ -1248,6 +1248,7 @@ def run_agent_events(
     max_tokens: int = None,
     images: list = None,
     system_prompt: str = None,
+    resume: str = None,
 ):
     """Generator core of the agent loop. Yields event dicts:
         {"type": "token",             "text": str}                          # final-answer deltas (stream=True)
@@ -1314,6 +1315,9 @@ def run_agent_events(
         (agent_cfg.get("testCmd") or "").strip() or (agent_cfg.get("lintCmd") or "").strip())
     autofix_max_rounds = int(agent_cfg.get("autoFixRounds", 3))
     checkpoint_edits = bool(agent_cfg.get("checkpointEdits", False))
+    # Durable run state: persist the message list + step + identity each step so a killed run can resume
+    # (distinct from checkpointEdits, which snapshots file bytes for rewind). Default off == no run rows.
+    checkpoint_run = bool(agent_cfg.get("checkpoint", False))
     # Goal recitation: re-emit the goal + open TODO at the context TAIL each step (default off ==
     # no recitation; the block is appended only to the per-step request, never stored in `messages`).
     recite_enabled = bool(agent_cfg.get("recite", False))
@@ -1335,6 +1339,39 @@ def run_agent_events(
     log = _agent_logger(config)
     t_start = time.monotonic()
     reg_build_ms = 0.0
+
+    # Resume path: rehydrate a checkpointed run's message list (tool results already embedded), step
+    # index, and identity, then continue from the next step -- completed tools are NOT re-run. A run
+    # lease guards against two processes resuming the same run at once (double-execution). Resume forces
+    # checkpointing on so the continued run keeps persisting.
+    resumed = None
+    resume_store = None
+    lease_token = None
+    step_start = 0
+    if resume:
+        try:
+            import bob_checkpoint
+            resume_store = bob_checkpoint.CheckpointStore(
+                db_path=agent_cfg.get("checkpointDbPath") or None, default_owner=owner or "local")
+            resumed = resume_store.load_run(resume, owner)
+        except Exception as _e:
+            log.warning(f"[{rid}] resume load failed: {_e}")
+        if resumed is None:
+            yield {"type": "error", "message": f"cannot resume run {resume!r}: not found for this owner"}
+            return
+        lease_token = uuid.uuid4().hex
+        if not resume_store.acquire_lease(resume, owner, holder=lease_token):
+            yield {"type": "error",
+                   "message": f"run {resume!r} is already active (held by another process)"}
+            return
+        rid = resume
+        owner = resumed["owner"]
+        scope = resumed["scope"]
+        agent_depth = resumed["agent_depth"]
+        goal = resumed["goal"]
+        step_start = resumed["step"]
+        checkpoint_run = True
+        log.info(f"[{rid}] resuming from step {step_start}")
 
     # Build the registry if the caller didn't supply one (server passes its prebuilt, warm
     # registry). Timed for the metrics line / cold-start visibility.
@@ -1465,19 +1502,28 @@ def run_agent_events(
     )
     # Prior session turns are seeded between the system prompt and the new goal;
     # truncate_history keeps the whole thing within the token budget.
-    messages = [{"role": "system", "content": base_system}]
-    if history:
-        messages.extend(history)
-    # Keep a reference to the goal message so truncate_history can pin it (by identity) into the
-    # stable prefix when stable_prefix is on; a plain user turn otherwise.
-    # With images attached, the user turn is an OpenAI content-block list ([text, image_url…]);
-    # with none it stays a plain string (byte-identical to the text-only path). `goal` itself stays a str, so
-    # recall / recitation / logging are untouched.
-    goal_content = goal
-    if images:
-        goal_content = [{"type": "text", "text": goal}] + [_image_content_block(s) for s in images]
-    goal_msg = {"role": "user", "content": goal_content}
-    messages.append(goal_msg)
+    # On resume the persisted transcript (its own system prompt + all turns, tool results embedded) is
+    # used verbatim so completed steps are not rebuilt or re-run; `history`/images are ignored.
+    if resumed is not None:
+        # The persisted transcript already ends with the pending work; pin its last user turn (if any)
+        # so truncate_history's stable-prefix logic has a goal reference to hold.
+        messages = resumed["messages"]
+        goal_msg = next((m for m in reversed(messages) if m.get("role") == "user"),
+                        {"role": "user", "content": goal})
+    else:
+        messages = [{"role": "system", "content": base_system}]
+        if history:
+            messages.extend(history)
+        # Keep a reference to the goal message so truncate_history can pin it (by identity) into the
+        # stable prefix when stable_prefix is on; a plain user turn otherwise.
+        # With images attached, the user turn is an OpenAI content-block list ([text, image_url…]);
+        # with none it stays a plain string (byte-identical to the text-only path). `goal` itself stays a
+        # str, so recall / recitation / logging are untouched.
+        goal_content = goal
+        if images:
+            goal_content = [{"type": "text", "text": goal}] + [_image_content_block(s) for s in images]
+        goal_msg = {"role": "user", "content": goal_content}
+        messages.append(goal_msg)
 
     # Conversation-paging capture (opt-in): persist every turn — user, assistant, AND intermediate tool
     # turns — to the owner-scoped transcript store AS IT HAPPENS, before compaction can drop it, so
@@ -1505,7 +1551,7 @@ def run_agent_events(
     _cap("user", goal)
 
     client = get_llm_client(config)
-    exit_requested = False
+    exit_requested = resumed["exit_requested"] if resumed is not None else False
     last_content = None
     steps_done = 0     # metrics
     tools_run = 0
@@ -1548,8 +1594,10 @@ def run_agent_events(
     run_ctx = RunContext(cancel=cancel, config=config, registry=registry, run_id=rid,
                          approve=approve, owner=owner, agent_depth=agent_depth, scope=scope,
                          policy=policy, tracer=tracer, trace_span=run_span)
+    if resumed is not None and resumed.get("todos"):
+        run_ctx.todos = resumed["todos"]   # restore the living TODO list so recitation/recall continue
     # Plan phase: one bounded planner turn whose step list is injected as context before the loop.
-    if plan_enabled:
+    if plan_enabled and resumed is None:
         plan_text = _single_turn(client, effective_role,
                                  [{"role": "system", "content": _PLAN_SYSTEM},
                                   {"role": "user", "content": goal}],
@@ -1558,16 +1606,53 @@ def run_agent_events(
             messages.insert(1, {"role": "system", "content": f"Plan for this task:\n{plan_text.strip()}"})
             log.info(f"[{rid}] plan injected ({len(plan_text)}c)")
 
-    # Per-step checkpoint store: snapshot the files a mutating step will touch, before it runs, so a bad
-    # edit can be rewound. Default off -> no store, no snapshots (byte-identical).
-    checkpoint_store = None
-    if checkpoint_edits:
+    # One CheckpointStore serves two independent concerns: per-step file snapshots (checkpointEdits, for
+    # rewind) and durable run state (checkpoint, for resume). Built when either gate is on. Default off ->
+    # no store (byte-identical).
+    checkpoint_store = resume_store   # reuse the store opened for resume (holds this run's lease)
+    if checkpoint_store is None and (checkpoint_edits or checkpoint_run):
         try:
             import bob_checkpoint
             checkpoint_store = bob_checkpoint.CheckpointStore(
                 db_path=agent_cfg.get("checkpointDbPath") or None, default_owner=owner or "local")
         except Exception as _e:
-            log.warning(f"[{rid}] checkpoint store unavailable ({_e}); edits will not be snapshotted")
+            log.warning(f"[{rid}] checkpoint store unavailable ({_e}); edits/run state not persisted")
+
+    # Durable-run bookkeeping: track the terminal status/result (recorded before each terminal yield via
+    # _term, written in the finally) and the run-state save helper. A row is written up front so a run that
+    # fails before completing a step is still recorded and resumable.
+    run_persist = checkpoint_store is not None and checkpoint_run
+
+    def _run_metrics():
+        return {"steps": steps_done, "tools": tools_run, "tokens_est": tokens_est}
+
+    def _save_run(status, next_step):
+        if not run_persist:
+            return
+        try:
+            checkpoint_store.save_run(rid, owner, status, goal, messages, next_step,
+                                      exit_requested=exit_requested, scope=scope,
+                                      agent_depth=agent_depth, todos=run_ctx.todos,
+                                      metrics=_run_metrics())
+        except Exception as _e:
+            log.warning(f"[{rid}] run-state persist failed (continuing): {_e}")
+
+    end_status, end_result = "running", None
+
+    def _term(ev):
+        """Record a run's terminal status/result before yielding its final/error event, so the finally
+        block can persist it even if the consumer abandons the generator right after the event."""
+        nonlocal end_status, end_result
+        if run_persist:
+            if ev["type"] == "error":
+                end_status, end_result = "failed", ev.get("message")
+            elif ev.get("reason") == "cancelled":
+                end_status, end_result = "cancelled", ev.get("result")
+            else:
+                end_status, end_result = "done", ev.get("result")
+        yield ev
+
+    _save_run("running", step_start)
 
     verified = False   # verify pass runs at most once per run (bounded)
     stop_hook_fired = False   # Stop hooks may nudge the run to continue, at most once (bounded)
@@ -1577,11 +1662,14 @@ def run_agent_events(
     force_answer = False      # set after a fully-repeated step: next turn must answer, not call tools
     prev_sigint = _install_interrupt_handler(cancel)
     try:
-        for step in range(max_steps):
+        for step in range(step_start, max_steps):
+            # `step` is rebound to the tool-results dict later in the body; keep the integer index for
+            # checkpointing the next resume boundary.
+            step_index = step
             if cancel.cancelled():
                 log.info(f"[{rid}] cancelled before step {step + 1}")
-                yield {"type": "final", "result": _final_answer(last_content, hermes_mode),
-                       "exit_requested": exit_requested, "reason": "cancelled"}
+                yield from _term({"type": "final", "result": _final_answer(last_content, hermes_mode),
+                                  "exit_requested": exit_requested, "reason": "cancelled"})
                 return
 
             # Mid-run steering: inject any queued steer messages as user turns at this step boundary
@@ -1659,23 +1747,25 @@ def run_agent_events(
                               file=sys.stderr)
                         _sleep_cancellable(delay, cancel)
                         if cancel is not None and cancel.cancelled():
-                            yield {"type": "final", "result": _final_answer(last_content, hermes_mode),
-                                   "exit_requested": exit_requested, "reason": "cancelled"}
+                            yield from _term({"type": "final",
+                                              "result": _final_answer(last_content, hermes_mode),
+                                              "exit_requested": exit_requested, "reason": "cancelled"})
                             return
                         continue
                     log.error(f"[{rid}] LLM error step {step + 1}: {e}")
-                    yield {"type": "error", "message": f"LLM error at step {step + 1}: {e}"}
+                    yield from _term({"type": "error", "message": f"LLM error at step {step + 1}: {e}"})
                     return
 
             if getattr(msg, "cancelled", False):
                 log.info(f"[{rid}] cancelled mid-stream step {step + 1}")
-                yield {"type": "final", "result": _final_answer(last_content, hermes_mode),
-                       "exit_requested": exit_requested, "reason": "cancelled"}
+                yield from _term({"type": "final", "result": _final_answer(last_content, hermes_mode),
+                                  "exit_requested": exit_requested, "reason": "cancelled"})
                 return
 
             if not (msg.content or msg.tool_calls):  # empty completion — preserve the empty-response guard
                 log.error(f"[{rid}] empty response step {step + 1}")
-                yield {"type": "error", "message": f"LLM returned an empty response at step {step + 1}"}
+                yield from _term({"type": "error",
+                                  "message": f"LLM returned an empty response at step {step + 1}"})
                 return
 
             content = msg.content or ""
@@ -1750,8 +1840,8 @@ def run_agent_events(
                         messages.append({"role": "user", "content": inject})
                         continue
                 log.info(f"[{rid}] final len={len(final)}")
-                yield {"type": "final", "result": final,
-                       "exit_requested": exit_requested, "reason": "answer"}
+                yield from _term({"type": "final", "result": final,
+                                  "exit_requested": exit_requested, "reason": "answer"})
                 return
 
             # Loop-guard: the previous step was nothing but repeated calls and we told the model to
@@ -1759,8 +1849,8 @@ def run_agent_events(
             if force_answer:
                 final = (_strip_tool_calls(content) if hermes_mode else content).strip() or _STUCK_ANSWER_MSG
                 log.warning(f"[{rid}] forcing answer after repeated tool calls")
-                yield {"type": "final", "result": final,
-                       "exit_requested": exit_requested, "reason": "forced_answer"}
+                yield from _term({"type": "final", "result": final,
+                                  "exit_requested": exit_requested, "reason": "forced_answer"})
                 return
 
             call_ids = [_call_id(tc, step, idx) for idx, tc in enumerate(tool_calls)]
@@ -1770,8 +1860,8 @@ def run_agent_events(
 
             # Per-step checkpoint: before any mutating call in this step runs, snapshot the files it will
             # touch (via each tool's AFFECTS declaration) so the step can be rewound. One checkpoint per
-            # (run_id, step); no-op when checkpointing is off or the step has no mutating calls.
-            if checkpoint_store is not None:
+            # (run_id, step); no-op when checkpointEdits is off or the step has no mutating calls.
+            if checkpoint_store is not None and checkpoint_edits:
                 affected = []
                 for tc in tool_calls:
                     if tc.function.name in getattr(registry, "mutating_tools", set()):
@@ -1802,8 +1892,8 @@ def run_agent_events(
             if step["exit_requested"]:
                 exit_requested = True
             if step["cancelled"]:
-                yield {"type": "final", "result": _final_answer(last_content, hermes_mode),
-                       "exit_requested": exit_requested, "reason": "cancelled"}
+                yield from _term({"type": "final", "result": _final_answer(last_content, hermes_mode),
+                                  "exit_requested": exit_requested, "reason": "cancelled"})
                 return
             # A tool may return image(s) via the {"__images__":[...], "text":...} contract;
             # split them out so the transcript carries the text summary and the images ride as
@@ -1845,11 +1935,28 @@ def run_agent_events(
                     "tool now — answer me directly using what you already have."})
                 force_answer = True
 
+            # Step boundary reached with the tool results now in `messages`: persist so a killed run can
+            # resume from the next step without re-running the tools whose results are already recorded.
+            _save_run("running", step_index + 1)
+
         log.warning(f"[{rid}] stopped after {max_steps} steps without a final answer")
         print(f"Agent stopped after {max_steps} steps without a final answer.", file=sys.stderr)
-        yield {"type": "final", "result": None, "exit_requested": exit_requested, "reason": "max_steps"}
+        yield from _term({"type": "final", "result": None, "exit_requested": exit_requested,
+                          "reason": "max_steps"})
     finally:
         _restore_interrupt_handler(prev_sigint)
+        # Record the run's terminal status/result (recorded by _term before each terminal yield; left
+        # 'running' if the run was interrupted with no terminal event, so it stays resumable).
+        if run_persist:
+            try:
+                checkpoint_store.set_status(rid, owner, end_status, end_result)
+            except Exception as _e:
+                log.warning(f"[{rid}] run-state terminal status write failed: {_e}")
+        if resume_store is not None and lease_token is not None:
+            try:
+                resume_store.release_lease(rid, owner, lease_token)
+            except Exception as _e:
+                log.warning(f"[{rid}] run lease release failed: {_e}")
         # Close the run span with the same counters as the metrics line (no-op when disabled).
         run_span.end(attributes={"steps": steps_done, "tools": tools_run, "tokens_est": tokens_est})
         # One metrics line per run so a single `grep <rid>` reconstructs it end to end.
@@ -1877,6 +1984,7 @@ def run_agent(
     no_tools: bool = False,
     max_tokens: int = None,
     images: list = None,
+    resume: str = None,
 ) -> tuple[str | None, bool]:
     """Blocking wrapper over run_agent_events for the CLI: prints tool previews to stderr,
     streams/echoes the final answer to stdout, and returns (result, exit_requested).
@@ -1893,7 +2001,7 @@ def run_agent(
         goal, config, role=role, agency=agency,
         exit_on_tools=exit_on_tools, registry=registry, stream=stream, history=history,
         cancel=cancel, run_id=run_id, approve=approve, owner=owner, agent_depth=agent_depth,
-        scope=scope, no_tools=no_tools, max_tokens=max_tokens, images=images,
+        scope=scope, no_tools=no_tools, max_tokens=max_tokens, images=images, resume=resume,
     ):
         t = ev["type"]
         if t == "token":

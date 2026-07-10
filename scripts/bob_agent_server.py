@@ -61,6 +61,10 @@ class SteerRequest(BaseModel):
     message: str           # injected into the running loop at its next step boundary
 
 
+class TaskCreate(BaseModel):
+    goal: str              # the durable, detached run to enqueue
+
+
 # Live streaming runs, keyed by run id, so an owner can steer a run in flight (POST /v1/agent/steer).
 # Registered when a stream starts, removed when it ends. Owner-scoped on lookup (no cross-owner steer).
 _live_runs: dict = {}     # run_id -> (owner, CancelToken)
@@ -430,6 +434,93 @@ def agent_steer(req: SteerRequest, authorization: str = Header(default="")):
         raise HTTPException(status_code=404, detail="no live run with that id")
     entry[1].steer(req.message)
     return {"status": "queued", "run_id": req.run_id}
+
+
+# --- detached tasks -------------------------------------------------------------------------------
+# Unlike the streaming endpoint (which cancels its run when the client disconnects), a task launches a
+# detached worker and returns immediately: the run survives the client leaving AND a server restart.
+# Owner-scoped throughout; an unknown id or another owner's task both 404 (no existence leak).
+
+def _task_store():
+    import bob_checkpoint
+    agent = _config.get("agent", {})
+    return bob_checkpoint.CheckpointStore(
+        db_path=agent.get("checkpointDbPath") or None, default_owner=agent.get("defaultOwner", "local"))
+
+
+def _task_summary(row: dict) -> dict:
+    return {"run_id": row["run_id"], "status": row["status"], "step": row["step"],
+            "goal": row["goal"], "result": row.get("result")}
+
+
+@app.post("/v1/tasks")
+def create_task(req: TaskCreate, authorization: str = Header(default="")):
+    from bob import cli
+    identity = _authenticate(authorization)
+    _check_rate(identity)
+    owner = identity.owner
+    store = _task_store()
+    rid = uuid.uuid4().hex[:8]
+    store.save_run(rid, owner, "queued", req.goal, [], step=0)
+    cli._launch_task(_config, rid, owner, req.goal, resume=False)
+    return {"run_id": rid, "status": "queued"}
+
+
+@app.get("/v1/tasks")
+def list_tasks(authorization: str = Header(default="")):
+    owner = _authed_owner(authorization)
+    return {"tasks": [_task_summary(r) for r in _task_store().list_runs(owner)]}
+
+
+@app.get("/v1/tasks/{run_id}")
+def get_task(run_id: str, authorization: str = Header(default="")):
+    owner = _authed_owner(authorization)
+    row = _task_store().load_run(run_id, owner)
+    if row is None:  # unknown id OR another owner's id — same 404, no existence leak
+        raise HTTPException(status_code=404, detail="Unknown run_id")
+    return _task_summary(row)
+
+
+@app.get("/v1/tasks/{run_id}/logs")
+def get_task_logs(run_id: str, authorization: str = Header(default="")):
+    owner = _authed_owner(authorization)
+    row = _task_store().load_run(run_id, owner)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Unknown run_id")
+    path = row.get("log_path")
+    from pathlib import Path
+    if not path or not Path(path).exists():
+        return {"run_id": run_id, "log": ""}
+    return {"run_id": run_id, "log": Path(path).read_text(encoding="utf-8", errors="replace")}
+
+
+@app.post("/v1/tasks/{run_id}/cancel")
+def cancel_task(run_id: str, authorization: str = Header(default="")):
+    import osenv
+    owner = _authed_owner(authorization)
+    store = _task_store()
+    row = store.load_run(run_id, owner)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Unknown run_id")
+    pid = row.get("pid")
+    if pid and osenv.pid_alive(pid):
+        osenv.stop_process_tree(pid)
+    store.set_status(run_id, owner, "cancelled")
+    return {"run_id": run_id, "status": "cancelled"}
+
+
+@app.post("/v1/tasks/{run_id}/resume")
+def resume_task(run_id: str, authorization: str = Header(default="")):
+    from bob import cli
+    identity = _authenticate(authorization)
+    _check_rate(identity)
+    owner = identity.owner
+    store = _task_store()
+    row = store.load_run(run_id, owner)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Unknown run_id")
+    cli._launch_task(_config, run_id, owner, row["goal"], resume=True)
+    return {"run_id": run_id, "status": "resuming"}
 
 
 if __name__ == "__main__":

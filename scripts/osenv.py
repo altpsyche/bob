@@ -56,6 +56,155 @@ def default_shell() -> list:
     return [shell, "-c"]
 
 
+# --- desktop input (computer-use) : the ONE OS seam for screen input injection ----------
+# Backends are chosen by shutil.which, mirroring bob_vision._LINUX_CAPTURE. Coordinates are REAL screen
+# pixels; the caller maps the model's image-space coordinates to screen pixels first (see bob_vision).
+# Every entry point raises RuntimeError with an install hint when no backend is available, so the
+# computer-use tool degrades gracefully rather than silently no-op'ing.
+
+def is_wayland() -> bool:
+    """True on a native Wayland session (synthetic input needs ydotool/uinput or wtype, not xdotool).
+    Env-driven so BOB_FORCE_* style overrides work in tests."""
+    if os.environ.get("WAYLAND_DISPLAY"):
+        return True
+    return os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland"
+
+
+def is_x11() -> bool:
+    """True on an X11 session (xdotool drives it directly)."""
+    if os.environ.get("XDG_SESSION_TYPE", "").lower() == "x11":
+        return True
+    return bool(os.environ.get("DISPLAY")) and not is_wayland()
+
+
+def _input_backend():
+    """Pick the Linux input backend by session type + availability. Prefers the tool that matches the
+    session (xdotool on X11, ydotool/wtype on Wayland) but falls back to whatever is installed. Returns
+    a backend name or None when none is present."""
+    if is_wayland():
+        order = ("ydotool", "wtype", "xdotool")   # xdotool only reaches XWayland apps, last resort
+    else:
+        order = ("xdotool", "ydotool", "wtype")
+    for tool in order:
+        if shutil.which(tool):
+            return tool
+    return None
+
+
+_XDOTOOL_BUTTON = {"left": 1, "middle": 2, "right": 3}
+_YDOTOOL_BUTTON = {"left": "0xC0", "middle": "0xC2", "right": "0xC1"}
+
+
+def _linux_input_commands(backend: str, action: str, **kw) -> list:
+    """Build the argv command(s) for one input action on a Linux backend. Returns a list of argv lists
+    (a click is move-then-click on ydotool). Raises RuntimeError for a capability the backend lacks."""
+    if backend == "xdotool":
+        if action == "move":
+            return [["xdotool", "mousemove", "--sync", str(kw["x"]), str(kw["y"])]]
+        if action == "click":
+            b = _XDOTOOL_BUTTON.get(kw.get("button", "left"), 1)
+            return [["xdotool", "mousemove", "--sync", str(kw["x"]), str(kw["y"]), "click", str(b)]]
+        if action == "type":
+            return [["xdotool", "type", "--clearmodifiers", "--", kw["text"]]]
+        if action == "key":
+            return [["xdotool", "key", "--", kw["keys"]]]
+        if action == "scroll":
+            dy, dx = int(kw.get("dy", 0)), int(kw.get("dx", 0))
+            cmds = []
+            if dy:
+                cmds.append(["xdotool", "click", "--repeat", str(abs(dy)), "5" if dy > 0 else "4"])
+            if dx:
+                cmds.append(["xdotool", "click", "--repeat", str(abs(dx)), "7" if dx > 0 else "6"])
+            return cmds or [["xdotool", "click", "5"]]
+    if backend == "ydotool":
+        if action == "move":
+            return [["ydotool", "mousemove", "-a", "-x", str(kw["x"]), "-y", str(kw["y"])]]
+        if action == "click":
+            code = _YDOTOOL_BUTTON.get(kw.get("button", "left"), "0xC0")
+            return [["ydotool", "mousemove", "-a", "-x", str(kw["x"]), "-y", str(kw["y"])],
+                    ["ydotool", "click", code]]
+        if action == "type":
+            return [["ydotool", "type", "--", kw["text"]]]
+        if action == "key":
+            return [["ydotool", "key", "--", kw["keys"]]]
+        if action == "scroll":
+            return [["ydotool", "mousemove", "-w", "-x", str(int(kw.get("dx", 0))),
+                     "-y", str(int(kw.get("dy", 0)))]]
+    if backend == "wtype":
+        if action == "type":
+            return [["wtype", kw["text"]]]
+        if action == "key":
+            return [["wtype", "-k", kw["keys"]]]
+        raise RuntimeError("wtype drives only keyboard input on Wayland; install ydotool for mouse actions")
+    raise RuntimeError(f"input backend {backend!r} cannot perform {action!r}")
+
+
+def _run_input(action: str, **kw) -> None:
+    name = os_name()
+    if name == "macos":
+        raise RuntimeError("computer-use input is not yet supported on macOS")
+    if name == "windows":  # pragma: no cover — exercised only on Windows
+        return _windows_input(action, **kw)
+    backend = _input_backend()
+    if backend is None:
+        raise RuntimeError("no desktop input backend found — install xdotool (X11) or ydotool (Wayland)")
+    for argv in _linux_input_commands(backend, action, **kw):
+        subprocess.run(argv, check=True)
+
+
+def _windows_input(action: str, **kw) -> None:  # pragma: no cover — Windows-only
+    try:
+        import pyautogui
+    except ImportError as e:
+        raise RuntimeError("computer-use input on Windows needs pyautogui (pip install pyautogui)") from e
+    if action == "move":
+        pyautogui.moveTo(kw["x"], kw["y"])
+    elif action == "click":
+        pyautogui.click(kw["x"], kw["y"], button=kw.get("button", "left"))
+    elif action == "type":
+        pyautogui.typewrite(kw["text"])
+    elif action == "key":
+        pyautogui.hotkey(*str(kw["keys"]).split("+"))
+    elif action == "scroll":
+        pyautogui.scroll(int(kw.get("dy", 0)))
+
+
+def computer_display(mode: str = "virtual"):
+    """Resolve which X display computer-use should drive. 'host' returns the current session's $DISPLAY
+    (the real logged-in desktop -- highest risk). 'virtual' returns a dedicated Xvfb/nested display from
+    $BOB_VIRTUAL_DISPLAY when one is provisioned, else None so the caller reports it rather than silently
+    falling back to the host session. Returning the display string lets the tool run input under it
+    (DISPLAY=<value>); a virtual display also neutralizes the Wayland synthetic-input block."""
+    if mode == "host":
+        return os.environ.get("DISPLAY")
+    return os.environ.get("BOB_VIRTUAL_DISPLAY")
+
+
+def input_move(x: int, y: int) -> None:
+    """Move the pointer to (x, y) in real screen pixels."""
+    _run_input("move", x=x, y=y)
+
+
+def input_click(x: int, y: int, button: str = "left") -> None:
+    """Click at (x, y) in real screen pixels (button: left|middle|right)."""
+    _run_input("click", x=x, y=y, button=button)
+
+
+def input_type(text: str) -> None:
+    """Type literal text at the current focus."""
+    _run_input("type", text=text)
+
+
+def input_key(keys: str) -> None:
+    """Press a key or chord, e.g. 'Return' or 'ctrl+c'."""
+    _run_input("key", keys=keys)
+
+
+def input_scroll(dx: int = 0, dy: int = 0) -> None:
+    """Scroll by (dx, dy) steps; positive dy scrolls down."""
+    _run_input("scroll", dx=dx, dy=dy)
+
+
 # --- data / state location ------------------------------------------------------------------
 
 def _repo_data() -> Path:
@@ -442,17 +591,18 @@ def stop_processes_by_name(names) -> list:
     return killed
 
 
-def start_detached(argv: list, pidfile=None, log_path=None, env: dict = None) -> int:
+def start_detached(argv: list, pidfile=None, log_path=None, env: dict = None, append: bool = False) -> int:
     """Launch a fully-detached background process and return its PID. POSIX uses start_new_session=True
     (setsid) so the child is its own group leader — REQUIRED so stop_process_tree's killpg reaps the
     whole tree. Windows uses DETACHED_PROCESS|CREATE_NO_WINDOW (no console window, survives the parent).
     Writes the PID to `pidfile` when given. When `log_path` is set, the child's stdout+stderr are
-    redirected there (truncated per launch — one clean log per run), else discarded. `env`
+    redirected there — truncated per launch by default (one clean log per run), or appended when
+    `append` is set (a resumable task keeps one growing log across relaunches) — else discarded. `env`
     overrides/extends the process environment. Launches the target binary DIRECTLY, with no
     shell wrapper in between."""
     if log_path is not None:
         Path(log_path).parent.mkdir(parents=True, exist_ok=True)
-        out = open(log_path, "wb")  # truncate: one clean log per run
+        out = open(log_path, "ab" if append else "wb")  # append keeps one log across a task's relaunches
         stdout, stderr = out, subprocess.STDOUT
     else:
         out, stdout, stderr = None, subprocess.DEVNULL, subprocess.DEVNULL

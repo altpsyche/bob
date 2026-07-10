@@ -50,6 +50,55 @@ def resize_image(path: str, max_dim: int = 1024) -> str:
         return path
 
 
+def scale_factor(w: int, h: int, max_long_edge: int = 1280, max_pixels: int = 1_150_000) -> float:
+    """A single uniform downscale factor (<= 1.0) to fit a screenshot within the model's long-edge and
+    megapixel limits, matching Anthropic's reference formula. Never upscales. The SAME factor maps both
+    axes, so aspect ratio is preserved and coordinates map back with one number."""
+    if w <= 0 or h <= 0:
+        return 1.0
+    long_edge = max(w, h)
+    edge_scale = max_long_edge / long_edge
+    px_scale = (max_pixels / (w * h)) ** 0.5
+    return min(1.0, edge_scale, px_scale)
+
+
+def to_screen(model_xy, scale: float):
+    """Map a coordinate the model gave (in the resized-image space it was shown) back to REAL screen
+    pixels: screen = model / scale. This is the fix for clicks landing in the wrong place when the
+    screenshot was downscaled before the model saw it."""
+    x, y = model_xy
+    return (int(round(x / scale)), int(round(y / scale)))
+
+
+def to_model(screen_xy, scale: float):
+    """Map a real screen coordinate into the resized-image space the model sees: model = screen * scale."""
+    x, y = screen_xy
+    return (int(round(x * scale)), int(round(y * scale)))
+
+
+def resize_for_control(path: str, max_long_edge: int = 1280, max_pixels: int = 1_150_000):
+    """Downscale a screenshot for computer-use and return (out_path, scale, (width, height)) where the
+    dims are the ACTUAL sent image size (so the tool reports them to the model verbatim) and scale is the
+    factor to map the model's click coordinates back to screen pixels. Falls back to (path, 1.0, size)
+    when Pillow is absent or on any error; never raises (image prep must not abort an action)."""
+    try:
+        from PIL import Image
+    except ImportError:
+        return path, 1.0, None
+    try:
+        with Image.open(path) as im:
+            w, h = im.size
+            scale = scale_factor(w, h, max_long_edge, max_pixels)
+            if scale >= 1.0:
+                return path, 1.0, (w, h)
+            nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
+            out = _tmp_png()
+            im.resize((nw, nh), Image.LANCZOS).save(out, "PNG")
+            return out, scale, (nw, nh)
+    except Exception:
+        return path, 1.0, None
+
+
 def capture_screen() -> str:
     """Capture the primary screen to a temp PNG and return its path. Windows/macOS via Pillow's
     ImageGrab; Linux via the first available of grim/spectacle/scrot/import. Raises RuntimeError with an

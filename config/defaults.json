@@ -102,6 +102,15 @@
       "plan": false,
       "verify": false,
       "selfRepair": false,
+      "checkpoint": false,
+      "computerUse": {
+        "enabled": false,
+        "display": "virtual",
+        "maxLongEdge": 1280,
+        "maxPixels": 1150000,
+        "maxActionsPerMinute": 60,
+        "allowUnattended": false
+      },
       "recite": false,
       "todoTool": false,
       "requestTimeout": 600,

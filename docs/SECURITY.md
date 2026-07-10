@@ -156,6 +156,85 @@ and shell wiring run everywhere; real-confinement tests (write-outside-root deni
 7. Watch `logs/bob-agent.log`: every run carries a run-id so concurrent clients are
    distinguishable and any single run is greppable end-to-end.
 
+## Autonomy dial
+
+Bob grants autonomy in escalating steps, each a separate, explicit opt-in. A bigger grant is never
+implied by a smaller one:
+
+1. **One-shot** (`bob agent "..."`): a single bounded run, foreground, no persistence.
+2. **`--deep`**: plan/verify/self-repair phases and a larger step budget; still foreground.
+3. **Durable run** (`agent.checkpoint`): run state persists so a run can resume across a restart. Off by
+   default. Resume restores reasoning state, not world state (filesystem changes are not undone).
+4. **Detached task** (`bob task start`): runs in a background worker that survives the client
+   disconnecting. Owner-scoped; still governed by the permission policy; a detached run is fail-closed on
+   approval (no interactive approver -> approval-gated tools are denied).
+5. **Computer-use** (`agent.computerUse`): drives the screen and input devices. The largest grant, off by
+   default, always approval-gated, and never available in an unattended/detached run without an explicit
+   opt-in (see below).
+
+Each rung requires its own configuration or flag. Nothing above one-shot is on by default.
+
+## Computer-use ([scripts/tools/computer.py](../scripts/tools/computer.py))
+
+Computer-use lets the agent take a screenshot and drive mouse/keyboard input. It is the most powerful and
+most dangerous capability in Bob, so it is gated hardest.
+
+**Threat model.** A screenshot is untrusted, model-controlled input: text rendered on screen (a web page,
+a chat message, a crafted image) can carry instructions that attempt to redirect the agent (prompt
+injection into GUI actions). A successful injection can click, type, and read whatever the logged-in user
+can. Two specific surfaces:
+- **Screenshot as an injection surface.** A captured frame is fed back to the model through the
+  `{"__images__": [...]}` tool-result contract and routed to the vision role. On-screen text must never be
+  allowed to silently expand the task, widen any allowlist, or relax the approval posture.
+- **Screenshot as an exfiltration surface.** A screenshot can capture secrets on screen (tokens, private
+  messages). Capture is therefore approval-gated even though it is a read.
+
+**Gating chain** (every computer-use action passes through all of it):
+default-off (`agent.computerUse.enabled`) -> the tool is not even offered unless enabled -> every action
+requires approval (`REQUIRES_APPROVAL`, so `_resolve_approval` is fail-closed: no approver means deny) ->
+the permission policy still applies -> every decision is audited (args hashed) -> a kill switch can halt
+all computer-use out of band -> a per-minute rate limit bounds action volume -> a detached/unattended run
+cannot use computer-use without an explicit opt-in.
+
+**Isolation posture.** Frontier computer-use references run in a disposable VM or container with a
+*virtual* display, a network allowlist, and no logged-in accounts. Bob supports a virtual-display target
+(`agent.computerUse.display: "virtual"`, an Xvfb/nested display) as the recommended default; it shrinks
+the blast radius of a successful injection and sidesteps the Wayland synthetic-input block. Driving the
+real logged-in desktop (`display: "host"`) is the highest-risk configuration and is an explicit, louder
+opt-in. Human confirmation on every action is the load-bearing defense: Bob has no server-side screenshot
+injection classifier unless a run is routed through a hosted computer-use API.
+
+**Accepted limitation.** GUI input needs the host display and input bus, which the deny-by-default OS
+sandbox (no `$HOME`, unshared network) cannot provide, so computer-use input does not route through the
+sandbox. Its controls are the approval floor, the audit log, the kill switch, and (preferably) a virtual
+display, not the OS sandbox.
+
+**Detached-task interaction.** A scheduled or detached run is already fail-closed on approval. The
+`--allow-computer` opt-in (`agent.computerUse.allowUnattended`) is required before computer-use is even
+loaded in such a run: defense-in-depth so an unattended agent cannot drive the desktop by default.
+
+**Test-backed guarantees.** Each control is pinned by a behavior test (all hermetic; no real input is
+injected and no live model is used):
+- Default-off (not offered unless enabled): `test_screenshot_tool_absent_when_computer_use_off`
+  ([tests/test_computer_use.py](../tests/test_computer_use.py)).
+- Every action approval-gated (`REQUIRES_APPROVAL`) and inputs declared mutating:
+  `test_screenshot_requires_approval`, `test_click_declared_mutating`.
+- Denial at the prompt blocks the action; approval runs it:
+  `test_computer_use_gating_fixtures_pass` ([tests/test_safety_eval.py](../tests/test_safety_eval.py),
+  over the `computer_use_*` eval fixtures).
+- Coordinate mapping is correct (a click lands where the model intended after downscaling):
+  `test_click_maps_model_coords_to_screen_before_backend`, `test_scale_roundtrip_within_rounding`.
+- Kill switch halts all actions out of band: `test_halt_sentinel_blocks_action`.
+- Per-minute rate limit: `test_rate_limit_refuses_past_budget`.
+- Detached/unattended interlock: `test_computer_use_absent_in_unattended_run_without_optin`,
+  `test_task_runner_marks_unattended`.
+- Screenshot flows through the untrusted-image -> vision-role path via the `{"__images__": [...]}`
+  contract: `test_screenshot_returns_image_contract_and_records_scale`, plus the loop's image-split
+  coverage in [tests/test_vision.py](../tests/test_vision.py).
+- Graceful degradation when no input/capture backend is present:
+  `test_input_raises_when_no_backend`, `test_screenshot_degrades_when_no_capture_backend`,
+  `test_input_unavailable_degrades_gracefully`.
+
 ## Known residual / accepted risks
 - Token revocation requires a server restart (config is read once at startup), acceptable for a
   single-operator local harness; documented, not a bug.
