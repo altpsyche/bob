@@ -11,6 +11,7 @@ single-sourced bob_models.regenerate_configs; bring-up does a best-effort regen,
 config/llama-swap.yaml + config/litellm.yaml (checked-in-locally, gitignored), erroring only if
 they're absent."""
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -23,48 +24,63 @@ REPO = Path(__file__).resolve().parent.parent.parent
 SCRIPTS = REPO / "scripts"
 
 # THE single source of truth for every service Bob manages. Each op — status/health, `ps`, stop,
-# name-kill, the grouped dashboard — reads from THIS list instead of its own hardcoded copy (there used
-# to be five). One entry per service:
+# name-kill, the grouped dashboard, and start (service_control) — reads from THIS list. One entry per
+# service; the `start` callables are bound onto their entries just below their definitions (see
+# _bind_start_fns), so the registry stays the one table and there is no parallel control map.
 #   name      pidfile key + display name (logs/<name>.{pid,log})
+#   label     short cockpit/status label (defaults to name)
 #   port      config port key (bob_core._port)
 #   group     dashboard grouping
 #   desc      one-line description
-#   pidfile   True if it's a Bob-launched daemon tracked by logs/<name>.pid (→ appears in `ps`, stopped
-#             by pidfile tree-kill)
+#   kind      "native"   Bob-launched daemon tracked by logs/<name>.pid (appears in `ps`, tree-killed on
+#                        stop); has a `start` fn (except llama-swap/open-webui, launched by stack_up)
+#             "docker"   a docker-compose service (guided-install + `docker compose up`, no pidfile)
+#             "external" managed by its own verb (agent-api via `bob agent serve`); port-checked only
+#   requires  optional capability gate, e.g. "docker" (triggers the generic guided install on start)
+#   policy    "core" (started by ensure_inference) or "lazy" (opt-in / on-demand; not started by `bob up`)
+#   start     the launch fn (bound below for native daemons that service_control starts)
+#   url_suffix path appended to the status URL (e.g. "/v1"); default ""
 #   procnames process names for the pkill fallback — reaped by name so they die even with a stale/missing
 #             pidfile (empty = pidfile-only teardown). open-webui is here: it's detached and a prior stop
 #             unlinks its pidfile, so a name-kill is the only thing that can still find a reparented WebUI.
-#   docker    True if it's a docker-compose service (stopped via `docker compose down`, no pidfile)
-#   core      True if it's part of core inference (what ensure_inference starts)
 #   hint      the command that starts it (shown on a `down` line so the dashboard is actionable, and in
 #             the TUI cockpit's toggle routing)
 SERVICES = [
-    {"name": "llama-swap", "label": "endpoint", "port": "port", "group": "Inference", "pidfile": True,
-     "procnames": ("llama-swap", "llama-server"), "core": True, "hint": "bob up",
+    {"name": "llama-swap", "label": "endpoint", "port": "port", "group": "Inference", "kind": "native",
+     "procnames": ("llama-swap", "llama-server"), "core": True, "policy": "core", "hint": "bob up",
      "desc": "llama.cpp via llama-swap"},
-    {"name": "litellm",    "label": "api", "port": "litellmPort", "group": "Inference", "pidfile": True,
-     "procnames": (), "core": True, "hint": "bob up",
-     "desc": "OpenAI-compatible proxy; point any client here"},
-    {"name": "whisper",    "port": "sttPort",     "group": "Voice", "pidfile": True,
-     "procnames": ("whisper-server",), "hint": "bob whisper start", "desc": "speech-to-text"},
-    {"name": "piper",      "port": "ttsPort",     "group": "Voice", "pidfile": True,
-     "procnames": (), "hint": "bob piper start",
+    {"name": "litellm",    "label": "api", "port": "litellmPort", "group": "Inference", "kind": "native",
+     "procnames": (), "core": True, "policy": "core", "url_suffix": "/v1", "agent_control": True,
+     "hint": "bob up", "desc": "OpenAI-compatible proxy; point any client here"},
+    {"name": "whisper",    "port": "sttPort", "group": "Voice", "kind": "native",
+     "procnames": ("whisper-server",), "policy": "lazy", "agent_control": True, "hint": "bob whisper start",
+     "desc": "speech-to-text"},
+    {"name": "piper",      "port": "ttsPort", "group": "Voice", "kind": "native",
+     "procnames": (), "policy": "lazy", "agent_control": True, "hint": "bob piper start",
      "desc": "text-to-speech server (optional; voice also works without it)"},
-    {"name": "open-webui", "label": "webui", "port": "webuiPort", "group": "Web & automation", "pidfile": True,
-     "procnames": ("open-webui",), "hint": "bob up", "desc": "Open WebUI, browser chat"},
-    {"name": "searxng",    "port": "searxngPort", "group": "Web & automation", "docker": True,
-     "hint": "bob services start", "desc": "private web search"},
-    {"name": "n8n",        "port": "n8nPort",     "group": "Web & automation", "docker": True,
-     "hint": "bob services start", "desc": "workflow automation"},
-    {"name": "langfuse",   "port": "langfusePort", "group": "Web & automation", "docker": True,
-     "hint": "bob services start", "desc": "tracing / observability"},
-    {"name": "agent-api",  "port": "agentPort",   "group": "Agent", "hint": "bob agent serve",
+    {"name": "open-webui", "label": "webui", "port": "webuiPort", "group": "Web & automation", "kind": "native",
+     "procnames": ("open-webui",), "policy": "lazy", "hint": "bob up", "desc": "Open WebUI, browser chat"},
+    {"name": "n8n",        "port": "n8nPort",     "group": "Web & automation", "kind": "native",
+     "procnames": ("n8n",), "policy": "lazy", "hint": "bob services n8n start",
+     "desc": "workflow automation (native, opt-in)"},
+    {"name": "searxng",    "port": "searxngPort", "group": "Web & automation", "kind": "docker",
+     "requires": "docker", "policy": "lazy", "hint": "bob services searxng start",
+     "desc": "private meta-search (optional; ddgs is the default)"},
+    {"name": "langfuse",   "port": "langfusePort", "group": "Web & automation", "kind": "docker",
+     "requires": "docker", "policy": "lazy", "hint": "bob services langfuse start",
+     "desc": "tracing / observability (optional)"},
+    {"name": "agent-api",  "port": "agentPort",   "group": "Agent", "kind": "external", "hint": "bob agent serve",
      "desc": "bob agent serve (REST/SSE)"},
 ]
 
 # Derived views — kept as module constants so callers/tests read one canonical list, never a fresh copy.
 _NAME_KILL = [p for s in SERVICES for p in s.get("procnames", ())]
-_PS_SERVICES = [s["name"] for s in SERVICES if s.get("pidfile")]
+_PS_SERVICES = [s["name"] for s in SERVICES if s.get("kind") == "native"]
+
+
+def _svc(name: str):
+    """The one SERVICES lookup by name (None if unknown)."""
+    return next((s for s in SERVICES if s["name"] == name), None)
 
 
 def configure(config: dict) -> None:
@@ -182,7 +198,7 @@ def service_snapshot(config: dict) -> list:
     rows = []
     for s in SERVICES:
         p = _port(config, s["port"])
-        is_docker = bool(s.get("docker"))
+        is_docker = s.get("kind") == "docker"
         rows.append({
             "name": s["name"], "label": s.get("label", s["name"]), "group": s["group"],
             "port": p, "up": osenv.is_port_in_use(p), "url": f"http://localhost:{p}",
@@ -190,7 +206,7 @@ def service_snapshot(config: dict) -> list:
             "core": bool(s.get("core")), "docker": is_docker,
             # A docker service on a box with no docker isn't "down" (startable) -- it's unavailable
             # until docker is installed. Surfacing that stops the misleading "start: bob services".
-            "unavailable": is_docker and not docker_ok,
+            "unavailable": s.get("requires") == "docker" and not docker_ok,
         })
     return rows
 
@@ -390,6 +406,64 @@ def _start_piper_bg(config: dict) -> str:
     return f"piper-server: http://localhost:{tts_port} (PID {new_pid}, voice={voice}), {tail}"
 
 
+# n8n runs native (pure Node, cross-OS) so a default install never needs Docker for it. It needs Node
+# 20.19–24.x; the guard skips a broken install on an out-of-range node instead of failing (n8n is opt-in).
+_N8N_NODE_MIN = (20, 19)
+_N8N_NODE_MAX_MAJOR = 24
+
+
+def _node_version() -> tuple:
+    """(major, minor) of the `node` on PATH, or None if absent/unparseable."""
+    try:
+        out = subprocess.run(["node", "--version"], check=False,
+                             capture_output=True, text=True).stdout.strip()
+    except OSError:
+        return None
+    m = re.match(r"v?(\d+)\.(\d+)", out)
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def _n8n_exe() -> Path:
+    osenv = _osenv()
+    binname = "n8n.cmd" if osenv.os_name() == "windows" else "n8n"
+    return REPO / "tools" / "n8n" / "node_modules" / ".bin" / binname
+
+
+def _start_n8n_bg(config: dict) -> str:
+    """Start n8n natively, installing it on demand into tools/n8n on first use. Node-version guarded:
+    an out-of-range node skips cleanly with an upgrade hint rather than installing a broken n8n."""
+    osenv = _osenv()
+    from bob_core import _port
+
+    ver = _node_version()
+    if ver is None:
+        return "Node.js not found. Install Node 20.19–24.x, then: bob services n8n start"
+    if ver < _N8N_NODE_MIN or ver[0] > _N8N_NODE_MAX_MAJOR:
+        return (f"n8n needs Node 20.19–24.x; found v{ver[0]}.{ver[1]}. "
+                "Upgrade Node, then: bob services n8n start")
+    port = _port(config, "n8nPort")
+    if osenv.is_port_in_use(port):
+        return f"n8n already running on :{port}."
+    exe = _n8n_exe()
+    if not exe.exists():
+        pin = (config.get("agent", {}) or {}).get("n8nVersion") or "latest"
+        print(f"Installing n8n@{pin} (first run; this can take a minute)...", file=sys.stderr)
+        if not osenv.npm_local_install(f"n8n@{pin}", REPO / "tools" / "n8n") or not exe.exists():
+            return "n8n install failed (npm). Check Node/npm, then retry: bob services n8n start"
+    _pidfile("n8n").unlink(missing_ok=True)
+    data = REPO / "tools" / "n8n-data"
+    data.mkdir(parents=True, exist_ok=True)
+    pid = osenv.start_detached(
+        [str(exe), "start"], pidfile=_pidfile("n8n"), log_path=_logfile("n8n"),
+        env={"N8N_USER_FOLDER": str(data), "N8N_PORT": str(port), "N8N_HOST": "localhost",
+             "N8N_PROTOCOL": "http", "WEBHOOK_URL": f"http://localhost:{port}",
+             "N8N_ENCRYPTION_KEY": config.get("n8nEncryptionKey") or "local-bob-n8n-key",
+             "GENERIC_TIMEZONE": config.get("n8nTimezone") or "UTC"})
+    ready = _poll(lambda: osenv.is_port_in_use(port), timeout=90, interval=1.0)
+    tail = "ready" if ready else "still starting — check logs/n8n.log"
+    return f"n8n: http://localhost:{port} (PID {pid}), {tail}"
+
+
 def _swap_launch(config: dict) -> tuple:
     """The ONE llama-swap launch spec — (exe, argv, env_add, port) — shared by the background
     (_start_endpoint_bg) and foreground (serve_foreground) starts, so the exe path, llama-swap.yaml
@@ -578,33 +652,109 @@ def _service_stop(svc: str, label: str) -> str:
     return f"{label} stopped." if stopped else f"{label} not running."
 
 
-# The individually-controllable Bob daemons — the ONE table that drives service_control (start/stop/
-# status), the per-service `bob <name>` verbs, and the per-service agent tools. Each entry carries its
-# start fn + display label + port key + health-URL suffix, so litellm/whisper/piper are no longer three
-# hand-written near-identical control functions (nor three hand-written CLI handlers / tool defs).
-_DAEMON_CONTROL = {
-    "litellm": {"start": _start_litellm_bg, "label": "LiteLLM",
-                "port": "litellmPort", "url_suffix": "/v1", "desc": "the LiteLLM proxy (:8081)"},
-    "whisper": {"start": _start_whisper_bg, "label": "whisper-server",
-                "port": "sttPort", "url_suffix": "", "desc": "the whisper STT server"},
-    "piper":   {"start": _start_piper_bg,   "label": "piper-server",
-                "port": "ttsPort", "url_suffix": "", "desc": "the piper TTS server"},
-}
+# Bind the native start fns onto their SERVICES entries. This is done here (below the fn definitions,
+# where the old _DAEMON_CONTROL table lived) because the entries are declared at the top of the file
+# before these fns exist. After this, SERVICES is the single control source: no parallel table.
+# llama-swap / open-webui are native but launched by stack_up (not service_control), so they carry no
+# `start`; agent-api is external.
+def _bind_start_fns() -> None:
+    for _name, _fn in (("litellm", _start_litellm_bg), ("whisper", _start_whisper_bg),
+                       ("piper", _start_piper_bg), ("n8n", _start_n8n_bg)):
+        _svc(_name)["start"] = _fn
+
+
+_bind_start_fns()
+
+
+def _guided_docker_install(config: dict) -> tuple:
+    """Ensure Docker is present, installing it through the package-manager seam if the user agrees.
+    Returns (ok, message). Only prompts on a TTY: in agent/non-interactive contexts it returns
+    (False, hint) so a search/tool call never blocks on stdin."""
+    osenv = _osenv()
+    if osenv.docker_present():
+        return True, ""
+    if not sys.stdin.isatty():
+        return False, ("Docker is required for this service and is not installed. "
+                       "Run it in a terminal to be walked through the Docker install: "
+                       f"{osenv.docker_install_hint()}")
+    print("This service needs Docker, which isn't installed.")
+    try:
+        ans = input("Install Docker now via your package manager? [Y/n] ").strip().lower()
+    except EOFError:
+        ans = "n"
+    if ans not in ("", "y", "yes"):
+        return False, f"Skipped. Install Docker yourself, then retry: {osenv.docker_install_hint()}"
+    try:
+        osenv.install_package("docker")
+    except Exception as e:   # loud-fail: report, don't crash
+        return False, f"Docker install failed: {e}. See {osenv.docker_install_hint()}"
+    if osenv.os_name() != "windows" and shutil.which("systemctl"):
+        subprocess.run(["sudo", "systemctl", "start", "docker"], check=False, capture_output=True)
+    if not osenv.docker_present():
+        return False, ("Docker installed but the daemon isn't ready yet "
+                       "(a reboot or WSL2 setup may be needed on Windows). Start Docker, then retry.")
+    return True, ""
+
+
+def _docker_start(config: dict, svc: dict) -> str:
+    """Start one docker-compose service, running the generic guided Docker install first if `requires:
+    docker` and Docker is absent. Idempotent (a service already on its port short-circuits)."""
+    from bob_core import _port
+    osenv = _osenv()
+    name = svc["name"]
+    port = _port(config, svc["port"])
+    if osenv.is_port_in_use(port):
+        return f"{name} already running on :{port}."
+    if svc.get("requires") == "docker":
+        ok, msg = _guided_docker_install(config)
+        if not ok:
+            return msg
+    base, err = _compose_base(config)
+    if err:
+        return err
+    _write_compose_env(config)
+    _prepare_docker_service(name)
+    r = subprocess.run(base + ["up", "-d", name], check=False, capture_output=True, text=True)
+    if r.returncode != 0:
+        return f"{name} failed to start:\n" + (r.stderr or r.stdout).strip()
+    ready = _poll(lambda: osenv.is_port_in_use(port), timeout=40, interval=0.5)
+    return (f"{name} ready: http://localhost:{port}" if ready
+            else f"{name} starting on :{port} (still warming up; retry shortly).")
 
 
 def service_control(config: dict, name: str, action: str = "start") -> str:
-    """Generic start/stop/status for a Bob-launched daemon (litellm/whisper/piper), driven off the
-    _DAEMON_CONTROL table — the one place the per-service lifecycle logic lives. `bob litellm|whisper|
-    piper`, the matching agent tools, provisioning smoke, and the shell's /voice preflight all route here."""
+    """The ONE per-service start/stop/status, routing by the registry entry's `kind`. Native daemons
+    (litellm/whisper/piper/n8n) run their `start` fn / pidfile tree-kill / pidfile status; docker services
+    (searxng/langfuse) go through the compose path with the generic guided Docker install. `bob litellm|
+    whisper|piper`, `bob services <name> <action>`, the agent tools, provisioning smoke, and the shell's
+    /voice preflight all route here."""
     from bob_core import _port
-    d = _DAEMON_CONTROL.get(name)
-    if d is None:
-        return f"Unknown service '{name}'. Known: {', '.join(_DAEMON_CONTROL)}"
+    svc = _svc(name)
+    if svc is None:
+        controllable = [s["name"] for s in SERVICES if s.get("start") or s.get("kind") == "docker"]
+        return f"Unknown service '{name}'. Known: {', '.join(controllable)}"
+    label = svc.get("label", name)
+    if svc.get("kind") == "docker":
+        if action == "stop":
+            base, err = _compose_base(config)
+            if err:
+                return err
+            subprocess.run(base + ["stop", name], check=False, capture_output=True)
+            return f"{name} stopped."
+        if action == "status":
+            up = _osenv().is_port_in_use(_port(config, svc["port"]))
+            return f"{name} {'running' if up else 'not running'} (:{_port(config, svc['port'])})"
+        return _docker_start(config, svc)
+    # native daemon
     if action == "stop":
-        return _service_stop(name, d["label"])
+        return _service_stop(name, label)
     if action == "status":
-        return _service_status(name, d["label"], _port(config, d["port"]), url_suffix=d["url_suffix"])
-    return d["start"](config)
+        return _service_status(name, label, _port(config, svc["port"]),
+                               url_suffix=svc.get("url_suffix", ""))
+    start = svc.get("start")
+    if start is None:
+        return f"'{name}' has no direct start (use: {svc.get('hint', 'bob up')})."
+    return start(config)
 
 
 def _compose_base(config: dict) -> tuple:
@@ -619,73 +769,88 @@ def _compose_base(config: dict) -> tuple:
 
 
 def _write_compose_env(config: dict) -> None:
-    """Write tools/compose/.env with the resolved ports (compose reads it for up)."""
+    """Write tools/compose/.env with the resolved ports (compose reads it for up). Only SearXNG and
+    Langfuse remain in compose (n8n is native), so only their ports are written."""
     from bob_core import _port
-    (REPO / "tools" / "compose" / ".env").write_text(
+    env = REPO / "tools" / "compose" / ".env"
+    env.parent.mkdir(parents=True, exist_ok=True)
+    env.write_text(
         f"REPO_PATH={REPO}\n"
         f"LANGFUSE_PORT={_port(config, 'langfusePort')}\n"
-        f"SEARXNG_PORT={_port(config, 'searxngPort')}\n"
-        f"N8N_PORT={_port(config, 'n8nPort')}\n", encoding="utf-8")
+        f"SEARXNG_PORT={_port(config, 'searxngPort')}\n", encoding="utf-8")
+
+
+def _prepare_docker_service(name: str) -> None:
+    """Per-service on-demand prep (moved off the old eager setup_docker): write the SearXNG settings the
+    container bind-mounts, and ensure Langfuse's Postgres data dir exists. Idempotent."""
+    if name == "searxng":
+        sx_cfg = REPO / "config" / "searxng" / "settings.yml"
+        if not sx_cfg.exists():
+            sx_cfg.parent.mkdir(parents=True, exist_ok=True)
+            sx_cfg.write_text(
+                'use_default_settings: true\nserver:\n  secret_key: "bob-searxng"\n'
+                '  bind_address: "0.0.0.0:8080"\nsearch:\n  safe_search: 0\n  default_lang: "en"\n'
+                '  formats:\n    - html\n    - json\n', encoding="utf-8")
+    elif name == "langfuse":
+        (REPO / "tools" / "langfuse-data").mkdir(parents=True, exist_ok=True)
+
+
+def _lazy_service_names() -> list:
+    """Opt-in add-ons (policy: lazy) that the group `bob services` verb operates on when no name is given."""
+    return [s["name"] for s in SERVICES if s.get("policy") == "lazy"
+            and s.get("kind") in ("native", "docker") and s["name"] not in ("whisper", "piper", "open-webui")]
 
 
 def services_control(config: dict, action: str = "status", service: str = None) -> str:
-    """Docker compose lifecycle (langfuse/searxng/n8n). Optional — needs docker + the compose file.
-    `service` scopes start/stop/logs to ONE container (e.g. just searxng) instead of the whole group."""
-    base, err = _compose_base(config)
-    if err:
-        return err
-    only = [service] if service else []
-    if action == "start":
-        _write_compose_env(config)
-        r = subprocess.run(base + ["up", "-d"] + only, check=False, capture_output=True, text=True)
-        label = f"{service} started" if service else "Services started"
-        return f"{label}.\n" + (r.stderr or r.stdout).strip()
-    if action == "stop":
-        # `stop <svc>` for one container; `down` tears the whole group down.
-        subprocess.run(base + (["stop", service] if service else ["down"]), check=False, capture_output=True)
-        return f"{service} stopped." if service else "Services stopped."
-    if action == "status":
-        r = subprocess.run(base + ["ps"] + only, check=False, capture_output=True, text=True)
-        return r.stdout.strip() or "No services running."
+    """The opt-in add-on lifecycle verb (`bob services [<name>] <start|stop|status|logs>`). Every named
+    service, native (n8n) or docker (searxng/langfuse), routes through the one service_control; with no
+    name it applies the action across the lazy add-ons. `logs` for docker services still uses compose."""
+    if action not in ("start", "stop", "status", "logs"):
+        return "Usage: bob services [<name>] start|stop|status|logs"
+    names = [service] if service else _lazy_service_names()
+    unknown = [n for n in names if _svc(n) is None]
+    if unknown:
+        return f"Unknown service(s): {', '.join(unknown)}. Known: {', '.join(_lazy_service_names())}"
     if action == "logs":
-        r = subprocess.run(base + ["logs", "--tail=50"] + only, check=False, capture_output=True, text=True)
-        return r.stdout.strip()
-    return "Usage: bob services start|stop|status|logs"
+        svc = _svc(service) if service else None
+        if svc is not None and svc.get("kind") == "docker":
+            base, err = _compose_base(config)
+            if err:
+                return err
+            r = subprocess.run(base + ["logs", "--tail=50", service], check=False,
+                               capture_output=True, text=True)
+            return r.stdout.strip()
+        # native daemons log to logs/<name>.log
+        target = service or (names[0] if names else "")
+        if not target:
+            return "Specify a service: bob services <name> logs"
+        lf = _logfile(target)
+        if not lf.exists():
+            return f"No log yet for {target} (start it: {(_svc(target) or {}).get('hint', 'bob up')})."
+        return "\n".join(lf.read_text(encoding="utf-8", errors="replace").splitlines()[-50:])
+    return "\n".join(f"{n}: {service_control(config, n, action)}" for n in names)
 
 
 def ensure_service(config: dict, name: str) -> tuple:
-    """On-demand: bring up JUST the named docker service (not the whole compose group) if it isn't
-    already listening, then wait until its port answers. The single generic 'make one docker service
-    reachable' op. Every service-specific value (container name, port) comes from the SERVICES registry
-    entry, so auto-starting a new docker service is a registry property, not hand-written code.
-    Best-effort: returns (False, msg) when the service is unknown/non-docker or docker/compose is
-    unavailable, so callers fall back gracefully. No-op (already reachable) short-circuits fast."""
+    """On-demand 'make this service reachable': no-op if its port already answers, else start it via the
+    one service_control (native or docker). Best-effort: returns (ok, msg) so callers fall back
+    gracefully. Every service-specific value comes from the SERVICES entry, so adding a service is a
+    registry property, not hand-written code."""
     from bob_core import _port
     osenv = _osenv()
-    svc = next((s for s in SERVICES if s["name"] == name), None)
+    svc = _svc(name)
     if svc is None:
         return False, f"Unknown service '{name}'."
-    if not svc.get("docker"):
-        return False, f"'{name}' is not a docker service (no on-demand start)."
-    label = svc.get("desc", name)
     port = _port(config, svc["port"])
     if osenv.is_port_in_use(port):
         return True, f"{name} already running."
-    base, err = _compose_base(config)
-    if err:
-        return False, err
-    _write_compose_env(config)
-    r = subprocess.run(base + ["up", "-d", name], check=False, capture_output=True, text=True)
-    if r.returncode != 0:
-        return False, f"{name} failed to start:\n" + (r.stderr or r.stdout).strip()
-    ready = _poll(lambda: osenv.is_port_in_use(port), timeout=40, interval=0.5)
-    return ready, (f"{name} ({label}) ready on :{port}." if ready
-                   else f"{name} starting on :{port} (still warming up; retry shortly).")
+    msg = service_control(config, name, "start")
+    return osenv.is_port_in_use(port), msg
 
 
 def ensure_searxng(config: dict) -> tuple:
-    """Thin alias over the generic ensure_service — 'make private web search reachable', used by
-    web_search + music_play. See ensure_service for behavior."""
+    """Thin alias over the generic ensure_service — 'make the SearXNG service reachable' (used when the
+    user has selected SearXNG as their search provider). See ensure_service for behavior."""
     return ensure_service(config, "searxng")
 
 
@@ -785,8 +950,8 @@ def _daemon_adapter(name: str):
     return adapter
 
 
-def _services_control(action: str = "status") -> str:
-    return services_control(_cfg, action=action)
+def _services_control(action: str = "status", service: str = None) -> str:
+    return services_control(_cfg, action=action, service=service)
 
 
 _ACTION_ENUM = {"type": "string", "enum": ["start", "stop", "status"],
@@ -826,23 +991,25 @@ TOOL_DEFS = [
             "lines": {"type": "integer", "description": "How many trailing lines (default 50)."}}}}},
     {"type": "function", "function": {
         "name": "services_control",
-        "description": "Manage optional Docker services (Langfuse / SearXNG / n8n): start|stop|status|logs.",
+        "description": ("Manage opt-in add-on services (n8n native; SearXNG / Langfuse via Docker): "
+                        "start|stop|status|logs, optionally scoped to one service by name."),
         "parameters": {"type": "object", "properties": {
             "action": {"type": "string", "enum": ["start", "stop", "status", "logs"],
-                       "description": "Default status."}}}}},
+                       "description": "Default status."},
+            "service": {"type": "string", "description": "Optional: one service (n8n|searxng|langfuse)."}}}}},
 ] + [
     # The per-daemon control tools (litellm_control / whisper_control / piper_control) are generated
-    # from the one _DAEMON_CONTROL table — same three names, no hand-repeated defs.
+    # from the SERVICES entries flagged `agent_control` — the one registry, no hand-repeated defs.
     {"type": "function", "function": {
-        "name": f"{_n}_control",
-        "description": f"Manage {_d['desc']}. start brings it up in the background.",
+        "name": f"{_s['name']}_control",
+        "description": f"Manage {_s['desc']}. start brings it up in the background.",
         "parameters": {"type": "object", "properties": {"action": _ACTION_ENUM}}}}
-    for _n, _d in _DAEMON_CONTROL.items()
+    for _s in SERVICES if _s.get("agent_control")
 ]
 
 DISPATCH = {
     "stack_up": _stack_up, "stack_stop": _stack_stop, "stack_restart": _stack_restart,
     "stack_status": _stack_status, "stack_ps": _stack_ps, "stack_logs": _stack_logs,
     "services_control": _services_control,
-    **{f"{_n}_control": _daemon_adapter(_n) for _n in _DAEMON_CONTROL},
+    **{f"{_s['name']}_control": _daemon_adapter(_s["name"]) for _s in SERVICES if _s.get("agent_control")},
 }

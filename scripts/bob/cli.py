@@ -729,9 +729,29 @@ def _svc_handler(name: str):
     return handler
 
 
+def _handle_traces(rest: list) -> int:
+    """`bob traces [list | show <trace-id>]` — view runs recorded by the file trace sink
+    (agent.tracing=true, agent.tracingSink=file). Docker-free local observability."""
+    import bob_tracing
+    if rest and rest[0] == "show" and len(rest) > 1:
+        print(bob_tracing.format_trace(rest[1]))
+        return 0
+    rows = bob_tracing.list_traces()
+    if not rows:
+        print(f"No traces yet. Enable with agent.tracing=true; they land in {bob_tracing.traces_dir()}.")
+        return 0
+    print("Recent traces (newest first) — bob traces show <id>:\n")
+    for tid, root, n, _mtime in rows:
+        print(f"  {tid[:16]}  {root:<28} {n} span(s)")
+    return 0
+
+
 def _handle_services(rest: list) -> int:
-    action = rest[0] if rest else "status"
-    print(_stack().services_control(_cfg(), action=action))
+    """`bob services [<name>] <start|stop|status|logs>` (name and action in either order)."""
+    actions = ("start", "stop", "status", "logs")
+    action = next((t for t in rest if t in actions), "status")
+    service = next((t for t in rest if t not in actions), None)
+    print(_stack().services_control(_cfg(), action=action, service=service))
     return 0
 
 
@@ -971,9 +991,9 @@ def _handle_shell(rest: list) -> int:
     from bob.shell import is_interactive, run
 
     if is_interactive():
-        from bob.kernel import offer_onboard
-        offer_onboard()          # fresh interactive bob offers to seed a profile (not only `bob setup`)
         _ensure_endpoint(_cfg())  # only auto-start for a real interactive session (piped -> just help)
+    # The profile-seeding offer now lives in the shell startup (after the welcome panel) so a newcomer
+    # sees ONE coherent first screen instead of a prompt then a panel.
     return run()
 
 
@@ -1402,6 +1422,7 @@ _HANDLERS = {
     "whisper": _svc_handler("whisper"),
     "piper": _svc_handler("piper"),
     "services": _handle_services,
+    "traces": _handle_traces,         # file-sink trace viewer (scripts/bob_tracing.py)
     "models": _handle_models,         # model registry readers (scripts/tools/models.py)
     "show": _handle_show,
     "profiles": _handle_profiles,

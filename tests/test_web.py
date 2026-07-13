@@ -74,9 +74,10 @@ _DDG_HTML = (
 )
 
 
-class TestWebSearchFallback(unittest.TestCase):
-    """#5b — when SearXNG is unreachable (commonly: no Docker), web_search degrades to a direct
-    provider (DuckDuckGo HTML) instead of just failing. Gated by agent.webSearchFallback (default on)."""
+class TestWebSearchProviders(unittest.TestCase):
+    """web_search is a cross-OS provider abstraction: `ddgs` is the keyless default (no Docker, no
+    daemon); brave/tavily/searxng are opt-in; any selected provider falls back to ddgs, then to a
+    last-ditch stdlib scrape. So search behaves identically on every OS and never hard-fails."""
 
     def _resp(self, *, json_data=None, text=None):
         r = mock.Mock()
@@ -87,39 +88,46 @@ class TestWebSearchFallback(unittest.TestCase):
             r.text = text
         return r
 
-    def test_searxng_results_win_and_skip_fallback(self):
-        web.configure(_common.fake_config())
+    def test_ddgs_is_the_default_provider(self):
+        web.configure(_common.fake_config())              # default searchProvider = ddgs
+        with mock.patch.object(web, "_ddgs_search", return_value="- T\n  http://u\n  c") as d:
+            out = web._web_search("q")
+        d.assert_called_once()
+        self.assertIn("http://u", out)
+
+    def test_selected_provider_falls_back_to_ddgs(self):
+        # brave selected but its key/call fails -> the keyless ddgs default still answers.
+        web.configure(_common.fake_config(agent={"searchProvider": "brave"}))
+        with mock.patch.object(web, "_brave_search", side_effect=Exception("no key")), \
+             mock.patch.object(web, "_ddgs_search", return_value="- T\n  http://ddg\n  c"):
+            out = web._web_search("q")
+        self.assertIn("http://ddg", out)
+
+    def test_searxng_provider_queries_the_service(self):
+        web.configure(_common.fake_config(agent={"searchProvider": "searxng"}))
         with mock.patch.object(web, "_ensure_searxng", return_value=""), \
              mock.patch.object(web.requests, "get",
                                return_value=self._resp(json_data={"results": [
-                                   {"title": "T", "url": "http://u", "content": "c"}]})), \
-             mock.patch.object(web.requests, "post",
-                               side_effect=AssertionError("fallback must not run")) as post:
+                                   {"title": "T", "url": "http://u", "content": "c"}]})):
             out = web._web_search("q")
         self.assertIn("http://u", out)
-        post.assert_not_called()
 
-    def test_falls_back_to_duckduckgo_when_searxng_down(self):
+    def test_last_ditch_scrape_when_ddgs_unavailable(self):
+        # ddgs lib missing -> the thin stdlib DuckDuckGo scrape still returns results.
         web.configure(_common.fake_config())
-        with mock.patch.object(web, "_ensure_searxng", return_value="Docker not found"), \
-             mock.patch.object(web.requests, "get", side_effect=Exception("searxng down")), \
+        with mock.patch.object(web, "_ddgs_search", return_value=None), \
              mock.patch.object(web.requests, "post", return_value=self._resp(text=_DDG_HTML)):
             out = web._web_search("q")
-        self.assertIn("DuckDuckGo", out)
         self.assertIn("https://example.com/page", out)   # DDG redirect decoded to the real URL
         self.assertIn("Example & Title", out)            # HTML entities unescaped, tags stripped
         self.assertIn("useful & short snippet", out)
 
-    def test_fallback_disabled_reports_unavailable(self):
-        web.configure(_common.fake_config(agent={"webSearchFallback": False}))
-        with mock.patch.object(web, "_ensure_searxng", return_value="Docker not found"), \
-             mock.patch.object(web.requests, "get", side_effect=Exception("searxng down")), \
-             mock.patch.object(web.requests, "post",
-                               side_effect=AssertionError("fallback disabled")) as post:
+    def test_reports_unavailable_when_everything_fails(self):
+        web.configure(_common.fake_config())
+        with mock.patch.object(web, "_ddgs_search", return_value=None), \
+             mock.patch.object(web, "_ddg_scrape_fallback", return_value=None):
             out = web._web_search("q")
         self.assertIn("web_search unavailable", out)
-        self.assertIn("Docker not found", out)
-        post.assert_not_called()
 
 
 if __name__ == "__main__":

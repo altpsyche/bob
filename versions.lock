@@ -15,6 +15,10 @@
   "requirements": {
     "venv-litellm": "tools/litellm-requirements.lock"
   },
+  "tools": {
+    "n8n": "2.29.10",
+    "ddgs": "ddgs>=9.0.0"
+  },
   "models": {
     "hermes-3-8b-q4_k_m.gguf": {
       "repo": "NousResearch/Hermes-3-Llama-3.1-8B-GGUF",

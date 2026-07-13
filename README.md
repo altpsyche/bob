@@ -79,39 +79,43 @@ block a merge; native-from-source is verified when a release is tagged. See
 
 ## Quick start
 
-Only **Git** is required up front. The two entry scripts install the rest of the toolchain (CUDA, Python 3.12, Go, Node.js, cmake) and build everything. Two thin shell stubs hand off to a Python cold-start kernel (`python -m bob.kernel`).
+**One command.** It clones Bob (with submodules), installs the toolchain (CUDA, Python 3.12, Go, Node.js, cmake), builds everything, and verifies against `versions.lock`. Re-running is safe (it fast-forwards). Add `--cpu` for a GPU-less box. macOS arrives in 2.0.
 
-**Step 1: install prerequisites (once per machine)**
+Linux:
+```bash
+curl -fsSL https://get.bob.sh | sh
+```
+
+Windows (PowerShell):
+```powershell
+irm https://get.bob.sh/install.ps1 | iex
+```
+
+Only **Git** is needed up front, and the installer installs even that if it's missing. On Linux you're asked for your `sudo` password once (for system packages); on atomic Fedora (Bazzite/Silverblue) it layers via `rpm-ostree`. Nothing here needs Docker: web search uses a built-in provider, and the optional add-on services are opt-in (see below).
+
+<details>
+<summary>Manual install (clone + two scripts)</summary>
+
+The one-liner just automates this. Only **Git** is required up front; the two entry scripts hand off to the Python cold-start kernel (`python -m bob.kernel`).
 
 Linux:
 ```bash
 git clone --recurse-submodules <your-remote> bob
 cd bob
 ./install_prereqs.sh            # add --cpu for a GPU-less box
+./setup.sh                      # GPU-less: ./setup.sh --cpu
 ```
 
 Windows (Command Prompt or PowerShell):
 ```bat
 git clone --recurse-submodules <your-remote> bob
 cd bob
-install_prereqs.bat            :: add --cpu for a GPU-less box
+install_prereqs.bat            :: add --cpu
+setup.bat                      :: GPU-less: setup.bat --cpu
 ```
+</details>
 
-You're asked for your `sudo` password **once** (Linux). On atomic Fedora (Bazzite/Silverblue) it layers via `rpm-ostree` and points you at a Fedora distrobox — the recommended path there.
-
-**Step 2: build, configure, and start**
-
-Linux:
-```bash
-./setup.sh                      # GPU-less: ./setup.sh --cpu
-```
-
-Windows:
-```bat
-setup.bat                       :: GPU-less: setup.bat --cpu
-```
-
-Builds the inference engine and proxy from source, downloads models, wires VS Code and terminal clients, and (if Docker is present) starts the compose services. Open a new terminal afterward so the `bob` command resolves (Linux: `~/.local/bin` on PATH; Windows: the `bob.cmd` shim that setup drops into your scoop shims — if you don't use scoop, add the repo folder to PATH).
+Setup builds the inference engine and proxy from source, downloads models, and wires VS Code and terminal clients. Open a new terminal afterward so the `bob` command resolves (Linux: `~/.local/bin` on PATH; Windows: the `bob.cmd` shim setup drops into your scoop shims — if you don't use scoop, add the repo folder to PATH).
 
 Then just talk to Bob — **inference auto-starts on demand**, no separate command needed:
 
@@ -121,7 +125,7 @@ bob chat "hi"                   # one-shot
 bob agent "summarise README.md" # agentic task loop
 ```
 
-`bob up` is an optional pre-warm (starts llama-swap `:8080` + the LiteLLM proxy `:8081` in the background; add `--with-services` for Docker, or opt into Open WebUI `:3000` at setup with `./setup.sh --with-webui`). Tail logs with `bob logs`.
+`bob up` is an optional pre-warm (starts llama-swap `:8080` + the LiteLLM proxy `:8081` in the background; opt into Open WebUI `:3000` at setup with `./setup.sh --with-webui`). Tail logs with `bob logs`. The opt-in add-ons start on demand: `bob services n8n start` (native), `bob services searxng start` / `bob services langfuse start` (Docker, with a guided install on first run). Tracing goes to a local file by default (`bob traces`); point it at Langfuse by opting into that service.
 
 **Step 3 (optional): register the agent scheduler**
 ```bash

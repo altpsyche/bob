@@ -579,6 +579,8 @@ class BobShell:
         self._print_splash()
         if self._first_run_pending():
             self._print_first_run()
+        if not self.no_tools:           # the full shell front door (not `bob chat/code/think`)
+            self._offer_onboard()       # welcome panel first, THEN the profile offer — one screen
         if self.theme.input_multiline:
             self.console.print(f"[{self.theme.muted}]multiline input on: Enter for a new line, "
                                f"Meta (or Esc) then Enter to send[/]")
@@ -816,15 +818,16 @@ class BobShell:
         import stack
         if r["core"] or r["name"] == "open-webui":
             return "/up"                                  # inference + WebUI come up together
-        if r["name"] in stack._DAEMON_CONTROL or r["docker"]:
-            return f"/services start {r['name']}"         # whisper/piper + the Docker services
+        toggleable = {s["name"] for s in stack.SERVICES if s.get("start") or s.get("kind") == "docker"}
+        if r["name"] in toggleable:
+            return f"/services start {r['name']}"         # whisper/piper/n8n + the Docker services
         if r["name"] == "agent-api":
             return "bob agent serve   (separate server)"
         return "/up"
 
     def _cmd_services(self, arg: str = "") -> None:
         """/services — the cockpit dashboard (every service, up/down). /services start|stop [name]
-        toggles one; with no name, the Docker services (SearXNG/n8n/Langfuse) as a group. After a
+        toggles one; with no name, the opt-in add-ons (n8n / SearXNG / Langfuse) as a group. After a
         toggle the dashboard re-renders, so the changed row flips colour — the visual-feedback loop."""
         parts = arg.split()
         if not parts:
@@ -845,10 +848,10 @@ class BobShell:
         import stack
         by = {s["name"]: s for s in stack.SERVICES}
         label_to_name = {s.get("label", s["name"]): s["name"] for s in stack.SERVICES}
-        docker = {s["name"] for s in stack.SERVICES if s.get("docker")}
-        daemons = set(stack._DAEMON_CONTROL)
+        docker = {s["name"] for s in stack.SERVICES if s.get("kind") == "docker"}
+        daemons = {s["name"] for s in stack.SERVICES if s.get("start")}
         if name is None:
-            return stack.services_control(self.config, action)    # Docker group (the default target)
+            return stack.services_control(self.config, action)    # all opt-in add-ons (the default target)
         canonical = name if name in by else label_to_name.get(name)
         if canonical is None:
             return f"unknown service '{name}' (see /services)"
@@ -1514,17 +1517,32 @@ class BobShell:
             pass
         return True
 
+    def _knows_user(self) -> bool:
+        """True if Bob has a durable profile row (identity seeded). Keyed on the SAME signal the kernel's
+        onboarding uses, so the welcome panel and the profile offer never tell different stories."""
+        try:
+            from bob.kernel import _has_profile_rows
+            return _has_profile_rows()
+        except Exception:
+            return True   # unknown -> don't nag with the CTA
+
     def _print_first_run(self) -> None:
-        """A one-time welcome panel pointing at the health check + the top entry points."""
+        """A one-time welcome panel. Leads with the single entry point, and when Bob doesn't know the user
+        yet, opens with the get-to-know-you line so the panel and the profile offer read as one screen."""
         from rich.align import Align
         from rich.panel import Panel
         from rich.text import Text
         t = self.theme
         body = Text()
-        body.append("Welcome. Bob runs entirely on your machine.\n\n")
-        for cmd, what in (("bob doctor", "check your setup is healthy"),
-                          ("/help", "see every command"),
-                          ("/agent <goal>", "let Bob use tools to do a task")):
+        if self._knows_user():
+            body.append("Welcome back. Bob runs entirely on your machine.\n\n")
+        else:
+            body.append("Welcome. Bob runs entirely on your machine.\n")
+            body.append("I don't know you yet — I'll offer to set up a quick profile in a moment.\n\n",
+                        style=t.muted)
+        for cmd, what in (("/help", "see every command"),
+                          ("/agent <goal>", "let Bob use tools to do a task"),
+                          ("bob doctor", "check your setup is healthy")):
             body.append(f"{cmd:<14}", style=f"bold {t.accent}")
             body.append(f" {what}\n", style=t.muted)
         panel = Panel(body, title="first run", title_align="left",
@@ -1533,6 +1551,16 @@ class BobShell:
         # inner text and ragged the columns.
         self.console.print(Align.center(panel) if t.centered else panel)
         self.console.print()
+
+    def _offer_onboard(self) -> None:
+        """After the welcome panel, offer to seed a profile (the kernel's one onboarding path). No-ops
+        when Bob already knows the user, on a non-TTY, or after the user declined once — so it never nags
+        and never blocks CI."""
+        try:
+            from bob.kernel import offer_onboard
+            offer_onboard()
+        except Exception as e:   # never let onboarding break the shell start
+            self.console.print(f"[{self.theme.warn}]onboarding offer skipped: {e}[/]")
 
     def _on_session_end(self, session_id) -> None:
         """Lifecycle seam — the point where a session is being left (on /exit, /session new,

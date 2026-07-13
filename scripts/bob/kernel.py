@@ -463,64 +463,37 @@ def onboard() -> None:
     print()
 
 
-# --- docker services (best-effort, optional) -----------------------------------------------------
+# The optional Docker services (SearXNG / Langfuse) are no longer provisioned eagerly at setup: they are
+# opt-in and start on demand via `bob services <name> start` (scripts/tools/stack.py), which prepares the
+# compose .env + per-service files and runs the guided Docker install if Docker is missing.
 
-def _docker_ready() -> bool:
-    return subprocess.run(["docker", "info"], capture_output=True).returncode == 0
 
-
-def setup_docker() -> None:
-    """Provision + start the optional compose services (Langfuse/SearXNG/n8n): wait for the daemon, write
-    the compose .env + SearXNG settings + data dirs, then `docker compose pull && up -d`. Best-effort —
-    the kernel only calls this when docker is already present."""
-    from bob_core import _port
-    _tools_on_path()
-    import bob_models
-
-    if not _docker_ready():
-        if osenv.os_name() != "windows" and _have("systemctl"):
-            print("  Starting docker daemon (systemctl)...", file=sys.stderr)
-            subprocess.run(["sudo", "systemctl", "start", "docker"], capture_output=True)
-        for _ in range(18):  # up to ~90s
-            if _docker_ready():
-                break
-            time.sleep(5)
-    if not _docker_ready():
-        print("  Docker daemon did not respond — skipping compose services. Start docker and re-run.",
+def verify_install() -> int:
+    """The 'verifies against versions.lock' step the one-command installer runs after setup. Reuses the
+    existing readers: check_reproducibility (installed submodules/models vs the lock) + check_sync (the
+    lock is in sync with its sources). Prints a green/red summary; returns 0 iff both pass."""
+    from bob import versions
+    ok = True
+    try:
+        drift = versions.check_reproducibility()
+    except Exception as e:  # noqa: BLE001 — a missing lock / git is a red, not a crash
+        print(f"  [x] reproducibility check failed: {e}", file=sys.stderr)
+        drift, ok = ["reproducibility check errored"], False
+    if drift:
+        ok = False
+        print("  [x] versions.lock drift:", file=sys.stderr)
+        for d in drift:
+            print(f"        - {d}", file=sys.stderr)
+        print("      fix: git submodule update --init --recursive  (or: bob fetch / bob lock)",
               file=sys.stderr)
-        return
-
-    config = _load_config()
-    d = bob_models.load_models_config().get("defaults", {})
-    lf = d.get("langfusePort") or _port(config, "langfusePort")
-    sx = d.get("searxngPort") or _port(config, "searxngPort")
-    n8n = d.get("n8nPort") or _port(config, "n8nPort")
-    tz = d.get("n8nTimezone") or "UTC"
-
-    env_file = REPO / "tools" / "compose" / ".env"
-    env_file.parent.mkdir(parents=True, exist_ok=True)
-    env_file.write_text(f"REPO_PATH={REPO}\nLANGFUSE_PORT={lf}\nSEARXNG_PORT={sx}\nN8N_PORT={n8n}\n"
-                        f"N8N_TIMEZONE={tz}\n", encoding="utf-8")
-    print(f"  Ports: Langfuse={lf}  SearXNG={sx}  n8n={n8n}  Timezone={tz}", file=sys.stderr)
-
-    for sub in ("langfuse-data", "n8n-data"):
-        (REPO / "tools" / sub).mkdir(parents=True, exist_ok=True)
-
-    sx_cfg = REPO / "config" / "searxng" / "settings.yml"
-    if not sx_cfg.exists():
-        sx_cfg.parent.mkdir(parents=True, exist_ok=True)
-        sx_cfg.write_text(
-            'use_default_settings: true\nserver:\n  secret_key: "bob-searxng"\n'
-            '  bind_address: "0.0.0.0:8080"\nsearch:\n  safe_search: 0\n  default_lang: "en"\n'
-            '  formats:\n    - html\n    - json\n', encoding="utf-8")
-
-    compose = REPO / "tools" / "compose" / "docker-compose.yml"
-    print("Pulling images (first run may take a few minutes)...", file=sys.stderr)
-    subprocess.run(["docker", "compose", "-f", str(compose), "pull"])
-    print("Starting services...", file=sys.stderr)
-    subprocess.run(["docker", "compose", "-f", str(compose), "up", "-d"])
-    print(f"\nServices running:\n  Langfuse:  http://localhost:{lf}\n  SearXNG:   http://localhost:{sx}\n"
-          f"  n8n:       http://localhost:{n8n}\nManage: bob services start|stop|status|logs", file=sys.stderr)
+    else:
+        print("  [OK] installed submodules + models match versions.lock", file=sys.stderr)
+    if versions.check_sync() != 0:
+        ok = False   # check_sync prints its own STALE message
+    else:
+        print("  [OK] versions.lock is in sync with its sources", file=sys.stderr)
+    print(("Verify: PASS" if ok else "Verify: FAIL"), file=sys.stderr)
+    return 0 if ok else 1
 
 
 # --- setup (the 12-step orchestrator) ------------------------------------------------------------
@@ -635,15 +608,11 @@ def setup(skip_models: bool = False, skip_build: bool = False, skip_voice: bool 
         print("  Linux: raise 'ulimit -l' (memlock) if you enable mlockBig. See: bob mlock --grant",
               file=sys.stderr)
 
-    _step(12, total, "Docker services (Langfuse + SearXNG + n8n)")
-    if _have("docker"):
-        try:
-            setup_docker()
-        except Exception as e:  # noqa: BLE001 — docker is optional
-            print(f"  Docker services skipped (non-fatal): {e}", file=sys.stderr)
-    else:
-        print("  Docker not installed — skipping. Install docker + re-run to add the compose services.",
-              file=sys.stderr)
+    _step(12, total, "Optional add-on services")
+    print("  Docker-free by default. Web search uses the built-in ddgs provider (no service needed).",
+          file=sys.stderr)
+    print("  Opt-in add-ons, started on demand: bob services n8n start (native), "
+          "bob services searxng|langfuse start (Docker, guided install).", file=sys.stderr)
 
     mins = int((time.monotonic() - start) // 60)
     secs = int((time.monotonic() - start) % 60)
@@ -725,6 +694,7 @@ def main(argv=None) -> int:
     sv.add_argument("names", nargs="+")
 
     sub.add_parser("build-swap", help="build the llama-swap proxy (Go)")
+    sub.add_parser("verify-install", help="verify installed submodules/models against versions.lock")
 
     args = p.parse_args(argv)
     try:
@@ -746,6 +716,8 @@ def main(argv=None) -> int:
         if args.cmd == "build-swap":
             print(build_swap(), file=sys.stderr)
             return 0
+        if args.cmd == "verify-install":
+            return verify_install()
     except RuntimeError as e:
         print(f"kernel {args.cmd} failed: {e}", file=sys.stderr)
         return 1

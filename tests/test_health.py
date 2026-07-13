@@ -180,26 +180,27 @@ class TestHealthCheckWiredRows(unittest.TestCase):
                 self.assertIn("○", line)
                 self.assertNotIn("✗", line)
 
-    def test_doctor_reports_docker_absent_for_compose_services(self):
-        # docker missing: the compose services (SearXNG/n8n) are reported unavailable with the
-        # real reason + install hint, not a misleading "bob services start" that would just fail.
+    def test_doctor_reports_addons_as_optin_and_ddgs_default(self):
+        # Add-on services (n8n/SearXNG/Langfuse) are opt-in: reported (not failed) with a start hint,
+        # and the Docker ones note the guided install. Web search states the ddgs default (no service).
         out = self._docker(present=False)
-        self.assertIn("not installed", out)
-        self.assertIn("SearXNG (:8888)", out)
-        self.assertIn("unavailable (needs Docker, not installed)", out)
-        self.assertNotIn("SearXNG reachable", out)   # the reachability check is skipped when no docker
+        self.assertIn("web search: ddgs", out)
+        self.assertIn("searxng (:8888)", out)
+        self.assertIn("opt-in", out)
+        self.assertIn("guided install on first start", out)   # the Docker add-ons
+        self.assertIn("bob services searxng start", out)
 
-    def test_doctor_checks_reachability_when_docker_present(self):
-        out = self._docker(present=True)
-        self.assertIn("SearXNG reachable (:8888)", out)   # normal reachability check restored
-        self.assertNotIn("needs Docker", out)
+    def test_doctor_reports_addon_reachable_when_up(self):
+        # When an add-on's port answers, doctor marks it reachable (reads the same service_snapshot).
+        out = self._docker(present=True, ports_up=True)
+        self.assertIn("searxng reachable (:8888)", out)
 
-    def _docker(self, present):
+    def _docker(self, present, ports_up=False):
         import requests
         with mock.patch.object(health_mod, "_has_module", return_value=True), \
              mock.patch.object(health_mod, "_tool_load_errors", return_value=[]), \
              mock.patch("osenv.docker_present", return_value=present), \
-             mock.patch("osenv.is_port_in_use", return_value=False), \
+             mock.patch("osenv.is_port_in_use", return_value=ports_up), \
              mock.patch("osenv.agent_task_status", return_value={"registered": False}), \
              mock.patch("requests.get", side_effect=requests.RequestException("down")), \
              mock.patch("bob_models.profile_roles", return_value={"agent": {"gguf": "x.gguf"}}), \

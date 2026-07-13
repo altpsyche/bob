@@ -36,7 +36,7 @@ jobs:
       - name: shellcheck the bootstrap shims
         run: |
           sudo apt-get update -y && sudo apt-get install -y shellcheck
-          shellcheck install_prereqs.sh setup.sh bob
+          shellcheck install_prereqs.sh setup.sh bob install/install.sh
 
   core-suite:
     name: core (${{ matrix.os }})
@@ -168,6 +168,14 @@ jobs:
           python -m bob build --cpu
           python -m bob.kernel build-swap
           python -m bob fetch cpu
+
+      # Prove the one-command installer's post-setup gate: the installed submodules + fetched model
+      # match versions.lock, and the lock is in sync with its sources. (The install/install.sh clone-vs-
+      # pull logic is gated by shellcheck + tests/test_install_bootstrap.py; here we exercise the
+      # verify-install step it runs against the real provisioned tree.)
+      - name: Verify against versions.lock (installer gate)
+        shell: bash
+        run: python -m bob.kernel verify-install
 
       - name: Bring the stack up
         shell: bash

@@ -78,6 +78,56 @@ class TestTracerUnit(unittest.TestCase):
         self.assertEqual(len(rec), 1)
 
 
+class TestFileSink(unittest.TestCase):
+    """The Docker-free default sink: finished spans -> logs/traces/<trace_id>.jsonl, read back by
+    `bob traces` (list_traces / format_trace)."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        import bob_tracing
+        self.dir = Path(tempfile.mkdtemp(prefix="bob-traces-"))
+        self._p = mock.patch.object(bob_tracing, "traces_dir", return_value=self.dir)
+        self._p.start()
+        self.addCleanup(self._p.stop)
+
+    def test_make_tracer_defaults_to_file_sink(self):
+        # tracing on + no tracingSink -> file sink (not OTLP), writing a JSONL file per trace.
+        t = make_tracer({"agent": {"tracing": True}})
+        self.assertTrue(t.enabled)
+        root = t.span("agent.run")
+        t.span("agent.tool", {"tool": "echo"}, parent=root).end()
+        root.end()
+        files = list(self.dir.glob("*.jsonl"))
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0].stem, root.trace_id)
+
+    def test_traces_show_reconstructs_the_tree(self):
+        import bob_tracing
+        t = make_tracer({"agent": {"tracing": True}})
+        root = t.span("agent.run")
+        child = t.span("agent.tool", {"tool": "echo"}, parent=root)
+        child.end()
+        root.end()
+        rows = bob_tracing.list_traces()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0], root.trace_id)      # trace id
+        self.assertEqual(rows[0][1], "agent.run")        # root span name
+        tree = bob_tracing.format_trace(root.trace_id)
+        self.assertIn("agent.run", tree)
+        self.assertIn("agent.tool", tree)                # nested child rendered under the root
+
+    def test_otlp_sink_selected_when_configured(self):
+        from unittest import mock
+        import bob_tracing
+        with mock.patch.object(bob_tracing, "_otlp_sink", return_value=lambda s: None) as otlp, \
+             mock.patch.object(bob_tracing, "_file_sink") as fsink:
+            make_tracer({"agent": {"tracing": True, "tracingSink": "otlp"}})
+        otlp.assert_called_once()
+        fsink.assert_not_called()
+
+
 class TestTracingInLoop(unittest.TestCase):
     """Run/tool spans through the real loop, with make_tracer stubbed to a recording tracer."""
 

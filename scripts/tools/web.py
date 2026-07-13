@@ -1,4 +1,10 @@
-"""Bob tool: web_search (SearXNG) and web_fetch."""
+"""Bob tool: web_search (a cross-OS provider abstraction) and web_fetch.
+
+Web search has ONE default that behaves identically on every OS with no Docker and no daemon: `ddgs`
+(Dux Distributed Global Search), a pure-Python in-process metasearch library aggregating DuckDuckGo /
+Bing / Google. Optional providers selected via `agent.searchProvider` + a key: `brave`, `tavily`, and
+`searxng` (the opt-in Docker service). Any selected provider falls back to `ddgs` (then a last-ditch
+stdlib scrape), so search never hard-fails."""
 import ipaddress
 import re
 import socket
@@ -9,22 +15,31 @@ import requests
 _cfg: dict = {}
 _searxng_url: str = ""
 _allow_private_fetch: bool = False  # gate SSRF-prone fetches behind an explicit flag
-_web_search_fallback: bool = True   # #5b — degrade to a direct provider when SearXNG is unreachable
+_web_search_fallback: bool = True   # degrade to the keyless ddgs provider when a selected one fails
+_search_provider: str = "ddgs"
+_brave_key: str = ""
+_tavily_key: str = ""
 _MAX_REDIRECTS = 5  # cap manual redirect following so each hop can be re-validated
 
 
 def configure(config: dict) -> None:
     global _cfg, _searxng_url, _allow_private_fetch, _web_search_fallback
+    global _search_provider, _brave_key, _tavily_key
     _cfg = config
     import sys
     from pathlib import Path
     scripts_dir = str(Path(__file__).parent.parent)
     if scripts_dir not in sys.path:
         sys.path.insert(0, scripts_dir)
+    import osenv
     from bob_core import _port  # single source of truth for ports
+    agent = config.get("agent", {}) or {}
     _searxng_url = f"http://localhost:{_port(config, 'searxngPort')}/search"
-    _allow_private_fetch = bool(config.get("agent", {}).get("allowPrivateFetch", False))
-    _web_search_fallback = bool(config.get("agent", {}).get("webSearchFallback", True))
+    _allow_private_fetch = bool(agent.get("allowPrivateFetch", False))
+    _web_search_fallback = bool(agent.get("webSearchFallback", True))
+    _search_provider = (agent.get("searchProvider") or "ddgs").lower()
+    _brave_key = osenv.secret("braveApiKey", agent.get("braveApiKey", ""), config)
+    _tavily_key = osenv.secret("tavilyApiKey", agent.get("tavilyApiKey", ""), config)
 
 
 def _is_blocked_host(host: str) -> bool:
@@ -47,11 +62,60 @@ def _is_blocked_host(host: str) -> bool:
     return False
 
 
+def _fmt(rows: list) -> str | None:
+    """Join (title, url, snippet) rows into the standard result block, or None if empty."""
+    out = [f"- {t}\n  {u}\n  {(s or '')[:200]}" for t, u, s in rows if u]
+    return "\n\n".join(out) if out else None
+
+
+def _ddgs_search(query: str, num_results: int) -> str | None:
+    """The default provider: the maintained pure-Python `ddgs` metasearch library (DuckDuckGo/Bing/
+    Google), in-process, keyless, no Docker, identical on every OS. Returns None if the lib is missing
+    or yields nothing, so the caller falls through to the stdlib scrape."""
+    try:
+        from ddgs import DDGS            # maintained package (formerly duckduckgo_search)
+    except ImportError:
+        try:
+            from duckduckgo_search import DDGS   # older name, same API
+        except ImportError:
+            return None
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=num_results))
+    except Exception:
+        return None
+    return _fmt([(x.get("title", ""), x.get("href") or x.get("url", ""),
+                  x.get("body") or x.get("content", "")) for x in results[:num_results]])
+
+
+def _brave_search(query: str, num_results: int) -> str | None:
+    """Optional keyed provider: Brave's independent web index (agent.braveApiKey / BOB secret)."""
+    if not _brave_key:
+        return None
+    r = requests.get("https://api.search.brave.com/res/v1/web/search",
+                     params={"q": query, "count": num_results},
+                     headers={"X-Subscription-Token": _brave_key, "Accept": "application/json"},
+                     timeout=10)
+    r.raise_for_status()
+    results = ((r.json().get("web", {}) or {}).get("results", []))[:num_results]
+    return _fmt([(x.get("title", ""), x.get("url", ""), x.get("description", "")) for x in results])
+
+
+def _tavily_search(query: str, num_results: int) -> str | None:
+    """Optional keyed provider: Tavily's LLM-optimized search (agent.tavilyApiKey / BOB secret)."""
+    if not _tavily_key:
+        return None
+    r = requests.post("https://api.tavily.com/search",
+                      json={"api_key": _tavily_key, "query": query, "max_results": num_results},
+                      timeout=15)
+    r.raise_for_status()
+    results = r.json().get("results", [])[:num_results]
+    return _fmt([(x.get("title", ""), x.get("url", ""), x.get("content", "")) for x in results])
+
+
 def _ensure_searxng() -> str:
-    """On-demand: bring SearXNG up if it's down and auto-start is enabled (agent.autoStartSearxng,
-    default on). Returns '' on success/already-up, else a short reason (e.g. Docker not installed)."""
-    if not _cfg.get("agent", {}).get("autoStartSearxng", True):
-        return "auto-start disabled (agent.autoStartSearxng)"
+    """On-demand: bring the opt-in SearXNG Docker service up if it's down. Returns '' on success/already
+    up, else a short reason. Only used when searxng is the selected provider."""
     try:
         import osenv
         from bob_core import _port
@@ -60,23 +124,29 @@ def _ensure_searxng() -> str:
         import stack                    # scripts/tools is on sys.path (tool loader)
         ok, msg = stack.ensure_searxng(_cfg)
         return "" if ok else msg
-    except Exception as e:              # noqa: BLE001 — advisory; fall through to the normal request
+    except Exception as e:              # noqa: BLE001 — advisory; fall through
         return str(e)
 
 
-def _ddg_search(query: str, num_results: int) -> str | None:
-    """Fallback web search via the DuckDuckGo HTML endpoint — no SearXNG, no Docker, no API key. So
-    search degrades gracefully on a box without Docker instead of just failing. Best-effort HTML parse
-    of a public endpoint; returns None on any error / no results so the caller can fall through."""
+def _searxng_search(query: str, num_results: int) -> str | None:
+    """Optional self-hosted meta-search via the SearXNG Docker service (started on demand if selected)."""
+    if not _searxng_url:
+        return None
+    _ensure_searxng()
+    r = requests.get(_searxng_url, params={"q": query, "format": "json", "pageno": 1}, timeout=10)
+    r.raise_for_status()
+    results = r.json().get("results", [])[:num_results]
+    return _fmt([(x.get("title", ""), x.get("url", ""), x.get("content", "")) for x in results])
+
+
+def _ddg_scrape_fallback(query: str, num_results: int) -> str | None:
+    """Last-ditch keyless search: a thin HTML scrape of DuckDuckGo, used only if the `ddgs` library is
+    unavailable. Best-effort parse of a public endpoint; returns None on any error / no results."""
     from html import unescape
     from urllib.parse import parse_qs, unquote
     try:
-        r = requests.post(
-            "https://html.duckduckgo.com/html/",
-            data={"q": query},
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=10,
-        )
+        r = requests.post("https://html.duckduckgo.com/html/", data={"q": query},
+                          headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
         r.raise_for_status()
     except Exception:
         return None
@@ -88,42 +158,40 @@ def _ddg_search(query: str, num_results: int) -> str | None:
 
     rows = []
     for i, (href, title) in enumerate(titles[:num_results]):
-        # DDG wraps result links as //duckduckgo.com/l/?uddg=<encoded-target> — decode to the real URL.
-        if "uddg=" in href:
+        if "uddg=" in href:   # DDG wraps links as /l/?uddg=<encoded-target> — decode to the real URL.
             href = unquote(parse_qs(urlparse(href).query).get("uddg", [href])[0])
         snippet = _clean(snippets[i]) if i < len(snippets) else ""
-        rows.append(f"- {_clean(title)}\n  {href}\n  {snippet[:200]}")
-    if not rows:
-        return None
-    return "(via DuckDuckGo; SearXNG unavailable)\n\n" + "\n\n".join(rows)
+        rows.append((_clean(title), href, snippet))
+    return _fmt(rows)
 
 
 def _web_search(query: str, num_results: int = 5) -> str:
-    reason = _ensure_searxng() if _searxng_url else "SearXNG URL missing"
-    if _searxng_url:
+    """Run the selected provider, falling back to keyless ddgs then a stdlib scrape. Uniform on every OS,
+    no Docker required by the default. The provider map is built here (not at import) so each entry
+    resolves the current module-level fn — swappable in tests and never stale."""
+    providers = {"ddgs": _ddgs_search, "brave": _brave_search,
+                 "tavily": _tavily_search, "searxng": _searxng_search}
+    order = [_search_provider]
+    if _web_search_fallback and _search_provider != "ddgs":
+        order.append("ddgs")
+    errors = []
+    for prov in order:
+        fn = providers.get(prov)
+        if fn is None:
+            errors.append(f"{prov}: unknown provider (use ddgs|brave|tavily|searxng)")
+            continue
         try:
-            r = requests.get(
-                _searxng_url,
-                params={"q": query, "format": "json", "pageno": 1},
-                timeout=10,
-            )
-            r.raise_for_status()
-            results = r.json().get("results", [])[:num_results]
-            if results:
-                return "\n\n".join(
-                    f"- {x['title']}\n  {x['url']}\n  {x.get('content', '')[:200]}"
-                    for x in results
-                )
-            return "(no results)"
-        except Exception:
-            pass                            # SearXNG unreachable — try the fallback below
-    # SearXNG isn't reachable (commonly: no Docker). Degrade to a direct provider if allowed.
-    if _web_search_fallback:
-        fb = _ddg_search(query, num_results)
-        if fb:
-            return fb
-    hint = reason or "start it with: bob services start (or /services start searxng)"
-    return f"web_search unavailable. SearXNG isn't reachable: {hint}"
+            out = fn(query, num_results)
+        except Exception as e:   # noqa: BLE001 — try the next provider
+            errors.append(f"{prov}: {e}")
+            continue
+        if out:
+            return out
+        errors.append(f"{prov}: no results")
+    fb = _ddg_scrape_fallback(query, num_results)   # last-ditch, only reached if ddgs is unavailable
+    if fb:
+        return fb
+    return "web_search unavailable: " + "; ".join(errors)
 
 
 def _web_fetch(url: str) -> str:
@@ -179,7 +247,7 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "Search the web via SearXNG (private, local); falls back to a direct provider when SearXNG is unavailable",
+            "description": "Search the web (default: in-process ddgs metasearch; optional Brave/Tavily/SearXNG providers). Cross-OS, no Docker required.",
             "parameters": {
                 "type": "object",
                 "properties": {

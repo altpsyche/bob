@@ -1128,6 +1128,21 @@ class TestFirstRun(unittest.TestCase):
         self.assertTrue(sh._first_run_pending(flag))    # first time
         self.assertFalse(sh._first_run_pending(flag))   # then never again
 
+    def test_first_run_panel_shows_cta_when_bob_doesnt_know_you(self):
+        # the welcome panel and the profile offer tell one story: no profile -> the get-to-know-you line.
+        sh, out = _make_shell()
+        with _patch(sh, "_knows_user", lambda: False):
+            sh._print_first_run()
+        self.assertIn("don't know you yet", out.file.getvalue())
+
+    def test_first_run_panel_omits_cta_when_profile_exists(self):
+        sh, out = _make_shell()
+        with _patch(sh, "_knows_user", lambda: True):
+            sh._print_first_run()
+        text = out.file.getvalue()
+        self.assertNotIn("don't know you yet", text)
+        self.assertIn("Welcome back", text)
+
 
 class TestGate(unittest.TestCase):
     def test_non_interactive_run_prints_help_not_shell(self):

@@ -87,7 +87,7 @@ class TestServiceRegistry(unittest.TestCase):
         self.assertEqual(stack._NAME_KILL,
                          [p for s in stack.SERVICES for p in s.get("procnames", ())])
         self.assertEqual(stack._PS_SERVICES,
-                         [s["name"] for s in stack.SERVICES if s.get("pidfile")])
+                         [s["name"] for s in stack.SERVICES if s.get("kind") == "native"])
 
     def test_health_lists_every_registered_service(self):
         with mock.patch.object(osenv, "is_port_in_use", return_value=False):
@@ -105,7 +105,8 @@ class TestServiceRegistry(unittest.TestCase):
         with mock.patch.object(osenv, "docker_present", return_value=True), \
              mock.patch.object(osenv, "is_port_in_use", return_value=False):
             down = "\n".join(stack._service_health_lines(CFG))
-        self.assertIn("→ start: bob services start", down)   # e.g. searxng/n8n/langfuse when down
+        self.assertIn("→ start: bob services searxng start", down)   # per-service hints now
+        self.assertIn("→ start: bob services n8n start", down)
         self.assertIn("→ start: bob whisper start", down)
         with mock.patch.object(osenv, "docker_present", return_value=True), \
              mock.patch.object(osenv, "is_port_in_use", return_value=True):
@@ -230,8 +231,10 @@ class TestSearxngOnDemand(unittest.TestCase):
         self.assertIn("already running", msg)
 
     def test_starts_single_container_and_waits(self):
-        seq = iter([False, True])                    # down at check, up after start (via _poll)
-        with mock.patch.object(osenv, "is_port_in_use", side_effect=lambda p, *a, **k: next(seq)), \
+        # docker present, port down at both checks, up after _poll.
+        seq = iter([False, False, True, True, True])
+        with mock.patch.object(osenv, "is_port_in_use", side_effect=lambda *a, **k: next(seq)), \
+             mock.patch.object(osenv, "docker_present", return_value=True), \
              mock.patch.object(stack, "_compose_base", return_value=(["docker", "compose", "-f", "x"], "")), \
              mock.patch.object(stack, "_write_compose_env"), \
              mock.patch.object(stack.subprocess, "run",
@@ -242,15 +245,20 @@ class TestSearxngOnDemand(unittest.TestCase):
         self.assertEqual(argv[-3:], ["up", "-d", "searxng"])   # single service, not the whole group
 
     def test_graceful_when_no_docker(self):
+        # No docker + non-interactive: the generic guided-install path returns a clear hint, never blocks.
         with mock.patch.object(osenv, "is_port_in_use", return_value=False), \
-             mock.patch.object(stack, "_compose_base", return_value=(None, "Docker not found.")):
+             mock.patch.object(osenv, "docker_present", return_value=False), \
+             mock.patch.object(sys.stdin, "isatty", return_value=False):
             ok, msg = stack.ensure_searxng(CFG)
         self.assertFalse(ok)
-        self.assertIn("Docker not found", msg)
+        self.assertIn("Docker", msg)
 
     def test_services_control_scopes_to_one_service(self):
-        with mock.patch.object(stack, "_compose_base", return_value=(["docker", "compose", "-f", "x"], "")), \
+        with mock.patch.object(osenv, "docker_present", return_value=True), \
+             mock.patch.object(osenv, "is_port_in_use", return_value=False), \
+             mock.patch.object(stack, "_compose_base", return_value=(["docker", "compose", "-f", "x"], "")), \
              mock.patch.object(stack, "_write_compose_env"), \
+             mock.patch.object(stack, "_poll", return_value=True), \
              mock.patch.object(stack.subprocess, "run",
                                return_value=mock.Mock(returncode=0, stdout="ok", stderr="")) as run:
             stack.services_control(CFG, "start", service="searxng")
@@ -275,29 +283,27 @@ class TestSearxngOnDemand(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(msg, "aliased")
 
-    def test_ensure_service_generic_second_docker_service(self):
-        # A different docker service (n8n) auto-starts through the SAME path with NO new code:
+    def test_ensure_service_generic_docker_service(self):
+        # A docker service (langfuse) auto-starts through the SAME path with NO new code:
         # its container name + port come from the SERVICES registry entry.
-        from bob_core import _port
-        seq = iter([False, True])                    # down at check, up after start (via _poll)
-        with mock.patch.object(osenv, "is_port_in_use", side_effect=lambda p, *a, **k: next(seq)), \
+        seq = iter([False, False, True, True, True])
+        with mock.patch.object(osenv, "is_port_in_use", side_effect=lambda *a, **k: next(seq)), \
+             mock.patch.object(osenv, "docker_present", return_value=True), \
              mock.patch.object(stack, "_compose_base", return_value=(["docker", "compose", "-f", "x"], "")), \
              mock.patch.object(stack, "_write_compose_env"), \
              mock.patch.object(stack.subprocess, "run",
                                return_value=mock.Mock(returncode=0, stdout="", stderr="")) as run:
-            ok, msg = stack.ensure_service(CFG, "n8n")
+            ok, _msg = stack.ensure_service(CFG, "langfuse")
         self.assertTrue(ok)
-        self.assertEqual(run.call_args[0][0][-3:], ["up", "-d", "n8n"])   # single service, from registry
-        self.assertIn(str(_port(CFG, "n8nPort")), msg)
+        self.assertEqual(run.call_args[0][0][-3:], ["up", "-d", "langfuse"])   # single service, from registry
 
-    def test_ensure_service_rejects_non_docker(self):
-        # A non-docker service (whisper) has no on-demand docker start; refuse cleanly, no docker call.
+    def test_ensure_service_starts_native_daemon(self):
+        # ensure_service is generic: a native daemon (whisper) routes to its registry start fn, not docker.
         with mock.patch.object(osenv, "is_port_in_use", return_value=False), \
-             mock.patch.object(stack.subprocess, "run") as run:
+             mock.patch.object(stack, "service_control", return_value="starting") as sc:
             ok, msg = stack.ensure_service(CFG, "whisper")
-        self.assertFalse(ok)
-        self.assertIn("not a docker service", msg)
-        run.assert_not_called()
+        sc.assert_called_once_with(CFG, "whisper", "start")
+        self.assertEqual(msg, "starting")
 
     def test_ensure_service_unknown_name(self):
         ok, msg = stack.ensure_service(CFG, "nope")

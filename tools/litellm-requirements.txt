@@ -10,3 +10,4 @@ prompt_toolkit>=3.0.0
 pyfiglet>=1.0.0
 PyYAML>=6.0
 yt-dlp>=2024.1.0
+ddgs>=9.0.0

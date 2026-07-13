@@ -132,23 +132,26 @@ def health_check(config: dict, doctor: bool = False) -> str:
     import shutil as _sh
     check("fabric on PATH", bool(_sh.which("fabric")), "bob fabric-setup")
 
-    # SearXNG / n8n run as docker compose services. On a box with no docker they can't start at all,
-    # so report the real reason (needs Docker + install hint) instead of a misleading "bob services
-    # start" that would just fail. Docker present -> the normal reachability checks.
-    searx_port = _port(config, "searxngPort")
-    n8n_port = _port(config, "n8nPort")
-    if not osenv.docker_present():
-        pending("Docker (for SearXNG / n8n / langfuse)", f"not installed. {osenv.docker_install_hint()}")
-        pending(f"SearXNG (:{searx_port})", "unavailable (needs Docker, not installed)")
-        pending(f"n8n (:{n8n_port})", "unavailable (needs Docker, not installed)")
+    # Web search: the default is the in-process ddgs provider (no service, no Docker), identical on
+    # every OS. Report the configured provider so doctor states the search capability plainly.
+    provider = (config.get("agent", {}) or {}).get("searchProvider", "ddgs")
+    if provider == "ddgs":
+        lines.append("  →  web search: ddgs (in-process metasearch — no service, no Docker)")
     else:
-        check(f"SearXNG reachable (:{searx_port})", osenv.is_port_in_use(searx_port), "bob services start")
-        n8n_ok = False
-        try:
-            n8n_ok = requests.get(f"http://localhost:{n8n_port}", timeout=8).status_code < 500
-        except requests.RequestException:
-            pass
-        check(f"n8n reachable (:{n8n_port})", n8n_ok, "bob services start")
+        lines.append(f"  →  web search: {provider} (falls back to ddgs)")
+
+    # Opt-in add-on services (n8n native; SearXNG / Langfuse via Docker). Read the ONE service_snapshot
+    # so doctor and `bob status` never drift; they are opt-in, so a down one is informational, not a
+    # failure — show how to start it (the Docker ones note the guided install on their entry's hint).
+    import stack
+    for r in stack.service_snapshot(config):
+        if r["name"] not in ("n8n", "searxng", "langfuse"):
+            continue
+        if r["up"]:
+            check(f"{r['name']} reachable (:{r['port']})", True)
+        else:
+            need = "opt-in Docker; guided install on first start" if r.get("docker") else "opt-in"
+            pending(f"{r['name']} (:{r['port']})", f"{need} — start: {r['hint']}")
 
     litellm_port = _port(config, "litellmPort")
     check(f"LiteLLM proxy (:{litellm_port})", osenv.is_port_in_use(litellm_port), "bob litellm")

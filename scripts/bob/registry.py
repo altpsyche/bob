@@ -123,8 +123,8 @@ COMMANDS = [
      "args": "", "handler": "ps"},
     {"name": "logs", "group": "Run", "summary": "Tail the server log",
      "args": "[-n N]", "handler": "logs"},
-    {"name": "services", "group": "Run", "summary": "Docker services: Langfuse / SearXNG / n8n",
-     "args": "<start|stop|status|logs>", "handler": "services"},
+    {"name": "services", "group": "Run", "summary": "Opt-in add-ons: n8n (native) / SearXNG / Langfuse (Docker)",
+     "args": "[<name>] <start|stop|status|logs>", "handler": "services"},
     {"name": "webui", "group": "Run", "summary": "Launch Open WebUI only",
      "args": "", "handler": "webui"},
 
@@ -161,6 +161,8 @@ COMMANDS = [
      "args": "[role]", "handler": "bench"},
     {"name": "version", "group": "Diagnose", "summary": "Show binary versions and submodule commits",
      "args": "", "handler": "version"},
+    {"name": "traces", "group": "Diagnose", "summary": "View agent traces from the local file sink (agent.tracing)",
+     "args": "[list | show <trace-id>]", "handler": "traces"},
 
     # --- Setup: first-run, install, build, provisioning ---------------------------------------
     {"name": "setup", "group": "Setup", "summary": "First-run setup + quick health check (= doctor --quick)",

@@ -133,13 +133,103 @@ class Tracer:
 
 def make_tracer(config: dict, sink=None) -> Tracer:
     """Build the run's tracer from config. `agent.tracing` off -> a disabled (no-op) Tracer. On -> a
-    Tracer whose sink is the OTLP exporter bridge (unless a sink is injected, e.g. by tests)."""
+    Tracer whose sink is chosen by `agent.tracingSink`: 'file' (default) writes spans to
+    logs/traces/<trace_id>.jsonl (Docker-free, offline, viewable via `bob traces`); 'otlp' exports to an
+    OTLP collector (e.g. Langfuse). A sink injected by the caller (tests) wins over both."""
     agent = (config or {}).get("agent", {}) or {}
     if not agent.get("tracing", False):
         return Tracer(enabled=False)
     if sink is None:
-        sink = _otlp_sink(agent)
+        sink = _otlp_sink(agent) if (agent.get("tracingSink", "file") == "otlp") else _file_sink(agent)
     return Tracer(enabled=True, sink=sink)
+
+
+def traces_dir():
+    """The directory the file sink writes to (logs/traces under the repo/data dir)."""
+    from pathlib import Path
+    try:
+        import osenv
+        return osenv.cache_dir() / "traces"
+    except Exception:   # osenv unavailable (import-light contexts) -> repo-relative default
+        return Path("logs") / "traces"
+
+
+def _file_sink(agent: dict):
+    """Return a callable(Span) that appends each finished span as one JSONL line under
+    logs/traces/<trace_id>.jsonl. Zero dependencies, no server, Docker-free; the whole run/tool/sub-agent
+    tree lands in one file per trace for `bob traces` to reconstruct."""
+    import json
+    base = traces_dir()
+    base.mkdir(parents=True, exist_ok=True)
+
+    def _write(span: "Span") -> None:
+        rec = {"trace_id": span.trace_id, "span_id": span.span_id, "parent_id": span.parent_id,
+               "name": span.name, "status": span.status, "attributes": span.attributes}
+        with open(base / f"{span.trace_id}.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, default=str) + "\n")
+
+    return _write
+
+
+# --- reader side: `bob traces [list|show <id>]` (viewer for the file sink) ------------------------
+
+def _load_trace(path) -> list:
+    """Read one <trace_id>.jsonl into a list of span records (skips malformed lines)."""
+    import json
+    spans = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            spans.append(json.loads(line))
+        except ValueError:
+            continue
+    return spans
+
+
+def list_traces(limit: int = 20) -> list:
+    """Most-recent-first summary of stored traces: (trace_id, root_name, span_count, mtime)."""
+    base = traces_dir()
+    if not base.exists():
+        return []
+    files = sorted(base.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)[:limit]
+    out = []
+    for f in files:
+        spans = _load_trace(f)
+        root = next((s for s in spans if not s.get("parent_id")), spans[0] if spans else None)
+        out.append((f.stem, (root or {}).get("name", "?"), len(spans), f.stat().st_mtime))
+    return out
+
+
+def format_trace(trace_id: str) -> str:
+    """Render one trace as an indented run/tool/sub-agent tree (parent_id linkage), with durations."""
+    base = traces_dir()
+    path = base / f"{trace_id}.jsonl"
+    if not path.exists():
+        # allow a unique prefix
+        matches = list(base.glob(f"{trace_id}*.jsonl")) if base.exists() else []
+        if len(matches) != 1:
+            return f"No trace '{trace_id}' in {base} (see: bob traces)."
+        path = matches[0]
+    spans = _load_trace(path)
+    if not spans:
+        return f"Trace {path.stem} is empty."
+    children = {}
+    for s in spans:
+        children.setdefault(s.get("parent_id"), []).append(s)
+    lines = [f"trace {path.stem}"]
+
+    def _walk(parent_id, depth):
+        for s in children.get(parent_id, []):
+            dur = s.get("attributes", {}).get("duration_ms")
+            dur_s = f"  {dur} ms" if dur is not None else ""
+            status = "" if s.get("status") in ("ok", "unset", None) else f"  [{s.get('status')}]"
+            lines.append(f"{'  ' * depth}- {s.get('name', '?')}{dur_s}{status}")
+            _walk(s.get("span_id"), depth + 1)
+
+    _walk(None, 1)
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

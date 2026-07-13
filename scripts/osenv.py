@@ -1477,6 +1477,20 @@ def install_packages(packages, manager: str = None, dry_run: bool = False) -> No
     _run_pkg_spec(spec, label=f"{len(pkgs)} package(s): {' '.join(pkgs)}")
 
 
+def npm_local_install(package: str, prefix) -> bool:
+    """Install one npm package into a repo-local prefix (prefix/node_modules/...), Docker-free and
+    cross-OS. Used for the native n8n opt-in. Returns True on success. `npm` on Windows is `npm.cmd`."""
+    prefix = Path(prefix)
+    prefix.mkdir(parents=True, exist_ok=True)
+    npm = "npm.cmd" if os_name() == "windows" else "npm"
+    try:
+        r = subprocess.run([npm, "install", package, "--prefix", str(prefix), "--no-fund", "--no-audit"],
+                           check=False)
+    except OSError:
+        return False
+    return r.returncode == 0
+
+
 def _py_minor(exe: str):
     """(major, minor) tuple from `<exe> --version`, or None."""
     import re

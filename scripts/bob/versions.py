@@ -26,6 +26,9 @@ LOCK_SUBMODULES = ["external/llama.cpp", "external/llama-swap", "external/whispe
 LOCK_TOOLCHAIN = {"python": "3.12", "cmake": "3.24", "cuda": "12.0"}
 # Per-venv requirements lock.
 LOCK_REQUIREMENTS = {"venv-litellm": "tools/litellm-requirements.lock"}
+# Pinned opt-in tools installed outside the venvs: the native n8n npm package and the ddgs search lib
+# (also a venv-litellm requirement; pinned here too so `bob lock --check` covers the search default).
+LOCK_TOOLS = {"n8n": "2.29.10", "ddgs": "ddgs>=9.0.0"}
 
 
 def load_lock(path: Optional[Path] = None) -> dict:
@@ -185,6 +188,7 @@ def build_lock_object(repo: Optional[Path] = None, models_config: Optional[dict]
         "submodules": submodule_commits(repo),
         "toolchain": dict(LOCK_TOOLCHAIN),
         "requirements": dict(LOCK_REQUIREMENTS),
+        "tools": dict(LOCK_TOOLS),
         "models": lock_model_manifest(models_config, repo),
     }
 
