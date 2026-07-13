@@ -104,16 +104,10 @@ the cross OS CI acceptance gate runs on every PR.
 Each line below is grounded in where local AI and coding agents actually are in 2026 (sources at the
 bottom). Version numbers are targets, not commitments; scope moves between them as things land.
 
-### 1.1 sharper daily driver
-Refresh what's already here so it keeps pace, and close the rough edges from real use.
+### 1.1 easy to install and get started
+Lower the barrier to entry so a new machine goes from nothing to a working Bob in one step, and a normal
+install never trips over Docker.
 
-- **Model refresh.** Move the coder role off the older Qwen2.5-Coder-14B to a current Qwen3-Coder
-  (30B-A3B or 27B class) that fits a single workstation at roughly 96% of flagship quality, and refresh
-  the cloud peers (DeepSeek V3.2, GLM-4.6, and Kimi K2 for multi attempt agentic coding).
-- **Faster, tougher voice.** Swap the STT path to a CTranslate2 or faster-whisper backend (about 4 to 5
-  times faster, and lighter on memory) and harden the voice loop against device and engine failure.
-- **Onboarding and entry clarity.** Finish the first run polish (the "it doesn't know me yet" case) and
-  make the single entry point unmistakable for a new user.
 - **One command install.** A hosted install script that replaces the clone plus two script dance with a
   single line per OS: `curl -fsSL https://get.bob.sh | sh` on Linux and macOS, and
   `irm https://get.bob.sh/install.ps1 | iex` on Windows. The script clones (with submodules), runs the
@@ -130,8 +124,19 @@ Refresh what's already here so it keeps pace, and close the rough edges from rea
   the dashboard. Web search already falls back to a direct provider when SearXNG is down, so it never
   requires Docker either. The goal: a normal install never trips over Docker, and Docker becomes something
   you choose (and are walked through) only for the Langfuse dashboard.
+- **Onboarding and entry clarity.** Finish the first run polish (the "it doesn't know me yet" case) and
+  make the single entry point unmistakable for a new user.
 
-### 1.2 a deeper coding agent
+### 1.2 sharper daily driver
+Refresh what's already here so it keeps pace, and close the rough edges from real use.
+
+- **Model refresh.** Move the coder role off the older Qwen2.5-Coder-14B to a current Qwen3-Coder
+  (30B-A3B or 27B class) that fits a single workstation at roughly 96% of flagship quality, and refresh
+  the cloud peers (DeepSeek V3.2, GLM-4.6, and Kimi K2 for multi attempt agentic coding).
+- **Faster, tougher voice.** Swap the STT path to a CTranslate2 or faster-whisper backend (about 4 to 5
+  times faster, and lighter on memory) and harden the voice loop against device and engine failure.
+
+### 1.3 a deeper coding agent
 Take the coding loop from good to measured best in class for a local harness.
 
 - **Structural code retrieval.** Add an `ast-grep` escalation tier and tree-sitter symbol extraction on
@@ -145,7 +150,7 @@ Take the coding loop from good to measured best in class for a local harness.
 - **Lifecycle hooks.** Expose scriptable events around the agent loop (pre and post tool, session start
   and end) so users can customize behavior without forking the harness.
 
-### 1.3 more model on the same GPU
+### 1.4 more model on the same GPU
 Push the inference tier so bigger, better models run on the hardware people already own.
 
 - **MoE expert offload.** Adopt llama.cpp's `-n-cpu-moe` (which now exists; an earlier internal note that
