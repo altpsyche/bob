@@ -1,6 +1,6 @@
 {
   "lockVersion": 1,
-  "release": "0.1.0",
+  "release": "1.0.0",
   "submodules": {
     "external/llama.cpp": "0ed235ea2c17a19fc8238668653946721ed136fd",
     "external/llama-swap": "32bc7813261000228ea5274d89a8c89e7cce2725",

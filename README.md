@@ -137,6 +137,8 @@ Flags for `setup`: `--profile 12gb` (smaller model set), `--skip-models` (skip d
 
 ## Docs
 
+[ROADMAP](ROADMAP.md): what Bob does today (the 1.0 line) and where it's going next.
+
 [DAY-IN-THE-LIFE](docs/DAY-IN-THE-LIFE.md): hands-on walkthrough of every feature structured as a working session. Start here after setup.
 
 [SETUP](docs/SETUP.md): prerequisites, two-step install flow, build steps, verification.
