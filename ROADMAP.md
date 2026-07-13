@@ -114,6 +114,22 @@ Refresh what's already here so it keeps pace, and close the rough edges from rea
   times faster, and lighter on memory) and harden the voice loop against device and engine failure.
 - **Onboarding and entry clarity.** Finish the first run polish (the "it doesn't know me yet" case) and
   make the single entry point unmistakable for a new user.
+- **One command install.** A hosted install script that replaces the clone plus two script dance with a
+  single line per OS: `curl -fsSL https://get.bob.sh | sh` on Linux and macOS, and
+  `irm https://get.bob.sh/install.ps1 | iex` on Windows. The script clones (with submodules), runs the
+  prereq and setup steps, verifies against `versions.lock`, and is idempotent on re run. Linux and Windows
+  ship first; the macOS path arrives with macOS support in 2.0 (see below).
+- **A Docker-free default install.** Nothing in Bob's core needs Docker; only three optional add-on
+  services do, and setup doesn't install Docker, so a default install can't reach them today. Make the two
+  that can run native do so out of the box: SearXNG (private search) in a venv, and n8n (workflow builder)
+  on the Node toolchain setup already installs. That leaves only Langfuse (observability), which ships
+  container-only, as an explicit Docker opt-in, and for the Docker-averse we point Bob's existing
+  OpenTelemetry traces at a lighter native sink instead. When you do opt into Langfuse, Bob makes Docker
+  painless: a guided install through the same package-manager seam setup already uses, then a single
+  command that brings up Langfuse and its Postgres from the pinned compose file, with clear steps to reach
+  the dashboard. Web search already falls back to a direct provider when SearXNG is down, so it never
+  requires Docker either. The goal: a normal install never trips over Docker, and Docker becomes something
+  you choose (and are walked through) only for the Langfuse dashboard.
 
 ### 1.2 a deeper coding agent
 Take the coding loop from good to measured best in class for a local harness.
@@ -145,7 +161,8 @@ Push the inference tier so bigger, better models run on the hardware people alre
 The big leaps that change what Bob *is*, which is why they carry a major version.
 
 - **New platforms.** macOS (a Metal backend) and AMD ROCm, today's honest "not yet" rows on the support
-  matrix.
+  matrix. This is also what completes the one command installer (1.1) across all three OSes: once macOS is
+  a supported platform, `curl -fsSL https://get.bob.sh | sh` covers it too.
 - **Team mode.** The agent server is already owner scoped with RBAC. Productize it into a shared, multi
   user Bob with per owner memory scopes.
 - **Reach your Bob from anywhere.** A secure path to your own agent server from a phone or another
