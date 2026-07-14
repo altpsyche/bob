@@ -37,9 +37,10 @@ You can also run any capability directly, without opening the shell — handy fo
 | Cline | VS Code agent: reads and writes files, runs commands |
 | aider | Terminal coding agent: review the plan before any file is touched |
 | fabric | 254 named LLM patterns, pipe any text through them |
-| n8n `:5678` | Visual workflow automation calling the local LLM |
-| SearXNG `:8888` | Private web search, powers Continue's `@web` and the agent |
-| Langfuse `:3001` | LLM observability: traces, latency, token counts |
+| Web search | Built-in `ddgs` metasearch by default (in-process, no service, no Docker); Brave/Tavily optional via key |
+| n8n `:5678` | Visual workflow automation — native, opt-in (`bob services n8n start`) |
+| SearXNG `:8888` | Private self-hosted meta-search — opt-in Docker (`bob services searxng start`) |
+| Langfuse `:3001` | LLM observability — opt-in Docker; the default trace sink is a local file (`bob traces`) |
 | API `:8081/v1` | OpenAI-compatible inference endpoint, drop-in for any existing tool |
 | Agent API `:8084` | `bob agent serve`: REST + SSE agent loop with per-client Bearer auth and owner-scoped sessions (loopback by default) |
 
@@ -100,7 +101,7 @@ The one-liner just automates this. Only **Git** is required up front; the two en
 
 Linux:
 ```bash
-git clone --recurse-submodules <your-remote> bob
+git clone --recurse-submodules https://github.com/altpsyche/bob.git bob
 cd bob
 ./install_prereqs.sh            # add --cpu for a GPU-less box
 ./setup.sh                      # GPU-less: ./setup.sh --cpu
@@ -108,7 +109,7 @@ cd bob
 
 Windows (Command Prompt or PowerShell):
 ```bat
-git clone --recurse-submodules <your-remote> bob
+git clone --recurse-submodules https://github.com/altpsyche/bob.git bob
 cd bob
 install_prereqs.bat            :: add --cpu
 setup.bat                      :: GPU-less: setup.bat --cpu

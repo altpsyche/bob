@@ -10,9 +10,10 @@
 # Overrides (env): BOB_HOME (install dir), BOB_REPO_URL (git source). Pass --cpu for the CPU-only tier.
 set -eu
 
-# The git source. get.bob.sh currently fronts the GitHub raw path for this file; the clone URL below is
-# the public repo. Both are set at release; BOB_REPO_URL can be overridden for forks/testing.
-BOB_REPO_URL="${BOB_REPO_URL:-https://github.com/REPLACE_ME_ORG/bob.git}"
+# The git source. get.bob.sh is intended to front the GitHub raw path for this file (see README); until
+# it does, fetch this script directly from raw.githubusercontent.com/altpsyche/bob/main/install/install.sh.
+# BOB_REPO_URL can be overridden for forks/testing.
+BOB_REPO_URL="${BOB_REPO_URL:-https://github.com/altpsyche/bob.git}"
 BOB_HOME="${BOB_HOME:-$HOME/bob}"
 
 log() { printf '[bob-install] %s\n' "$*"; }

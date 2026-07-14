@@ -8,7 +8,7 @@
 # the retired PowerShell harness - it mirrors how install_prereqs.bat bootstraps today.
 $ErrorActionPreference = 'Stop'
 
-$RepoUrl = if ($env:BOB_REPO_URL) { $env:BOB_REPO_URL } else { 'https://github.com/REPLACE_ME_ORG/bob.git' }
+$RepoUrl = if ($env:BOB_REPO_URL) { $env:BOB_REPO_URL } else { 'https://github.com/altpsyche/bob.git' }
 $BobHome = if ($env:BOB_HOME) { $env:BOB_HOME } else { Join-Path $env:USERPROFILE 'bob' }
 
 function Log($m) { Write-Host "[bob-install] $m" }
