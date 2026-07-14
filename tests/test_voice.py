@@ -9,6 +9,19 @@ from unittest import mock
 import _common
 import bob_voice
 
+try:
+    import fastapi          # noqa: F401
+    import httpx            # noqa: F401 — TestClient transport
+    # python-multipart: FastAPI needs it to BUILD the File/Form routes (at import), or the module raises.
+    # Import name changed at 0.0.12 (multipart -> python_multipart); accept either so the pin (0.0.32) counts.
+    try:
+        import python_multipart  # noqa: F401
+    except ImportError:
+        import multipart         # noqa: F401
+    _HAS_FASTAPI = True
+except ImportError:                       # runtime-venv deps; present in CI core-suite, maybe not locally
+    _HAS_FASTAPI = False
+
 
 class TestFormatForSpeech(unittest.TestCase):
     def test_strips_markdown_and_typography(self):
@@ -243,6 +256,7 @@ class TestSttEngineDispatch(unittest.TestCase):
             self.assertEqual(stack._start_stt_bg({"voice": {}}), "fw")   # default is faster-whisper
 
 
+@unittest.skipUnless(_HAS_FASTAPI, "fastapi/httpx not installed (runtime venv only)")
 class TestFasterWhisperServer(unittest.TestCase):
     """The faster-whisper STT server matches the whisper.cpp /inference contract (multipart file ->
     {'text': ...}) so the client/lifecycle stay engine-agnostic. The CT2 model is faked (no wheel needed)."""

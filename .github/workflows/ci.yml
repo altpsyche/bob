@@ -58,10 +58,11 @@ jobs:
       # sys.exit(1)s at import if they're missing — omitting them fails the whole suite, not one test.
       - name: Install core-suite deps
         shell: bash
-        # rich/prompt_toolkit/pyfiglet (shell UI) + PyYAML (skills manifests) are lightweight
-        # pure-python runtime deps — installed so the shell/theme/render/skills tests run for real
-        # (the tests also skip cleanly if these are ever absent, so the suite still passes minimally).
-        run: python -m pip install --upgrade pip fastapi uvicorn pydantic httpx requests openai sqlite-utils rich prompt_toolkit pyfiglet pyyaml
+        # rich/prompt_toolkit/pyfiglet (shell UI) + PyYAML (skills manifests) + python-multipart
+        # (FastAPI multipart routes, e.g. the faster-whisper STT server) are lightweight pure-python
+        # runtime deps — installed so those tests run for real (the tests also skip cleanly if these
+        # are ever absent, so the suite still passes minimally).
+        run: python -m pip install --upgrade pip fastapi uvicorn pydantic httpx requests openai sqlite-utils rich prompt_toolkit pyfiglet pyyaml python-multipart
 
       # One gate, both OSes: py_compile + lock sync + exec-bits + the unittest core suite. Runs on
       # the CI interpreter (there is no venv-litellm here); check.py is stdlib-only.

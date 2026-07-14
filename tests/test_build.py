@@ -25,6 +25,54 @@ class TestBuildToolSurface(unittest.TestCase):
         self.assertEqual(build_mod.DISPATCH, {})
 
 
+class TestPruneOrphanModels(unittest.TestCase):
+    """update's opt-in reclaim of models/*.gguf a release dropped (e.g. the old coder). Keeps referenced
+    GGUFs + their mmproj sidecars; TTY-gated; guarded against pruning while the new set is incomplete."""
+
+    def setUp(self):
+        import json
+        self.repo = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, self.repo, True)
+        self.models = self.repo / "models"
+        self.models.mkdir()
+        for name, blob in (("keep.gguf", b"x" * 10), ("old-coder.gguf", b"y" * 20),
+                           ("mmproj-x.gguf", b"z" * 5)):
+            (self.models / name).write_bytes(blob)
+        (self.repo / "versions.lock").write_text(json.dumps(
+            {"models": {"keep.gguf": {"repo": "r", "path": "keep.gguf", "mmproj": "mmproj-x.gguf"}}}))
+        p = mock.patch.object(build_mod, "REPO", self.repo)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _run(self, isatty=True, answer="y", current=None):
+        import provision
+        current = current if current is not None else [{"gguf": "keep.gguf"}]
+        with mock.patch.object(provision, "resolve_fetch_set", return_value=("16gb", current)), \
+             mock.patch("sys.stdin") as stdin, \
+             mock.patch("builtins.input", return_value=answer):
+            stdin.isatty.return_value = isatty
+            build_mod._prune_orphan_models()
+
+    def test_prunes_orphan_on_yes(self):
+        self._run(isatty=True, answer="y")
+        self.assertFalse((self.models / "old-coder.gguf").exists())   # orphan gone
+        self.assertTrue((self.models / "keep.gguf").exists())          # referenced kept
+        self.assertTrue((self.models / "mmproj-x.gguf").exists())      # referenced mmproj kept
+
+    def test_keeps_on_no(self):
+        self._run(isatty=True, answer="n")
+        self.assertTrue((self.models / "old-coder.gguf").exists())
+
+    def test_skips_when_non_interactive(self):
+        self._run(isatty=False)
+        self.assertTrue((self.models / "old-coder.gguf").exists())
+
+    def test_skips_when_current_model_missing(self):
+        # guard: don't prune the old coder while the new one hasn't downloaded yet
+        self._run(isatty=True, answer="y", current=[{"gguf": "not-downloaded-yet.gguf"}])
+        self.assertTrue((self.models / "old-coder.gguf").exists())
+
+
 class TestCmakeFlags(unittest.TestCase):
     def test_gpu_linux_ninja_no_staging(self):
         f = osenv.resolve_build_cmake_flags(cpu=False, arch=120, os="linux")

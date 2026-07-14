@@ -359,6 +359,70 @@ def _reinstall_venv() -> None:
         print(f"  (venv reinstall skipped: {e})", file=sys.stderr)
 
 
+def _prune_orphan_models() -> None:
+    """After relock, offer to delete models/*.gguf that versions.lock no longer references (e.g. a coder a
+    release dropped) to reclaim disk. Opt-in and TTY-only: it lists the orphans and asks before deleting;
+    in a non-interactive/agent context it lists them and skips (never blocks on stdin, never deletes
+    without a yes). Keeps referenced GGUFs and their mmproj sidecars, and only touches top-level *.gguf, so
+    the whisper.cpp fallback binary and the faster-whisper CT2 model dir are left alone. Guarded: skips the
+    prune entirely while any current-profile model is still missing (e.g. the new coder failed to
+    download), so it can never strip a role down to no model."""
+    import json
+
+    models_dir = REPO / "models"
+    lock_path = REPO / "versions.lock"
+    if not models_dir.exists() or not lock_path.exists():
+        return
+    try:
+        manifest = json.loads(lock_path.read_text(encoding="utf-8")).get("models", {})
+    except (OSError, ValueError):
+        return
+    referenced = set(manifest) | {m["mmproj"] for m in manifest.values() if m.get("mmproj")}
+    orphans = sorted(p for p in models_dir.glob("*.gguf") if p.name not in referenced)
+    if not orphans:
+        return
+
+    # Safety: only reconcile once disk holds the new set. If the active profile's models aren't all
+    # present yet, leave everything in place (deleting the old coder before the new one lands would
+    # leave that role with nothing to serve).
+    try:
+        import provision
+        _, current = provision.resolve_fetch_set(None)
+        pending = [m["gguf"] for m in current if not (models_dir / m["gguf"]).exists()]
+    except Exception:  # noqa: BLE001 — if we can't confirm the current set, don't risk a prune
+        pending = ["?"]
+    if pending:
+        print("Prune skipped — some current-profile models aren't present yet (run `bob fetch`); "
+              "old files left in place.", file=sys.stderr)
+        return
+
+    total_gb = sum(p.stat().st_size for p in orphans) / 1e9
+    print(f"\n{len(orphans)} model file(s) are no longer referenced by versions.lock "
+          f"({total_gb:.1f} GB total):", file=sys.stderr)
+    for p in orphans:
+        print(f"  {p.name}  ({p.stat().st_size / 1e9:.1f} GB)", file=sys.stderr)
+    if not sys.stdin.isatty():
+        print("Prune skipped (non-interactive). Delete them yourself, or re-run `bob update` in a "
+              "terminal to be prompted.", file=sys.stderr)
+        return
+    try:
+        ans = input("Delete these old model files to reclaim space? [y/N] ").strip().lower()
+    except EOFError:
+        ans = "n"
+    if ans not in ("y", "yes"):
+        print("Kept the old model files.", file=sys.stderr)
+        return
+    freed = 0
+    for p in orphans:
+        try:
+            sz = p.stat().st_size
+            p.unlink()
+            freed += sz
+        except OSError as e:  # noqa: PERF203 — report the one that failed, keep pruning the rest
+            print(f"  could not delete {p.name}: {e}", file=sys.stderr)
+    print(f"Pruned {freed / 1e9:.1f} GB of old models.", file=sys.stderr)
+
+
 def update_stack(tag: str = None) -> int:
     """Release-aware update with rollback: fetch/checkout (default: ff the current branch; tag= a release),
     submodule sync, venv reinstall, then rebuild EVERY compiled submodule that actually moved (llama.cpp,
@@ -437,6 +501,10 @@ def update_stack(tag: str = None) -> int:
         print(provision.fetch_models(), file=sys.stderr)
     except Exception as e:  # noqa: BLE001 — advisory; never fail the update over a model download
         print(f"model fetch skipped ({e}); run `bob fetch` to pull any new models.", file=sys.stderr)
+
+    # Reconcile disk to the new lock: offer to reclaim space from models a release dropped (e.g. the old
+    # coder after the 1.2 refresh). Opt-in, guarded, never fatal.
+    _prune_orphan_models()
 
     print("Running bob doctor...", file=sys.stderr)
     import health
