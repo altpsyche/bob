@@ -361,13 +361,24 @@ def _reinstall_venv() -> None:
 
 def update_stack(tag: str = None) -> int:
     """Release-aware update with rollback: fetch/checkout (default: ff the current branch; tag= a release),
-    submodule sync, venv reinstall, conditional rebuild (only if llama.cpp moved) with a bin/ snapshot +
-    binary verify + rollback on failure, relock, fetch any newly-added models (resume + skip-present, so
-    code-only updates download nothing), then doctor. Port of the former update case.
-    Returns 0 on success, 1 on a handled failure. CLI-only + long."""
+    submodule sync, venv reinstall, then rebuild EVERY compiled submodule that actually moved (llama.cpp,
+    whisper.cpp, llama-swap, fabric) under one bin/ snapshot with per-binary verify + rollback on failure,
+    relock, fetch any newly-added models (resume + skip-present, so code-only updates download nothing),
+    then doctor. Returns 0 on success, 1 on a handled failure. CLI-only + long."""
     import osenv
 
-    before = _git_head(SRC_LLAMA)
+    cpu = osenv.gpu_info() is None
+    # (name, source dir, produced binary, verify-by-running-`--version`, rebuild fn). Every native
+    # component the update can rebuild; a submodule is rebuilt only when its committed commit moved, so a
+    # code-only update stays a no-op and a llama-swap/fabric bump no longer leaves a stale binary behind.
+    components = [
+        ("llama.cpp",   SRC_LLAMA,   "llama-server",  True,  lambda: build_llama(force=True, cpu=cpu)),
+        ("whisper.cpp", SRC_WHISPER, "whisper-server", False, lambda: build_whisper(force=True, cpu_only=cpu)),
+        ("llama-swap",  SRC_SWAP,    "llama-swap",    True,  lambda: build_llama_swap(force=True)),
+        ("fabric",      SRC_FABRIC,  "fabric",        True,  lambda: setup_fabric(force=True)),
+    ]
+    before = {name: _git_head(src) for name, src, _, _, _ in components}
+
     print("Fetching updates...", file=sys.stderr)
     _run(["git", "-C", str(REPO), "fetch", "--tags", "--quiet"])
     if tag:
@@ -378,25 +389,31 @@ def update_stack(tag: str = None) -> int:
         _run(["git", "-C", str(REPO), "pull", "--ff-only"])
     print("Syncing submodules to the pinned commits...", file=sys.stderr)
     _run(["git", "-C", str(REPO), "submodule", "update", "--init", "--recursive"])
-    after = _git_head(SRC_LLAMA)
 
     _reinstall_venv()
 
-    if before == after:
-        print(f"llama.cpp unchanged ({_short(after)}) — no rebuild needed.", file=sys.stderr)
+    moved = [c for c in components if before[c[0]] != _git_head(c[1])]
+    if not moved:
+        print("Submodules unchanged, no rebuild needed.", file=sys.stderr)
     else:
-        print(f"llama.cpp {_short(before)} -> {_short(after)}; rebuilding (bin/ snapshotted for rollback)...",
-              file=sys.stderr)
+        summary = ", ".join(f"{n} {_short(before[n])} to {_short(_git_head(s))}" for n, s, _, _, _ in moved)
+        print(f"Rebuilding moved submodules: {summary} (bin/ snapshotted for rollback)...", file=sys.stderr)
         bak = osenv.backup_build_output(BIN)
-        built = True
-        try:
-            build_llama(force=True, cpu=osenv.gpu_info() is None)
-        except RuntimeError as e:
-            print(f"build failed: {e}", file=sys.stderr)
-            built = False
-        srv = osenv.bin_exe("llama-server")
-        if not (built and srv.exists() and _verify_binary(srv)):
-            print("Update verification failed — rolling back the build output.", file=sys.stderr)
+        ok = True
+        for name, _src, binname, use_version, fn in moved:
+            try:
+                print(fn(), file=sys.stderr)
+            except RuntimeError as e:
+                print(f"  {name} build failed: {e}", file=sys.stderr)
+                ok = False
+                break
+            exe = osenv.bin_exe(binname)
+            if not (exe.exists() and (_verify_binary(exe) if use_version else True)):
+                print(f"  {name}: {binname} missing or failed verification.", file=sys.stderr)
+                ok = False
+                break
+        if not ok:
+            print("Update verification failed, rolling back the build output.", file=sys.stderr)
             if osenv.restore_build_output(BIN, bak):
                 print("Rolled bin/ back to the previous build. Your install is unchanged.", file=sys.stderr)
             return 1

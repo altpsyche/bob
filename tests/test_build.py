@@ -177,25 +177,39 @@ class TestSetupFabric(_BuildTreeMixin, unittest.TestCase):
 class TestUpdateStack(unittest.TestCase):
     # update over git + build + lock + doctor with a bin/ rollback; every piece is mocked so no
     # git/network/compiler runs. CLI-only.
-    def _run(self, before, after, verify=True, tag=None):
-        """Run update_stack with everything mocked; return (rc, mocks-by-name, git-calls)."""
+    def _run(self, before, after, verify=True, tag=None, changed="llama.cpp"):
+        """Run update_stack with everything mocked; return (rc, mocks-by-name, git-calls). `changed`
+        picks which submodule moves (before -> after); every other submodule stays put, so the test
+        controls exactly which component the update should rebuild."""
         import contextlib
         import health
         import tempfile
         git = []
-        srv = Path(tempfile.mkdtemp()) / "llama-server"
-        srv.write_text("ELF")  # so srv.exists() is True after a rebuild
-        self.addCleanup(__import__("shutil").rmtree, srv.parent, True)
+        exe = Path(tempfile.mkdtemp()) / "bin-artifact"
+        exe.write_text("ELF")  # so bin_exe(...).exists() is True after a rebuild
+        self.addCleanup(__import__("shutil").rmtree, exe.parent, True)
+        src_of = {"llama.cpp": build_mod.SRC_LLAMA, "whisper.cpp": build_mod.SRC_WHISPER,
+                  "llama-swap": build_mod.SRC_SWAP, "fabric": build_mod.SRC_FABRIC}
+        changed_src = src_of[changed]
+        phase = {"after": False}   # flipped by the _reinstall_venv mock, which runs after the submodule sync
+        def head(p):
+            if p == changed_src:
+                return after if phase["after"] else before
+            return "same"          # every other submodule is unchanged across the update
         specs = {
-            "_git_head": mock.patch.object(build_mod, "_git_head", side_effect=[before, after]),
+            "_git_head": mock.patch.object(build_mod, "_git_head", side_effect=head),
             "_run": mock.patch.object(build_mod, "_run", side_effect=lambda a, **k: git.append([str(x) for x in a])),
-            "_reinstall_venv": mock.patch.object(build_mod, "_reinstall_venv"),
+            "_reinstall_venv": mock.patch.object(build_mod, "_reinstall_venv",
+                                                 side_effect=lambda *a, **k: phase.update(after=True)),
             "build_llama": mock.patch.object(build_mod, "build_llama", return_value="built"),
+            "build_whisper": mock.patch.object(build_mod, "build_whisper", return_value="built"),
+            "build_llama_swap": mock.patch.object(build_mod, "build_llama_swap", return_value="built"),
+            "setup_fabric": mock.patch.object(build_mod, "setup_fabric", return_value="built"),
             "_verify_binary": mock.patch.object(build_mod, "_verify_binary", return_value=verify),
             "backup": mock.patch("osenv.backup_build_output", return_value=Path("/bin.bak")),
             "restore": mock.patch("osenv.restore_build_output", return_value=True),
             "remove_bak": mock.patch("osenv.remove_build_output_backup"),
-            "bin_exe": mock.patch("osenv.bin_exe", return_value=srv),
+            "bin_exe": mock.patch("osenv.bin_exe", return_value=exe),
             "gpu_info": mock.patch("osenv.gpu_info", return_value=None),
             "write_lock": mock.patch("bob.versions.write_lock"),
             "h_configure": mock.patch.object(health, "configure"),
@@ -210,8 +224,9 @@ class TestUpdateStack(unittest.TestCase):
     def test_unchanged_skips_rebuild_but_relocks(self):
         rc, mocks, git = self._run("abc", "abc")
         self.assertEqual(rc, 0)
-        mocks["build_llama"].assert_not_called()   # commit unchanged -> no rebuild
-        mocks["write_lock"].assert_called_once()   # relock still happens
+        for m in ("build_llama", "build_whisper", "build_llama_swap", "setup_fabric"):
+            mocks[m].assert_not_called()            # nothing moved -> no rebuild
+        mocks["write_lock"].assert_called_once()    # relock still happens
         mocks["health_check"].assert_called_once()
         self.assertTrue(any("pull" in c for c in git))
 
@@ -219,9 +234,19 @@ class TestUpdateStack(unittest.TestCase):
         rc, mocks, _ = self._run("aaa", "bbb", verify=True)
         self.assertEqual(rc, 0)
         mocks["build_llama"].assert_called_once()
+        for m in ("build_whisper", "build_llama_swap", "setup_fabric"):
+            mocks[m].assert_not_called()            # only the moved submodule is rebuilt
         mocks["backup"].assert_called_once()
-        mocks["remove_bak"].assert_called_once()   # backup discarded on verified success
+        mocks["remove_bak"].assert_called_once()    # backup discarded on verified success
         mocks["restore"].assert_not_called()
+
+    def test_nonengine_submodule_rebuilds_when_moved(self):
+        # A llama-swap bump (engine unchanged) must still rebuild llama-swap — the regression this guards.
+        rc, mocks, _ = self._run("v230", "v239", changed="llama-swap")
+        self.assertEqual(rc, 0)
+        mocks["build_llama_swap"].assert_called_once()
+        mocks["build_llama"].assert_not_called()
+        mocks["remove_bak"].assert_called_once()
 
     def test_changed_verify_fails_rolls_back(self):
         rc, mocks, _ = self._run("aaa", "bbb", verify=False)

@@ -33,6 +33,16 @@ command, and a normal install never trips over Docker. See [ROADMAP.md](ROADMAP.
   lazy: they start only when asked, never at setup.
 - **Onboarding and entry clarity.** First-run polish for the "it doesn't know me yet" case, and a single
   unmistakable entry point for a new user.
+- **Refreshed vendored submodules to latest releases:** llama.cpp `b9827` to `b9993`, llama-swap `v230`
+  to `v239`, fabric `v1.4.455` to `v1.4.458` (whisper.cpp is already ahead of its newest tag, so it stays
+  put). `versions.lock` re-pinned; rebuilt and verified (unit suite green, live smoke green). Per-upstream
+  details in [docs/VENDOR-CHANGELOG.md](docs/VENDOR-CHANGELOG.md).
+
+### Fixed
+- **`bob update` now rebuilds every moved submodule, not just llama.cpp.** An update previously advanced
+  all submodule source but rebuilt only the engine, silently leaving stale llama-swap / fabric / whisper
+  binaries after a bump. It now rebuilds each of llama.cpp, whisper.cpp, llama-swap, and fabric whose
+  pinned commit moved, under one `bin/` snapshot with per-binary verify and rollback on failure.
 
 ## [1.0.0] (2026-07-13)
 
