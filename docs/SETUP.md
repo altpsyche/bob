@@ -1,6 +1,6 @@
 # SETUP
 
-Bob installs and runs on **Windows and Linux** from one documented, two-step path per OS. This page is
+Bob installs and runs on **Windows and Linux** from one command per OS. This page is
 the "how to install" guide for both; [PORTABILITY.md](PORTABILITY.md) is the "how the split works"
 reference (portable runtime + cross-platform provisioner), and [MANUAL-INSTALL.md](MANUAL-INSTALL.md) is
 the by-hand path for advanced users / debugging a partial install. The exact steps below are the same
@@ -18,28 +18,58 @@ for exactly what each OS × GPU combination is tested to do. macOS and AMD/ROCm 
 
 ## Install
 
-Two commands per OS (a possible logout between them on Windows if Docker Desktop was just installed).
-The entry scripts are thin shell stubs — the Linux `.sh` ensures a system `python3`, the Windows `.bat`
-requires Python — that then hand off to the Python cold-start kernel (`python -m bob.kernel`). Add
-`--cpu` to either command on a GPU-less box.
+One command per OS. Only **git** is needed up front (the installer installs git too if it is missing).
+Add `--cpu` on a GPU-less box.
 
 <table>
 <tr><th>Linux (glibc; apt/dnf/pacman/zypper; atomic Fedora via rpm-ostree)</th><th>Windows 11 (NVIDIA)</th></tr>
+<tr><td>
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/altpsyche/bob/main/install/install.sh | sh
+```
+
+Asks for `sudo` once for system packages. On atomic Fedora (Bazzite/Silverblue) it layers via
+`rpm-ostree` and recommends a Fedora distrobox, see [MANUAL-INSTALL.md](MANUAL-INSTALL.md).
+
+</td><td>
+
+```powershell
+irm https://raw.githubusercontent.com/altpsyche/bob/main/install/install.ps1 | iex
+```
+
+</td></tr>
+</table>
+
+The one command ensures git, clones with submodules into `~/bob` (Windows `%USERPROFILE%\bob`) or
+fast-forwards an existing clone, runs the prereq step, runs setup, then runs
+`python -m bob.kernel verify-install` (checks installed submodules + model SHAs against
+[`versions.lock`](../versions.lock)). It is **idempotent**: re-run it any time and completed steps are
+skipped. macOS is out of scope until 2.0.
+
+(The short `https://get.bob.sh/install.sh` and `https://get.bob.sh/install.ps1` forms are the planned
+short URLs once the domain fronts these files; use the `raw.githubusercontent.com` URLs above today.)
+
+### Manual install (full control / fallback)
+
+For full control, or to debug a partial install, clone and run the two steps by hand. The entry scripts
+are thin shell stubs: the Linux `.sh` ensures a system `python3`, the Windows `.bat` requires Python, and
+both hand off to the Python cold-start kernel (`python -m bob.kernel`).
+
+<table>
+<tr><th>Linux</th><th>Windows 11</th></tr>
 <tr><td>
 
 Prereqs you provide first: **git**. (`install_prereqs.sh` ensures `python3` and installs the toolchain
 via your package manager.)
 
 ```bash
-git clone --recurse-submodules <your-remote> ~/bob
+git clone --recurse-submodules https://github.com/altpsyche/bob.git ~/bob
 cd ~/bob
 ./install_prereqs.sh       # compiler, cmake, ninja, go, node, python3, CUDA (add --cpu to skip CUDA)
-./setup.sh                 # build → venvs → models → wire clients
+./setup.sh                 # build, venvs, models, wire clients
 bob                        # inference auto-starts; or `bob chat "hi"`
 ```
-
-One `sudo` prompt (Linux). On atomic Fedora (Bazzite/Silverblue) it layers via `rpm-ostree` and
-recommends a Fedora distrobox — see [MANUAL-INSTALL.md](MANUAL-INSTALL.md).
 
 </td><td>
 
@@ -47,11 +77,10 @@ Prereqs you provide first: **Git**, **Python 3.12** (`winget install Python.Pyth
 with the *Desktop development with C++* workload (for the CUDA build).
 
 ```bat
-git clone --recurse-submodules <your-remote> C:\bob
+git clone --recurse-submodules https://github.com/altpsyche/bob.git C:\bob
 cd C:\bob
-install_prereqs.bat        :: Node, uv, Go, CUDA, cmake, Docker
-:: (log out/in if Docker Desktop was just installed)
-setup.bat                  :: build -> venvs -> models -> wire clients
+install_prereqs.bat        :: Node, uv, Go, CUDA, cmake
+setup.bat                  :: build, venvs, models, wire clients
 bob                        :: inference auto-starts
 ```
 
@@ -70,8 +99,8 @@ fails partway, fix it and re-run; completed steps are skipped. Common flags (sam
 - `--with-webui`: also build the Open WebUI venv (opt-in; multi-GB torch/transformers)
 - `--launch`: start the stack when setup finishes
 
-`setup` needs **no root** — only `install_prereqs` (system packages) uses sudo. After setup, open a new
-terminal to pick up the PATH change, then just run `bob` (inference auto-starts on demand — no separate
+`setup` needs **no root**: only `install_prereqs` (system packages) uses sudo. After setup, open a new
+terminal to pick up the PATH change, then just run `bob` (inference auto-starts on demand, no separate
 `bob up` needed; `bob up` remains an optional pre-warm). On a GPU-less box `bob profile auto` selects the
 `cpu` tier automatically. Verify with `bob doctor` (see [Verifying the install](#verifying-the-install)).
 
@@ -80,56 +109,74 @@ terminal to pick up the PATH change, then just run `bob` (inference auto-starts 
 `setup` runs `python -m bob.kernel setup`, which imports the same capability functions the agent and
 `bob --run` use (one code path) and runs these steps in order:
 
-0. **Diagnose** — a machine summary (GPU, VRAM, RAM, CUDA, NUMA topology, mlock privilege, active profile, model files) before anything is installed. Run `bob diagnose` at any time to see the same report.
+0. **Diagnose**: a machine summary (GPU, VRAM, RAM, CUDA, NUMA topology, mlock privilege, active profile, model files) before anything is installed. Run `bob diagnose` at any time to see the same report.
 1. `git submodule update --init --recursive` fetches the llama.cpp and llama-swap source trees.
-2. **Build llama.cpp** (`build.build_llama`) — compiles the CUDA engine, or the CPU tier with `--cpu` / when no CUDA toolkit is found, and writes the binaries to `bin/`. Skips if the binary already exists (`bob build --force` to rebuild). Before replacing a binary it backs it up as `bin/<name>.bak`; `bob update` snapshots `bin/` before a rebuild and rolls back automatically if the new build fails to verify.
-3. **Build llama-swap** — the model-swap proxy (Go).
-4. **Python venvs** — `tools/venv-aider` and `tools/venv-litellm` (plus `tools/venv-webui` with `--with-webui`) are created via `osenv.new_bob_venv` and their deps installed. Kept separate on purpose — their pins conflict. (`venv-eval` is provisioned lazily by `bob eval`.)
-5. **Generate configs** (`generate.gen_all`) — writes `config/llama-swap.yaml` + `config/litellm.yaml` from `config/models.json`. Never edit them by hand; both are regenerated on every `bob up`/`serve`.
-6. **Fetch models** (`provision.fetch_models`) — downloads the active profile's GGUFs (resume + SHA256-verify vs `versions.lock`).
-7. **Wire clients** — symlinks `config/continue/config.yaml` to `~/.continue/config.yaml` and checks VS Code extension status.
-8. **fabric** — builds the fabric CLI (Go) and points it at the local endpoint.
-9. **Install the `bob` CLI** — symlinks `./bob` into `~/.local/bin` (POSIX) or a `bob.cmd` shim into scoop\shims (Windows).
+2. **Build llama.cpp** (`build.build_llama`), compiles the CUDA engine, or the CPU tier with `--cpu` / when no CUDA toolkit is found, and writes the binaries to `bin/`. Skips if the binary already exists (`bob build --force` to rebuild). Before replacing a binary it backs it up as `bin/<name>.bak`; `bob update` snapshots `bin/` before a rebuild and rolls back automatically if the new build fails to verify.
+3. **Build llama-swap**: the model-swap proxy (Go).
+4. **Python venvs**: `tools/venv-aider` and `tools/venv-litellm` (plus `tools/venv-webui` with `--with-webui`) are created via `osenv.new_bob_venv` and their deps installed. Kept separate on purpose, their pins conflict. (`venv-eval` is provisioned lazily by `bob eval`.)
+5. **Generate configs** (`generate.gen_all`), writes `config/llama-swap.yaml` + `config/litellm.yaml` from `config/models.json`. Never edit them by hand; both are regenerated on every `bob up`/`serve`.
+6. **Fetch models** (`provision.fetch_models`), downloads the active profile's GGUFs (resume + SHA256-verify vs `versions.lock`).
+7. **Wire clients**: symlinks `config/continue/config.yaml` to `~/.continue/config.yaml` and checks VS Code extension status.
+8. **fabric**: builds the fabric CLI (Go) and points it at the local endpoint.
+9. **Install the `bob` CLI**: symlinks `./bob` into `~/.local/bin` (POSIX) or a `bob.cmd` shim into scoop\shims (Windows).
 10. **Memory lock:** reports the mlock privilege status. On Linux it prints the `ulimit`/`limits.conf` guidance (mlock is an rlimit, not a grantable privilege); on Windows, if `mlockBig` is enabled in `config/user.json` it grants `SeLockMemoryPrivilege` (UAC). Open a new terminal afterward for it to take effect.
-11. **Docker services** — if Docker is present, provisions + starts the compose stack (Langfuse, SearXNG, n8n); skipped gracefully if not.
-12. **Onboarding** — a first-run profile prompt (name / work / optional DeepSeek key) when `config/user.json` has no `bob` section; skipped on a non-interactive run.
+11. **Optional services:** prints the opt-in service info (n8n, SearXNG, Langfuse) and installs nothing. A default install is 100% Docker-free; services start on demand, not at setup. See [Optional services](#optional-services).
+12. **Onboarding**: a first-run profile prompt (name / work / optional DeepSeek key) when `config/user.json` has no `bob` section; skipped on a non-interactive run.
 
-After setup, run `bob agent install` once to register the recurring background-agent runner (Linux cron / Windows Scheduled Task) — separate from setup because it references the final install location. `bob agent status` confirms it.
+After setup, run `bob agent install` once to register the recurring background-agent runner (Linux cron / Windows Scheduled Task), separate from setup because it references the final install location. `bob agent status` confirms it.
 
 To pin llama.cpp to a specific commit or bump to a newer version, see [MANUAL-INSTALL.md § 4](MANUAL-INSTALL.md#4-build-llamacpp) and [TUNING.md](TUNING.md#bumping-the-llamacpp-submodule).
 
-**Docker services** (Langfuse, SearXNG, n8n) extend the stack with observability, private web search, and automation:
+## Optional services
 
-| Service | Port | What it does | Why you'd want it |
-|---|---|---|---|
-| **Langfuse** | 3001 | bob observability: every prompt, completion, latency, and token count in a dashboard | Debug unexpected model output; compare quant levels; trace exactly what aider/Cline sends |
-| **SearXNG** | 8888 | Self-hosted meta-search (queries Google/Bing without sending your searches to the cloud) | Powers Continue.dev `@web`: type `@web <query>` in Continue chat and the model gets live search results |
-| **n8n** | 5678 | Visual workflow automation (like Zapier, local): chains bob calls, webhooks, and APIs | Automate tasks without scripts: summarize PRs on open, generate commit messages, run daily digests |
+A default install is **100% Docker-free** and needs no services for core inference. These extend the
+stack with automation, private web search, and observability. Each is opt-in and starts on demand, never
+at setup. Start one with `bob services <name> start`; the Docker-backed ones run a guided Docker install
+(via the same apt/dnf/pacman/zypper/rpm-ostree/winget package seam) if Docker is missing, then bring the
+service up.
 
-None are required for core inference. They start automatically at the end of `setup` if Docker is present.
+| Service | Port | Runs as | What it does | Why you'd want it |
+|---|---|---|---|---|
+| **n8n** | 5678 | Native (Node) | Visual workflow automation (like Zapier, local): chains bob calls, webhooks, and APIs | Automate tasks without scripts: summarize PRs on open, generate commit messages, run daily digests |
+| **SearXNG** | 8888 | Docker | Self-hosted meta-search (queries Google/Bing without sending your searches to the cloud) | Backs the `searxng-search` MCP so Continue.dev `@web` gets self-hosted search results |
+| **Langfuse** | 3001 | Docker | bob observability: every prompt, completion, latency, and token count in a dashboard (plus its own Postgres) | Debug unexpected model output; compare quant levels; trace exactly what aider/Cline sends |
 
-### Installing Docker services
+Web search for the agent and CLI does **not** need any of these: the default in-process `ddgs` metasearch
+provider (pure Python, no service, no daemon, no Docker) works identically on every OS out of the box.
+Optional providers are Brave/Tavily via API key (`agent.searchProvider`) or the opt-in `searxng` service;
+all fall back to `ddgs`.
 
-Docker services start automatically at the end of `setup` (if Docker is present). No separate step needed.
+Tracing is Docker-free too: the default trace sink is a local file sink, writing spans to
+`logs/traces/<trace_id>.jsonl`, viewed with `bob traces` (`bob traces list`, `bob traces show <id>`).
+`agent.tracing` gates tracing (off by default) and `agent.tracingSink` picks `file` (default) or `otlp`;
+`otlp` exports to `agent.otlpEndpoint` (for example an opted-in Langfuse). Langfuse is not required for
+observability.
 
-> **On Windows, before `setup` finishes:** Docker Desktop → Settings → General → uncheck
-> **"Use containerd for pulling and storing images"** → Apply & Restart.
-> If this setting is on, SearXNG fails with `exec /bin/sh: exec format error`. Only needs to be changed once.
-
-Verify the containers started:
+Start each service on demand:
 ```bash
-bob services status
-# Expected: four rows, all "Up": compose-langfuse-postgres-1, compose-langfuse-1, compose-searxng-1, compose-n8n-1
+bob services n8n start        # native, no Docker
+bob services searxng start    # Docker; guided Docker install if missing
+bob services langfuse start   # Docker; guided Docker install if missing
 ```
 
-URLs after first run:
-- Langfuse: http://localhost:3001 (login: `admin@local.dev` / `admin123`)
-- SearXNG: http://localhost:8888
+> **If you opt into a Docker service on Windows:** if Docker Desktop was just installed, log out and back
+> in first. Then in Docker Desktop → Settings → General → uncheck **"Use containerd for pulling and
+> storing images"** → Apply & Restart. If that setting is on, SearXNG fails with
+> `exec /bin/sh: exec format error`. Only needs to be changed once.
+
+Check status:
+```bash
+bob services status
+```
+
+URLs once a service is up:
 - n8n: http://localhost:5678
+- SearXNG: http://localhost:8888
+- Langfuse: http://localhost:3001 (login: `admin@local.dev` / `admin123`)
 
-Day-to-day management: `bob services start|stop|status|logs`.
+Day-to-day management: `bob services status|start|stop|logs`, or per-service `bob services <name> start`.
 
-For a detailed walkthrough of what the Docker step does internally, including troubleshooting, see [MANUAL-INSTALL.md § Docker services](MANUAL-INSTALL.md#12-docker-services).
+For a detailed walkthrough of what the Docker-backed services do internally, including troubleshooting, see [MANUAL-INSTALL.md § Docker services](MANUAL-INSTALL.md#12-docker-services).
 
 ## Verifying the install
 

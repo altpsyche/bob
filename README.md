@@ -11,9 +11,9 @@ Bob chats, listens, speaks, sees, and acts as an agent that can search your code
 
 ## The one way to use Bob
 
-Run **`bob`** with no arguments on a terminal. That opens the interactive shell — Bob's home base. Type a message to chat; `/agent <goal>` runs an agentic task; `/voice`, `/model`, `/stop`, `/help` drive the rest. Inference **auto-starts** the first time you talk, so there is nothing to launch first.
+Run **`bob`** with no arguments on a terminal. That opens the interactive shell, Bob's home base. Type a message to chat; `/agent <goal>` runs an agentic task; `/voice`, `/model`, `/stop`, `/help` drive the rest. Inference **auto-starts** the first time you talk, so there is nothing to launch first.
 
-You can also run any capability directly, without opening the shell — handy for quick questions, scripts, and pipes:
+You can also run any capability directly, without opening the shell, handy for quick questions, scripts, and pipes:
 
 | Command | What it does |
 |---|---|
@@ -26,7 +26,7 @@ You can also run any capability directly, without opening the shell — handy fo
 | `bob memory <cmd>` | Inspect/curate memory: `list`, `show`, `edit`, `pin`, `forget`, `export`, … |
 | `bob help` | The full command catalog. |
 
-**Agent tools** are what the loop calls on your behalf — memory, web, git, file, shell, fabric, and the drop-in plugins **summarise, draft, search, play**. They are *not* `bob <verb>` commands; they run inside `bob agent` / the shell. List them with `bob tools` and `bob plugins`, or invoke one directly with `bob --run <tool> '{json}'`.
+**Agent tools** are what the loop calls on your behalf, memory, web, git, file, shell, fabric, and the drop-in plugins **summarise, draft, search, play**. They are *not* `bob <verb>` commands; they run inside `bob agent` / the shell. List them with `bob tools` and `bob plugins`, or invoke one directly with `bob --run <tool> '{json}'`.
 
 ## What the stack includes
 
@@ -38,9 +38,9 @@ You can also run any capability directly, without opening the shell — handy fo
 | aider | Terminal coding agent: review the plan before any file is touched |
 | fabric | 254 named LLM patterns, pipe any text through them |
 | Web search | Built-in `ddgs` metasearch by default (in-process, no service, no Docker); Brave/Tavily optional via key |
-| n8n `:5678` | Visual workflow automation — native, opt-in (`bob services n8n start`) |
-| SearXNG `:8888` | Private self-hosted meta-search — opt-in Docker (`bob services searxng start`) |
-| Langfuse `:3001` | LLM observability — opt-in Docker; the default trace sink is a local file (`bob traces`) |
+| n8n `:5678` | Visual workflow automation, native, opt-in (`bob services n8n start`) |
+| SearXNG `:8888` | Private self-hosted meta-search, opt-in Docker (`bob services searxng start`) |
+| Langfuse `:3001` | LLM observability, opt-in Docker; the default trace sink is a local file (`bob traces`) |
 | API `:8081/v1` | OpenAI-compatible inference endpoint, drop-in for any existing tool |
 | Agent API `:8084` | `bob agent serve`: REST + SSE agent loop with per-client Bearer auth and owner-scoped sessions (loopback by default) |
 
@@ -84,13 +84,15 @@ block a merge; native-from-source is verified when a release is tagged. See
 
 Linux:
 ```bash
-curl -fsSL https://get.bob.sh | sh
+curl -fsSL https://raw.githubusercontent.com/altpsyche/bob/main/install/install.sh | sh
 ```
 
 Windows (PowerShell):
 ```powershell
-irm https://get.bob.sh/install.ps1 | iex
+irm https://raw.githubusercontent.com/altpsyche/bob/main/install/install.ps1 | iex
 ```
+
+> The short `https://get.bob.sh` / `https://get.bob.sh/install.ps1` forms are planned once the domain fronts these files; the `raw.githubusercontent.com` URLs above are the ones to use today.
 
 Only **Git** is needed up front, and the installer installs even that if it's missing. On Linux you're asked for your `sudo` password once (for system packages); on atomic Fedora (Bazzite/Silverblue) it layers via `rpm-ostree`. Nothing here needs Docker: web search uses a built-in provider, and the optional add-on services are opt-in (see below).
 
@@ -116,9 +118,9 @@ setup.bat                      :: GPU-less: setup.bat --cpu
 ```
 </details>
 
-Setup builds the inference engine and proxy from source, downloads models, and wires VS Code and terminal clients. Open a new terminal afterward so the `bob` command resolves (Linux: `~/.local/bin` on PATH; Windows: the `bob.cmd` shim setup drops into your scoop shims — if you don't use scoop, add the repo folder to PATH).
+Setup builds the inference engine and proxy from source, downloads models, and wires VS Code and terminal clients. Open a new terminal afterward so the `bob` command resolves (Linux: `~/.local/bin` on PATH; Windows: the `bob.cmd` shim setup drops into your scoop shims, if you don't use scoop, add the repo folder to PATH).
 
-Then just talk to Bob — **inference auto-starts on demand**, no separate command needed:
+Then just talk to Bob, **inference auto-starts on demand**, no separate command needed:
 
 ```bash
 bob                             # interactive REPL (brings the stack up if it isn't)
@@ -134,7 +136,7 @@ bob agent install
 ```
 Registers a recurring background-agent runner (Linux cron / Windows Scheduled Task) for scheduled goals. Skip if you won't use it.
 
-Both scripts are safe to re-run if something fails partway through. `setup` needs **no root** — only `install_prereqs` (system packages) uses sudo, so if your sudo is finicky you can install the toolchain by hand and skip straight to `./setup.sh`.
+Both scripts are safe to re-run if something fails partway through. `setup` needs **no root**: only `install_prereqs` (system packages) uses sudo, so if your sudo is finicky you can install the toolchain by hand and skip straight to `./setup.sh`.
 
 The server speaks the same chat completions protocol as OpenAI. Any tool already pointed at OpenAI works here unchanged by redirecting its base URL to `http://localhost:8081/v1`.
 

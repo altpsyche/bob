@@ -30,7 +30,7 @@ exercises `/health` + an owner-scoped session turn + an SSE stream as the end-to
 
 ## Config
 
-All under the `agent` block of the runtime config — override in `config/user.json`;
+All under the `agent` block of the runtime config, override in `config/user.json`;
 defaults live in `config/defaults.json` under `runtime.agent`:
 `serveHost`, `agentPort`, `apiTokens`, `defaultOwner`, `sessionDbPath`, `maxSessionTokens`,
 `gitAllowedRoots`, `logMaxBytes`/`logBackupCount`, `mcpEnabled`. See [TUNING.md](TUNING.md).
@@ -105,8 +105,11 @@ curl -N http://127.0.0.1:8084/v1/agent/completions/stream \
 
 ## n8n
 
+n8n runs native by default (`bob services n8n start`), so it reaches the agent server on `localhost`.
+Use `http://host.docker.internal:8084` only if you run n8n in a container yourself.
+
 ```
-URL:    http://host.docker.internal:8084/v1/agent/completions
+URL:    http://localhost:8084/v1/agent/completions
 Header: Authorization: Bearer <litellm key or an agent.apiTokens entry>
 Body:   { "goal": "{{ $json.goal }}" }
 ```

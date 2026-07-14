@@ -8,7 +8,31 @@ rebuilds only what changed, verifies, and rolls back on failure.
 
 ## [Unreleased]
 
-_Nothing yet. See [ROADMAP.md](ROADMAP.md) for what's planned (1.1 and beyond)._
+Toward 1.1 (easy to install and get started): a new machine goes from nothing to a working Bob in one
+command, and a normal install never trips over Docker. See [ROADMAP.md](ROADMAP.md) for the full plan.
+
+### Added
+- **One-command install.** A hosted install script per OS replaces the clone plus two-script dance:
+  `curl -fsSL <url>/install.sh | sh` on Linux and `irm <url>/install.ps1 | iex` on Windows PowerShell.
+  It ensures git, clones with submodules, runs the prereq and setup steps, then runs
+  `python -m bob.kernel verify-install` to check installed submodules and model checksums against
+  `versions.lock`. Idempotent on re-run (an existing clone fast-forwards). Linux and Windows ship now;
+  macOS arrives with 2.0. The scripts live at `install/install.sh` and `install/install.ps1`.
+- **Native trace sink.** Agent tracing defaults to a local file sink (`logs/traces/<trace_id>.jsonl`,
+  viewed with `bob traces`), so observability works offline with no Docker. `agent.tracingSink` selects
+  `file` (default) or `otlp`; `otlp` exports to `agent.otlpEndpoint` (for example an opted-in Langfuse).
+- **Guided Docker install.** Opting into a Docker service (`bob services searxng|langfuse start`) runs a
+  guided Docker install through the same package-manager seam setup uses (apt/dnf/pacman/zypper/
+  rpm-ostree/winget) when Docker is missing, then brings the service up.
+
+### Changed
+- **Docker-free default install.** Nothing in Bob's core needs Docker, and setup no longer provisions or
+  starts any Docker service. Web search defaults to the in-process `ddgs` metasearch provider (no service,
+  no daemon, no Docker). n8n now runs native on the Node toolchain as an opt-in (`bob services n8n start`).
+  SearXNG and Langfuse remain Docker, now explicit opt-ins started on demand. All add-on services are
+  lazy: they start only when asked, never at setup.
+- **Onboarding and entry clarity.** First-run polish for the "it doesn't know me yet" case, and a single
+  unmistakable entry point for a new user.
 
 ## [1.0.0] (2026-07-13)
 

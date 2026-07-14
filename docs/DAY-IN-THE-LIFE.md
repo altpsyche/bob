@@ -2,7 +2,7 @@
 
 This is a hands-on tour of every feature in the stack, structured as a typical working session. Follow it end-to-end the first time to see everything in action. After that, jump to any section as a quick reference.
 
-**Prerequisites:** `install_prereqs.sh` + `setup.sh` (Linux) or `install_prereqs.bat` + `setup.bat` (Windows) have been run and completed successfully, and you have opened a new terminal so the `bob` command resolves. Bob is one Python engine — the same commands work on Linux and Windows. If setup isn't done yet, start at [SETUP.md](SETUP.md).
+**Prerequisites:** Bob is installed and the `bob` command resolves in a fresh terminal. The quickest path is the one-command installer: on Linux, `curl -fsSL https://raw.githubusercontent.com/altpsyche/bob/main/install/install.sh | sh`; on Windows PowerShell, `irm https://raw.githubusercontent.com/altpsyche/bob/main/install/install.ps1 | iex`. The manual `install_prereqs` + `setup` path still works too. Bob is one Python engine, so the same commands work on Linux and Windows. If setup isn't done yet, start at [SETUP.md](SETUP.md).
 
 ---
 
@@ -38,7 +38,7 @@ There is one way in. Open a terminal and run:
 bob
 ```
 
-That opens the interactive shell — Bob's home base. Type a message to chat; slash-commands drive everything else. **Inference auto-starts the first time you talk**, so there is nothing to launch first. You'll see a splash with the active model, session, and tool/skill counts, then a prompt:
+That opens the interactive shell, Bob's home base. Type a message to chat; slash-commands drive everything else. **Inference auto-starts the first time you talk**, so there is nothing to launch first. You'll see a splash with the active model, session, and tool/skill counts, then a prompt:
 
 ```
 Bob  ·  chat / Qwen3-14B  ·  session new  ·  12 tools · 6 skills
@@ -65,17 +65,17 @@ The shell is the home base. Every capability is also a plain one-shot `bob <verb
 
 ### Optional: pre-warm the stack in the background
 
-Auto-start is on-demand — it brings inference up when you first talk, and you never have to think about it. If you'd rather warm everything up ahead of time, or keep it running for tools outside the terminal (Open WebUI, VS Code, n8n), pre-warm it:
+Auto-start is on-demand, it brings inference up when you first talk, and you never have to think about it. If you'd rather warm everything up ahead of time, or keep it running for tools outside the terminal (Open WebUI, VS Code, n8n), pre-warm it:
 
 ```bash
 bob up
 ```
 
 This starts, silently in the background:
-- The **llama-swap engine** at `http://localhost:8080/v1` — the local model server (llama.cpp)
-- The **LiteLLM proxy** at `http://localhost:8081/v1` — the OpenAI-compatible endpoint all your AI tools point at (adds retry + pro-model routing)
+- The **llama-swap engine** at `http://localhost:8080/v1`: the local model server (llama.cpp)
+- The **LiteLLM proxy** at `http://localhost:8081/v1`: the OpenAI-compatible endpoint all your AI tools point at (adds retry + pro-model routing)
 
-Add `--with-services` to also start the Docker services (Langfuse, SearXNG, n8n), and opt into Open WebUI at setup time with `setup.sh --with-webui` (or `setup.bat --with-webui`). `bob up` opens your browser if WebUI is enabled; suppress that with `bob up --no-open`.
+Add `--with-services` to also start the opt-in add-on services (Langfuse, SearXNG, n8n) on demand; they are off by default and never auto-start. Opt into Open WebUI at setup time with `setup.sh --with-webui` (or `setup.bat --with-webui`). `bob up` opens your browser if WebUI is enabled; suppress that with `bob up --no-open`.
 
 Check what's running:
 
@@ -85,28 +85,26 @@ bob status
 
 You should see the models listed: `planner`, `coder`, `chat`, `fim`, `embed`, `vision`, `agent`. None are loaded into VRAM yet; they load on first use and stay there until idle. `fim` (autocomplete) and `embed` (search indexing) are pinned and never unload.
 
-> **Pro models:** If you've set `DEEPSEEK_API_KEY` and `ZHIPU_API_KEY`, three additional models are available via the LiteLLM proxy at `:8081`: `chat-pro`, `planner-pro`, `coder-pro`. These route directly to DeepSeek and Zhipu APIs — no local GPU required, no platform fee. See [USAGE.md § Pro models](USAGE.md#pro-models-api-backed-no-platform-fee).
+> **Pro models:** If you've set `DEEPSEEK_API_KEY` and `ZHIPU_API_KEY`, three additional models are available via the LiteLLM proxy at `:8081`: `chat-pro`, `planner-pro`, `coder-pro`. These route directly to DeepSeek and Zhipu APIs, no local GPU required, no platform fee. See [USAGE.md § Pro models](USAGE.md#pro-models-api-backed-no-platform-fee).
 
-> **Tip — start at login:** To bring the background stack up automatically every login, run `bob up --no-open` from a startup entry: on Linux a user systemd unit or a `@reboot` cron line; on Windows a Task Scheduler task set to "At log on".
+> **Tip, start at login:** To bring the background stack up automatically every login, run `bob up --no-open` from a startup entry: on Linux a user systemd unit or a `@reboot` cron line; on Windows a Task Scheduler task set to "At log on".
 
-### Start Docker services
+### Start the add-on services (opt-in, on demand)
 
-The optional services (Langfuse, SearXNG, n8n) run in Docker. Make sure Docker is running (Docker Desktop on Windows, or the `docker` daemon on Linux), then:
+A default install is 100% Docker-free, and none of the add-on services start at setup. Bring them up individually when you want them:
+
+- **n8n** runs natively on the Node toolchain (no Docker): `bob services n8n start`
+- **SearXNG** is an opt-in, self-hosted meta-search that runs in Docker: `bob services searxng start` (runs a guided Docker install first if Docker is missing)
+- **Langfuse** is opt-in observability that runs in Docker: `bob services langfuse start` (also guided if Docker is missing)
+
+Start whichever you need, then check status:
 
 ```bash
-bob services start
+bob services n8n start
 bob services status
 ```
 
-You should see four containers, all `Up`:
-```
-compose-langfuse-postgres-1   Up
-compose-langfuse-1            Up
-compose-searxng-1             Up
-compose-n8n-1                 Up
-```
-
-The services are now available at:
+The services are available at:
 - Langfuse: http://localhost:3001
 - SearXNG: http://localhost:8888
 - n8n: http://localhost:5678
@@ -129,7 +127,7 @@ Just run `bob` and type. Bob streams the response; keep typing to continue the c
 
 ### One-shot from the terminal
 
-No shell — pipe a question and get an answer. These are the scripting forms, identical on every OS:
+No shell, pipe a question and get an answer. These are the scripting forms, identical on every OS:
 
 ```bash
 bob chat "what is the difference between a mutex and a semaphore?"
@@ -181,7 +179,7 @@ Full reference: [MEMORY.md](MEMORY.md). Disable memory by adding `{"memory": {"e
 
 ## Feature 2: Open WebUI (Browser Chat)
 
-**What it is:** A full-featured chat interface in your browser, like ChatGPT but running locally. It's opt-in — enable it with `setup.sh --with-webui` (or `setup.bat --with-webui`), or launch it any time with `bob webui`.
+**What it is:** A full-featured chat interface in your browser, like ChatGPT but running locally. It's opt-in, enable it with `setup.sh --with-webui` (or `setup.bat --with-webui`), or launch it any time with `bob webui`.
 
 Open http://localhost:3000. On first visit, create a local account (username and password stored locally, with no signup email or server involved).
 
@@ -252,12 +250,12 @@ To include the current file automatically, select some code before pressing `Ctr
 
 ### Web search in chat
 
-With SearXNG running, type `@web` to pull in live search results:
+With the opt-in SearXNG service running (`bob services searxng start`), type `@web` to pull in live search results:
 ```
 @web latest Python async best practices 2025
 ```
 
-Continue sends the query to your local SearXNG, gets the top results, and gives them to the model as context before answering. Your search never goes to Google directly.
+Continue sends the query to your local SearXNG, gets the top results, and gives them to the model as context before answering. Your search never goes to Google directly. (The `@web` integration uses the SearXNG MCP, so it needs that opt-in service running; plain `bob` agent and CLI web search do not.)
 
 ### Inline edit
 
@@ -408,9 +406,17 @@ cat architecture-doc.md | fabric --pattern analyze_claims --model planner
 
 ## Feature 7: SearXNG (Private Web Search)
 
-**What it is:** A self-hosted search engine at http://localhost:8888. You type a query, SearXNG sends it to Google, Bing, DuckDuckGo, and others in parallel, and shows you combined results. Your searches aren't linked to any account.
+**What it is:** An opt-in, self-hosted meta-search engine at http://localhost:8888. You type a query, SearXNG sends it to Google, Bing, DuckDuckGo, and others in parallel, and shows you combined results. Your searches aren't linked to any account. Run it when you want a private search UI or the Continue `@web` integration.
 
-Open http://localhost:8888 and try a search. Results come from multiple engines simultaneously.
+> **You usually don't need this for the agent.** Bob's built-in `web_search` tool uses the in-process `ddgs` metasearch provider, so plain agent and CLI web search work out of the box with no Docker and no SearXNG. SearXNG is the opt-in upgrade for a browser search page and Continue's `@web`.
+
+Start it, then open http://localhost:8888 and try a search. Results come from multiple engines simultaneously.
+
+```bash
+bob services searxng start
+```
+
+If Docker isn't installed, `bob services searxng start` walks you through a guided install first (SearXNG runs in Docker).
 
 ### Set it as your browser's default search
 
@@ -433,15 +439,19 @@ This is where SearXNG integrates with your coding workflow. In the Continue chat
 
 Continue queries SearXNG, includes the top results as context, then asks the model. So the model answers with current information, not just what it was trained on. This is especially useful for library releases, recent bug fixes, and anything that changes frequently.
 
-If `@web` returns nothing, check that Docker services are running: `bob services status`.
+If `@web` returns nothing, check that the SearXNG service is running: `bob services status` (start it with `bob services searxng start`).
 
 ---
 
 ## Feature 8: n8n (Workflow Automation)
 
-**What it is:** A visual workflow builder at http://localhost:5678. Connect triggers (a schedule, a webhook, a file change) to actions (call the local LLM, send an email, post to Slack) without writing scripts.
+**What it is:** A visual workflow builder at http://localhost:5678. Connect triggers (a schedule, a webhook, a file change) to actions (call the local LLM, send an email, post to Slack) without writing scripts. n8n is opt-in and runs natively on the Node toolchain (no Docker container in the default path).
 
-Open http://localhost:5678. On first visit, create a local account.
+Start it, then open http://localhost:5678. On first visit, create a local account.
+
+```bash
+bob services n8n start
+```
 
 ### Import the starter workflow
 
@@ -473,7 +483,7 @@ To understand how n8n works by building from scratch:
 1. Click **New Workflow**
 2. Add a **Webhook** trigger node → Method: `POST` → copy the webhook URL
 3. Add an **HTTP Request** node:
-   - Method: `POST`, URL: `http://host.docker.internal:8081/v1/chat/completions`
+   - Method: `POST`, URL: `http://localhost:8081/v1/chat/completions`
    - Header: `Authorization: Bearer sk-local`
    - Body (raw JSON): `{{ JSON.stringify({model: "coder", messages: [{role: "system", content: "Write a concise git commit message for this diff. Output only the message."}, {role: "user", content: $json.body.diff}]}) }}`
 4. Add a **Set** node → extract `message` = `{{ $json.choices[0].message.content }}`
@@ -486,7 +496,7 @@ git diff --staged | jq -Rs '{diff: .}' | \
   -H "Content-Type: application/json" -d @-
 ```
 
-> Inside n8n containers, your machine is at `host.docker.internal`. Use `:8081` (LiteLLM proxy) for automatic retry, or `:8080` for the direct endpoint.
+> Native n8n reaches the local LLM at `http://localhost:8081` (LiteLLM proxy, automatic retry) or `http://localhost:8080` (direct endpoint). If you instead run n8n in Docker yourself, your machine is at `host.docker.internal` from inside the container.
 
 ### More workflow ideas
 
@@ -501,11 +511,19 @@ git diff --staged | jq -Rs '{diff: .}' | \
 
 ## Feature 9: Langfuse (LLM Observability)
 
-**What it is:** A dashboard at http://localhost:3001 that records every AI request routed through LiteLLM: the full prompt, response, latency, token counts, and retries. Useful for understanding what the model actually received (not what you think you sent), debugging unexpected answers, and seeing which workflows are expensive.
+**What it is:** Opt-in LLM observability. Bob traces agent runs out of the box with a local, Docker-free file sink: spans land in `logs/traces/<trace_id>.jsonl`, and you read them with `bob traces` (`bob traces list`, then `bob traces show <id>`). Tracing is gated by `agent.tracing` in `config/user.json` (default off); turn it on and you get inspectable traces with no extra services.
 
-Default login: `admin@local.dev` / `admin123`
+Langfuse is the opt-in upgrade: a dashboard at http://localhost:3001 (Docker) that records every AI request routed through LiteLLM (the full prompt, response, latency, token counts, and retries) with a rich UI. Useful for understanding what the model actually received (not what you think you sent), debugging unexpected answers, and seeing which workflows are expensive.
 
-### Enabling tracing
+Start Langfuse when you want the dashboard:
+
+```bash
+bob services langfuse start
+```
+
+If Docker isn't installed, this runs a guided install first (Langfuse runs in Docker). Default login: `admin@local.dev` / `admin123`
+
+### Enabling Langfuse tracing
 
 Langfuse only captures requests routed through the LiteLLM proxy (port 8081). Direct requests to port 8080 are invisible. Here's how to wire it up:
 
@@ -522,7 +540,7 @@ export LANGFUSE_PUBLIC_KEY='pk-lf-...'   # paste your public key
 export LANGFUSE_SECRET_KEY='sk-lf-...'   # paste your secret key
 ```
 
-Windows (Command Prompt — `setx` persists for new shells):
+Windows (Command Prompt, `setx` persists for new shells):
 ```bat
 setx LANGFUSE_PUBLIC_KEY "pk-lf-..."
 setx LANGFUSE_SECRET_KEY "sk-lf-..."
@@ -544,6 +562,8 @@ bob litellm status  # confirm it's running
 ```
 
 > `config/litellm.yaml` is generated automatically; do not edit it directly. Make persistent changes in `config/user.json` and re-run `bob gen`.
+
+> **Exporting agent-loop traces to Langfuse:** the steps above cover LiteLLM request tracing. To send the agent loop's own spans (the ones that otherwise go to the local file sink) to Langfuse instead, set `agent.tracing: true`, `agent.tracingSink: "otlp"`, and `agent.otlpEndpoint` to your Langfuse OTLP URL in `config/user.json`. Leave `tracingSink` unset to keep the built-in file sink and read traces with `bob traces`.
 
 **Step 4: Confirm clients use :8081:**
 
@@ -656,7 +676,7 @@ Images are sent as `image_url` data URIs in the OpenAI chat completions format. 
 
 **What it is:** An autonomous agent loop that runs locally. You give it a goal; it decides which tools to call, executes them, and iterates until it has a final answer. Everything (the reasoning, the tool calls, the results) stays on your machine.
 
-**Prerequisites:** None beyond setup — inference **auto-starts** the first time you run a goal, so you don't need a prior `bob up`. The `agent` model is included in the 16 GB profile and loads on first use. Run `bob doctor` if you want to verify everything is wired.
+**Prerequisites:** None beyond setup, inference **auto-starts** the first time you run a goal, so you don't need a prior `bob up`. The `agent` model is included in the 16 GB profile and loads on first use. Run `bob doctor` if you want to verify everything is wired.
 
 ### Try it: one-shot goals
 
@@ -692,9 +712,7 @@ The agent calls `git_log` and `git_diff`, then synthesises the answer from both 
 bob agent "search for the latest llama.cpp release and summarise what changed"
 ```
 
-The agent calls `web_search` (via SearXNG, no cloud, no tracking), fetches the top result with `web_fetch`, then summarises.
-
-> SearXNG must be running: `bob services start`
+The agent calls `web_search` (via the built-in in-process `ddgs` metasearch, no Docker, no cloud, no tracking), fetches the top result with `web_fetch`, then summarises. No SearXNG or any add-on service is required.
 
 ### Try it: memory + reasoning
 
@@ -747,7 +765,7 @@ Returns: {"result": "...", "session_id": null, "error": null}
 
 For token-by-token streaming, POST the same body to `/v1/agent/completions/stream` (Server-Sent Events; the run cancels within ~1s if you disconnect). For a multi-turn conversation, create a session with `POST /v1/sessions` and pass its `session_id` on each call. Each token maps to an owner, and **sessions are owner-scoped**: a token can only see sessions its own owner created (another owner's `session_id` returns 404). Give distinct callers distinct `{ "token": "...", "owner": "..." }` entries in `agent.apiTokens`. Full endpoint contract + event schema: [AGENT-SERVER.md](AGENT-SERVER.md); security model + `0.0.0.0` checklist: [SECURITY.md](SECURITY.md).
 
-Wire into n8n with an HTTP Request node: URL `http://host.docker.internal:8084/v1/agent/completions`, method POST, header `Authorization: Bearer sk-local`, body `{"goal": "{{ $json.goal }}"}`. Bind address and port are `agent.serveHost` / `agent.agentPort` in `config/user.json` (loopback by default; set `serveHost` to `0.0.0.0` to expose on the LAN; keep `allowPrivateFetch` false).
+Wire into n8n with an HTTP Request node: URL `http://localhost:8084/v1/agent/completions` (native n8n; use `http://host.docker.internal:8084/...` only if you run n8n in Docker yourself), method POST, header `Authorization: Bearer sk-local`, body `{"goal": "{{ $json.goal }}"}`. Bind address and port are `agent.serveHost` / `agent.agentPort` in `config/user.json` (loopback by default; set `serveHost` to `0.0.0.0` to expose on the LAN; keep `allowPrivateFetch` false).
 
 > **Note:** Selecting the `agent` model directly in Open WebUI runs raw inference without tool injection; `<tool_call>` blocks appear as plain text. Use `bob agent serve` for full tool use from WebUI via a custom function or n8n workflow.
 
@@ -766,8 +784,8 @@ bob doctor          # the above + runtime: endpoint reachable, GPU/VRAM, writabl
 
 **What it is:** The capabilities the agent loop calls on your behalf. There are two kinds, and **neither is a `bob <verb>` command**:
 
-- **Core agent tools** — memory, web, git, file, shell, fabric. List them with `bob tools`.
-- **Drop-in plugins** — `summarise`, `draft`, `search`, `play`. List them with `bob plugins list`. Add your own by dropping a `plugins/<name>/tool.py`.
+- **Core agent tools**: memory, web, git, file, shell, fabric. List them with `bob tools`.
+- **Drop-in plugins**: `summarise`, `draft`, `search`, `play`. List them with `bob plugins list`. Add your own by dropping a `plugins/<name>/tool.py`.
 
 You use these three ways: (1) just ask Bob in the shell and let the agent pick them, (2) run `/agent <goal>`, or (3) invoke one deterministically for scripts/CI with `bob --run <tool> '{json}'` (one capability, no model, exact agent dispatch).
 
@@ -812,7 +830,7 @@ Runs ripgrep (or `findstr` as fallback), then the LLM summarises what it found a
 
 ### play
 
-Ask Bob: *"play some lofi hip hop"* — handy in a voice session. Deterministic form:
+Ask Bob: *"play some lofi hip hop"*: handy in a voice session. Deterministic form:
 
 ```bash
 bob --run music_play '{"query": "lofi hip hop"}'
@@ -843,7 +861,7 @@ The same `bob <verb>` commands work identically on Linux and Windows.
 |---|---|
 | Pre-warm the stack (background) | `bob up` |
 | Pre-warm without opening browser | `bob up --no-open` |
-| Pre-warm + Docker services | `bob up --with-services` |
+| Pre-warm + add-on services | `bob up --with-services` |
 | Start inference foreground (Ctrl-C to stop) | `bob serve` |
 | Check what's running | `bob status` |
 | Stop everything | `bob stop` |
@@ -864,11 +882,14 @@ The same `bob <verb>` commands work identically on Linux and Windows.
 | Memory DB status | `bob memory status` |
 | Spending summary | `bob budget` |
 
-### Docker services
+### Add-on services (opt-in, off by default)
 
 | Task | Command |
 |---|---|
-| Start services | `bob services start` |
+| Start n8n (native) | `bob services n8n start` |
+| Start SearXNG (Docker, guided) | `bob services searxng start` |
+| Start Langfuse (Docker, guided) | `bob services langfuse start` |
+| Start all add-on services | `bob services start` |
 | Stop services | `bob services stop` |
 | Check status | `bob services status` |
 | Tail logs | `bob services logs` |
@@ -979,6 +1000,7 @@ LiteLLM runs on port 8081 and starts automatically with `bob up` (and on demand 
 | Hardware + CUDA + model health | `bob diagnose` |
 | Full agent + runtime pre-flight | `bob doctor` |
 | Running processes (PID, RAM) | `bob ps` |
+| List/inspect local traces | `bob traces list` / `bob traces show <id>` |
 | Check model files on disk | `bob show coder` |
 | Throughput benchmark | `bob bench` |
 
@@ -991,12 +1013,12 @@ Stop the inference stack to free VRAM:
 bob stop
 ```
 
-Stop Docker services to free RAM (optional; they're lightweight, you can leave them running):
+If you started any add-on services, stop them to free resources (optional; they're lightweight, you can leave them running):
 ```bash
 bob services stop
 ```
 
-Data is always preserved when you stop. Langfuse traces, n8n workflows, and model files are all on disk. Tomorrow, just run `bob` again — inference auto-starts and picks up exactly where you left off.
+Data is always preserved when you stop. Local file traces, Langfuse data, n8n workflows, and model files are all on disk. Tomorrow, just run `bob` again: inference auto-starts and picks up exactly where you left off.
 
 ---
 
@@ -1008,16 +1030,16 @@ If this was your first read-through, here's a short sequence that touches every 
 2. `bob diagnose`: confirm GPU, CUDA, and model files are all healthy
 3. `bob think "design a plugin architecture for a game engine"`: one-shot with the planner
 4. `bob remember "working on X project"` then `bob recall "current project"`: test memory store/search
-5. `bob up --with-services`: pre-warm inference + the Docker services in the background
+5. `bob up --with-services`: pre-warm inference + the opt-in add-on services in the background
 6. Open http://localhost:3000 (after `setup.sh --with-webui` or `bob webui`): chat with Open WebUI, try `/no_think`
 7. Open VS Code: accept an autocomplete suggestion, try `Ctrl+I` on a block of code
 8. Open the Continue panel (`Ctrl+L`): ask `@web what changed in the latest Python release?`
 9. Open the Cline panel: give it a small contained task ("add a docstring to this function")
 10. In a terminal: `cd` into a project and `bob aider`; add a file with `/add`, ask for a change, review the plan
 11. In a terminal: `git diff --staged | fabric --pattern write_git_commit`
-12. Open http://localhost:8888: do a search, set it as a browser shortcut
-13. Open http://localhost:5678: create a webhook workflow that calls the LLM
-14. Enable Langfuse tracing: set `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY` + `{"langfuseEnabled": true}` in `config/user.json` + `bob gen && bob litellm`, make a request, open http://localhost:3001
+12. `bob services searxng start` then open http://localhost:8888: do a search, set it as a browser shortcut
+13. `bob services n8n start` then open http://localhost:5678: create a webhook workflow that calls the LLM
+14. Traces: set `{"agent": {"tracing": true}}` in `config/user.json`, run an agent goal, then `bob traces list` (built-in file sink, no Docker). For the Langfuse dashboard, `bob services langfuse start`, wire keys + `{"langfuseEnabled": true}` + `bob gen && bob litellm`, then open http://localhost:3001
 15. `bob setup-voice` then `bob speak "Hello"`: test TTS; you should hear a response
 16. `bob listen`: say a few words into the mic; the transcript should print
 17. `bob voice`: run one full loop (speak a question, hear the answer back), then Ctrl+C
@@ -1026,7 +1048,7 @@ If this was your first read-through, here's a short sequence that touches every 
 20. `bob agent "what is the git status of this repo?"`: run your first agent goal, watch it call git_status
 21. `bob agent --agency confirm "check the last 3 commits and summarise them"`: try confirm mode
 22. `bob clip https://news.ycombinator.com`: clip a page to memory (fetch → summarise → store)
-23. `bob doctor`: full pre-flight — verify agent deps + runtime (endpoint, GPU, writable dirs, config)
+23. `bob doctor`: full pre-flight, verify agent deps + runtime (endpoint, GPU, writable dirs, config)
 24. `bob plugins list`: see the four built-in plugins (summarise, draft, search, play)
 25. `bob --run summarise_text '{"content": "…", "length": "short"}'`: summarise deterministically
 26. `bob --run search_code '{"query": "TODO", "path": "scripts/"}'`: search + LLM synthesis

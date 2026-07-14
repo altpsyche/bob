@@ -2,6 +2,9 @@
 
 Pre-built workflows for the bob stack. Import any `.json` file directly into n8n.
 
+n8n and SearXNG are opt-in add-ons (n8n runs native, SearXNG runs in Docker). Start them before importing:
+`bob services n8n start`, and for the workflows that cross-reference sources, `bob services searxng start`.
+
 ## How to import
 
 1. Open `http://localhost:5678`
@@ -16,7 +19,7 @@ Pre-built workflows for the bob stack. Import any `.json` file directly into n8n
 
 Fetches RSS articles every morning, cross-references each one via SearXNG to check whether other sources cover the same topic, summarizes them one at a time with the local LLM, and posts to Discord as linked embeds. Articles seen in the last 7 days are skipped.
 
-**Two modes — same workflow:**
+**Two modes, same workflow:**
 
 | Trigger | How | What happens |
 |---------|-----|-------------|
@@ -27,13 +30,13 @@ Fetches RSS articles every morning, cross-references each one via SearXNG to che
 
 Open the **Config** node and set three values:
 
-**`discord_url`** — your Discord webhook URL  
+**`discord_url`**: your Discord webhook URL  
 Discord > Server Settings > Integrations > Webhooks > New Webhook > Copy URL
 
-**`rss_feed_url`** — RSS feed to monitor (default: Hacker News front page)  
+**`rss_feed_url`**: RSS feed to monitor (default: Hacker News front page)  
 To add more feeds: duplicate the `RSS: Fetch Feed` node and connect it to `Keyword Filter`
 
-**`keywords_csv`** — optional comma-separated topic filter (leave empty for all articles)  
+**`keywords_csv`**: optional comma-separated topic filter (leave empty for all articles)  
 Example: `AI, open source, security, rust`
 
 Other options in Config:
@@ -73,7 +76,7 @@ Footer: Verified: arxiv.org, theverge.com, arstechnica.com
 ```
 
 Green border = SearXNG found coverage on at least one independent source.  
-Blue border = single source — article is included but treat with more caution.
+Blue border = single source, so the article is included but treat with more caution.
 
 ### Deduplication
 
@@ -82,7 +85,7 @@ Article URLs are stored in n8n workflow static data. Anything seen in the last 7
 ### Schedule
 
 Edit the **Daily Schedule** node. Default cron: `0 8 * * *` (8am daily).  
-The timezone follows n8n's `GENERIC_TIMEZONE` env var — set it in `config/user.psd1` via `n8nTimezone`.
+The timezone follows n8n's `GENERIC_TIMEZONE` env var; set `n8nTimezone` in `config/user.json`.
 
 ---
 
@@ -108,7 +111,7 @@ Some feeds that work well with this workflow:
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
 | Discord not receiving messages | Invalid webhook URL | Check `discord_url` in Config node |
-| SearXNG errors in execution log | Service not running | `llm services status`; open `http://localhost:8888` |
+| SearXNG errors in execution log | Service not running | `bob services status`; open `http://localhost:8888` |
 | LLM timeout or empty summary | Model still loading (llama-swap) | Wait 30s and re-run; or switch `model` to `chat` |
 | All articles show "Single source" | SearXNG engines not returning results | Open `http://localhost:8888/preferences` and enable more engines |
 | "No new articles" on every run | Dedup marked everything as seen | Clear workflow static data: workflow menu > Settings > Clear static data |

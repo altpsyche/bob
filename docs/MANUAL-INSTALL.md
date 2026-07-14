@@ -4,9 +4,15 @@ This guide walks through every step that `install_prereqs.sh` / `install_prereqs
 `setup.sh` / `setup.bat` perform, one command at a time. Use it when you want full control, are
 troubleshooting a failed automated install, or want to understand what the scripts actually do.
 
-**If you just want to get running quickly, use the two entry scripts instead** — see the
-[README](../README.md#quick-start) and [SETUP](SETUP.md). Each is a thin shell stub that hands off to
-the Python cold-start kernel:
+**If you just want to get running quickly, use the one-command installer instead.** On Linux:
+`curl -fsSL https://raw.githubusercontent.com/altpsyche/bob/main/install/install.sh | sh`; on Windows
+PowerShell: `irm https://raw.githubusercontent.com/altpsyche/bob/main/install/install.ps1 | iex`. It
+clones the repo, runs both entry scripts, and verifies the result for you. See the
+[README](../README.md#quick-start) and [SETUP](SETUP.md) for details. This manual guide is the
+full-control, do-it-by-hand alternative to that installer.
+
+You can also run the two entry scripts directly. Each is a thin shell stub that hands off to the
+Python cold-start kernel:
 
 - `install_prereqs.sh` / `install_prereqs.bat` → `python -m bob.kernel prereqs` (Tier 0: toolchain)
 - `setup.sh` / `setup.bat` → `python -m bob.kernel setup` (Tier 1: build, configure, start)
@@ -15,7 +21,7 @@ Everything below reproduces those two kernel runs by hand. This document is for 
 prefer to drive each step manually.
 
 > **OS coverage.** Linux (glibc; apt/dnf/pacman/zypper, plus rpm-ostree on atomic Fedora) and Windows
-> 11 are supported. macOS is not supported — there is no package-manager provisioning path and the GPU
+> 11 are supported. macOS is not supported, there is no package-manager provisioning path and the GPU
 > build is CUDA-only. The bash steps below are a starting point if you adapt them by hand (e.g. with
 > Homebrew and a CPU build), but nothing here is tested on macOS. See the
 > [supported matrix](../README.md#supported-matrix).
@@ -36,7 +42,7 @@ prefer to drive each step manually.
 10. [Wire the editor clients (Continue + aider)](#10-wire-the-editor-clients-continue--aider)
 11. [Build and configure fabric](#11-build-and-configure-fabric)
 12. [Voice and vision (whisper + piper)](#12-voice-and-vision-whisper--piper)
-13. [Docker services (Langfuse, SearXNG, n8n)](#13-docker-services-langfuse-searxng-n8n)
+13. [Optional add-on services (Langfuse, SearXNG, n8n)](#13-optional-add-on-services-langfuse-searxng-n8n)
 14. [Verify the installation](#14-verify-the-installation)
 
 ---
@@ -53,8 +59,9 @@ The kernel resolves the concrete package names per distro from a single table
 ### Linux
 
 Pick the block for your package manager. Add the CUDA toolkit only for a GPU build (skip it for the
-CPU-only tier). Cron is optional — needed only for scheduled agents (`bob agent install`); Docker is
-optional — needed only for the compose services in step 13.
+CPU-only tier). A default install is 100% Docker-free, so Docker is not required here. Cron is
+optional (needed only for scheduled agents, `bob agent install`); Docker is optional too (needed only
+if you later opt into the SearXNG or Langfuse add-on services in step 13).
 
 **Debian / Ubuntu (apt):**
 ```bash
@@ -97,7 +104,7 @@ sudo zypper --non-interactive install cuda
 sudo zypper --non-interactive install cronie docker
 ```
 
-**Atomic Fedora (Bazzite / Silverblue / Kinoite — rpm-ostree):** the base OS is immutable, so packages
+**Atomic Fedora (Bazzite / Silverblue / Kinoite, rpm-ostree):** the base OS is immutable, so packages
 are *layered* and apply on the next boot. The kernel reuses the `dnf` package names above:
 ```bash
 sudo rpm-ostree install --idempotent --allow-inactive git curl gcc-c++ make cmake \
@@ -105,7 +112,7 @@ sudo rpm-ostree install --idempotent --allow-inactive git curl gcc-c++ make cmak
 systemctl reboot        # layered packages apply on the next boot
 ```
 CUDA is deliberately **not** layered on an atomic host (it needs NVIDIA's repo + akmods and is fragile
-there). The recommended path for GPU work on Bazzite/Silverblue is a Fedora distrobox — plain `dnf`
+there). The recommended path for GPU work on Bazzite/Silverblue is a Fedora distrobox, plain `dnf`
 inside, native build and CUDA passthrough just work, and nothing touches the immutable host:
 ```bash
 distrobox create --name bob --image fedora:latest --nvidia
@@ -130,7 +137,7 @@ The Windows path uses winget / scoop to install the **toolchain** (not Bob itsel
 open a new terminal afterward so each lands on PATH.
 
 ```bat
-:: Git — install from https://git-scm.com if not already present, then:
+:: Git, install from https://git-scm.com if not already present, then:
 winget install Python.Python.3.12 --accept-package-agreements --accept-source-agreements
 winget install OpenJS.NodeJS --accept-package-agreements --accept-source-agreements
 winget install astral-sh.uv --accept-package-agreements --accept-source-agreements
@@ -151,7 +158,7 @@ For a GPU build, install CUDA (12.8 covers Blackwell, Ada, and Ampere) and, opti
 winget install Nvidia.CUDA --version 12.8 --accept-package-agreements --accept-source-agreements
 winget install Docker.DockerDesktop --accept-package-agreements --accept-source-agreements
 ```
-After installing Docker Desktop, **log out of Windows and back in** — Docker adds your user to the
+After installing Docker Desktop, **log out of Windows and back in**: Docker adds your user to the
 `docker-users` group and that only takes effect at login. Restart your terminal after CUDA installs to
 pick up the new PATH entries.
 
@@ -164,13 +171,13 @@ proxy), `external/whisper.cpp` (STT), and `external/fabric` (prompt patterns).
 
 Linux:
 ```bash
-git clone --recurse-submodules <your-remote> bob
+git clone --recurse-submodules https://github.com/altpsyche/bob.git bob
 cd bob
 ```
 
 Windows:
 ```bat
-git clone --recurse-submodules <your-remote> C:\bob
+git clone --recurse-submodules https://github.com/altpsyche/bob.git C:\bob
 cd C:\bob
 ```
 
@@ -194,7 +201,7 @@ The build finds the CUDA toolkit by probing disk (`/usr/local/cuda*`, `/opt/cuda
 Linux; `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\vX.Y` on Windows). Blackwell (sm_120) needs
 CUDA **12.8+**.
 
-Identify your GPU's compute architecture — you need it for the cmake step:
+Identify your GPU's compute architecture, you need it for the cmake step:
 ```bash
 nvidia-smi --query-gpu=compute_cap --format=csv,noheader
 # e.g. 12.0 (Blackwell), 8.9 (Ada), 8.6 (Ampere)
@@ -208,7 +215,7 @@ Convert to the cmake `CUDA_ARCHITECTURES` value (drop the dot):
 | Ada Lovelace | RTX 4090, 4080, 4070 Ti | `8.9` | `89` |
 | Ampere | RTX 3090, 3080, 3070 | `8.6` | `86` |
 
-**Linux — put the toolkit on PATH** (a convenience; the build probes disk regardless):
+**Linux, put the toolkit on PATH** (a convenience; the build probes disk regardless):
 ```bash
 export CUDA_PATH=/usr/local/cuda        # or wherever your toolkit lives
 export PATH="$CUDA_PATH/bin:$PATH"
@@ -222,7 +229,7 @@ drop-in):
 export NVCC_CCBIN=/usr/bin/g++-13       # an nvcc-compatible g++, if the default is too new
 ```
 
-**Windows — set the toolkit path for the session:**
+**Windows, set the toolkit path for the session:**
 ```bat
 set "CUDA_PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8"
 set "PATH=%CUDA_PATH%\bin;%PATH%"
@@ -237,7 +244,7 @@ This produces `bin/llama-server`. On Linux the build uses the **Ninja** generato
 the **Visual Studio 17 2022** generator. These are the exact flags `scripts/tools/build.py`
 (`build_llama`) passes.
 
-### Linux — CUDA build
+### Linux, CUDA build
 
 Replace `120` with your GPU's value from the table above. If you provisioned the pinned cmake in step 1,
 use its full path instead of `cmake`.
@@ -257,7 +264,7 @@ cmake --build build --config Release -j
 cd ../..
 ```
 
-### Linux — CPU build
+### Linux, CPU build
 
 ```bash
 cd external/llama.cpp
@@ -277,7 +284,7 @@ cp external/llama.cpp/build/bin/* bin/
 bin/llama-server --version              # sanity check
 ```
 
-### Windows — CUDA build
+### Windows, CUDA build
 
 ```bat
 cd external\llama.cpp
@@ -350,12 +357,12 @@ first `bob eval`.
 
 | Venv | Requirements file | Built by default? |
 |---|---|---|
-| `venv-litellm` | `tools/litellm-requirements.txt` | yes — the LiteLLM proxy **and** the `bob` CLI's runtime deps live here |
+| `venv-litellm` | `tools/litellm-requirements.txt` | yes, the LiteLLM proxy **and** the `bob` CLI's runtime deps live here |
 | `venv-aider` | `tools/aider-requirements.txt` | yes |
-| `venv-webui` | `tools/webui-requirements.txt` | no — opt-in (large: torch/transformers, multi-GB) |
-| `venv-eval` | `tools/eval-requirements.txt` | no — on demand for `bob eval` |
+| `venv-webui` | `tools/webui-requirements.txt` | no, opt-in (large: torch/transformers, multi-GB) |
+| `venv-eval` | `tools/eval-requirements.txt` | no, on demand for `bob eval` |
 
-> The `bob` command itself runs under `tools/venv-litellm/bin/python`, so build **venv-litellm first** —
+> The `bob` command itself runs under `tools/venv-litellm/bin/python`, so build **venv-litellm first**,
 > nothing else works until it exists. On Windows the venv layout is `tools\<venv>\Scripts\` and the
 > pinned `.lock` files are used in place of `.txt`.
 
@@ -386,7 +393,7 @@ tools\venv-aider\Scripts\python.exe -m pip install --upgrade pip
 tools\venv-aider\Scripts\python.exe -m pip install -r tools\aider-requirements.lock
 ```
 
-Each install takes 2–10 minutes; `venv-webui` is by far the largest.
+Each install takes 2 to 10 minutes; `venv-webui` is by far the largest.
 
 ---
 
@@ -424,7 +431,7 @@ then `bob help`.
 `bob gen` reads the model registry (`config/models.json`, plus your `config/user.json` overrides) and
 writes the generated runtime configs: `config/llama-swap.yaml` (local model routing) and
 `config/litellm.yaml` (the OpenAI-compatible proxy's model list). These are overwritten on every
-`bob gen` — do not edit them by hand.
+`bob gen`: do not edit them by hand.
 
 ```bash
 bob gen                 # for the active profile
@@ -445,7 +452,7 @@ ls config/llama-swap.yaml config/litellm.yaml
 ## 9. Download models
 
 `bob fetch` downloads the GGUF files for the active profile into `models/`, verifying each against the
-SHA256 pinned in the registry. Downloads are resumable — re-run if interrupted.
+SHA256 pinned in the registry. Downloads are resumable, re-run if interrupted.
 
 ```bash
 bob fetch                    # download the active profile (~38 GB for 16gb, ~21 GB for 12gb)
@@ -563,15 +570,27 @@ into `bin/voices/`. Enable `voice.enabled` / `vision.enabled` in `config/user.js
 
 ---
 
-## 13. Docker services (Langfuse, SearXNG, n8n)
+## 13. Optional add-on services (Langfuse, SearXNG, n8n)
 
-Optional. These run in Docker; skip if you don't need observability, private search, or workflow
-automation. Docker must be installed and its daemon running. After setup, manage them with
-`bob services start|stop|status|logs`.
+Entirely opt-in. A default install is 100% Docker-free and needs none of these; add them only if you
+want their specific capability. Each starts on demand:
 
-The kernel's `setup_docker` writes `tools/compose/.env`, creates the persistent data dirs, writes a
-default `config/searxng/settings.yml`, then pulls and starts the stack. To do it by hand, ensure Docker
-is up, then:
+- **n8n** (workflow automation) runs **natively** on the Node toolchain (no Docker). Start it with
+  `bob services n8n start`.
+- **SearXNG** (private metasearch) is a **Docker opt-in**. Web search already works out of the box with
+  no Docker via the built-in in-process `ddgs` metasearch provider; SearXNG is the self-hosted
+  alternative. `bob services searxng start` runs a guided Docker install (through the package-manager
+  seam) if Docker is missing, then `docker compose up`. Port 8888.
+- **Langfuse** (LLM tracing dashboard) is a **Docker opt-in**. Tracing is on by default without it: the
+  default sink is a local file sink at `logs/traces/<trace_id>.jsonl`, viewed with `bob traces`.
+  Langfuse is an upgrade for a hosted dashboard. `bob services langfuse start` brings up Langfuse and
+  its pinned Postgres from the compose file. Port 3001, login `admin@local.dev` / `admin123`.
+
+`bob services <name> start` writes `tools/compose/.env`, creates the persistent data dirs, writes a
+default `config/searxng/settings.yml`, installs Docker if needed for the Docker services, then pulls
+and starts that service. Manage them with `bob services start|stop|status|logs`.
+
+To drive the Docker opt-ins by hand instead, install Docker, ensure its daemon is running, then:
 
 Linux:
 ```bash
@@ -588,7 +607,7 @@ docker compose -f tools\compose\docker-compose.yml up -d
 ```
 
 The compose file reads ports from `tools/compose/.env` (defaults: Langfuse `3001`, SearXNG `8888`,
-n8n `5678`). If that file is missing, create it:
+n8n `5678`), which `bob services <name> start` prepares. To create it by hand:
 ```bash
 printf 'REPO_PATH=%s\nLANGFUSE_PORT=3001\nSEARXNG_PORT=8888\nN8N_PORT=5678\nN8N_TIMEZONE=UTC\n' \
     "$(pwd)" > tools/compose/.env
@@ -596,26 +615,34 @@ printf 'REPO_PATH=%s\nLANGFUSE_PORT=3001\nSEARXNG_PORT=8888\nN8N_PORT=5678\nN8N_
 
 Once up:
 
-- **Langfuse** — http://localhost:3001 (login `admin@local.dev` / `admin123`)
-- **SearXNG** — http://localhost:8888
-- **n8n** — http://localhost:5678
+- **Langfuse**: http://localhost:3001 (login `admin@local.dev` / `admin123`)
+- **SearXNG**: http://localhost:8888
+- **n8n**: http://localhost:5678
 
 Verify and manage:
 ```bash
-bob services status          # container names, state, uptime
-bob services logs            # tail all container logs
-bob services stop            # stop containers (data is preserved)
+bob services status          # service names, state, uptime
+bob services logs            # tail all service logs
+bob services stop            # stop services (data is preserved)
 ```
 
-> **Windows / Docker Desktop:** disable the containerd snapshotter before pulling images (Settings →
-> General → uncheck "Use containerd for pulling and storing images" → Apply & Restart) — otherwise
-> SearXNG fails with `exec format error`.
+> **Windows / Docker Desktop (SearXNG and Langfuse only):** disable the containerd snapshotter before
+> pulling images (Settings, General, uncheck "Use containerd for pulling and storing images", then
+> Apply & Restart), otherwise SearXNG fails with `exec format error`. After installing Docker Desktop,
+> log out of Windows and back in so the `docker-users` group membership takes effect.
 
 ---
 
 ## 14. Verify the installation
 
-Run these in order; each exercises a different part of the stack.
+First confirm the install itself is complete and correct. `python -m bob.kernel verify-install` checks
+the installed submodules and downloaded model SHAs against `versions.lock` (the one-command
+installer runs this automatically at the end):
+```bash
+python -m bob.kernel verify-install
+```
+
+Then run these in order; each exercises a different part of the stack.
 
 ```bash
 # 1. Hardware, CUDA, and config summary
@@ -634,11 +661,11 @@ bob chat "write a fizzbuzz in Rust"
 # 5. Throughput benchmark (≈ pp512 4600 t/s, tg128 89 t/s on an RTX 5080)
 bob bench
 
-# 6. Docker services, if installed
+# 6. Optional add-on services, if you opted into any (step 13)
 bob services status
 ```
 
-You don't need to keep `bob serve` running for everyday use — inference **auto-starts on demand** the
+You don't need to keep `bob serve` running for everyday use, inference **auto-starts on demand** the
 first time you talk to Bob (`bob`, `bob chat`, `bob agent …`). `bob serve` (foreground) and `bob up`
 (background) are there for when you want the stack pre-warmed or serving outside-terminal clients.
 
@@ -661,10 +688,10 @@ bob build --force
 | `llama-server` crashes immediately (Windows) | CUDA DLLs not staged into `bin\` | Re-copy `cublas64_12.dll`, `cublasLt64_12.dll`, `cudart64_12.dll` (step 4) |
 | `pip install` fails in a venv | wrong Python | Confirm the venv's Python is 3.11/3.12, not the system default |
 | `bob` not found after step 7 | PATH not refreshed | Open a new terminal; ensure `~/.local/bin` (or the shim dir) is on PATH |
-| `bob gen`/`bob fetch` error importing deps | `venv-litellm` missing | Build `venv-litellm` first (step 6) — the CLI runs under it |
+| `bob gen`/`bob fetch` error importing deps | `venv-litellm` missing | Build `venv-litellm` first (step 6), the CLI runs under it |
 | `bench` shows ~1000 t/s prefill | CPU fallback build | `bob build --force` with `CUDA_PATH` on 12.8+ |
 | SearXNG `exec format error` (Windows) | containerd snapshotter enabled | Docker Desktop → uncheck containerd → Apply & Restart |
-| Langfuse shows no traces | LiteLLM tracing not configured | See [USAGE § Langfuse](USAGE.md#langfuse--llm-observability) |
+| Langfuse dashboard shows no traces | tracing still going to the default file sink | Traces default to `logs/traces/*.jsonl` (view with `bob traces`); to send them to Langfuse set `agent.tracingSink: otlp` and `agent.otlpEndpoint` in `config/user.json`. See [USAGE § Langfuse](USAGE.md#langfuse--llm-observability) |
 
 For alternatives when a build or install won't cooperate (prebuilt binaries, CPU tier, offline models),
 see [FALLBACKS.md](FALLBACKS.md).
