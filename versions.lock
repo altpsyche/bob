@@ -1,6 +1,6 @@
 {
   "lockVersion": 1,
-  "release": "1.1.0",
+  "release": "1.2.0",
   "submodules": {
     "external/llama.cpp": "2969d6d15d67a08e7b83f26164b15350c79c5248",
     "external/llama-swap": "dd81801d7bfa1a9100ac7af0e579731650b357e6",
@@ -34,12 +34,12 @@
       "sha256": null,
       "sizeGB": 5.0
     },
-    "qwen-coder-7b-q4_k_m.gguf": {
-      "repo": "bartowski/Qwen2.5-Coder-7B-Instruct-GGUF",
-      "path": "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
+    "qwen3-coder-30b-a3b-q4_k_m.gguf": {
+      "repo": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+      "path": "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
       "revision": "main",
       "sha256": null,
-      "sizeGB": 4.7
+      "sizeGB": 18.6
     },
     "bge-m3-q8_0.gguf": {
       "repo": "gpustack/bge-m3-GGUF",
@@ -75,13 +75,6 @@
       "revision": "main",
       "sha256": "b2fb813afad50963f29a9e69cd844a02add63d6a29f965fef4e084fdd10075d3",
       "sizeGB": 6.0
-    },
-    "qwen-coder-14b-q4_k_m.gguf": {
-      "repo": "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF",
-      "path": "Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf",
-      "revision": "main",
-      "sha256": "2946d28c9e1bb2bcae6d42e8678863a31775df6f740315c7d7e6d6b6411f5937",
-      "sizeGB": 8.4
     },
     "qwen-coder-3b-q8_0.gguf": {
       "repo": "Qwen/Qwen2.5-Coder-3B-Instruct-GGUF",
@@ -119,13 +112,6 @@
       "sha256": null,
       "sizeGB": 10.7
     },
-    "qwen-coder-14b-q6_k.gguf": {
-      "repo": "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF",
-      "path": "Qwen2.5-Coder-14B-Instruct-Q6_K.gguf",
-      "revision": "main",
-      "sha256": null,
-      "sizeGB": 10.7
-    },
     "qwen3-30b-a3b-q5_k_m.gguf": {
       "repo": "bartowski/Qwen3-30B-A3B-GGUF",
       "path": "Qwen3-30B-A3B-Q5_K_M.gguf",
@@ -155,12 +141,12 @@
       "sha256": null,
       "sizeGB": 15.0
     },
-    "qwen-coder-14b-q8_0.gguf": {
-      "repo": "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF",
-      "path": "Qwen2.5-Coder-14B-Instruct-Q8_0.gguf",
+    "qwen3-coder-30b-a3b-q6_k.gguf": {
+      "repo": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+      "path": "Qwen3-Coder-30B-A3B-Instruct-Q6_K.gguf",
       "revision": "main",
       "sha256": null,
-      "sizeGB": 15.0
+      "sizeGB": 25.1
     },
     "qwen3-30b-a3b-q6_k.gguf": {
       "repo": "bartowski/Qwen3-30B-A3B-GGUF",
@@ -183,6 +169,13 @@
       "revision": "main",
       "sha256": null,
       "sizeGB": 2.6
+    },
+    "qwen-coder-7b-q4_k_m.gguf": {
+      "repo": "bartowski/Qwen2.5-Coder-7B-Instruct-GGUF",
+      "path": "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
+      "revision": "main",
+      "sha256": null,
+      "sizeGB": 4.7
     },
     "qwen2.5-0.5b-instruct-q8_0.gguf": {
       "repo": "unsloth/Qwen2.5-0.5B-Instruct-GGUF",

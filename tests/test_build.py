@@ -212,6 +212,9 @@ class TestUpdateStack(unittest.TestCase):
             "bin_exe": mock.patch("osenv.bin_exe", return_value=exe),
             "gpu_info": mock.patch("osenv.gpu_info", return_value=None),
             "write_lock": mock.patch("bob.versions.write_lock"),
+            # update_stack fetches any newly-added models (best-effort). Keep the unit hermetic — never
+            # touch the network / attempt a real GGUF download.
+            "fetch_models": mock.patch("provision.fetch_models", return_value="models: all present"),
             "h_configure": mock.patch.object(health, "configure"),
             "health_check": mock.patch.object(health, "health_check", return_value="doctor-ok"),
         }

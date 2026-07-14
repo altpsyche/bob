@@ -401,30 +401,38 @@ def record_audio(silence_sec: float = 1.5, rms_silence: int = 200,
     max_record_chunks = int(max_record_sec / chunk_secs)  # hard cap on a single utterance
     chunk_samples = int(_AUDIO_SAMPLE_RATE * chunk_secs)
     frames, consecutive_silence, started, elapsed, peak = [], 0, False, 0, 0.0
-    with sd.InputStream(samplerate=_AUDIO_SAMPLE_RATE, channels=_AUDIO_CHANNELS, dtype="int16") as stream:
-        while True:
-            data, _ = stream.read(chunk_samples)
-            elapsed += 1
-            rms = float(np.sqrt(np.mean(data.astype(np.float32) ** 2)))
-            if not started:
-                if rms > rms_silence:
-                    started, peak = True, rms
-                    frames.append(data.copy())
-                elif elapsed >= max_wait_chunks:
-                    return b""                # no speech detected in max_wait — don't hang
-                continue
-            # Speaking: track the peak and call silence RELATIVE to it, so ambient above the floor
-            # still ends the turn shortly after the pause (was: kept recording to max_record_sec).
-            peak = max(peak, rms)
-            frames.append(data.copy())
-            if rms < max(rms_silence, peak * silence_ratio):
-                consecutive_silence += 1
-                if consecutive_silence >= silence_chunks:
-                    break
-            else:
-                consecutive_silence = 0
-            if elapsed >= max_record_chunks:
-                break                         # utterance ran past the cap — stop
+    # A present-but-unusable capture device (no input device, PortAudio open error, or the device
+    # vanishing mid-record) raises sd.PortAudioError, NOT ImportError — wrap it as the same friendly
+    # RuntimeError so the /voice loop and `bob listen` report "check your mic" instead of a traceback.
+    try:
+        with sd.InputStream(samplerate=_AUDIO_SAMPLE_RATE, channels=_AUDIO_CHANNELS, dtype="int16") as stream:
+            while True:
+                data, _ = stream.read(chunk_samples)
+                elapsed += 1
+                rms = float(np.sqrt(np.mean(data.astype(np.float32) ** 2)))
+                if not started:
+                    if rms > rms_silence:
+                        started, peak = True, rms
+                        frames.append(data.copy())
+                    elif elapsed >= max_wait_chunks:
+                        return b""                # no speech detected in max_wait — don't hang
+                    continue
+                # Speaking: track the peak and call silence RELATIVE to it, so ambient above the floor
+                # still ends the turn shortly after the pause (was: kept recording to max_record_sec).
+                peak = max(peak, rms)
+                frames.append(data.copy())
+                if rms < max(rms_silence, peak * silence_ratio):
+                    consecutive_silence += 1
+                    if consecutive_silence >= silence_chunks:
+                        break
+                else:
+                    consecutive_silence = 0
+                if elapsed >= max_record_chunks:
+                    break                         # utterance ran past the cap — stop
+    except sd.PortAudioError as e:
+        raise RuntimeError(
+            f"no usable microphone / capture device ({e}). Check your input device and volume."
+        ) from e
     if not frames:
         return b""
     return _pcm_to_wav(np.concatenate(frames, axis=0).tobytes())

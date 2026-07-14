@@ -213,7 +213,11 @@ class TestSetupVoice(unittest.TestCase):
         prov.configure({"voice": {"sttModel": "base.en", "ttsVoice": "en_GB-alan-medium"},
                         "ports": {"sttPort": 8082}, "sttPort": 8082})
 
-    def _run(self, force=False, server_exists=False, piper_exists=False, pip_exists=True, dls=None):
+    def _run(self, force=False, server_exists=False, piper_exists=False, pip_exists=True, dls=None,
+             engine="faster-whisper"):
+        prov.configure({"voice": {"sttEngine": engine, "sttModel": "base.en",
+                                  "ttsVoice": "en_GB-alan-medium"},
+                        "ports": {"sttPort": 8082}, "sttPort": 8082})
         pip = self.tmp / "pip"
         if pip_exists:
             pip.write_text("x")
@@ -240,22 +244,38 @@ class TestSetupVoice(unittest.TestCase):
         return out, {"build_whisper": bw, "install_piper": ip, "pip": sub, "dls": dls}
 
     def test_builds_whisper_when_absent(self):
-        out, m = self._run(server_exists=False)
+        out, m = self._run(server_exists=False, engine="whisper.cpp")
         m["build_whisper"].assert_called_once()
         self.assertIn("whisper built", out)
 
     def test_skips_whisper_build_when_present(self):
-        out, m = self._run(server_exists=True)
+        out, m = self._run(server_exists=True, engine="whisper.cpp")
         m["build_whisper"].assert_not_called()
 
     def test_downloads_model_and_voice_with_derived_urls(self):
-        _, m = self._run()
+        _, m = self._run(engine="whisper.cpp")
         labels = {label for label, _ in m["dls"]}
         self.assertIn("ggml-base.en.bin", labels)
         self.assertIn("en_GB-alan-medium.onnx", labels)
         # piper voice URL is derived from the voice name (lang/region/name/quality)
         voice_url = next(u for label, u in m["dls"] if label == "en_GB-alan-medium.onnx")
         self.assertIn("rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/alan/medium/", voice_url)
+
+    def test_faster_whisper_fetches_ct2_model(self):
+        # 1.2 default backend: fetch the CT2 model dir from Systran, not the whisper.cpp ggml/server.
+        _, m = self._run()   # engine defaults to faster-whisper
+        m["build_whisper"].assert_not_called()
+        labels = {label for label, _ in m["dls"]}
+        self.assertIn("faster-whisper/base.en/model.bin", labels)
+        self.assertIn("faster-whisper/base.en/config.json", labels)
+        self.assertIn("faster-whisper/base.en/tokenizer.json", labels)
+        model_url = next(u for label, u in m["dls"] if label == "faster-whisper/base.en/model.bin")
+        self.assertIn("Systran/faster-whisper-base.en/resolve/main/model.bin", model_url)
+
+    def test_faster_whisper_installs_dep(self):
+        _, m = self._run()   # engine defaults to faster-whisper
+        pip_calls = [c.args[0] for c in m["pip"].call_args_list]
+        self.assertTrue(any("faster-whisper" in c for c in pip_calls))
 
     def test_installs_piper_when_absent(self):
         _, m = self._run(piper_exists=False)

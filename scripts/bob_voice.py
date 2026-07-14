@@ -81,25 +81,40 @@ def stt_ready(config: dict) -> bool:
 
 
 def transcribe(wav_path: str, port: int) -> str:
-    """POST a WAV file to whisper-server, return the transcript text. Raises RuntimeError with an
-    actionable message when the server is unreachable (single source for the STT CLI + /voice mode)."""
+    """POST a WAV file to the STT server (whisper.cpp or faster-whisper share the /inference contract),
+    return the transcript text. Every backend failure (unreachable, timeout, 5xx crash mid-request,
+    malformed body) is wrapped as a RuntimeError with an actionable message, so the /voice loop and the
+    STT CLI can recover instead of surfacing a raw traceback. Single source for both callers."""
     import requests
 
     url = f"http://localhost:{port}/inference"
-    with open(wav_path, "rb") as f:
-        try:
+    resp = None
+    try:
+        with open(wav_path, "rb") as f:
             resp = requests.post(
                 url,
                 files={"file": ("audio.wav", f, "audio/wav")},
                 data={"temperature": "0.0", "response_format": "json"},
                 timeout=30,
             )
-        except requests.exceptions.ConnectionError as e:
-            raise RuntimeError(
-                f"whisper-server not reachable at {url}. Start it with: bob whisper (or bob up)"
-            ) from e
-    resp.raise_for_status()
-    return resp.json().get("text", "").strip()
+        resp.raise_for_status()
+        return resp.json().get("text", "").strip()
+    except requests.exceptions.ConnectionError as e:
+        raise RuntimeError(
+            f"STT server not reachable at {url}. Start it with: bob whisper (or bob up)"
+        ) from e
+    except requests.exceptions.Timeout as e:
+        raise RuntimeError(
+            f"STT server timed out at {url} — the engine may be overloaded or stuck."
+        ) from e
+    except requests.exceptions.HTTPError as e:
+        code = resp.status_code if resp is not None else "?"
+        raise RuntimeError(
+            f"STT server error ({code}) at {url} — the engine may have crashed mid-request. "
+            "Check logs/whisper.log."
+        ) from e
+    except ValueError as e:   # json.JSONDecodeError (a ValueError) — malformed / non-JSON body
+        raise RuntimeError(f"STT server returned an unreadable response from {url}.") from e
 
 
 def record(config: dict, silence_sec: float = None) -> bytes:

@@ -334,16 +334,39 @@ def _voice_smoke(stt_port: int) -> str:
             pass
 
 
+def _fetch_ct2_model(size: str, force: bool, out: list) -> None:
+    """Fetch a faster-whisper CTranslate2 model directory from Systran/faster-whisper-<size> into
+    models/faster-whisper/<size>/. STT models are provisioned here (like the whisper.cpp ggml model),
+    not pinned in the GGUF manifest. The vocabulary file extension varies by conversion (.txt on
+    small/base/medium, .json on large-v3), so it is fetched best-effort — newer tokenizers embed the
+    vocabulary in tokenizer.json."""
+    repo = f"Systran/faster-whisper-{size}"
+    base = f"https://huggingface.co/{repo}/resolve/main"
+    dest = REPO / "models" / "faster-whisper" / size
+    for fn in ("config.json", "tokenizer.json", "model.bin"):
+        _dl_file(f"{base}/{fn}", dest / fn, f"faster-whisper/{size}/{fn}", force, out)
+    for vocab in ("vocabulary.txt", "vocabulary.json"):
+        if (dest / vocab).exists() and not force:
+            return
+        try:
+            _dl_file(f"{base}/{vocab}", dest / vocab, f"faster-whisper/{size}/{vocab}", force, out)
+            return
+        except Exception:  # noqa: BLE001 — try the other extension, then give up (vocab is optional)
+            continue
+
+
 def setup_voice(force: bool = False, smoke: bool = True) -> str:
-    """Provision Phase-2 voice: build whisper-server, download the whisper model + piper binary/voice +
-    espeak-ng-data, install sounddevice+numpy into venv-litellm, and (best-effort) smoke-test STT.
-    Post-venv (needs venv-litellm pip)."""
+    """Provision Phase-2 voice for the configured STT backend (voice.sttEngine): faster-whisper (default,
+    fetch the CT2 model, run in venv-litellm) or whisper.cpp (build whisper-server + fetch the ggml model,
+    the fallback). Always: piper binary/voice + espeak-ng-data + audio python deps into venv-litellm, then
+    a best-effort STT smoke. Post-venv (needs venv-litellm pip)."""
     import subprocess
 
     import osenv
     from bob_core import _port
 
     voice = (_cfg or {}).get("voice", {})
+    stt_engine = voice.get("sttEngine", "faster-whisper")
     stt_model = voice.get("sttModel", "small")
     tts_voice = voice.get("ttsVoice", "en_GB-alan-medium")
     win = osenv.os_name() == "windows"
@@ -356,21 +379,22 @@ def setup_voice(force: bool = False, smoke: bool = True) -> str:
     piper_url = ("https://github.com/rhasspy/piper/releases/download/2023.11.14-2/"
                  + ("piper_windows_amd64.zip" if win else "piper_linux_x86_64.tar.gz"))
 
-    # [1/5] whisper-server
-    server = osenv.bin_exe("whisper-server")
-    if force or not server.exists():
-        sys.path.insert(0, str(SCRIPTS / "tools"))
-        import build
-        build.configure(_cfg)
-        out.append(build.build_whisper(force=force))
+    # [1/4] STT engine + model
+    if stt_engine == "whisper.cpp":
+        server = osenv.bin_exe("whisper-server")
+        if force or not server.exists():
+            sys.path.insert(0, str(SCRIPTS / "tools"))
+            import build
+            build.configure(_cfg)
+            out.append(build.build_whisper(force=force))
+        else:
+            out.append("  whisper-server already built — skipping.")
+        _dl_file(f"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{stt_model}.bin",
+                 REPO / "models" / "whisper" / f"ggml-{stt_model}.bin", f"ggml-{stt_model}.bin", force, out)
     else:
-        out.append("  whisper-server already built — skipping.")
+        _fetch_ct2_model(stt_model, force, out)
 
-    # [2/5] whisper model
-    _dl_file(f"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{stt_model}.bin",
-             REPO / "models" / "whisper" / f"ggml-{stt_model}.bin", f"ggml-{stt_model}.bin", force, out)
-
-    # [3/5] piper binary + voice model
+    # [2/4] piper binary + voice model
     bindir = REPO / "bin"
     voices = bindir / "voices"
     if force or not osenv.bin_exe("piper").exists():
@@ -378,14 +402,17 @@ def setup_voice(force: bool = False, smoke: bool = True) -> str:
     _dl_file(f"{vbase}.onnx", voices / f"{tts_voice}.onnx", f"{tts_voice}.onnx", force, out)
     _dl_file(f"{vbase}.onnx.json", voices / f"{tts_voice}.onnx.json", f"{tts_voice}.onnx.json", force, out)
 
-    # [4/5] python audio deps
+    # [3/4] python deps: audio capture (both engines) + faster-whisper when it is the active backend
     pip = osenv.venv_exe("venv-litellm", "pip")
     if not pip.exists():
         raise RuntimeError("venv-litellm not found — run bootstrap first")
     subprocess.run([str(pip), "install", "--quiet", "sounddevice", "numpy"])
     out.append("  sounddevice + numpy installed")
+    if stt_engine != "whisper.cpp":
+        subprocess.run([str(pip), "install", "--quiet", "faster-whisper"])
+        out.append("  faster-whisper installed")
 
-    # [5/5] smoke test (best-effort)
+    # [4/4] smoke test (best-effort)
     if smoke:
         out.append(_voice_smoke(_port(_cfg, "sttPort")))
     out.append("\nVoice setup complete. Enable voice.enabled / vision.enabled in your config to use it.")

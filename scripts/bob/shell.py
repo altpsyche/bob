@@ -1400,9 +1400,21 @@ class BobShell:
                 try:
                     with self._phase("transcribing…"):
                         transcript = bob_voice.transcribe_bytes(wav, stt_port)
-                except RuntimeError as e:            # whisper server vanished mid-session
-                    self.console.print(f"[{t.error}]{e}[/]")
-                    break
+                except RuntimeError as e:            # STT engine crashed / unreachable mid-session
+                    # One engine hiccup must not drop the whole session: restart the STT server once
+                    # and retry this utterance; only leave voice mode if the retry also fails.
+                    self.console.print(f"[{t.muted}]STT hiccup ({e}); restarting the engine…[/]")
+                    import stack
+                    try:
+                        stack.ensure_deps(self.config, stt=True)
+                    except Exception:                # noqa: BLE001 — advisory; the retry below decides
+                        pass
+                    try:
+                        with self._phase("transcribing…"):
+                            transcript = bob_voice.transcribe_bytes(wav, stt_port)
+                    except RuntimeError as e2:
+                        self.console.print(f"[{t.error}]{e2}[/]")
+                        break
                 if not transcript.strip():
                     self.console.print(f"[{t.muted}]couldn't make out any words. Try again, or Ctrl-C[/]")
                     continue

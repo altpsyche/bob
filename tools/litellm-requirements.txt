@@ -11,3 +11,4 @@ pyfiglet>=1.0.0
 PyYAML>=6.0
 yt-dlp>=2024.1.0
 ddgs>=9.0.0
+faster-whisper>=1.2.0

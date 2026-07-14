@@ -57,6 +57,35 @@ class TestSttClient(unittest.TestCase):
                 bob_voice.transcribe("/tmp/x.wav", 8082)
         self.assertIn("bob whisper", str(cm.exception))
 
+    def test_transcribe_timeout_wrapped(self):
+        import requests
+        with mock.patch("requests.post", side_effect=requests.exceptions.Timeout), \
+             mock.patch("builtins.open", mock.mock_open(read_data=b"RIFF")):
+            with self.assertRaises(RuntimeError) as cm:
+                bob_voice.transcribe("/tmp/x.wav", 8082)
+        self.assertIn("timed out", str(cm.exception))
+
+    def test_transcribe_http_500_wrapped(self):
+        # engine crashed mid-request -> raise_for_status HTTPError -> friendly RuntimeError, not a traceback
+        import requests
+        resp = mock.Mock(status_code=500)
+        resp.raise_for_status.side_effect = requests.exceptions.HTTPError(response=resp)
+        with mock.patch("requests.post", return_value=resp), \
+             mock.patch("builtins.open", mock.mock_open(read_data=b"RIFF")):
+            with self.assertRaises(RuntimeError) as cm:
+                bob_voice.transcribe("/tmp/x.wav", 8082)
+        self.assertIn("500", str(cm.exception))
+
+    def test_transcribe_bad_json_wrapped(self):
+        resp = mock.Mock(status_code=200)
+        resp.raise_for_status.return_value = None
+        resp.json.side_effect = ValueError("no json")   # json.JSONDecodeError is a ValueError
+        with mock.patch("requests.post", return_value=resp), \
+             mock.patch("builtins.open", mock.mock_open(read_data=b"RIFF")):
+            with self.assertRaises(RuntimeError) as cm:
+                bob_voice.transcribe("/tmp/x.wav", 8082)
+        self.assertIn("unreadable", str(cm.exception))
+
     def test_listen_empty_capture_returns_blank(self):
         with mock.patch.object(bob_voice.osenv, "record_audio", return_value=b""):
             self.assertEqual(bob_voice.listen(_common.fake_config()), "")
@@ -174,6 +203,80 @@ class TestCliHandlers(unittest.TestCase):
         # --agent: shell default (agent role + tools) — no role/no_tools override passed
         self.assertNotIn("no_tools", rv.call_args.kwargs)
         self.assertNotIn("role", rv.call_args.kwargs)
+
+
+class TestRecordAudioMicHardening(unittest.TestCase):
+    """A present-but-unusable capture device raises sd.PortAudioError (not ImportError); osenv.record_audio
+    must wrap it as a friendly RuntimeError so the /voice loop reports 'check your mic', not a traceback."""
+
+    def test_portaudio_error_wrapped_as_runtime_error(self):
+        import sys
+        import types
+        fake_sd = types.ModuleType("sounddevice")
+
+        class PortAudioError(Exception):
+            pass
+
+        fake_sd.PortAudioError = PortAudioError
+
+        def _input_stream(*a, **k):
+            raise PortAudioError("Error opening InputStream: no default input device")
+
+        fake_sd.InputStream = _input_stream
+        fake_np = types.ModuleType("numpy")   # imported alongside sd; unused before the raise
+        with mock.patch.dict(sys.modules, {"sounddevice": fake_sd, "numpy": fake_np}):
+            import osenv
+            with self.assertRaises(RuntimeError) as cm:
+                osenv.record_audio()
+        self.assertIn("microphone", str(cm.exception))
+
+
+class TestSttEngineDispatch(unittest.TestCase):
+    """stack._start_stt_bg picks the STT backend from voice.sttEngine (faster-whisper default)."""
+
+    def test_dispatch_selects_backend(self):
+        import stack
+        with mock.patch.object(stack, "_start_whisper_bg", return_value="wc"), \
+             mock.patch.object(stack, "_start_faster_whisper_bg", return_value="fw"):
+            self.assertEqual(stack._start_stt_bg({"voice": {"sttEngine": "whisper.cpp"}}), "wc")
+            self.assertEqual(stack._start_stt_bg({"voice": {"sttEngine": "faster-whisper"}}), "fw")
+            self.assertEqual(stack._start_stt_bg({"voice": {}}), "fw")   # default is faster-whisper
+
+
+class TestFasterWhisperServer(unittest.TestCase):
+    """The faster-whisper STT server matches the whisper.cpp /inference contract (multipart file ->
+    {'text': ...}) so the client/lifecycle stay engine-agnostic. The CT2 model is faked (no wheel needed)."""
+
+    def _client(self):
+        import faster_whisper_server as fws
+        from fastapi.testclient import TestClient
+        return fws, TestClient(fws.app)
+
+    def test_inference_returns_text_from_segments(self):
+        fws, client = self._client()
+        seg = mock.Mock(text=" hello world")
+        fws._model = mock.Mock(transcribe=mock.Mock(return_value=([seg], object())))
+        r = client.post("/inference", files={"file": ("a.wav", b"RIFFxxxx", "audio/wav")},
+                        data={"temperature": "0.0", "response_format": "json"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["text"], "hello world")
+
+    def test_inference_empty_upload_returns_blank(self):
+        fws, client = self._client()
+        fws._model = mock.Mock()
+        r = client.post("/inference", files={"file": ("a.wav", b"", "audio/wav")})
+        self.assertEqual(r.json()["text"], "")
+
+    def test_inference_503_when_model_not_loaded(self):
+        fws, client = self._client()
+        fws._model = None
+        r = client.post("/inference", files={"file": ("a.wav", b"RIFF", "audio/wav")})
+        self.assertEqual(r.status_code, 503)
+
+    def test_health(self):
+        fws, client = self._client()
+        fws._model = None
+        self.assertEqual(client.get("/health").json()["status"], "loading")
 
 
 class _FakePath:

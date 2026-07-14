@@ -54,8 +54,8 @@ class TestModelShow(unittest.TestCase):
     def test_known_role_fields(self):
         out = models_mod.model_show("coder", CFG)
         self.assertIn("Role:     coder", out)
-        self.assertIn("qwen-coder-14b-q4_k_m.gguf", out)
-        self.assertIn("bartowski/Qwen2.5-Coder-14B-Instruct-GGUF", out)
+        self.assertIn("qwen3-coder-30b-a3b-q4_k_m.gguf", out)
+        self.assertIn("unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF", out)
 
     def test_unknown_role(self):
         out = models_mod.model_show("bogus", CFG)

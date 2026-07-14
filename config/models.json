@@ -68,25 +68,52 @@
     },
     "zhipu": {
       "pro": {
-        "coder": "glm-4-flash"
+        "coder": {
+          "maxTokens": 8192,
+          "model": "glm-5.2",
+          "systemPrompt": "You are an expert software engineer. Be direct. No preambles."
+        },
+        "chat": {
+          "maxTokens": 4096,
+          "model": "glm-5.2",
+          "systemPrompt": "Be helpful and concise."
+        },
+        "ponder": {
+          "maxTokens": 8192,
+          "model": "glm-5.2"
+        }
       },
       "enabled": false,
       "apiKeyEnv": "ZHIPU_API_KEY",
       "litellmPrefix": "openai",
-      "proxy": "https://open.bigmodel.cn/api/paas/v4"
+      "proxy": "https://api.z.ai/api/paas/v4"
+    },
+    "kimi": {
+      "pro": {
+        "coder": {
+          "maxTokens": 8192,
+          "model": "kimi-k2.7-code",
+          "systemPrompt": "You are an expert software engineer. Be direct. No preambles."
+        }
+      },
+      "enabled": false,
+      "apiKeyEnv": "MOONSHOT_API_KEY",
+      "litellmPrefix": "openai",
+      "proxy": "https://api.moonshot.ai/v1"
     }
   },
   "profiles": {
     "16gb": {
       "coder": {
         "kv": true,
-        "repo": "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF",
-        "path": "Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf",
-        "tokenizer": "Qwen/Qwen2.5-Coder-14B-Instruct",
-        "draftRole": "fim",
+        "noMmap": true,
+        "nCpuMoe": 24,
+        "repo": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+        "path": "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+        "tokenizer": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
         "ctx": 16384,
-        "sizeGB": 8.4,
-        "gguf": "qwen-coder-14b-q4_k_m.gguf"
+        "sizeGB": 18.6,
+        "gguf": "qwen3-coder-30b-a3b-q4_k_m.gguf"
       },
       "embed": {
         "ttl": 0,
@@ -173,13 +200,12 @@
     "24gb": {
       "coder": {
         "kv": true,
-        "repo": "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF",
-        "path": "Qwen2.5-Coder-14B-Instruct-Q6_K.gguf",
-        "tokenizer": "Qwen/Qwen2.5-Coder-14B-Instruct",
-        "draftRole": "fim",
+        "repo": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+        "path": "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+        "tokenizer": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
         "ctx": 16384,
-        "sizeGB": 10.7,
-        "gguf": "qwen-coder-14b-q6_k.gguf"
+        "sizeGB": 18.6,
+        "gguf": "qwen3-coder-30b-a3b-q4_k_m.gguf"
       },
       "_notes": "Q5_K_M ponder (~21.3 GB), Q6_K coder/chat (~10.7 GB). Swaps big models as usual.",
       "vision": {
@@ -346,13 +372,12 @@
     "32gb": {
       "coder": {
         "kv": true,
-        "repo": "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF",
-        "path": "Qwen2.5-Coder-14B-Instruct-Q8_0.gguf",
-        "tokenizer": "Qwen/Qwen2.5-Coder-14B-Instruct",
-        "draftRole": "fim",
+        "repo": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+        "path": "Qwen3-Coder-30B-A3B-Instruct-Q6_K.gguf",
+        "tokenizer": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
         "ctx": 32768,
-        "sizeGB": 15.0,
-        "gguf": "qwen-coder-14b-q8_0.gguf"
+        "sizeGB": 25.1,
+        "gguf": "qwen3-coder-30b-a3b-q6_k.gguf"
       },
       "_notes": "Near-lossless quants (Q6_K ponder ~24 GB, Q8_0 coder/chat ~15 GB). Swaps big models. 48GB+ for true no-swap.",
       "vision": {
@@ -438,13 +463,14 @@
     "12gb": {
       "coder": {
         "kv": true,
-        "repo": "bartowski/Qwen2.5-Coder-7B-Instruct-GGUF",
-        "path": "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
-        "tokenizer": "Qwen/Qwen2.5-Coder-7B-Instruct",
-        "draftRole": "fim",
-        "ctx": 8192,
-        "sizeGB": 4.7,
-        "gguf": "qwen-coder-7b-q4_k_m.gguf"
+        "noMmap": true,
+        "nCpuMoe": 34,
+        "repo": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+        "path": "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+        "tokenizer": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+        "ctx": 16384,
+        "sizeGB": 18.6,
+        "gguf": "qwen3-coder-30b-a3b-q4_k_m.gguf"
       },
       "embed": {
         "ttl": 0,

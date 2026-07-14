@@ -378,6 +378,44 @@ def _start_whisper_bg(config: dict) -> str:
     return f"whisper-server: http://localhost:{stt_port} (PID {pid}), {tail}"
 
 
+def _start_faster_whisper_bg(config: dict) -> str:
+    """Start the faster-whisper (CTranslate2) STT server under venv-litellm. Same sttPort + /inference
+    contract as whisper.cpp, so the client and lifecycle are engine-agnostic. Model loads once at startup,
+    so the port-open poll doubles as a readiness check (allow extra time for a cold model load)."""
+    osenv = _osenv()
+    from bob_core import _port
+
+    stt_port = _port(config, "sttPort")
+    voice = config.get("voice", {})
+    size = voice.get("sttModel", "small")
+    model_dir = REPO / "models" / "faster-whisper" / size
+    py = osenv.venv_exe("venv-litellm", "python")
+    server = SCRIPTS / "faster_whisper_server.py"
+    if not py.exists():
+        return "venv-litellm not found. run: python -m bob.kernel venv litellm"
+    pid = _read_pid("whisper")
+    if pid is not None and osenv.pid_alive(pid):
+        return f"faster-whisper already running (PID {pid})."
+    osenv.stop_processes_by_name("whisper-server")  # reap a stale whisper.cpp server on engine switch
+    _pidfile("whisper").unlink(missing_ok=True)
+    new_pid = osenv.start_detached(
+        [str(py), str(server)], pidfile=_pidfile("whisper"), log_path=_logfile("whisper"),
+        env={"STT_PORT": str(stt_port), "STT_MODEL": size, "STT_MODEL_DIR": str(model_dir),
+             "STT_COMPUTE_TYPE": voice.get("sttComputeType", "auto")})
+    ready = _poll(lambda: osenv.is_port_in_use(stt_port), timeout=60, interval=0.5)
+    tail = "ready" if ready else "may not be ready yet — check logs/whisper.log"
+    return f"faster-whisper: http://localhost:{stt_port} (PID {new_pid}, model={size}), {tail}"
+
+
+def _start_stt_bg(config: dict) -> str:
+    """Start the STT server for the configured backend. voice.sttEngine picks faster-whisper (the 1.2
+    default, in venv-litellm) or whisper.cpp (the compiled bin/whisper-server fallback)."""
+    engine = (config.get("voice", {}) or {}).get("sttEngine", "faster-whisper")
+    if engine == "whisper.cpp":
+        return _start_whisper_bg(config)
+    return _start_faster_whisper_bg(config)
+
+
 def _start_piper_bg(config: dict) -> str:
     osenv = _osenv()
     from bob_core import _port
@@ -572,7 +610,7 @@ def stack_up(config: dict, open_browser: bool = True, with_services: bool = Fals
         return err
     ok, lines = ensure_inference(config)
     if config.get("voice", {}).get("enabled"):    # STT is a voice extra, not part of core inference
-        lines.append(_start_whisper_bg(config))
+        lines.append(_start_stt_bg(config))
 
     # Open WebUI (opt-in; detached background process).
     webui = osenv.venv_exe("venv-webui", "open-webui")
@@ -658,7 +696,7 @@ def _service_stop(svc: str, label: str) -> str:
 # llama-swap / open-webui are native but launched by stack_up (not service_control), so they carry no
 # `start`; agent-api is external.
 def _bind_start_fns() -> None:
-    for _name, _fn in (("litellm", _start_litellm_bg), ("whisper", _start_whisper_bg),
+    for _name, _fn in (("litellm", _start_litellm_bg), ("whisper", _start_stt_bg),
                        ("piper", _start_piper_bg), ("n8n", _start_n8n_bg)):
         _svc(_name)["start"] = _fn
 
@@ -871,7 +909,7 @@ def serve_foreground(config: dict) -> int:
         return 1
     print(_start_litellm_bg(config), file=sys.stderr)
     if config.get("voice", {}).get("enabled"):
-        print(_start_whisper_bg(config), file=sys.stderr)
+        print(_start_stt_bg(config), file=sys.stderr)
     if osenv.is_port_in_use(port):
         print(f"Port {port} already in use; the endpoint is probably already running (bob stop).",
               file=sys.stderr)

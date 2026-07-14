@@ -64,14 +64,32 @@ class TestLlamaSwap(unittest.TestCase):
         self.assertIn('kv: "--cache-type-k q8_0 --cache-type-v q8_0"', out)
         self.assertIn("members: [ponder, coder, chat, vision, agent]", out)
 
-    def test_draft_and_setparams_and_ttl(self):
+    def test_setparams_and_ttl(self):
         out = self._gen("16gb")
-        # coder has a pinned draft (fim) -> speculative decode flags appended
-        self.assertIn("-md ${env.LLAMA_LOCAL_ROOT}/models/qwen-coder-3b-q8_0.gguf -ngld 99", out)
         # chat setParams sorted
         self.assertIn("setParams: { temperature: 0.7, top_p: 0.9 }", out)
         # fim/embed ttl 0
         self.assertRegex(out, r"fim:\n.*\n\s+ttl: 0")
+
+    def test_draft_speculative_decode_on_dense_coder(self):
+        # The 8gb dense coder keeps a pinned fim draft -> speculative-decode flags appended. The 12gb+
+        # MoE coders (Qwen3-Coder-30B-A3B) can't spec-decode, so they carry no draft (1.2 refresh).
+        out = self._gen("8gb")
+        self.assertIn("-md ${env.LLAMA_LOCAL_ROOT}/models/qwen-coder-1.5b-q8_0.gguf -ngld 99", out)
+
+    def test_coder_moe_offload_per_profile(self):
+        # 1.2: the coder role is Qwen3-Coder-30B-A3B (MoE) on every GPU tier. Tight tiers spill experts
+        # to RAM (--n-cpu-moe); 24gb fits Q4 and 32gb fits Q6 natively (no offload); 8gb stays dense.
+        def coder_line(profile):
+            out = self._gen(profile)
+            return next(ln for ln in out.splitlines()
+                        if "qwen3-coder-30b-a3b" in ln or "qwen-coder-7b" in ln)
+        self.assertIn("--n-cpu-moe 34", coder_line("12gb"))
+        self.assertIn("--n-cpu-moe 24", coder_line("16gb"))
+        self.assertNotIn("--n-cpu-moe", coder_line("24gb"))
+        self.assertNotIn("--n-cpu-moe", coder_line("32gb"))
+        self.assertIn("qwen-coder-7b", coder_line("8gb"))       # small dense coder, no offload
+        self.assertNotIn("--n-cpu-moe", coder_line("8gb"))
 
     def test_moe_offload_emitted_for_overflow_model(self):
         out = self._gen("16gb")
@@ -122,6 +140,24 @@ class TestLitellm(unittest.TestCase):
         self.assertIn("  num_retries: 3", out)
         self.assertIn("  request_timeout: 600", out)
         self.assertIn("  master_key: sk-local", out)
+
+    def test_glm_and_kimi_peers_when_enabled(self):
+        # 1.2 cloud-peer refresh: GLM-5.2 (z.ai) and Kimi K2.7 Code (moonshot) ship enabled:false
+        # (opt-in, one coding peer at a time). Force-enable a copy of the registry and assert the wiring.
+        import copy
+        import unittest.mock as m
+        import bob_models
+        mcfg = copy.deepcopy(bob_models.load_models_config())
+        mcfg["peers"]["zhipu"]["enabled"] = True
+        mcfg["peers"]["kimi"]["enabled"] = True
+        with m.patch.object(bob_models, "load_models_config", return_value=mcfg):
+            out = self._gen()
+        self.assertIn("      model: openai/glm-5.2", out)
+        self.assertIn("      api_base: https://api.z.ai/api/paas/v4", out)
+        self.assertIn("      api_key: os.environ/ZHIPU_API_KEY", out)
+        self.assertIn("      model: openai/kimi-k2.7-code", out)
+        self.assertIn("      api_base: https://api.moonshot.ai/v1", out)
+        self.assertIn("      api_key: os.environ/MOONSHOT_API_KEY", out)
 
 
 class TestContinue(unittest.TestCase):

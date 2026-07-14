@@ -71,7 +71,9 @@
     },
     "voice": {
       "enabled": true,
+      "sttEngine": "faster-whisper",
       "sttModel": "small",
+      "sttComputeType": "auto",
       "ttsEngine": "piper",
       "ttsVoice": "en_GB-alan-medium",
       "silenceSec": 1.5,
