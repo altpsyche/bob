@@ -404,9 +404,9 @@ Pro (cloud) model prompts live inside the peer config as a `systemPrompt` field 
   "peers": {
     "deepseek": {
       "pro": {
-        "coder":   { "model": "deepseek-chat",     "maxTokens": 4096, "systemPrompt": "You are an expert software engineer. Be direct. No preambles." },
-        "chat":    { "model": "deepseek-chat",     "maxTokens": 4096, "systemPrompt": "Be helpful and concise." },
-        "ponder": { "model": "deepseek-reasoner", "maxTokens": 8192 }
+        "coder":   { "model": "deepseek-v4-flash", "maxTokens": 4096, "systemPrompt": "You are an expert software engineer. Be direct. No preambles." },
+        "chat":    { "model": "deepseek-v4-flash", "maxTokens": 4096, "systemPrompt": "Be helpful and concise." },
+        "ponder": { "model": "deepseek-v4-pro",    "maxTokens": 8192 }
       }
     }
   }
@@ -423,7 +423,7 @@ The `maxTokens` field caps per-model output in `litellm.yaml`. Without it, a rea
 
 Default (MODULE J): `--cache-type-k q8_0 --cache-type-v q8_0`, ~50% KV VRAM savings versus unquantized f16, with near-zero performance overhead on all GPU generations.
 
-**VRAM impact at ctx=16384, Qwen2.5-Coder-14B (40 layers, 8 KV heads, d_head=128):**
+**VRAM impact at ctx=16384, Qwen3-14B (the `chat` role: 40 layers, 8 KV heads, d_head=128):**
 
 | K type | V type | KV VRAM estimate | Notes |
 |--------|--------|-----------------|-------|

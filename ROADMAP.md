@@ -22,11 +22,12 @@ dependency locks, the minimum toolchain, and the model manifest (repo, revision,
 reports the running release. `bob update` moves between releases lockfile to lockfile, rebuilds only what
 changed, verifies, and rolls back on failure.
 
-> **1.1 is the current line.** Bob started as a Windows first, two language (PowerShell plus Python)
+> **1.2 is the current line.** Bob started as a Windows first, two language (PowerShell plus Python)
 > experiment. That whole plan is now complete: one command, one engine, cross platform, reproducible, and
 > test backed. 1.0 marked the point where Bob became a coherent product rather than a build out; 1.1 makes
-> it easy to install and get started, with one command per OS and a Docker-free default. Everything up to
-> and including 1.1 is shipped; everything above it is the plan.
+> it easy to install and get started, with one command per OS and a Docker-free default; 1.2 sharpens the
+> daily driver with a current local coder, refreshed cloud peers, and a faster, tougher voice path.
+> Everything up to and including 1.2 is shipped; everything above it is the plan.
 
 ---
 
@@ -50,7 +51,7 @@ the cross OS CI acceptance gate runs on every PR.
 - VRAM profiles from 8 GB to 32 GB, auto selected from the detected GPU, plus a CPU tier for GPU-less
   machines.
 - Named roles (chat, coder, ponder, vision, embed, fim, agent) with optional cloud "pro" peers
-  (DeepSeek, GLM) routed transparently when you ask for them.
+  (DeepSeek, GLM, Kimi) routed transparently when you ask for them.
 
 ### An agent that acts, safely
 - A full tool using agent loop: memory, web, git, file, shell, and fabric tools plus drop-in plugins.
@@ -78,8 +79,8 @@ the cross OS CI acceptance gate runs on every PR.
 ### Sees and speaks
 - Vision in the loop: the agent can be handed an image mid task and reason over it. `bob describe` and
   `bob screenshot` cover one shots.
-- Voice: a spoken conversation mode in the shell (`/voice`) and `bob voice`, with Whisper STT in and Piper
-  TTS out.
+- Voice: a spoken conversation mode in the shell (`/voice`) and `bob voice`, with faster-whisper STT in
+  and Piper TTS out.
 
 ### Remembers you
 - Typed memory (profile, preference, project, fact, episodic) in SQLite with BGE-M3 embeddings.
@@ -117,14 +118,16 @@ as explicit opt-ins with a local file trace sink for the Docker-averse), and fir
 single unmistakable entry point. Linux and Windows ship now; the macOS path arrives with 2.0. See
 [CHANGELOG.md](CHANGELOG.md) for the detail.
 
-### 1.2 sharper daily driver
-Refresh what's already here so it keeps pace, and close the rough edges from real use.
+### 1.2 sharper daily driver (shipped)
+Refreshed what's already here so it keeps pace, and closed the rough edges from real use.
 
-- **Model refresh.** Move the coder role off the older Qwen2.5-Coder-14B to a current Qwen3-Coder
-  (30B-A3B or 27B class) that fits a single workstation at roughly 96% of flagship quality, and refresh
-  the cloud peers (DeepSeek V3.2, GLM-4.6, and Kimi K2 for multi attempt agentic coding).
-- **Faster, tougher voice.** Swap the STT path to a CTranslate2 or faster-whisper backend (about 4 to 5
-  times faster, and lighter on memory) and harden the voice loop against device and engine failure.
+- **Model refresh.** Moved the coder role off the older Qwen2.5-Coder-14B to a strong current local coder,
+  Qwen3-Coder-30B-A3B (MoE), right sized per VRAM profile: CPU expert offload (`--n-cpu-moe`) on the tight
+  12 and 16 GB cards, native on 24 and 32 GB, and a small dense coder on 8 GB and the CPU tier. Refreshed
+  the cloud peers too: DeepSeek V4, GLM-5.2, and a new Moonshot Kimi K2.7 Code, all opt-in.
+- **Faster, tougher voice.** Swapped the STT path to faster-whisper (CTranslate2) as the default backend,
+  behind the same HTTP contract (whisper.cpp kept as a fallback), and hardened the voice loop against a
+  missing mic, an engine crash mid turn, an empty transcript, and an unreachable backend.
 
 ### 1.3 a deeper coding agent
 Take the coding loop from good to measured best in class for a local harness.

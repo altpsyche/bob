@@ -549,21 +549,23 @@ Replace `8081` if you changed `litellmPort` in `config/user.json`.
 
 ---
 
-## 12. Voice and vision (whisper + piper)
+## 12. Voice and vision (faster-whisper + piper)
 
-Optional Phase-2 feature. `bob setup-voice` builds `whisper.cpp` (STT), downloads the whisper model and
-the piper TTS binary + voice, and installs the audio deps into `venv-litellm`, which must already exist
-(step 6).
+Optional Phase-2 feature. `bob setup-voice` provisions the configured STT backend, downloads the piper TTS
+binary + voice, and installs the audio deps into `venv-litellm`, which must already exist (step 6).
 
 ```bash
-bob setup-voice              # build whisper-server, fetch STT model + piper voice
-bob setup-voice --force      # rebuild / re-download everything
+bob setup-voice              # fetch STT model + piper voice + audio deps
+bob setup-voice --force      # re-download everything
 ```
 
-This builds `whisper.cpp` with the same CUDA/cmake seams as llama.cpp (`-DWHISPER_CUDA=ON` for a GPU,
-CPU fallback otherwise) into `bin/whisper-server` + `bin/whisper-cli`, downloads `ggml-small.bin` into
-`models/whisper/`, extracts piper into `bin/`, and drops the voice model into `bin/voices/`. Enable
-`voice.enabled` / `vision.enabled` in `config/user.json` to use it.
+By default (`voice.sttEngine = 'faster-whisper'`) this fetches the CTranslate2 STT model into
+`models/faster-whisper/<size>/` and installs `faster-whisper`; the server runs under `venv-litellm` on port
+8082, exposing the same `POST /inference` contract. When `voice.sttEngine = 'whisper.cpp'` it instead
+builds `whisper.cpp` with the same CUDA/cmake seams as llama.cpp (`-DWHISPER_CUDA=ON` for a GPU, CPU
+fallback otherwise) into `bin/whisper-server` + `bin/whisper-cli` and downloads `ggml-<size>.bin` into
+`models/whisper/`. Either way it extracts piper into `bin/` and drops the voice model into `bin/voices/`.
+Enable `voice.enabled` / `vision.enabled` in `config/user.json` to use it.
 
 ---
 

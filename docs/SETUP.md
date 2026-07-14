@@ -193,7 +193,7 @@ bob plugins list     # should show: summarise, draft, search, play (built-in plu
 
 **Agent system:** `bob doctor` (superset of `bob setup check`) validates all agent dependencies (the Hermes 3 model file, tool loading, scheduled task registration) plus a runtime pre-flight (endpoint, GPU/VRAM, writable `logs/`+`data/`, `config.json` parses) and a **reproducibility** block (installed submodule commits + present-model checksums vs [`versions.lock`](../versions.lock)). On any failure it prints the exact fix command. Run `bob setup check` (or `bob doctor --quick`) for just the dependency subset.
 
-**Pro models** (optional): set the `DEEPSEEK_API_KEY` and `ZHIPU_API_KEY` environment variables, then run `bob gen`. The pro models (`chat-pro`, `ponder-pro`, `coder-pro`) become available via the LiteLLM proxy at `:8081`. See [USAGE.md § Pro models](USAGE.md#pro-models-api-backed-no-platform-fee).
+**Pro models** (optional): set `DEEPSEEK_API_KEY`, then run `bob gen`. The pro models (`chat-pro`, `ponder-pro`, `coder-pro`) become available via the LiteLLM proxy at `:8081`. GLM-5.2 (`ZHIPU_API_KEY`, z.ai) and Kimi K2.7 Code (`MOONSHOT_API_KEY`) are opt-in coding-peer alternatives (enable one in `config/models.json`, set its key, `bob gen`). See [USAGE.md § Pro models](USAGE.md#pro-models-api-backed-no-platform-fee).
 
 **Voice and Vision (Phase 2):** included in `setup` automatically (builds whisper, downloads the STT model, piper TTS, and vision mmproj). To skip: `./setup.sh --skip-voice`. See [USAGE.md § Voice](USAGE.md#voice-phase-2) and [USAGE.md § Vision](USAGE.md#vision-phase-2).
 

@@ -85,7 +85,7 @@ bob status
 
 The models are listed: `ponder`, `coder`, `chat`, `fim`, `embed`, `vision`, `agent`. None are loaded into VRAM yet; they load on first use and stay until idle. `fim` (autocomplete) and `embed` (search indexing) are pinned and never unload.
 
-> **Pro models:** If you've set `DEEPSEEK_API_KEY` and `ZHIPU_API_KEY`, three additional models are available via the LiteLLM proxy at `:8081`: `chat-pro`, `ponder-pro`, `coder-pro`. These route directly to DeepSeek and Zhipu APIs, no local GPU required, no platform fee. See [USAGE.md § Pro models](USAGE.md#pro-models-api-backed-no-platform-fee).
+> **Pro models:** If you've set `DEEPSEEK_API_KEY`, three additional models are available via the LiteLLM proxy at `:8081`: `chat-pro`, `ponder-pro`, `coder-pro`. These route directly to the DeepSeek API, no local GPU required, no platform fee. GLM-5.2 (z.ai) and Kimi K2.7 Code (Moonshot) are opt-in coding-peer alternatives. See [USAGE.md § Pro models](USAGE.md#pro-models-api-backed-no-platform-fee).
 
 > **Tip, start at login:** To bring the background stack up automatically every login, run `bob up --no-open` from a startup entry: on Linux a user systemd unit or a `@reboot` cron line; on Windows a Task Scheduler task set to "At log on".
 
@@ -141,7 +141,7 @@ bob chat --pro "explain CAP theorem with a concrete example"
 ```bash
 bob chat            # default: chat (general conversation, Qwen3-14B)
 bob think           # ponder: Qwen3-30B, deep reasoning, thinking mode on
-bob code            # coder: Qwen2.5-Coder-14B, code-focused
+bob code            # coder: Qwen3-Coder-30B-A3B, code-focused
 bob chat --pro      # chat-pro: DeepSeek via API (needs DEEPSEEK_API_KEY)
 bob think --pro     # ponder-pro: strongest reasoning, via API
 bob code --pro      # coder-pro: via API
@@ -594,7 +594,7 @@ This is how you debug "why did the model respond like that?": you see the exact 
 
 **Prerequisites:** Run `bob setup-voice` once (downloads whisper + piper + vision mmproj). Voice is enabled by default; if you turned it off, set `{"voice": {"enabled": true}}` in `config/user.json`. The whisper server auto-starts on the first voice turn.
 
-Voice adds microphone input (whisper.cpp STT on port 8082) and speaker output (piper TTS) to the terminal. All processing is local.
+Voice adds microphone input (faster-whisper STT on port 8082) and speaker output (piper TTS) to the terminal. All processing is local.
 
 ### Try it: individual commands
 

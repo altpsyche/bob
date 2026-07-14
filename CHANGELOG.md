@@ -8,11 +8,48 @@ rebuilds only what changed, verifies, and rolls back on failure.
 
 ## [Unreleased]
 
+## [1.2.0] (2026-07-14)
+
+Sharper daily driver: a current local coder, refreshed cloud peers, and a faster, tougher voice path.
+See [ROADMAP.md](ROADMAP.md) for where Bob is headed next.
+
+### Changed
+- **Local coder moved to Qwen3-Coder-30B-A3B (MoE), right sized per VRAM profile.** Off the older
+  Qwen2.5-Coder-14B onto the current coder-specialized MoE (Apache 2.0, 256K context). It lands per tier
+  because no single coder fits every card: Q4_K_M with CPU expert offload (`--n-cpu-moe`) on the tight
+  12 GB and 16 GB cards, native Q4 on 24 GB and Q6_K on 32 GB (no offload), a small dense coder
+  (Qwen2.5-Coder-7B) on 8 GB, and the tiny model on the CPU tier. One coder family, fewer lock entries.
+  `versions.lock` is re-pinned and the old 14B dropped; `bob update` fetches the new coder and offers to
+  prune the old.
+- **STT default swapped to faster-whisper (CTranslate2).** Speech to text now runs on faster-whisper
+  behind the same HTTP contract (`POST /inference`), selected by `voice.sttEngine` (default
+  `faster-whisper`, with `whisper.cpp` kept as a fallback). Built-in Silero VAD handles endpointing and
+  the model loads once and stays warm. `/voice`, `bob voice`, and the transcript contract are unchanged.
+- **Cloud peers refreshed.** The GLM peer moves to GLM-5.2 on the z.ai OpenAI-compatible endpoint, and a
+  new Moonshot Kimi K2.7 Code peer is added. Both are opt in (`enabled: false`; flip it and set the key),
+  and one cloud coding peer is active at a time. Cloud peers stay off the local-first default and route
+  through LiteLLM as `*-pro` roles.
+
+### Added
+- **faster-whisper STT server** (`scripts/faster_whisper_server.py`): a small local server on `sttPort`
+  exposing the whisper.cpp-compatible `POST /inference` plus a `GET /health`, run under the runtime venv.
+  `voice.sttComputeType` picks the CTranslate2 compute type (`auto` uses float16 on GPU, int8 on CPU). The
+  CT2 model is fetched into `models/faster-whisper/<size>/` by setup and by `bob update`.
+- **Hardened voice loop.** A missing mic or capture-device failure, an engine crash mid-turn, an empty
+  transcript, and an unreachable backend now each degrade to a clear message instead of a traceback: mic
+  errors are wrapped, transcription timeouts / 5xx / malformed responses are caught, and the loop restarts
+  the STT server once and retries the turn before leaving voice mode.
+- **`bob update` lands a fully working default.** It provisions voice (STT model + piper voice + audio
+  deps) exactly as a fresh setup does, and offers to prune model files a release dropped (opt in, guarded
+  so it never deletes a current model that has not downloaded yet).
+- **CI gates fresh-install voice.** `acceptance-cpu` runs a faster-whisper CPU `/inference` round trip
+  (`scripts/smoke_voice.py`) on Linux and Windows, so a broken default voice backend blocks the PR.
+
 ### Fixed
-- **DeepSeek cloud peer moved to the V4 model IDs.** The `deepseek` pro peer used `deepseek-chat` and
-  `deepseek-reasoner`, which DeepSeek deprecates on 2026-07-24. Updated to `deepseek-v4-flash`
+- **DeepSeek cloud peer on the V4 model IDs.** The `deepseek` pro peer used `deepseek-chat` and
+  `deepseek-reasoner`, which DeepSeek deprecates on 2026-07-24. It now uses `deepseek-v4-flash`
   (chat/coder/vision) and `deepseek-v4-pro` (ponder). Base URL and OpenAI-compatible routing through
-  LiteLLM are unchanged; this is a model-string swap only. GLM and Kimi peers are refreshed in 1.2.
+  LiteLLM are unchanged; a model-string swap only.
 
 ## [1.1.0] (2026-07-14)
 
@@ -196,5 +233,6 @@ OSes. This tag consolidates the module history below.
 - Earlier work: the agent runtime, HTTP server, tools, memory, voice, vision, and the
   inference stack. See `docs/ROAD-TO-BOB.md` for the full history.
 
+[1.2.0]: https://example.invalid/bob/releases/tag/v1.2.0
 [1.0.0]: https://example.invalid/bob/releases/tag/v1.0.0
 [0.1.0]: https://example.invalid/bob/releases/tag/v0.1.0

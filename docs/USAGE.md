@@ -20,7 +20,7 @@ You can also run any capability directly, without opening the shell, for quick q
 |---|---|
 | `bob chat "…"` | One-shot chat (great for pipes). `--think` reasoning mode, `--code` coding, `--pro` cloud. |
 | `bob agent "goal"` | Agentic task loop: plans, uses tools, executes steps. Schedulable via cron. |
-| `bob voice` | Continuous voice loop: speak, Bob replies out loud. Whisper STT + piper TTS. |
+| `bob voice` | Continuous voice loop: speak, Bob replies out loud. faster-whisper STT + piper TTS. |
 | `bob describe <image>` · `bob screenshot` | Describe an image or the screen. `--pro` routes to cloud vision. |
 | `bob clip <url>` | Fetch a page, summarise it, and store it to memory. |
 | `bob remember "…"` · `bob recall "…"` | Store / search Bob's memory (blended semantic + recency + importance). |
@@ -68,7 +68,7 @@ For scripting, piping, and quick questions without entering the shell:
 ```
 bob chat          # opens the routed REPL, multi-turn, empty line to exit
 bob think         # same, with reasoning turned ON (the chat model thinks before answering)
-bob code          # same but uses the coder (Qwen2.5-Coder-14B), code focus
+bob code          # same but uses the coder (Qwen3-Coder-30B-A3B), code focus
 ```
 
 `think` is a reasoning **mode**, not a model swap: `bob think` and `bob chat --think` keep the chat
@@ -160,7 +160,7 @@ bob up --no-open
 | Name | Role | Backing model |
 |---|---|---|
 | `ponder` | heavy reasoning and architecture | Qwen3-30B-A3B Q4 |
-| `coder` | coding chat and agentic edits | Qwen2.5-Coder-14B Q4_K_M |
+| `coder` | coding chat and agentic edits | Qwen3-Coder-30B-A3B Q4_K_M (MoE) |
 | `chat` | general conversation | Qwen3-14B Q4_K_M |
 | `fim` | autocomplete (pinned) | Qwen-Coder-3B Q8_0 |
 | `embed` | RAG embeddings (pinned) | bge-m3 Q8 |
@@ -179,10 +179,10 @@ Additional model names are available via the LiteLLM proxy (`:8081`) when the co
 
 | Name | Role | Provider | Backing model | Approx. cost |
 |---|---|---|---|---|
-| `chat-pro` | general conversation | DeepSeek | deepseek-chat (V4) | ~$0.27/M in |
-| `ponder-pro` | heavy reasoning | DeepSeek | deepseek-reasoner (R1) | ~$0.55/M in |
-| `coder-pro` | coding | DeepSeek | deepseek-chat (V4) | ~$0.27/M in |
-| `vision-pro` | cloud vision | DeepSeek | deepseek-chat (V4, vision-capable) | ~$0.27/M in |
+| `chat-pro` | general conversation | DeepSeek | deepseek-v4-flash | ~$0.27/M in |
+| `ponder-pro` | heavy reasoning | DeepSeek | deepseek-v4-pro | ~$0.55/M in |
+| `coder-pro` | coding | DeepSeek | deepseek-v4-flash | ~$0.27/M in |
+| `vision-pro` | cloud vision | DeepSeek | deepseek-v4-flash (vision-capable) | ~$0.27/M in |
 
 **API keys**: all four pro roles route through DeepSeek by default, so only one key is needed. Set it in the environment:
 
@@ -197,6 +197,8 @@ setx DEEPSEEK_API_KEY "sk-..."     :: platform.deepseek.com -> API keys
 ```
 
 Or store it via onboarding (it writes the key to `config/user.json`, gitignored). Pro models are only available through `:8081` (LiteLLM). Direct `:8080` requests return "model not found" because llama-swap only serves local models.
+
+**Other coding peers (opt-in).** Two alternative cloud coders ship defined but disabled in `config/models.json`: **GLM-5.2** (z.ai, key `ZHIPU_API_KEY`) and **Kimi K2.7 Code** (Moonshot, key `MOONSHOT_API_KEY`). Enable one at a time (set its `enabled: true`, export its key, run `bob gen`); each provides `coder-pro`, so run a single coding peer to avoid a name clash. DeepSeek stays the enabled default.
 
 **Override providers or models** in `config/user.json` under a `peers` block (see `config/user.json.example`). You can disable individual peers, change which model a role uses, or add OpenRouter as a fallback (5.5% platform fee applies). Run `bob gen` after any change.
 
@@ -339,13 +341,13 @@ Shows the configured `max_budget`/`budget_duration`, queries the LiteLLM proxy f
 
 ## Voice
 
-Voice adds two-way audio to the terminal using whisper.cpp (STT) and piper (TTS). All processing is local: no cloud, no microphone data leaving the machine. Voice is **enabled by default** (`runtime.voice.enabled = true`); you only download the models once.
+Voice adds two-way audio to the terminal using faster-whisper (STT) and piper (TTS). All processing is local: no cloud, no microphone data leaving the machine. Voice is **enabled by default** (`runtime.voice.enabled = true`); you only download the models once. (whisper.cpp is a built-in fallback backend, selected by `voice.sttEngine = 'whisper.cpp'`.)
 
 **One-time model download:**
 ```
 bob setup-voice
 ```
-Downloads the whisper model (~74 MB for `base.en`), the piper voice, and the Qwen2-VL mmproj file, then builds whisper-server. `bob up` auto-starts the whisper server on port 8082 when the binary is present.
+Downloads the faster-whisper STT model, the piper voice, and the Qwen2-VL mmproj file, and installs the STT Python deps. `bob up` auto-starts the STT server on port 8082. (Only when `voice.sttEngine = 'whisper.cpp'` does setup build `whisper-server` and fetch the ggml model instead.)
 
 **Commands:**
 ```
@@ -366,7 +368,7 @@ bob listen | bob chat | bob speak   # one-shot voice turn
 
 **Whisper / piper server management:**
 ```
-bob whisper start|stop|status       # whisper STT server (port 8082)
+bob whisper start|stop|status       # STT server, faster-whisper by default (port 8082)
 bob piper start|stop|status         # piper TTS HTTP server (:8083, OpenAI /v1/audio/speech)
 bob ps                              # shows whisper and piper rows alongside other services
 bob status                          # includes whisper and piper UP/down lines
@@ -395,7 +397,9 @@ cat article.txt | fabric --pattern extract_wisdom | bob speak   # read fabric ou
 | `maxTokens` | `512` | Caps the voice reply length. Lower (e.g. `256`) for faster one-liners; raise if Bob cuts off. |
 | `silenceSec` | `1.5` | Seconds of mic silence before recording stops. Raise if Bob cuts off while you're still speaking. |
 | `systemPrompt` | *(voice-specific)* | The system prompt used only in `bob voice`; instructs the model to reply in plain spoken sentences with no markdown. |
-| `sttModel` | `'small'` | Whisper model size: `tiny`, `base`, `small`, `medium`. Larger = more accurate, slower. Re-run `bob setup-voice` after changing. |
+| `sttModel` | `'small'` | STT model size (faster-whisper CT2): `tiny`, `base`, `small`, `medium`, `large-v3`. Larger = more accurate, slower. Re-run `bob setup-voice` after changing. |
+| `sttEngine` | `'faster-whisper'` | STT backend: `faster-whisper` (default) or `whisper.cpp` (fallback). |
+| `sttComputeType` | `'auto'` | faster-whisper compute type: `auto` (float16 on GPU, int8 on CPU), or a CT2 type. |
 
 The voice loop sanitises text before sending it to piper: it strips markdown symbols so stray markdown from the model never reaches the TTS engine. Combined with the voice system prompt, Bob replies in natural spoken language without reading punctuation aloud.
 
@@ -415,7 +419,7 @@ bob screenshot "What application is open and what does it show?"
 bob screenshot --pro "Explain the code on screen"                       # cloud vision
 ```
 
-`--pro` routes to DeepSeek V4 (deepseek-chat), which supports vision input, using the existing `DEEPSEEK_API_KEY`. Useful when local Qwen2-VL output is insufficient or the image needs stronger OCR/reasoning.
+`--pro` routes to DeepSeek V4 (deepseek-v4-flash), which supports vision input, using the existing `DEEPSEEK_API_KEY`. Useful when local Qwen2-VL output is insufficient or the image needs stronger OCR/reasoning.
 
 `bob describe` resizes the image to max 1024 px on the longest edge before encoding. `bob screenshot` captures the primary display, saves a temp PNG, describes it, then deletes the PNG.
 
@@ -620,7 +624,7 @@ if choice.finish_reason == "tool_calls":
         # Execute the function, add the result to messages, continue the conversation...
 ```
 
-**Supported:** `coder` (Qwen2.5-Coder-14B). **Not supported:** `ponder`, `chat`. Qwen3 tool-use quality varies; use `coder` for agentic tasks. In Cline, point at `coder` for best results; in aider, tool use is handled internally.
+**Supported:** `coder` (Qwen3-Coder-30B-A3B, tuned for agentic tool use). **Not supported:** `ponder`, `chat`. Use `coder` for agentic tasks. In Cline, point at `coder` for best results; in aider, tool use is handled internally.
 
 ## Clients
 
@@ -636,7 +640,7 @@ Install the **Continue** extension from the VS Code Marketplace, then start the 
 
 | Continue role | Model | Purpose |
 |---|---|---|
-| Chat, edit, apply | `coder` (Qwen2.5-Coder-14B) | default coding chat and inline edits |
+| Chat, edit, apply | `coder` (Qwen3-Coder-30B-A3B) | default coding chat and inline edits |
 | Chat, edit | `ponder` (Qwen3-30B-A3B) | architecture discussion and heavy reasoning |
 | Chat | `chat` (Qwen3-14B) | general conversation; thinking off by default |
 | Chat, edit | `chat-pro` (DeepSeek V4, API) | general conversation via API |
@@ -685,7 +689,7 @@ Set the context window to `16384` to match the server's limit. Leave image suppo
 
 ### Terminal: aider (plan and edit separately)
 
-Aider has a genuine planning-versus-editing split: `ponder` (Qwen3-30B) drafts the change, `coder` (Qwen2.5-Coder-14B) turns it into file edits. You review the plan before any edit lands. Setup links the aider config (`config/aider/.aider.conf.yml`) into your home directory. Then:
+Aider has a genuine planning-versus-editing split: `ponder` (Qwen3-30B) drafts the change, `coder` (Qwen3-Coder-30B-A3B) turns it into file edits. You review the plan before any edit lands. Setup links the aider config (`config/aider/.aider.conf.yml`) into your home directory. Then:
 
 ```
 cd <your-project>

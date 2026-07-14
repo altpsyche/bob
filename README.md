@@ -18,7 +18,7 @@ Or run any capability directly, for quick questions, scripts, and pipes:
 |---|---|
 | `bob chat "…"` | One-shot chat. `--think` deep reasoning, `--code` coding, `--pro` cloud. |
 | `bob agent "goal"` | Agentic task loop: plans, uses tools, executes. Schedulable via cron. |
-| `bob voice` | Continuous voice loop: speak, Bob replies aloud. Whisper STT + piper TTS. |
+| `bob voice` | Continuous voice loop: speak, Bob replies aloud. faster-whisper STT + piper TTS. |
 | `bob describe <image>` · `bob screenshot` | Describe an image or the screen. `--pro` for cloud vision. |
 | `bob clip <url>` | Fetch a page, summarise it, store it to memory. |
 | `bob remember "…"` · `bob recall "…"` | Store or search memory (semantic + recency + importance). |
