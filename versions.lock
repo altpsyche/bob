@@ -2,10 +2,10 @@
   "lockVersion": 1,
   "release": "1.0.0",
   "submodules": {
-    "external/llama.cpp": "0ed235ea2c17a19fc8238668653946721ed136fd",
-    "external/llama-swap": "32bc7813261000228ea5274d89a8c89e7cce2725",
+    "external/llama.cpp": "2969d6d15d67a08e7b83f26164b15350c79c5248",
+    "external/llama-swap": "dd81801d7bfa1a9100ac7af0e579731650b357e6",
     "external/whisper.cpp": "0ae02cdb2c7317b50991367c165736ce42ed96ac",
-    "external/fabric": "a420eaf63c532094eb12bc90c91a227401e96c31"
+    "external/fabric": "82e14bb8f31801a17b851cdd1bbb39a0e1c27126"
   },
   "toolchain": {
     "python": "3.12",
