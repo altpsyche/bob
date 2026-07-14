@@ -1,8 +1,8 @@
 # Bob: Security Review
 
 Scope: the agent tool surface and the `bob agent serve` HTTP server. Bob is a local-first,
-single-operator assistant; the threat model is (1) a prompt-injected or misbehaving LLM abusing
-its tools, and (2) exposure to other machines when the server is bound to `0.0.0.0`. Each claim
+single-operator assistant. The threat model is (1) a prompt-injected or misbehaving LLM abusing
+its tools, and (2) exposure to other machines when the server binds to `0.0.0.0`. Each claim
 below names the test that backs it. Run the suite from the litellm venv:
 
 ```bash
@@ -38,25 +38,24 @@ tools\venv-litellm\Scripts\python.exe -m unittest discover -s tests
   **disabled** unless `agent.allowedWritePaths` is set.
 - **Secrets denylist (OS-aware).** Even inside an allowed root, `_is_denied_secret`
   refuses `config.json` (holds `litellmKey` + `apiTokens`), any `*.psd1` (config), any `*.db` (session
-  / memory stores), anything under a `logs/` directory, and `.env*`. The osenv seam makes it
-  OS-aware: it also denies the resolved secrets file (`data/secrets.json`) and the platform secret
+  / memory stores), anything under a `logs/` directory, and `.env*`. The osenv seam also denies the
+  resolved secrets file (`data/secrets.json`) and the platform secret
   dirs (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/bob`) on every OS. This closes the gap where the
   default repo-root allowlist would otherwise expose the proxy key and session DB to a prompt-injected
-  read. Secrets themselves resolve through the seam `osenv.secret()`:
+  read. Secrets resolve through the seam `osenv.secret()`:
   env → OS keychain → `data/secrets.json` → config default; never a git-tracked file. To
-  read a legitimately-named-but-safe file that collides with the denylist, place it outside those
-  patterns.
+  read a safe file whose name collides with the denylist, place it outside those patterns.
 
 ### `git_status` / `git_log` / `git_diff` ([scripts/tools/git.py](../scripts/tools/git.py))
 - Read-only git subcommands. **Path allow-list:** `_is_allowed_repo` restricts them to the
   Bob repo root plus `agent.gitAllowedRoots`; any other path returns `Access denied`. Without this
-  restriction a `path` argument could point at any repo on disk (info disclosure of unrelated history).
+  restriction a `path` argument could point at any repo on disk (disclosing unrelated history).
 
 ### `shell_run` ([scripts/tools/shell.py](../scripts/tools/shell.py))
 - **Approval-gated.** `shell_run` sets `REQUIRES_APPROVAL=True`, so the agent loop asks its
   injected `approve` callback *before* dispatch (event-driven, not a blocking `input()`; it works
-  under the TUI/server). The callback is **fail-closed**: no approver wired (server, cron, non-TTY)
-  → the call is denied and runs nothing. A configurable permission policy layers `allow|ask|deny` on
+  under the TUI/server). The callback is **fail-closed**: with no approver wired (server, cron, non-TTY)
+  the call is denied and runs nothing. A configurable permission policy layers `allow|ask|deny` on
   top (see "Permission policy" below). 30s timeout; process killed on timeout. It is therefore **not** a
   remote-code-execution vector from the server.
 - **Optional OS sandbox.** When `agent.sandbox='on'`, the command runs under an OS confinement
@@ -70,20 +69,19 @@ tools\venv-litellm\Scripts\python.exe -m unittest discover -s tests
   SearXNG instance. Backed by [tests/test_web.py](../tests/test_web.py).
 
 ### `fabric_run` ([scripts/tools/fabric.py](../scripts/tools/fabric.py))
-- Runs a **named** fabric pattern (`fabric --pattern <name>`) on piped input, 120s timeout. The
-  pattern name is resolved and validated by fabric itself against its installed pattern set; there
+- Runs a **named** fabric pattern (`fabric --pattern <name>`) on piped input, 120s timeout. Fabric
+  resolves and validates the pattern name against its installed pattern set; there
   is no path/argument passthrough from the model, so there is no traversal or injection surface
-  here beyond whatever patterns the operator installed. No change here; documented as
-  accepted.
+  here beyond whatever patterns the operator installed. Documented as accepted.
 
 ### `memory_recall` / `memory_store` ([scripts/tools/memory.py](../scripts/tools/memory.py))
 - Operate only on the local `bob.db` via the embed server; no external egress. Disabled unless
   `memory.enabled`.
 
 ## Permission policy ([scripts/bob_permissions.py](../scripts/bob_permissions.py))
-Authorization at the **single dispatch choke point** (`_dispatch_with_approval` in `bob_loop.py`, which
-every tool call passes through). `PermissionPolicy.resolve(tool, owner, agent_depth, mutating)` returns
-`allow | ask | deny`:
+Authorization happens at the **single dispatch choke point** (`_dispatch_with_approval` in `bob_loop.py`,
+which every tool call passes through). `PermissionPolicy.resolve(tool, owner, agent_depth, mutating)`
+returns `allow | ask | deny`:
 - **deny**: the call never dispatches; the model receives a clean refusal string it can react to.
 - **ask**: emits an `approval_required` event and consults the fail-closed `approve` callback; also
   triggered by the approval floor (`agency='confirm'` or a tool's `REQUIRES_APPROVAL`), which the policy can
@@ -96,17 +94,17 @@ class default. **An absent/empty `permissions` reproduces the pre-policy behavio
 only the approval floor prompts, nothing denied). Every decision is written to an append-only audit line
 (`[rid] AUDIT tool=… decision=… owner=… args_sha1=…`) on the `bob.agent` logger; arguments are
 **hashed, never logged raw**, so secrets in args don't leak. Backed by `test_permissions.*`. Treat all
-tool output as untrusted model input (prompt-injection posture); keep mutating tools behind `ask`.
+tool output as untrusted model input (prompt-injection posture) and keep mutating tools behind `ask`.
 
 ## OS sandbox ([scripts/sandbox.py](../scripts/sandbox.py))
 When `agent.sandbox='on'`, exec surfaces (`shell_run` today) run under an OS-native confinement backend
 selected via `osenv`. Read-only tools stay in-process. **Default `off` reproduces today's behavior;**
 when `on` with no usable backend, `run_sandboxed` **fails closed** (`SandboxUnavailable` → the tool
-refuses); a loud unsandboxed fallback is only ever chosen under `off`.
+refuses). A loud unsandboxed fallback is only ever chosen under `off`.
 
 Config: `agent.sandbox` (`off|on`), `agent.sandboxLimits` = `{cpuSeconds, memoryMB, allowRoots:[],
 network:false}`. `allowRoots` is the writable set (empty ⇒ only a tmpfs `/tmp` is writable, maximally
-locked); `$HOME` is never in the bind set, so `~/.ssh`/secrets are absent from the sandbox namespace on
+locked). `$HOME` is never in the bind set, so `~/.ssh`/secrets are absent from the sandbox namespace on
 Linux even with a filesystem view.
 
 **Per-OS backend matrix:**
@@ -130,17 +128,17 @@ and shell wiring run everywhere; real-confinement tests (write-outside-root deni
   deny-by-default *filesystem* jailing: that needs a restricted token with restricting SIDs
   (Chromium-style) or an AppContainer, which must be validated live on Windows before it can be trusted.
   Until then the secrets denylist remains the filesystem floor for `file_*` tools, and a sandboxed
-  `shell_run` on Windows is resource-confined but not FS-jailed. Do not rely on the Windows sandbox for
-  filesystem isolation yet.
+  `shell_run` on Windows is resource-confined but not FS-jailed. Do not yet rely on the Windows sandbox
+  for filesystem isolation.
 
 ## Auth + ownership ([scripts/bob_agent_server.py](../scripts/bob_agent_server.py))
 - **Auth.** `_authed_owner` accepts a bearer token iff it is the litellm key or an `agent.apiTokens`
   entry, else **401**. `/health` is intentionally unauthenticated (returns only tool counts).
 - **Ownership.** Each token maps to an owner id (`agent.apiTokens` records `@{token;owner}`;
-  the litellm key → `agent.defaultOwner`). Sessions are stamped with the creating owner; every
+  the litellm key → `agent.defaultOwner`). Sessions are stamped with the creating owner, and every
   session route resolves through `get_owned`/`delete_owned`, so another owner's `session_id`
-  returns **404**, indistinguishable from an unknown id (no existence leak). Revocation = remove
-  the token from config and restart `bob agent serve`.
+  returns **404**, indistinguishable from an unknown id (no existence leak). To revoke a token, remove
+  it from config and restart `bob agent serve`.
 
 ## Exposing on `0.0.0.0`: checklist
 `agent.serveHost` defaults to `127.0.0.1`. Before setting `0.0.0.0` (LAN/other machines):
@@ -148,12 +146,12 @@ and shell wiring run everywhere; real-confinement tests (write-outside-root deni
    `sk-local` litellm key. (Auth: 401 without a valid token; ownership: 404 across owners.)
 2. Confirm the `file_read` secrets denylist is in force; the default repo-root allowlist
    would otherwise expose `config.json`. Narrow `allowedReadPaths` further if desired.
-3. Leave `allowPrivateFetch` at `false` so `web_fetch` can't be used to SSRF the host's private
+3. Leave `allowPrivateFetch` at `false` so `web_fetch` can't SSRF the host's private
    network from a LAN client.
 4. Leave `allowedWritePaths` empty (or tightly scoped); `file_write` is off by default.
 5. Keep `gitAllowedRoots` empty unless a specific extra repo must be exposed.
 6. Remember `shell_run` is inert on the server (no stdin); no action needed.
-7. Watch `logs/bob-agent.log`: every run carries a run-id so concurrent clients are
+7. Watch `logs/bob-agent.log`: every run carries a run-id, so concurrent clients are
    distinguishable and any single run is greppable end-to-end.
 
 ## Autonomy dial
@@ -165,8 +163,8 @@ implied by a smaller one:
 2. **`--deep`**: plan/verify/self-repair phases and a larger step budget; still foreground.
 3. **Durable run** (`agent.checkpoint`): run state persists so a run can resume across a restart. Off by
    default. Resume restores reasoning state, not world state (filesystem changes are not undone).
-4. **Detached task** (`bob task start`): runs in a background worker that survives the client
-   disconnecting. Owner-scoped; still governed by the permission policy; a detached run is fail-closed on
+4. **Detached task** (`bob task start`): runs in a background worker that survives client
+   disconnection. Owner-scoped and still governed by the permission policy; a detached run is fail-closed on
    approval (no interactive approver -> approval-gated tools are denied).
 5. **Computer-use** (`agent.computerUse`): drives the screen and input devices. The largest grant, off by
    default, always approval-gated, and never available in an unattended/detached run without an explicit
@@ -182,12 +180,12 @@ most dangerous capability in Bob, so it is gated hardest.
 **Threat model.** A screenshot is untrusted, model-controlled input: text rendered on screen (a web page,
 a chat message, a crafted image) can carry instructions that attempt to redirect the agent (prompt
 injection into GUI actions). A successful injection can click, type, and read whatever the logged-in user
-can. Two specific surfaces:
+can. Two surfaces:
 - **Screenshot as an injection surface.** A captured frame is fed back to the model through the
-  `{"__images__": [...]}` tool-result contract and routed to the vision role. On-screen text must never be
-  allowed to silently expand the task, widen any allowlist, or relax the approval posture.
+  `{"__images__": [...]}` tool-result contract and routed to the vision role. On-screen text must never
+  silently expand the task, widen any allowlist, or relax the approval posture.
 - **Screenshot as an exfiltration surface.** A screenshot can capture secrets on screen (tokens, private
-  messages). Capture is therefore approval-gated even though it is a read.
+  messages), so capture is approval-gated even though it is a read.
 
 **Gating chain** (every computer-use action passes through all of it):
 default-off (`agent.computerUse.enabled`) -> the tool is not even offered unless enabled -> every action
@@ -202,7 +200,7 @@ cannot use computer-use without an explicit opt-in.
 the blast radius of a successful injection and sidesteps the Wayland synthetic-input block. Driving the
 real logged-in desktop (`display: "host"`) is the highest-risk configuration and is an explicit, louder
 opt-in. Human confirmation on every action is the load-bearing defense: Bob has no server-side screenshot
-injection classifier unless a run is routed through a hosted computer-use API.
+injection classifier unless a run routes through a hosted computer-use API.
 
 **Accepted limitation.** GUI input needs the host display and input bus, which the deny-by-default OS
 sandbox (no `$HOME`, unshared network) cannot provide, so computer-use input does not route through the
@@ -213,7 +211,7 @@ display, not the OS sandbox.
 `--allow-computer` opt-in (`agent.computerUse.allowUnattended`) is required before computer-use is even
 loaded in such a run: defense-in-depth so an unattended agent cannot drive the desktop by default.
 
-**Test-backed guarantees.** Each control is pinned by a behavior test (all hermetic; no real input is
+**Test-backed guarantees.** Each control is pinned by a hermetic behavior test (no real input is
 injected and no live model is used):
 - Default-off (not offered unless enabled): `test_screenshot_tool_absent_when_computer_use_off`
   ([tests/test_computer_use.py](../tests/test_computer_use.py)).
@@ -240,8 +238,8 @@ injected and no live model is used):
   single-operator local harness; documented, not a bug.
 - `fabric_run` executes whatever patterns the operator installed; treat the fabric pattern library
   as trusted operator config.
-- The secrets denylist is deliberately broad (all `*.psd1`/`*.db`, any `logs/`); a user who needs
-  to read such a file via the agent must place it outside those patterns.
+- The secrets denylist is deliberately broad (all `*.psd1`/`*.db`, any `logs/`); to read such a file
+  via the agent, place it outside those patterns.
 - **Denylist is name/path-based** (`Path.resolve()`: it follows symlinks/junctions and expands 8.3
   short names, but does *not* dereference NTFS **hardlinks**). An attacker who can create a hardlink
   to `config.json` under an allowed root with an innocuous name/suffix could read it via `file_read`.

@@ -2,7 +2,7 @@
 
 Because all clients point at a single OpenAI-compatible endpoint, the stack is layered: swapping one component rarely requires touching the others. This document describes working alternatives at each layer and fixes for the most common failure modes.
 
-**Diagnose first.** Before reaching for a fallback, run the built-in checks — they tell you which layer actually failed:
+**Diagnose first.** Before reaching for a fallback, run the built-in checks, they tell you which layer actually failed:
 
 ```
 bob doctor      # full pre-flight diagnostics (build, models, ports, privileges)
@@ -20,7 +20,7 @@ bob diagnose    # system + model health check
 
 ## Engine won't build
 
-`bob build` detects your GPU and CUDA version automatically and should work on RTX 3000, 4000, and 5000 series cards, on both Windows and Linux (the OS-specific bits — Visual Studio + CUDA DLLs on Windows, Ninja + `.so` on Linux — go through the `scripts/osenv.py` seam). If the build fails anyway, the options below are ordered from least to most disruptive.
+`bob build` detects your GPU and CUDA version automatically and should work on RTX 3000, 4000, and 5000 series cards, on both Windows and Linux (the OS-specific bits, Visual Studio + CUDA DLLs on Windows, Ninja + `.so` on Linux, go through the `scripts/osenv.py` seam). If the build fails anyway, the options below are ordered from least to most disruptive.
 
 **No GPU?** Build the CPU tier:
 

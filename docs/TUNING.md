@@ -1,10 +1,10 @@
 # TUNING
 
-This document covers the internals of how the server is configured and how to get the most out of it: the launch flags the models run with, how to estimate VRAM requirements for different models, how to verify you're on the fast hardware path, and how to update the inference engine safely.
+Server configuration internals and tuning: the launch flags the models run with, how to estimate VRAM requirements, how to verify you're on the fast hardware path, and how to update the inference engine safely.
 
 ## How the server config is generated
 
-The runtime config files (and the Open WebUI model table) are generated automatically from [config/models.json](../config/models.json) every time you run `bob serve` or `bob gen`. Don't edit them by hand; edit `config/models.json` (or your `config/user.json` override) instead. The generators are plain Python functions in [scripts/tools/generate.py](../scripts/tools/generate.py).
+The runtime config files (and the Open WebUI model table) are generated from [config/models.json](../config/models.json) every time you run `bob serve` or `bob gen`. Don't edit them by hand; edit `config/models.json` (or your `config/user.json` override) instead. The generators are Python functions in [scripts/tools/generate.py](../scripts/tools/generate.py).
 
 - `config/llama-swap.yaml` (`gen_llama_swap`): local model routing, swap groups, KV cache flags
 - `config/litellm.yaml` (`gen_litellm`): LiteLLM proxy model list, including pro models (API-backed peers)
@@ -21,7 +21,7 @@ The generated `llama-swap.yaml` has this structure:
 
 ## Tunable defaults and personal overrides
 
-The `defaults` block in `config/models.json` controls the server launch flags and port numbers. Both `gen_llama_swap` and `gen_litellm` read it every time `bob gen` regenerates their configs.
+The `defaults` block in `config/models.json` controls the server launch flags and port numbers. Both `gen_llama_swap` and `gen_litellm` read it whenever `bob gen` regenerates their configs.
 
 | Key | Default | Effect |
 |-----|---------|--------|
@@ -40,11 +40,11 @@ The `defaults` block in `config/models.json` controls the server launch flags an
 | `webuiSecret` | `"bob-dev"` | Open WebUI session key. Change before exposing on a LAN. |
 | `maxTokens` | `512` | Default `max_tokens` for `bob chat`. |
 
-Ports are **not** in this block — they live once in [config/defaults.json](../config/defaults.json) under `ports` (llama-swap `8080`, LiteLLM proxy `8081`, whisper `8082`, piper `8083`, agent server `8084`, Open WebUI `3000`).
+Ports are **not** in this block; they live once in [config/defaults.json](../config/defaults.json) under `ports` (llama-swap `8080`, LiteLLM proxy `8081`, whisper `8082`, piper `8083`, agent server `8084`, Open WebUI `3000`).
 
 **KV cache type options** (valid for both `kvQuantK` and `kvQuantV`): `f16`, `bf16`, `q8_0`, `q5_1`, `q5_0`, `q4_1`, `q4_0`, `iq4_nl`.
 
-**Personal overrides without touching git**: create `config/user.json` (gitignored, copy from [config/user.json.example](../config/user.json.example)) to shadow any of these values without modifying the tracked file. It is deep-merged over `config/models.json`:
+**Personal overrides without touching git**: create `config/user.json` (gitignored, copy from [config/user.json.example](../config/user.json.example)) to shadow any of these values without modifying the tracked file. It deep-merges over `config/models.json`:
 
 ```json
 {
@@ -67,7 +67,7 @@ Run `bob gen` after editing. Changes take effect on the next `bob serve`.
 ### Agent behavior
 
 The agent runtime defaults live in `config/defaults.json` under `runtime.agent`. Tools are **auto-discovered** from
-`scripts/tools/*.py` and `plugins/*/tool.py`: there is no allowlist; creating the file is the only
+`scripts/tools/*.py` and `plugins/*/tool.py`: there is no allowlist, and creating the file is the only
 registration step. To exclude a tool without deleting it, add its name to `agent.disabledTools`
 (a denylist). See [plugins/AUTHORING.md](../plugins/AUTHORING.md).
 
@@ -120,7 +120,7 @@ endpoint requires `Authorization: Bearer <token>`.
 
 See [AGENT-SERVER.md](AGENT-SERVER.md) for the endpoint contract.
 
-**Switching the agent model:** the agent role defaults to the `agent` model (Hermes 3 8B). If you switch to a model that uses OpenAI-format tool calling (like Qwen3), also set `agent.toolFormat = "openai"` in `config/user.json` and run `bob gen`.
+**Switching the agent model:** the agent role defaults to the `agent` model (Hermes 3 8B). If you switch to a model that uses OpenAI-format tool calling (like Qwen3), set `agent.toolFormat = "openai"` in `config/user.json` and run `bob gen`.
 
 ### Memory (`memory.*`)
 
@@ -160,12 +160,12 @@ Bob's typed, owner/project-scoped memory store (SQLite + BGE-M3). On by default.
 | `memory.projectFiles` | `true` | Read `BOB.md`/`AGENTS.md` project files at session start. |
 | `memory.bobMdMaxTokens` | `4000` | Cap on the concatenated project files. |
 
-Recall/injection are best-effort: a memory-server error is logged and skipped, never fatal to a run.
+Recall and injection are best-effort: a memory-server error is logged and skipped, never fatal to a run.
 
 ### Plugins
 
 Plugins live in `plugins/<name>/` as an `invoke.py` (CLI + core logic) plus an optional `tool.py`
-(agent-facing wrapper). They are discovered and dispatched automatically — there is nothing to register.
+(agent-facing wrapper). They are discovered and dispatched automatically, with nothing to register.
 A plugin can be written in any language that reads arguments and writes stdout; the bundled examples
 are Python.
 
@@ -174,7 +174,7 @@ Python plugins read config through `bob_core.load_config()` (which resolves `con
 role. To override the model a plugin uses for a specific invocation, most accept a `--role` flag (check
 `--help` on each plugin, or run one directly with `bob --run <name> '{json}'`).
 
-To disable a plugin without deleting it, rename its `invoke.py` to `invoke.py.disabled`, or add the
+To disable a plugin without deleting it, rename its `invoke.py` to `invoke.py.disabled`, or add its
 directory/stem name to `agent.disabledTools` in `config/user.json`.
 
 ## Per-model launch flags (Blackwell / 16GB)
@@ -185,27 +185,27 @@ These flags are assembled from the `defaults` block above. The resulting command
 -ngl 99 -c 16384 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0
 ```
 
-`-ngl 99` loads all layers onto the GPU. Lower this number only if a model plus its context spills past 16 GB; some layers will then fall back to CPU, which is slower but functional.
+`-ngl 99` loads all layers onto the GPU. Lower it only if a model plus its context spills past 16 GB; some layers then fall back to CPU, which is slower but functional.
 
-`--flash-attn on` enables Flash Attention, which is required for KV cache quantization. This build needs the explicit `on`/`off`/`auto` value; a bare `--flash-attn` without a value errors out.
+`--flash-attn on` enables Flash Attention, required for KV cache quantization. This build needs the explicit `on`/`off`/`auto` value; a bare `--flash-attn` errors out.
 
-`--cache-type-k q8_0 --cache-type-v q8_0` applies KV cache quantization (MODULE J). ~50% VRAM savings versus unquantized f16, with near-zero performance overhead across all GPU generations. On pre-Blackwell GPUs (RTX 20/30/40, sm_75 to 89), overriding to q5_1 keys and q4_0 values saves ~75% vs f16 (see [config/user.json.example](../config/user.json.example)). On Blackwell (RTX 50, sm_120+), sub-q8_0 types cause a significant prompt-processing regression with flash attention; q8_0 is the correct choice. Exception: Gemma models regress in quality with any KV quantization; set `kvQuantK = ""` and `kvQuantV = ""` in `config/user.json`.
+`--cache-type-k q8_0 --cache-type-v q8_0` applies KV cache quantization (MODULE J): ~50% VRAM savings versus unquantized f16, with near-zero performance overhead across all GPU generations. On pre-Blackwell GPUs (RTX 20/30/40, sm_75 to 89), overriding to q5_1 keys and q4_0 values saves ~75% vs f16 (see [config/user.json.example](../config/user.json.example)). On Blackwell (RTX 50, sm_120+), sub-q8_0 types cause a significant prompt-processing regression with flash attention; q8_0 is the correct choice. Exception: Gemma models regress in quality with any KV quantization; set `kvQuantK = ""` and `kvQuantV = ""` in `config/user.json`.
 
 ## VRAM math
 
-When deciding whether a model will fit, start with a rough estimate of weight memory plus KV cache.
+To decide whether a model will fit, estimate weight memory plus KV cache.
 
-Weight memory is approximately the number of parameters multiplied by the bytes per weight for that quantization level. Common values: Q4_K_M is about 0.56 GB per billion parameters, Q5 about 0.70, and Q8 about 1.0.
+Weight memory is approximately the parameter count multiplied by the bytes per weight for that quantization level. Common values: Q4_K_M is about 0.56 GB per billion parameters, Q5 about 0.70, Q8 about 1.0.
 
 KV cache adds roughly 1 to 2 GB at a 4k context window, or 3 to 5 GB at 32k. The default q8_0/q8_0 quantization cuts these figures by roughly 50% versus unquantized f16. On pre-Blackwell GPUs, q5_1 keys and q4_0 values cut by ~75% at the cost of minor quality loss.
 
 For the models in this repo on 16 GB VRAM: the 14B Q4_K_M coder is about 9 to 10 GB for weights plus 1 to 2 GB for context, which fits comfortably. The 30B-A3B Q4 planner is about 18 GB for the full weight matrix, so it uses a small amount of RAM offload; but because only 3B parameters are active per token (it's a mixture-of-experts model), generation is still fast.
 
-On mixture-of-experts models generally: VRAM requirements are based on the total parameter count, not just the active ones. The active parameter count affects compute speed but not how much memory you need to load the model. An 80B model with 3B active parameters at Q4 still needs roughly 45 GB for the weight matrix.
+For mixture-of-experts models generally, VRAM requirements are based on the total parameter count, not the active count. Active parameters affect compute speed but not the memory needed to load the model. An 80B model with 3B active parameters at Q4 still needs roughly 45 GB for the weight matrix.
 
 ## Verifying the fast path
 
-The most important health check is whether the engine is using Blackwell's optimized matrix multiplication (MMQ) rather than the slower cuBLAS fallback. The fallback is roughly five to six times slower on prefill.
+The key health check is whether the engine uses Blackwell's optimized matrix multiplication (MMQ) rather than the slower cuBLAS fallback. The fallback is roughly five to six times slower on prefill.
 
 ```
 bob bench
@@ -213,7 +213,7 @@ bob bench
 
 Expected numbers on an RTX 5080 with the 14B Q4 coder model: **pp512 ≈ 4400 t/s, tg128 ≈ 85 t/s**.
 
-If prefill is around 1000 t/s, you're on the cuBLAS fallback. This happens when the build used CUDA 13.x or when there's a stale build cache from a previous compile. Fix it by forcing a clean rebuild:
+If prefill is around 1000 t/s, you're on the cuBLAS fallback. This happens when the build used CUDA 13.x or when a stale build cache lingers from a previous compile. Force a clean rebuild:
 
 ```
 bob build --force
@@ -223,9 +223,9 @@ The `--force` flag rebuilds even when a binary already exists; `bob build` wipes
 
 ## Quality benchmarking (lm-eval)
 
-`bob bench` measures *speed*: tokens per second. It tells you nothing about whether the model's answers are correct. `bob eval` fills that gap using [lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness), an open-source harness that runs standardized tasks against any OpenAI-compatible endpoint and returns a reproducible accuracy score. lm-eval and its heavy deps live in their own lazily-provisioned virtualenv (`tools/venv-eval`); the first `bob eval` run creates it automatically.
+`bob bench` measures *speed*: tokens per second. It says nothing about whether the model's answers are correct. `bob eval` fills that gap using [lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness), an open-source harness that runs standardized tasks against any OpenAI-compatible endpoint and returns a reproducible accuracy score. lm-eval and its heavy deps live in their own lazily-provisioned virtualenv (`tools/venv-eval`); the first `bob eval` run creates it automatically.
 
-**When to run:** after changing a model, switching quant levels (e.g. Q8_0 → Q4_K_M to reclaim VRAM), or after bumping llama.cpp. A score drop reveals whether the configuration change hurt answer quality, not just speed.
+**When to run:** after changing a model, switching quant levels (e.g. Q8_0 → Q4_K_M to reclaim VRAM), or bumping llama.cpp. A score drop reveals whether the change hurt answer quality, not just speed.
 
 ```
 bob serve                        # endpoint must be running
@@ -238,7 +238,7 @@ bob eval coder gsm8k             # ~90 min, 1319 samples
 bob eval coder humaneval         # ~3 hr
 ```
 
-The syntax is `bob eval <role> [task] [--shots N] [--limit N]`. Results land in `results/eval-<role>-<task>-<timestamp>/`. Look for `exact_match,flexible-extract` (0.0 to 1.0); the flexible extractor finds the final number in the model's response, which is the right metric for generative math tasks.
+The syntax is `bob eval <role> [task] [--shots N] [--limit N]`. Results land in `results/eval-<role>-<task>-<timestamp>/`. Look for `exact_match,flexible-extract` (0.0 to 1.0); the flexible extractor finds the final number in the response, the right metric for generative math tasks.
 
 **Baseline scores for 14B Q4_K_M (16gb profile):**
 
@@ -259,11 +259,11 @@ The syntax is `bob eval <role> [task] [--shots N] [--limit N]`. Results land in 
 
 `bob eval` always passes `--apply_chat_template` to lm-eval, so the model sees its expected prompt format; without it, generative scores like gsm8k collapse.
 
-**Shot count:** `--shots 0` (zero-shot) is the default and runs faster. `--shots 5` gives 3 to 5% higher scores but takes longer and only makes sense if you're comparing against published 5-shot benchmarks.
+**Shot count:** `--shots 0` (zero-shot) is the default and runs faster. `--shots 5` gives 3 to 5% higher scores but takes longer, and only makes sense when comparing against published 5-shot benchmarks.
 
 ## Updating the llama.cpp engine
 
-New llama.cpp versions can add support for new models, fix bugs, or improve performance. Blackwell MMQ support can regress between commits, so always re-run the benchmark after a bump to confirm performance before committing the new pin.
+New llama.cpp versions can add model support, fix bugs, or improve performance. Blackwell MMQ support can regress between commits, so always re-run the benchmark after a bump to confirm performance before committing the new pin.
 
 The easiest path is the built-in update command, which fast-forwards the current branch, syncs submodules, reinstalls the venv, rebuilds **only if llama.cpp actually moved** (with a `bin/` snapshot + binary verify + automatic rollback on failure), relocks `versions.lock`, and finishes with `bob doctor`:
 
@@ -297,7 +297,7 @@ git add external\llama.cpp
 git commit -m "bump llama.cpp to <commit>"
 ```
 
-To check out a specific commit or tag by hand instead of using `bob update`:
+To check out a specific commit or tag by hand instead of `bob update`:
 
 Linux:
 ```bash
@@ -323,7 +323,7 @@ If performance regressed, check back to the previous known-good commit.
 
 ## Adding or swapping a model
 
-All model configuration lives in `config/models.json`. To add a new model or swap the backing GGUF for an existing role:
+All model configuration lives in `config/models.json`. To add a model or swap the backing GGUF for an existing role:
 
 1. Edit the model entry under the profile: set `repo` and `path` (the HuggingFace source), `gguf` (the local filename), `ctx` (context size), and any optional flags (`kv`, `flags`, `setParams`, `ttl`, `pinned`, `embedding`).
 2. Optionally add its name to `group.members` if it should swap with the other large models.
@@ -354,7 +354,7 @@ Override in `config/user.json`:
 }
 ```
 
-The voice loop reuses the **same** agent turn (and the same persona) as text chat — there is no separate voice system prompt. To keep replies speech-friendly, the loop runs `bob_voice.format_for_speech()` ([scripts/bob_voice.py](../scripts/bob_voice.py)), a post-processor that strips markdown and typographic symbols before the text reaches piper. The chain is: model output → strip `<think>` blocks → `format_for_speech` → piper TTS.
+The voice loop reuses the **same** agent turn (and persona) as text chat; there is no separate voice system prompt. To keep replies speech-friendly, it runs `bob_voice.format_for_speech()` ([scripts/bob_voice.py](../scripts/bob_voice.py)), a post-processor that strips markdown and typographic symbols before the text reaches piper. The chain is: model output → strip `<think>` blocks → `format_for_speech` → piper TTS.
 
 **Piper HTTP server (for Open WebUI TTS):** `bob piper` starts a FastAPI wrapper around piper on `:8083` that accepts OpenAI-compatible `POST /v1/audio/speech` requests. The OpenAI `voice` parameter is accepted but ignored: piper always uses the configured `ttsVoice` ONNX file. Wire it in Open WebUI: Admin Panel → Audio → Text-to-Speech Engine → `http://localhost:8083`.
 
@@ -362,14 +362,14 @@ The voice loop reuses the **same** agent turn (and the same persona) as text cha
 
 ## System prompts
 
-**Bob's persona (agent loop + interactive shell)**: the base system prompt Bob runs with lives in
+**Bob's persona (agent loop + interactive shell)**: the base system prompt lives in
 the neutral runtime layer at `config/defaults.json` → `runtime.persona.systemPrompt` (read on every OS
 by the Python resolver). The shipped default is
-intentionally short and general — it introduces Bob and tells the model to save durable facts about you
+intentionally short and general: it introduces Bob and tells the model to save durable facts about you
 with the memory tools.
 
 Give Bob a specific role or personality by editing that value in `config/defaults.json`, or override it
-per-machine without touching the tracked file: add a top-level `persona` key to `config/user.json`:
+per-machine without touching the tracked file by adding a top-level `persona` key to `config/user.json`:
 
 ```json
 {
@@ -382,7 +382,7 @@ per-machine without touching the tracked file: add a top-level `persona` key to 
 Run `bob gen` (or any `bob` command) to pick up the change. Keep it to the persona itself: tool usage and
 memory behaviour are guided by the tool descriptions, not the system prompt.
 
-The remaining two are separate surfaces:
+The remaining two surfaces are separate:
 
 **Open WebUI**: driven from `config/models.json`. The top-level `prompts` key holds per-role prompts for local models:
 
@@ -415,11 +415,11 @@ Pro (cloud) model prompts live inside the peer config as a `systemPrompt` field 
 
 The `maxTokens` field caps per-model output in `litellm.yaml`. Without it, a reasoning model like R1 can generate 10k to 15k tokens unbounded. Bare-string values (the legacy form without `maxTokens`) still work; only the object form supports `maxTokens` and `systemPrompt`.
 
-**Continue.dev**: `config/continue/config.yaml` is **generated** by `gen_continue` from the same `prompts` in `config/models.json`, then linked into `~/.continue/` by setup. Change the role prompts in `config/models.json` (or `config/user.json`) and run `bob gen` rather than editing the generated file, or it will be overwritten on the next regenerate.
+**Continue.dev**: `config/continue/config.yaml` is **generated** by `gen_continue` from the same `prompts` in `config/models.json`, then linked into `~/.continue/` by setup. Change the role prompts in `config/models.json` (or `config/user.json`) and run `bob gen` rather than editing the generated file, which is overwritten on the next regenerate.
 
 ## KV cache quantization
 
-`--cache-type-k` and `--cache-type-v` control how the key and value tensors of the attention cache are stored. Keys drive attention score computation and are more sensitivity-critical; values are weighted and summed and tolerate more aggressive quantization.
+`--cache-type-k` and `--cache-type-v` control how the key and value tensors of the attention cache are stored. Keys drive attention score computation and are more sensitivity-critical; values are weighted and summed, so they tolerate more aggressive quantization.
 
 Default (MODULE J): `--cache-type-k q8_0 --cache-type-v q8_0`, ~50% KV VRAM savings versus unquantized f16, with near-zero performance overhead on all GPU generations.
 
@@ -446,9 +446,9 @@ Pre-Blackwell users (RTX 20/30/40, sm_75 to 89) can override for more VRAM savin
 
 `noMmap: true` on a model entry (or in `defaults` to apply globally) forces llama.cpp to read the full model file into heap memory at startup instead of using memory-mapped I/O (the default).
 
-Under mmap, CPU-offloaded layer weights are read from disk on demand (page faults). For the 30B-A3B planner, which overflows VRAM by ~1.3 GB, every access to those offloaded layers is a potential disk seek during inference. With `--no-mmap`, all weights are in heap RAM after startup: zero disk I/O during inference.
+Under mmap, CPU-offloaded layer weights are read from disk on demand (page faults). For the 30B-A3B planner, which overflows VRAM by ~1.3 GB, every access to those offloaded layers is a potential disk seek during inference. With `--no-mmap`, all weights sit in heap RAM after startup: zero disk I/O during inference.
 
-**Trade-off:** startup takes roughly 1 s per GB of model size (a 17 GB planner = ~17 s on first load after a cold start). After that first load, the heap pages can be retained in RAM across swaps if `--mlock` is also set.
+**Trade-off:** startup takes roughly 1 s per GB of model size (a 17 GB planner = ~17 s on first load after a cold start). After that, the heap pages can be retained in RAM across swaps if `--mlock` is also set.
 
 Set per-model in `config/models.json` (already done for the 16 GB planner, which has `"noMmap": true`), or globally in `config/user.json`:
 
@@ -466,13 +466,13 @@ Verified: `--no-mmap` is fully supported on Windows (via `SetFilePointerEx` + `R
 
 Combined with `--no-mmap`, mlock fully pins model weights in physical RAM: no disk seeks, no OS eviction to the pagefile. Inference latency for CPU-offloaded layers becomes consistent rather than occasionally spiky.
 
-**Windows requirement:** `SeLockMemoryPrivilege` is required. Without it, llama-server logs a warning and continues without locking. Grant it (one-time UAC prompt):
+**Windows requirement:** `SeLockMemoryPrivilege`. Without it, llama-server logs a warning and continues without locking. Grant it (one-time UAC prompt):
 
 ```
 bob mlock --grant
 ```
 
-After the UAC prompt completes, **restart your terminal**, then `bob serve`. `bob diagnose` will confirm the privilege is active. Manual fallback: `secpol.msc` → Local Policies → User Rights Assignment → "Lock pages in memory" → add your user account → restart terminal.
+After the UAC prompt completes, **restart your terminal**, then `bob serve`. `bob diagnose` confirms the privilege is active. Manual fallback: `secpol.msc` → Local Policies → User Rights Assignment → "Lock pages in memory" → add your user account → restart terminal.
 
 **Linux requirement:** a sufficient memlock limit (`RLIMIT_MEMLOCK`). Raise it with `ulimit -l unlimited` for the session, or a `memlock` entry in `/etc/security/limits.conf` for persistence. There is no Windows-style privilege to grant, so `bob mlock --grant` only prints guidance on Linux.
 
@@ -488,7 +488,7 @@ Enable in `config/user.json`:
 
 ## NUMA strategy (7950X3D and multi-CCD CPUs)
 
-`--numa` controls how llama.cpp allocates threads and memory when CPU layer offloading is active. The Ryzen 9 7950X3D has two CCDs exposed as two NUMA nodes: CCD0 has the 96 MB V-Cache; CCD1 has 32 MB L3.
+`--numa` controls how llama.cpp allocates threads and memory when CPU layer offloading is active. The Ryzen 9 7950X3D exposes two CCDs as two NUMA nodes: CCD0 has the 96 MB V-Cache; CCD1 has 32 MB L3.
 
 | Strategy | Effect |
 |----------|--------|
@@ -509,11 +509,11 @@ Enable in `config/user.json`:
 
 ## MoE layer offloading (Qwen3-30B-A3B)
 
-The planner model (30B total parameters, 3B active per forward pass) exceeds 16 GB VRAM at Q4_K_M. At `-ngl 99`, llama.cpp fills GPU VRAM and spills excess layers to CPU RAM automatically: roughly 30 to 31 layers fit on GPU, with ~17 layers going to CPU.
+The planner model (30B total parameters, 3B active per forward pass) exceeds 16 GB VRAM at Q4_K_M. At `-ngl 99`, llama.cpp fills GPU VRAM and spills excess layers to CPU RAM automatically: roughly 30 to 31 layers fit on GPU, with ~17 going to CPU.
 
-There is no `-n-cpu-moe` flag in llama-server. MoE expert routing is controlled entirely via `-ngl`. The expert FFN blocks are large but tolerate CPU offload well because only a fraction of experts activate per token.
+llama-server has no `-n-cpu-moe` flag; MoE expert routing is controlled entirely via `-ngl`. The expert FFN blocks are large but tolerate CPU offload well because only a fraction of experts activate per token.
 
-With KV q8_0 quantization saving ~1.4 GB vs unquantized f16 (at ctx=16384), the auto-fit may shift 3 to 4 more layers onto GPU compared to a stock unquantized setup. To benchmark the impact, run `bob bench` at the baseline `ngl=99`, then override the planner's `ngl` explicitly in `config/user.json` and compare `tg128` (generation tokens/s):
+With KV q8_0 quantization saving ~1.4 GB vs unquantized f16 (at ctx=16384), the auto-fit may shift 3 to 4 more layers onto GPU than a stock unquantized setup. To benchmark the impact, run `bob bench` at the baseline `ngl=99`, then override the planner's `ngl` explicitly in `config/user.json` and compare `tg128` (generation tokens/s):
 
 ```json
 {
@@ -533,19 +533,19 @@ Run `bob gen && bob serve && bob bench` after editing.
 | `noMmap: true` | Heap RAM from startup; no disk seeks during inference |
 | `noMmap + mlockBig` | Heap RAM, pinned: OS cannot evict; consistent low latency |
 
-The 7950X3D's V-Cache (96 MB L3) reduces main-memory pressure for CPU-resident layer data. Pair with `numa: "isolate"` to keep those accesses on the V-Cache CCD.
+The 7950X3D's V-Cache (96 MB L3) reduces main-memory pressure for CPU-resident layer data. Pair it with `numa: "isolate"` to keep those accesses on the V-Cache CCD.
 
 ## Speculative decoding
 
-`draftRole: "fim"` on the `coder` model (enabled by default in all profiles) uses the always-resident `fim` model as a draft: `fim` proposes N tokens, and `coder` verifies them in a single forward pass. When the draft is correct (roughly 70 to 80% of the time on coding tasks), the large model accepts all N tokens without spending compute on each one individually, effectively multiplying generation throughput.
+`draftRole: "fim"` on the `coder` model (enabled by default in all profiles) uses the always-resident `fim` model as a draft: `fim` proposes N tokens, and `coder` verifies them in a single forward pass. When the draft is correct (roughly 70 to 80% of the time on coding tasks), the large model accepts all N tokens without spending compute on each one, effectively multiplying generation throughput.
 
 Expected speedup: **20 to 40% on generation-heavy tasks** (autocomplete, inline edits, code generation). No quality change: the large model rejects incorrect draft tokens and falls back to its own output.
 
-**Tokenizer constraint:** Only the `coder` → `fim` pairing is safe. Qwen3 (used by `chat` and `planner`) has a different tokenizer vocabulary from Qwen2.5 (used by `coder` and `fim`). Mismatched vocabularies cause the large model to reject nearly all draft tokens, eliminating the speedup and potentially producing garbled output. Do not add `draftRole` to `chat` or `planner`.
+**Tokenizer constraint:** only the `coder` → `fim` pairing is safe. Qwen3 (used by `chat` and `planner`) has a different tokenizer vocabulary from Qwen2.5 (used by `coder` and `fim`). Mismatched vocabularies cause the large model to reject nearly all draft tokens, eliminating the speedup and potentially producing garbled output. Do not add `draftRole` to `chat` or `planner`.
 
 **Disable:** Remove `draftRole` from the `coder` entry in `config/models.json`, then run `bob gen`.
 
-**Verify it's active:** run `bob gen`, then grep the generated config for the draft-model flag:
+**Verify it's active:** run `bob gen`, then grep the generated config for the draft-model flag.
 
 Linux:
 ```bash

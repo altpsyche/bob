@@ -1,8 +1,8 @@
 # A Day with bob
 
-This is a hands-on tour of every feature in the stack, structured as a typical working session. Follow it end-to-end the first time to see everything in action. After that, jump to any section as a quick reference.
+A hands-on tour of every feature in the stack, structured as a working session. Follow it end-to-end the first time, then jump to any section as a quick reference.
 
-**Prerequisites:** Bob is installed and the `bob` command resolves in a fresh terminal. The quickest path is the one-command installer: on Linux, `curl -fsSL https://raw.githubusercontent.com/altpsyche/bob/main/install/install.sh | sh`; on Windows PowerShell, `irm https://raw.githubusercontent.com/altpsyche/bob/main/install/install.ps1 | iex`. The manual `install_prereqs` + `setup` path still works too. Bob is one Python engine, so the same commands work on Linux and Windows. If setup isn't done yet, start at [SETUP.md](SETUP.md).
+**Prerequisites:** Bob is installed and the `bob` command resolves in a fresh terminal. The quickest path is the one-command installer: on Linux, `curl -fsSL https://raw.githubusercontent.com/altpsyche/bob/main/install/install.sh | sh`; on Windows PowerShell, `irm https://raw.githubusercontent.com/altpsyche/bob/main/install/install.ps1 | iex`. The manual `install_prereqs` + `setup` path also works. Bob is one Python engine, so the same commands work on Linux and Windows. If setup isn't done yet, start at [SETUP.md](SETUP.md).
 
 ---
 
@@ -32,13 +32,13 @@ This is a hands-on tour of every feature in the stack, structured as a typical w
 
 ### Just run `bob`
 
-There is one way in. Open a terminal and run:
+Open a terminal and run:
 
 ```bash
 bob
 ```
 
-That opens the interactive shell, Bob's home base. Type a message to chat; slash-commands drive everything else. **Inference auto-starts the first time you talk**, so there is nothing to launch first. You'll see a splash with the active model, session, and tool/skill counts, then a prompt:
+This opens the interactive shell, Bob's home base. Type a message to chat; slash-commands drive everything else. **Inference auto-starts the first time you talk**, so there is nothing to launch first. A splash shows the active model, session, and tool/skill counts, then a prompt:
 
 ```
 Bob  ·  chat / Qwen3-14B  ·  session new  ·  12 tools · 6 skills
@@ -61,11 +61,11 @@ From inside the shell:
 | `/status` · `/logs` · `/stop` | Endpoint + session status · recent server log · stop inference |
 | `/theme [reload]` · `/clear` · `/help` · `/exit` | Reload colours · clear screen · reference · leave |
 
-The shell is the home base. Every capability is also a plain one-shot `bob <verb>` command (covered below) for scripting and piping.
+Every capability is also a one-shot `bob <verb>` command (covered below) for scripting and piping.
 
 ### Optional: pre-warm the stack in the background
 
-Auto-start is on-demand, it brings inference up when you first talk, and you never have to think about it. If you'd rather warm everything up ahead of time, or keep it running for tools outside the terminal (Open WebUI, VS Code, n8n), pre-warm it:
+Auto-start is on-demand: it brings inference up when you first talk. To warm everything up ahead of time, or keep it running for tools outside the terminal (Open WebUI, VS Code, n8n), pre-warm it:
 
 ```bash
 bob up
@@ -83,7 +83,7 @@ Check what's running:
 bob status
 ```
 
-You should see the models listed: `planner`, `coder`, `chat`, `fim`, `embed`, `vision`, `agent`. None are loaded into VRAM yet; they load on first use and stay there until idle. `fim` (autocomplete) and `embed` (search indexing) are pinned and never unload.
+The models are listed: `planner`, `coder`, `chat`, `fim`, `embed`, `vision`, `agent`. None are loaded into VRAM yet; they load on first use and stay until idle. `fim` (autocomplete) and `embed` (search indexing) are pinned and never unload.
 
 > **Pro models:** If you've set `DEEPSEEK_API_KEY` and `ZHIPU_API_KEY`, three additional models are available via the LiteLLM proxy at `:8081`: `chat-pro`, `planner-pro`, `coder-pro`. These route directly to DeepSeek and Zhipu APIs, no local GPU required, no platform fee. See [USAGE.md § Pro models](USAGE.md#pro-models-api-backed-no-platform-fee).
 
@@ -91,7 +91,7 @@ You should see the models listed: `planner`, `coder`, `chat`, `fim`, `embed`, `v
 
 ### Start the add-on services (opt-in, on demand)
 
-A default install is 100% Docker-free, and none of the add-on services start at setup. Bring them up individually when you want them:
+A default install is 100% Docker-free, and no add-on service starts at setup. Bring them up individually when you want them:
 
 - **n8n** runs natively on the Node toolchain (no Docker): `bob services n8n start`
 - **SearXNG** is an opt-in, self-hosted meta-search that runs in Docker: `bob services searxng start` (runs a guided Docker install first if Docker is missing)
@@ -113,11 +113,11 @@ The services are available at:
 
 ## Feature 1: The bob shell + Chat
 
-**What it is:** A multi-turn conversational assistant in your terminal. Bob knows your name and work context (from onboarding), routes to the right model based on what you're doing, and recalls memory automatically.
+**What it is:** A multi-turn conversational assistant in your terminal. Bob knows your name and work context (from onboarding), routes to the right model for the task, and recalls memory automatically.
 
 ### Chat in the shell
 
-Just run `bob` and type. Bob streams the response; keep typing to continue the conversation. Switch the role without leaving:
+Run `bob` and type. Bob streams the response; keep typing to continue. Switch the role without leaving:
 
 ```
 > /model planner        # deeper reasoning, thinking mode on
@@ -127,7 +127,7 @@ Just run `bob` and type. Bob streams the response; keep typing to continue the c
 
 ### One-shot from the terminal
 
-No shell, pipe a question and get an answer. These are the scripting forms, identical on every OS:
+Skip the shell: pipe a question and get an answer. These are the scripting forms, identical on every OS:
 
 ```bash
 bob chat "what is the difference between a mutex and a semaphore?"
@@ -160,7 +160,7 @@ bob recall "current project"   # blended-rank search; prints matching memories
 bob memory list                # browse what Bob knows (typed: profile/preference/project/fact/…)
 ```
 
-But mostly you don't manage it by hand. Open the `bob` shell and just talk:
+But mostly you don't manage it by hand. Open the `bob` shell and talk:
 
 ```
 bob                                    # the shell, persisted sessions
@@ -179,7 +179,7 @@ Full reference: [MEMORY.md](MEMORY.md). Disable memory by adding `{"memory": {"e
 
 ## Feature 2: Open WebUI (Browser Chat)
 
-**What it is:** A full-featured chat interface in your browser, like ChatGPT but running locally. It's opt-in, enable it with `setup.sh --with-webui` (or `setup.bat --with-webui`), or launch it any time with `bob webui`.
+**What it is:** A full-featured chat interface in your browser, like ChatGPT but running locally. Opt-in: enable it with `setup.sh --with-webui` (or `setup.bat --with-webui`), or launch it any time with `bob webui`.
 
 Open http://localhost:3000. On first visit, create a local account (username and password stored locally, with no signup email or server involved).
 
@@ -188,24 +188,24 @@ Try a first message:
 Explain what a hash map is in simple terms.
 ```
 
-The `chat` model is used by default. You'll notice a brief pause before the first word appears; the model is loading into VRAM. Subsequent messages in the same session are much faster.
+The `chat` model is used by default. The first word takes a moment while the model loads into VRAM; later messages in the same session are much faster.
 
 ### Switching models
 
-At the top of the chat, click the model name dropdown and switch to `planner`. This is the larger reasoning model, better for complex questions, architecture discussions, or anything where you want it to think carefully before answering.
+At the top of the chat, click the model dropdown and switch to `planner`, the larger reasoning model, better for complex questions, architecture discussions, or anything you want it to think through before answering.
 
-Switch back to `coder` for programming questions. It's faster and more precise on code tasks.
+Switch back to `coder` for programming questions; it's faster and more precise on code tasks.
 
 ### Thinking mode and /no_think
 
-The `planner` and `chat` models use a reasoning scratchpad by default. Before writing a response they think through the problem silently. This produces better answers for hard questions, but adds latency.
+The `planner` and `chat` models use a reasoning scratchpad by default, thinking through the problem silently before responding. This produces better answers for hard questions but adds latency.
 
 For quick questions where you don't need deep reasoning:
 ```
 What's the keyboard shortcut to close a tab in Chrome? /no_think
 ```
 
-Adding `/no_think` at the end of your message skips the scratchpad. Use it for simple lookups. Leave it off for planning, debugging, or architecture questions.
+Adding `/no_think` at the end of a message skips the scratchpad. Use it for simple lookups; leave it off for planning, debugging, or architecture questions.
 
 ### Document chat (RAG)
 
@@ -226,13 +226,13 @@ Open VS Code. The Continue panel is in the left sidebar (the Continue icon, or p
 
 ### Autocomplete
 
-Open any source file and start typing a function. After a second or two, ghost text appears suggesting how to continue. Press `Tab` to accept, or keep typing to dismiss. This is the `fim` model: small, fast, and pinned in VRAM so it never causes a reload delay.
+Open any source file and start typing a function. After a second or two, ghost text suggests how to continue. Press `Tab` to accept, or keep typing to dismiss. This is the `fim` model: small, fast, and pinned in VRAM so it never causes a reload delay.
 
 Try typing in a Python file:
 ```python
 def calculate_fibonacci(n):
 ```
-Ghost text will suggest the body. Tab to accept.
+Ghost text suggests the body. Tab to accept.
 
 ### Chat panel
 
@@ -246,7 +246,7 @@ To include a specific file as context, type `@` in the chat box:
 @filesystem src/parser.py what does the parse_line function do?
 ```
 
-To include the current file automatically, select some code before pressing `Ctrl+L` and it's included as context.
+To include the current file, select some code before pressing `Ctrl+L`.
 
 ### Web search in chat
 
@@ -255,7 +255,7 @@ With the opt-in SearXNG service running (`bob services searxng start`), type `@w
 @web latest Python async best practices 2025
 ```
 
-Continue sends the query to your local SearXNG, gets the top results, and gives them to the model as context before answering. Your search never goes to Google directly. (The `@web` integration uses the SearXNG MCP, so it needs that opt-in service running; plain `bob` agent and CLI web search do not.)
+Continue sends the query to your local SearXNG, gets the top results, and passes them to the model as context before answering. Your search never goes to Google directly. (The `@web` integration uses the SearXNG MCP, so it needs that opt-in service running; plain `bob` agent and CLI web search do not.)
 
 ### Inline edit
 
@@ -268,7 +268,7 @@ A diff appears inline. Press `Ctrl+Enter` (or click Accept) to apply it, or `Ctr
 
 ### Switching between coder and planner
 
-At the bottom of the Continue chat panel, there's a model dropdown. Use `coder` for everyday edits and quick questions. Switch to `planner` when you want to discuss architecture or get deeper reasoning. Switching models causes a brief VRAM swap (a few seconds).
+The model dropdown is at the bottom of the Continue chat panel. Use `coder` for everyday edits and quick questions; switch to `planner` for architecture or deeper reasoning. Switching models causes a brief VRAM swap (a few seconds).
 
 ---
 
@@ -286,7 +286,7 @@ Open the Cline panel (C icon in the sidebar). If you haven't configured it yet:
 
 ### Your first Cline task
 
-Give it a specific, contained task. Cline works best when the goal is clear:
+Give it a specific, contained task; Cline works best when the goal is clear:
 ```
 Add a --verbose flag to the CLI that prints each step to stderr as it runs.
 Look at src/cli.py to understand the current structure first.
@@ -306,15 +306,15 @@ In Cline settings, enable **"Use different models for Plan and Act"**:
 - Plan model: `planner`
 - Act model: `coder`
 
-With this on, Cline uses `planner` (the larger reasoning model) to figure out the approach, then switches to `coder` to write the actual code. This costs a VRAM swap between models, but the plans are significantly better for complex tasks.
+With this on, Cline uses `planner` to work out the approach, then switches to `coder` to write the code. This costs a VRAM swap, but the plans are significantly better for complex tasks.
 
-> **Tip:** Keep Cline tasks focused. If the conversation history gets long, start a new task. Long histories consume context window quickly.
+> **Tip:** Keep Cline tasks focused. If the conversation history gets long, start a new task; long histories consume context window quickly.
 
 ---
 
 ## Feature 5: Aider (Terminal Plan-then-Edit)
 
-**What it is:** A terminal coding agent with a genuine planning step. `planner` describes what needs to change in plain English; `coder` turns that into file edits. You review the plan before any file is touched.
+**What it is:** A terminal coding agent with a genuine planning step. `planner` describes the changes in plain English; `coder` turns that into file edits. You review the plan before any file is touched.
 
 Open a terminal, navigate to a project, and start aider:
 
@@ -351,7 +351,7 @@ What happens:
 > /drop src/auth.py    # remove from context when done
 ```
 
-aider commits each accepted edit to git automatically. Work on a branch so `/undo` stays clean.
+aider commits each accepted edit to git automatically. Work on a branch to keep `/undo` clean.
 
 ### When to use aider vs Cline
 
@@ -366,7 +366,7 @@ aider commits each accepted edit to git automatically. Work on a branch so `/und
 
 ## Feature 6: Fabric (Shell Pattern Pipes)
 
-**What it is:** Named prompt patterns you pipe text through in the terminal. Instead of writing the same system prompt every time ("summarize this in bullet points, formatted as..."), you pipe to `fabric --pattern <name>`.
+**What it is:** Named prompt patterns you pipe text through in the terminal. Instead of writing the same system prompt every time ("summarize this in bullet points, formatted as..."), pipe to `fabric --pattern <name>`.
 
 First-time setup (once):
 ```bash
@@ -406,11 +406,11 @@ cat architecture-doc.md | fabric --pattern analyze_claims --model planner
 
 ## Feature 7: SearXNG (Private Web Search)
 
-**What it is:** An opt-in, self-hosted meta-search engine at http://localhost:8888. You type a query, SearXNG sends it to Google, Bing, DuckDuckGo, and others in parallel, and shows you combined results. Your searches aren't linked to any account. Run it when you want a private search UI or the Continue `@web` integration.
+**What it is:** An opt-in, self-hosted meta-search engine at http://localhost:8888. You type a query, SearXNG sends it to Google, Bing, DuckDuckGo, and others in parallel, and shows combined results. Your searches aren't linked to any account. Run it when you want a private search UI or the Continue `@web` integration.
 
 > **You usually don't need this for the agent.** Bob's built-in `web_search` tool uses the in-process `ddgs` metasearch provider, so plain agent and CLI web search work out of the box with no Docker and no SearXNG. SearXNG is the opt-in upgrade for a browser search page and Continue's `@web`.
 
-Start it, then open http://localhost:8888 and try a search. Results come from multiple engines simultaneously.
+Start it, then open http://localhost:8888 and try a search. Results come from multiple engines at once.
 
 ```bash
 bob services searxng start
@@ -429,7 +429,7 @@ Now type `s <query>` in the address bar to search privately.
 
 ### @web in Continue.dev
 
-This is where SearXNG integrates with your coding workflow. In the Continue chat panel:
+SearXNG integrates with your coding workflow through the Continue chat panel:
 
 ```
 @web what are the breaking changes in Python 3.13?
@@ -437,7 +437,7 @@ This is where SearXNG integrates with your coding workflow. In the Continue chat
 @web FastAPI background tasks best practices
 ```
 
-Continue queries SearXNG, includes the top results as context, then asks the model. So the model answers with current information, not just what it was trained on. This is especially useful for library releases, recent bug fixes, and anything that changes frequently.
+Continue queries SearXNG, includes the top results as context, then asks the model, so the answer reflects current information rather than only training data. Especially useful for library releases, recent bug fixes, and anything that changes frequently.
 
 If `@web` returns nothing, check that the SearXNG service is running: `bob services status` (start it with `bob services searxng start`).
 
@@ -445,7 +445,7 @@ If `@web` returns nothing, check that the SearXNG service is running: `bob servi
 
 ## Feature 8: n8n (Workflow Automation)
 
-**What it is:** A visual workflow builder at http://localhost:5678. Connect triggers (a schedule, a webhook, a file change) to actions (call the local LLM, send an email, post to Slack) without writing scripts. n8n is opt-in and runs natively on the Node toolchain (no Docker container in the default path).
+**What it is:** A visual workflow builder at http://localhost:5678. Connect triggers (a schedule, a webhook, a file change) to actions (call the local LLM, send an email, post to Slack) without writing scripts. n8n is opt-in and runs natively on the Node toolchain (no Docker in the default path).
 
 Start it, then open http://localhost:5678. On first visit, create a local account.
 
@@ -455,7 +455,7 @@ bob services n8n start
 
 ### Import the starter workflow
 
-A ready-to-import workflow is at `tools/n8n-workflows/daily-research-digest.json`. It runs daily at 8am, fetches RSS articles, cross-references each one via SearXNG, summarizes them with the local LLM, and posts Discord embeds with clickable links. Articles seen in the last 7 days are skipped automatically.
+A ready-to-import workflow is at `tools/n8n-workflows/daily-research-digest.json`. It runs daily at 8am, fetches RSS articles, cross-references each one via SearXNG, summarizes them with the local LLM, and posts Discord embeds with clickable links. Articles seen in the last 7 days are skipped.
 
 **Import steps:**
 1. Open http://localhost:5678 → top-right menu (≡) → **Import from file**
@@ -478,7 +478,7 @@ See `tools/n8n-workflows/README.md` for troubleshooting and RSS customization ti
 
 ### Build your own: Commit message generator
 
-To understand how n8n works by building from scratch:
+To learn how n8n works, build one from scratch:
 
 1. Click **New Workflow**
 2. Add a **Webhook** trigger node → Method: `POST` → copy the webhook URL
@@ -511,9 +511,9 @@ git diff --staged | jq -Rs '{diff: .}' | \
 
 ## Feature 9: Langfuse (LLM Observability)
 
-**What it is:** Opt-in LLM observability. Bob traces agent runs out of the box with a local, Docker-free file sink: spans land in `logs/traces/<trace_id>.jsonl`, and you read them with `bob traces` (`bob traces list`, then `bob traces show <id>`). Tracing is gated by `agent.tracing` in `config/user.json` (default off); turn it on and you get inspectable traces with no extra services.
+**What it is:** Opt-in LLM observability. Bob traces agent runs out of the box with a local, Docker-free file sink: spans land in `logs/traces/<trace_id>.jsonl`, and you read them with `bob traces` (`bob traces list`, then `bob traces show <id>`). Tracing is gated by `agent.tracing` in `config/user.json` (default off); turn it on for inspectable traces with no extra services.
 
-Langfuse is the opt-in upgrade: a dashboard at http://localhost:3001 (Docker) that records every AI request routed through LiteLLM (the full prompt, response, latency, token counts, and retries) with a rich UI. Useful for understanding what the model actually received (not what you think you sent), debugging unexpected answers, and seeing which workflows are expensive.
+Langfuse is the opt-in upgrade: a dashboard at http://localhost:3001 (Docker) that records every AI request routed through LiteLLM (full prompt, response, latency, token counts, and retries) with a rich UI. Useful for seeing what the model actually received (not what you think you sent), debugging unexpected answers, and finding which workflows are expensive.
 
 Start Langfuse when you want the dashboard:
 
@@ -525,7 +525,7 @@ If Docker isn't installed, this runs a guided install first (Langfuse runs in Do
 
 ### Enabling Langfuse tracing
 
-Langfuse only captures requests routed through the LiteLLM proxy (port 8081). Direct requests to port 8080 are invisible. Here's how to wire it up:
+Langfuse only captures requests routed through the LiteLLM proxy (port 8081); direct requests to port 8080 are invisible. To wire it up:
 
 **Step 1: Get API keys from Langfuse:**
 1. Open http://localhost:3001
@@ -575,17 +575,18 @@ All bundled clients (Continue, aider, Cline, fabric, Open WebUI, `bob chat`) are
 bob code "explain what a mutex is"
 ```
 
-Open http://localhost:3001 → **Traces**. Within a few seconds you'll see the request appear with the full prompt, the response, and timing information.
+Open http://localhost:3001 → **Traces**. Within a few seconds the request appears with the full prompt, the response, and timing information.
 
 ### Reading a trace
 
-Click any trace to expand it. You'll see:
+Click any trace to expand it:
 - **Input**: the exact messages the model received, including system prompt
 - **Output**: the model's full response
 - **Latency**: time to first token and total generation time
 - **Token usage**: prompt tokens + completion tokens + cost estimate (at $0 since it's local, but useful for seeing what's expensive)
 
 This is how you debug "why did the model respond like that?": you see the exact system prompt and conversation history, not your application's internal representation.
+
 
 ---
 
@@ -619,7 +620,8 @@ bob voice --agent      # routes each voice turn through the full agent tool loop
 
 From inside the `bob` shell, `/voice` does the same thing. Bob listens for speech, transcribes it, sends the text to the chat model, then reads the response aloud. The energy gate in `scripts/bob-voice-capture.py` swallows silent moments so near-silence doesn't produce empty transcripts.
 
-The voice loop uses a dedicated system prompt that instructs the model to reply in plain spoken sentences: no asterisks, no bullet points, no markdown. Bob's `format_for_speech` sanitiser also strips any remaining markdown symbols before the text reaches piper, so Bob never reads `**bold**` or `- item` aloud.
+
+The voice loop uses a dedicated system prompt that tells the model to reply in plain spoken sentences: no asterisks, no bullet points, no markdown. Bob's `format_for_speech` sanitiser also strips any remaining markdown symbols before the text reaches piper, so Bob never reads `**bold**` or `- item` aloud.
 
 **Tips:**
 - Use headphones to stop the mic from picking up the speaker.
@@ -633,7 +635,7 @@ The voice loop uses a dedicated system prompt that instructs the model to reply 
 
 **Prerequisites:** The vision GGUF is downloaded by `bob fetch` (it's part of the 16gb profile). The mmproj is downloaded by `bob setup-voice`. Vision is enabled by default; toggle it with `{"vision": {"enabled": true}}` in `config/user.json`.
 
-Vision uses Qwen2-VL-7B to describe images and answer visual questions. The model loads on demand from the swap group and unloads after 30 s of idle.
+Vision uses Qwen2-VL-7B to describe images and answer visual questions. The model loads on demand from the swap group and unloads after 30 s idle.
 
 ### Try it: describe an image file
 
@@ -666,7 +668,7 @@ bob screenshot --pro "Explain the code on screen in detail"
 
 ### How it works
 
-Images are sent as `image_url` data URIs in the OpenAI chat completions format. They route through LiteLLM → llama-swap → a dedicated llama-server instance with `--mmproj` for the vision encoder. Flash attention is automatically disabled for the vision model (flash-attn is incompatible with multimodal projection in the current llama.cpp build; the config generator handles this transparently).
+Images are sent as `image_url` data URIs in the OpenAI chat completions format. They route through LiteLLM → llama-swap → a dedicated llama-server instance with `--mmproj` for the vision encoder. Flash attention is disabled for the vision model (flash-attn is incompatible with multimodal projection in the current llama.cpp build; the config generator handles this transparently).
 
 `--pro` skips llama-swap entirely and routes directly to the DeepSeek API via the `vision-pro` LiteLLM entry. No separate key needed; it uses `DEEPSEEK_API_KEY`.
 
@@ -674,9 +676,9 @@ Images are sent as `image_url` data URIs in the OpenAI chat completions format. 
 
 ## Feature 12: Bob Agent (Local Tool Use)
 
-**What it is:** An autonomous agent loop that runs locally. You give it a goal; it decides which tools to call, executes them, and iterates until it has a final answer. Everything (the reasoning, the tool calls, the results) stays on your machine.
+**What it is:** An autonomous agent loop that runs locally. You give it a goal; it decides which tools to call, executes them, and iterates until it has a final answer. Everything (reasoning, tool calls, results) stays on your machine.
 
-**Prerequisites:** None beyond setup, inference **auto-starts** the first time you run a goal, so you don't need a prior `bob up`. The `agent` model is included in the 16 GB profile and loads on first use. Run `bob doctor` if you want to verify everything is wired.
+**Prerequisites:** None beyond setup. Inference **auto-starts** the first time you run a goal, so no prior `bob up` is needed. The `agent` model is included in the 16 GB profile and loads on first use. Run `bob doctor` to verify everything is wired.
 
 ### Try it: one-shot goals
 
@@ -686,7 +688,7 @@ From the shell, use `/agent <goal>`; from a script, use `bob agent "<goal>"`:
 bob agent "what is the git status of this repo?"
 ```
 
-You'll see the agent's thinking process in your terminal:
+The agent's thinking process prints to your terminal:
 ```
   → git_status({})
     M config/user.json
@@ -696,7 +698,7 @@ You'll see the agent's thinking process in your terminal:
 The repo has three modified files: config/user.json, scripts/bob_loop.py, and scripts/tools/git.py.
 ```
 
-Cyan lines (`→`) show tool calls. Dark gray shows the tool output. The final answer prints to stdout.
+Cyan lines (`→`) show tool calls, dark gray shows tool output, and the final answer prints to stdout.
 
 ### Try it: multi-step reasoning
 
@@ -712,7 +714,7 @@ The agent calls `git_log` and `git_diff`, then synthesises the answer from both 
 bob agent "search for the latest llama.cpp release and summarise what changed"
 ```
 
-The agent calls `web_search` (via the built-in in-process `ddgs` metasearch, no Docker, no cloud, no tracking), fetches the top result with `web_fetch`, then summarises. No SearXNG or any add-on service is required.
+The agent calls `web_search` (via the built-in in-process `ddgs` metasearch, no Docker, no cloud, no tracking), fetches the top result with `web_fetch`, then summarises. No SearXNG or add-on service is required.
 
 ### Try it: memory + reasoning
 
@@ -728,7 +730,7 @@ The agent calls `memory_recall` to pull context from your memory DB, then `git_s
 bob agent --agency confirm "check git status and draft a commit message for the staged changes"
 ```
 
-With `confirm`, the agent pauses before each tool call and asks `Execute? [y/N]`. Useful when you want to supervise every step. Inside the shell, `/agency confirm` sets the same mode for the session.
+With `confirm`, the agent pauses before each tool call and asks `Execute? [y/N]`, useful when you want to supervise every step. Inside the shell, `/agency confirm` sets the same mode for the session.
 
 ### Schedule a background goal
 
@@ -738,7 +740,7 @@ bob agent schedule add morning-summary --cron "0 9 * * *" --goal "check git log 
 bob agent schedule list
 ```
 
-The recurring `BobAgent` task (registered with `bob agent install`: a cron entry on Linux, a Scheduled Task on Windows) runs every minute and fires any due entries. Results are stored in `data/schedules.json`. The scheduler always runs in `silent` mode, with no terminal output.
+The recurring `BobAgent` task (registered with `bob agent install`: a cron entry on Linux, a Scheduled Task on Windows) runs every minute and fires any due entries. Results are stored in `data/schedules.json`. The scheduler always runs in `silent` mode, no terminal output.
 
 ### Save a web page to memory
 
@@ -746,7 +748,7 @@ The recurring `BobAgent` task (registered with `bob agent install`: a cron entry
 bob clip https://news.ycombinator.com/item?id=12345678
 ```
 
-Fetches the page, strips HTML, summarises in 3 to 5 sentences, prints the summary, and stores `url: summary` to Bob's memory DB. Not an agent loop; one LLM call, very fast.
+Fetches the page, strips HTML, summarises in 3 to 5 sentences, prints the summary, and stores `url: summary` to Bob's memory DB. Not an agent loop: one LLM call, very fast.
 
 ### Serve via HTTP (for n8n and Open WebUI)
 
@@ -776,7 +778,7 @@ bob setup check     # dependency + registration checks  (same as `bob doctor --q
 bob doctor          # the above + runtime: endpoint reachable, GPU/VRAM, writable dirs, config parses
 ```
 
-`bob setup check` (equivalently `bob doctor --quick`) prints yes or no for each agent dependency (venv, Python packages, model file, tool loading, services, scheduled task) with the exact fix command for anything that fails. `bob doctor` is the superset; run it first when something's off.
+`bob setup check` (equivalently `bob doctor --quick`) prints yes or no for each agent dependency (venv, Python packages, model file, tool loading, services, scheduled task) with the exact fix command for anything that fails. `bob doctor` is the superset; run it when something's off.
 
 ---
 
@@ -787,7 +789,7 @@ bob doctor          # the above + runtime: endpoint reachable, GPU/VRAM, writabl
 - **Core agent tools**: memory, web, git, file, shell, fabric. List them with `bob tools`.
 - **Drop-in plugins**: `summarise`, `draft`, `search`, `play`. List them with `bob plugins list`. Add your own by dropping a `plugins/<name>/tool.py`.
 
-You use these three ways: (1) just ask Bob in the shell and let the agent pick them, (2) run `/agent <goal>`, or (3) invoke one deterministically for scripts/CI with `bob --run <tool> '{json}'` (one capability, no model, exact agent dispatch).
+Use them three ways: (1) ask Bob in the shell and let the agent pick them, (2) run `/agent <goal>`, or (3) invoke one deterministically for scripts/CI with `bob --run <tool> '{json}'` (one capability, no model, exact agent dispatch).
 
 ```bash
 bob tools           # core agent tools
@@ -796,13 +798,13 @@ bob plugins list    # drop-in plugins (summarise, draft, search, play)
 
 ### summarise
 
-Inside the shell, just ask: *"summarise docs/USAGE.md"*. To script it deterministically:
+Inside the shell, ask: *"summarise docs/USAGE.md"*. To script it deterministically:
 
 ```bash
 bob --run summarise_text '{"content": "long text here", "length": "short"}'
 ```
 
-Or summarise a file by piping it into the shell prompt / agent. Useful after a long meeting, for a quick digest of a changelog, or to compress a big file before you read it.
+Or summarise a file by piping it into the shell prompt / agent. Useful after a long meeting, for a quick digest of a changelog, or to compress a big file before reading.
 
 ### draft
 
@@ -830,14 +832,14 @@ Runs ripgrep (or `findstr` as fallback), then the LLM summarises what it found a
 
 ### play
 
-Ask Bob: *"play some lofi hip hop"*: handy in a voice session. Deterministic form:
+Ask Bob: *"play some lofi hip hop"* (handy in a voice session). Deterministic form:
 
 ```bash
 bob --run music_play '{"query": "lofi hip hop"}'
 bob --run music_play '{"query": "pink floyd the wall", "platform": "youtube"}'
 ```
 
-Opens Spotify via URI protocol if installed, otherwise opens YouTube Music in your browser. No API keys, no account needed.
+Opens Spotify via URI protocol if installed, otherwise YouTube Music in your browser. No API keys, no account needed.
 
 ---
 
@@ -1013,18 +1015,18 @@ Stop the inference stack to free VRAM:
 bob stop
 ```
 
-If you started any add-on services, stop them to free resources (optional; they're lightweight, you can leave them running):
+If you started any add-on services, stop them to free resources (optional; they're lightweight and can stay running):
 ```bash
 bob services stop
 ```
 
-Data is always preserved when you stop. Local file traces, Langfuse data, n8n workflows, and model files are all on disk. Tomorrow, just run `bob` again: inference auto-starts and picks up exactly where you left off.
+Data is always preserved when you stop. Local file traces, Langfuse data, n8n workflows, and model files are all on disk. Tomorrow, run `bob` again: inference auto-starts and picks up where you left off.
 
 ---
 
 ## What to Try First
 
-If this was your first read-through, here's a short sequence that touches every feature:
+For a first read-through, here's a short sequence that touches every feature:
 
 1. `bob`: open the shell, type a question, get a streaming answer, `/exit` to leave
 2. `bob diagnose`: confirm GPU, CUDA, and model files are all healthy

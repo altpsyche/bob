@@ -3,12 +3,12 @@
 Bob is one Python runtime that boots and runs the same on every supported OS. Portability comes from
 three pieces:
 
-- **`scripts/osenv.py`** — the OS seam. Every OS-specific behavior (data dir, secrets, package
+- **`scripts/osenv.py`**: the OS seam. Every OS-specific behavior (data dir, secrets, package
   install, notifications, process teardown, shell) funnels through here, so the rest of the code
   stays OS-agnostic.
-- **`scripts/bob_config.py`** — the Python config resolver. Builds the runtime config from
+- **`scripts/bob_config.py`**: the Python config resolver. Builds the runtime config from
   neutral JSON at startup; no generated cache is required off Windows.
-- **`scripts/bob/kernel.py`** — the cold-start provisioner. Installs prerequisites, builds the
+- **`scripts/bob/kernel.py`**: the cold-start provisioner. Installs prerequisites, builds the
   engine, creates venvs, generates configs, downloads models, and wires clients. The two shell stubs
   (`setup.sh` / `setup.bat`) just ensure `python3` is present and hand off to `python -m bob.kernel`.
 
@@ -16,11 +16,11 @@ three pieces:
 
 Bob's runtime config is resolved live, per OS, from neutral sources:
 
-- **`config/defaults.json`** — the neutral single source of truth: `ports`, `roleTable`, and
+- **`config/defaults.json`**: the neutral single source of truth: `ports`, `roleTable`, and
   the `runtime.*` defaults (persona, memory, vision, voice, agent). Both the Python runtime and the
   provisioner read it.
-- **`config/models.json`** — the model registry (roles, files, VRAM, SHA256, profiles).
-- **`config/user.json`** — *your* override, in the runtime-config shape, e.g.
+- **`config/models.json`**: the model registry (roles, files, VRAM, SHA256, profiles).
+- **`config/user.json`**: *your* override, in the runtime-config shape, e.g.
   `{"agent": {"maxSteps": 8}}` or `{"peers": {"deepseek": {"apiKey": "…"}}}`. This is the documented
   authoring surface on every OS. (A `config/user.toml` is also accepted on Python 3.11+.)
 
@@ -48,14 +48,14 @@ Drop a `config/user.json`:
 { "litellmPort": 8081 }
 ```
 
-Set the base URL your clients call to `http://localhost:8081/v1` (or wherever your endpoint lives —
+Set the base URL your clients call to `http://localhost:8081/v1` (or wherever your endpoint lives,
 the port is the seam). The master key resolves through the secret seam (`litellmKey`, default
 `sk-local`), so set it via env or keychain rather than a tracked file. At startup Bob **probes** the
 endpoint (`bob_core.capability_probe`) and degrades with a clear message if it is unreachable,
 rather than assuming a particular provisioner ran.
 
 The agent core (`bob agent`, `bob agent serve`, `bob agent mcp`) needs nothing more than a resolvable
-config and a reachable endpoint — no local build required.
+config and a reachable endpoint, no local build required.
 
 ## Supported OS / package-manager matrix
 
@@ -67,8 +67,8 @@ short version:
 |----|--------|------------------|
 | **Linux** (glibc) | gated on the CPU tier every PR; NVIDIA CUDA proven in the release-tag GPU tier | `apt`, `dnf`, `pacman`, `zypper`, plus **`rpm-ostree`** for atomic Fedora (Bazzite/Silverblue) |
 | **Windows 11** | gated on the CPU tier every PR; NVIDIA CUDA proven in the release-tag GPU tier | `scoop` shim for the `bob` command; toolchain via `install_prereqs.bat` |
-| **macOS** | not yet | — |
-| **AMD / ROCm** | not yet | — |
+| **macOS** | not yet | n/a |
+| **AMD / ROCm** | not yet | n/a |
 
 Package installation goes through `osenv` (`PACKAGE_MAP` / `resolve_package_*` / `install_package`),
 which selects the right manager for the host. On atomic Fedora the toolchain is layered via
@@ -80,8 +80,8 @@ which selects the right manager for the host. On atomic Fedora the toolchain is 
 venvs exist):
 
 ```
-python -m bob.kernel prereqs [--cpu]     # Tier 0 — toolchain + a venv-compatible Python
-python -m bob.kernel setup [flags]       # Tier 1 — the fresh-machine orchestrator
+python -m bob.kernel prereqs [--cpu]     # Tier 0, toolchain + a venv-compatible Python
+python -m bob.kernel setup [flags]       # Tier 1, the fresh-machine orchestrator
 python -m bob.kernel bootstrap [flags]   #          submodules -> build -> venvs -> gen -> fetch
 python -m bob.kernel venv <name...>      #          create tools/venv-<name>
 python -m bob.kernel build-swap          #          build the llama-swap proxy (Go)
@@ -97,7 +97,7 @@ the step-by-step for advanced users.**
 
 [`versions.lock`](../versions.lock) (neutral JSON, read on every OS) pins submodule commits, per-venv
 requirements, minimum toolchain versions, and the model manifest (repo → revision → sha256). It is
-generated from those sources (`bob lock`), staleness-gated in CI, and installs run *from the lock* —
+generated from those sources (`bob lock`), staleness-gated in CI, and installs run *from the lock*,
 each model download's checksum is verified, fail-loud on mismatch. `bob doctor` reports drift,
 `bob version` reports the release, and `bob update` moves between releases and rolls the build output
 back on a failed upgrade.

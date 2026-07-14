@@ -1,6 +1,6 @@
 # Contributing to Bob
 
-Bob is a personal, local-first AI assistant — a single Python CLI + agent harness (`python -m bob`)
+Bob is a personal, local-first AI assistant, a single Python CLI + agent harness (`python -m bob`)
 that runs cross-platform on Linux and Windows (see
 [docs/PORTABILITY.md](docs/PORTABILITY.md)). This note captures the **conventions** the codebase
 already follows so new code stays consistent. Most of it is enforced by the architecture, not by tooling.
@@ -49,13 +49,13 @@ See [plugins/AUTHORING.md](plugins/AUTHORING.md) for the three-layer capability 
    `bob_core.load_defaults()` (→ `_PORT_DEFAULTS` / `get_role`). Never re-inline a port number or
    role literal; add it to `defaults.json`. The runtime config resolves live from
    `defaults.json` + `config/user.json` via [scripts/bob_config.py](scripts/bob_config.py)
-   `resolve_runtime_config()` — the same way on every OS.
+   `resolve_runtime_config()`, the same way on every OS.
 
 9. **Portability seams.** OS-specific behavior goes through one seam, not scattered
    branches: [scripts/osenv.py](scripts/osenv.py) for shell / data-dir / secrets / notify;
    secrets resolve via `osenv.secret()` (env → keychain → `data/secrets.json`), never a git-tracked
    file. New `bob` commands are added to the command registry
-   ([scripts/bob/registry.py](scripts/bob/registry.py)) — `registry.COMMANDS` is the sole source for
+   ([scripts/bob/registry.py](scripts/bob/registry.py)), `registry.COMMANDS` is the sole source for
    dispatch + help, so adding a verb is one entry + one handler with no generated table to keep in sync.
 
 ## Tests
@@ -84,7 +84,7 @@ cancellation, concurrency); see the Module N tests for the pattern.
 
 ## Verifying a change
 
-- One gate for everything: `python scripts/check.py` — `py_compile` over `scripts/`/`plugins/`/`tests/`,
+- One gate for everything: `python scripts/check.py`, `py_compile` over `scripts/`/`plugins/`/`tests/`,
   a `versions.lock`↔sources sync check, the git exec-bits on the shell entrypoints, and the unittest
   suite; exits non-zero on the first failing category. Run it with the project interpreter:
 

@@ -1,10 +1,10 @@
 # USAGE
 
-This document is the full command and usage reference: the interactive shell, one-shot verbs, the lifecycle commands that keep inference running, the OpenAI-compatible API, the agent system, client configuration, opt-in ecosystem services, and customization. For installation, see [SETUP.md](SETUP.md). For performance tuning and updating the engine, see [TUNING.md](TUNING.md).
+The full command and usage reference: interactive shell, one-shot verbs, the lifecycle commands that keep inference running, the OpenAI-compatible API, the agent system, client configuration, opt-in ecosystem services, and customization. For installation, see [SETUP.md](SETUP.md). For performance tuning and updating the engine, see [TUNING.md](TUNING.md).
 
 > **New here?** [DAY-IN-THE-LIFE.md](DAY-IN-THE-LIFE.md) walks through every feature in one hands-on session. It's a better starting point than reading this document top to bottom.
 
-Bob is Python-only and cross-OS. The same `bob <verb>` commands work identically on Linux and Windows, only install, PATH, and shell-integration steps differ per OS, and those are shown in paired blocks below.
+Bob is Python-only and cross-OS. The same `bob <verb>` commands work identically on Linux and Windows. Only install, PATH, and shell-integration steps differ per OS; those are shown in paired blocks below.
 
 ## The one way to use Bob
 
@@ -30,7 +30,7 @@ You can also run any capability directly, without opening the shell, for quick q
 
 ### Verbs vs. tools vs. plugins
 
-Three different things are easy to confuse:
+Three easily confused things:
 
 - **Verbs** are `bob <name>` commands (everything in `bob help`, sourced from `scripts/bob/registry.py`). `chat`, `agent`, `voice`, `up`, `setup` are verbs.
 - **Agent tools** are what the agent loop calls *on your behalf*: memory, web, git, file, shell, fabric. They are not `bob <verb>` commands; they run inside `bob agent` / the shell. List them with `bob tools list`.
@@ -59,7 +59,7 @@ In the shell:
 
 Type `/` to filter the command list. Gated tools (e.g. `shell_run`, or any tool under `/agency confirm`) show an inline **y/N/a** approval; **Ctrl-C** cancels the in-flight turn and returns to the prompt. Inference auto-starts on your first turn if the stack isn't already up.
 
-**Two surfaces, one core.** The shell's `/commands` and the terminal's `bob <verb>` are *not* competing menus: use `bob <verb>` for scripting, cron, and SSH one-shots; use `/command` to drive the same thing from inside the cockpit without leaving. The lifecycle/cockpit commands live on **both**: `bob up`/`/up`, `bob stop`/`/stop`, `bob status`/`/status`, plus `restart`, `services`, `webui`, `logs`: and each is a thin front door over one shared core (e.g. [`scripts/tools/stack.py`](../scripts/tools/stack.py)), never a second implementation. Session-only state (`/model`, `/agency`, `/session`, `/theme`, `/clear`) is shell-only by design; provisioning and one-shot conversation (`chat`, `fetch`, `build`, `setup`, …) are terminal-only. `bob help` (from the terminal) prints the same generated command catalog and, at the end, lists which commands are also `/commands` in the shell.
+**Two surfaces, one core.** The shell's `/commands` and the terminal's `bob <verb>` are not competing menus: use `bob <verb>` for scripting, cron, and SSH one-shots; use `/command` to drive the same thing from inside the cockpit. The lifecycle/cockpit commands live on **both**: `bob up`/`/up`, `bob stop`/`/stop`, `bob status`/`/status`, plus `restart`, `services`, `webui`, `logs`. Each is a thin front door over one shared core (e.g. [`scripts/tools/stack.py`](../scripts/tools/stack.py)), never a second implementation. Session-only state (`/model`, `/agency`, `/session`, `/theme`, `/clear`) is shell-only by design; provisioning and one-shot conversation (`chat`, `fetch`, `build`, `setup`, …) are terminal-only. From the terminal, `bob help` prints the same generated command catalog and, at the end, lists which commands are also `/commands` in the shell.
 
 ## One-shot chat: `chat`, `think`, `code`
 
@@ -108,7 +108,7 @@ When output is piped, `bob chat` returns clean text (spinner and colour suppress
 
 ## Keeping inference running
 
-There are three ways inference gets served; pick by how long you want it up:
+Inference gets served three ways; pick by how long you want it up:
 
 | Command | What it does | Use when |
 |---------|--------------|----------|
@@ -136,7 +136,7 @@ bob stop      # stop all services and free VRAM
 
 The endpoint logs go to `logs/llama-swap.log`; tail them live with `bob logs`. The server loads a model into VRAM on first request and unloads it after idle. The exceptions are `fim` (autocomplete) and `embed` (embeddings), which are pinned and never unloaded. Only one large model (`planner`, `coder`, or `chat`) is resident at a time; switching between them takes a few seconds.
 
-**mlock:** `fim` and `embed` are pinned in physical RAM with `--mlock`, preventing the OS from paging their weights to disk under memory pressure (e.g. simultaneous VS Code autocomplete, chat, and Open WebUI load). This locks roughly 4 GB of physical RAM permanently. On systems with less than 32 GB of RAM, disable it by overriding the `fim`/`embed` entries in `config/user.json` and re-running `bob gen`. Setting `mlockBig` on the swap-group models (planner, coder, chat) extends mlock to their CPU-offloaded pages; on Windows this needs `SeLockMemoryPrivilege` (`bob mlock --grant` checks and grants it), and on Linux you raise the memlock limit instead (`ulimit -l unlimited` or `/etc/security/limits.conf`).
+**mlock:** `fim` and `embed` are pinned in physical RAM with `--mlock`, preventing the OS from paging their weights to disk under memory pressure (e.g. simultaneous VS Code autocomplete, chat, and Open WebUI load). This locks roughly 4 GB of physical RAM permanently. On systems with less than 32 GB of RAM, disable it by overriding the `fim`/`embed` entries in `config/user.json` and re-running `bob gen`. Setting `mlockBig` on the swap-group models (planner, coder, chat) extends mlock to their CPU-offloaded pages; on Windows this needs `SeLockMemoryPrivilege` (`bob mlock --grant` checks and grants it), on Linux you raise the memlock limit instead (`ulimit -l unlimited` or `/etc/security/limits.conf`).
 
 **Start automatically at login (optional):**
 
@@ -166,9 +166,9 @@ bob up --no-open
 
 Every model's GGUF file, HuggingFace source, context size, and launch flags are defined once in [config/models.json](../config/models.json). The downloader and the runtime config both read from it. Clients reference the role names above (`coder`, `planner`, etc.), so swapping the backing model for a role never requires touching any client configuration.
 
-The `12gb` profile uses smaller variants (~21 GB on disk instead of ~38 GB). The `8gb` profile targets cards like the RTX 3070 and 4060 and is marked unvalidated. The `24gb` and `32gb` profiles ship near-lossless quants for bigger cards. Switch with `bob profile 12gb`, or `bob profile auto` to detect from VRAM, or pass `--profile <name>` to setup before the first model download.
+The `12gb` profile uses smaller variants (~21 GB on disk instead of ~38 GB). The `8gb` profile targets cards like the RTX 3070 and 4060 and is marked unvalidated. The `24gb` and `32gb` profiles ship near-lossless quants for bigger cards. Switch with `bob profile 12gb`, `bob profile auto` to detect from VRAM, or pass `--profile <name>` to setup before the first model download.
 
-There is also a `cpu` profile (a single tiny ~0.5 GB model) for **no-GPU** boxes such as CI runners and dev laptops. It proves the serve → agent path works without a GPU (correctness and wiring, not performance); `bob profile auto` selects it when no GPU is detected, and `bob build --cpu` produces a CUDA-off engine to run it.
+A `cpu` profile (a single tiny ~0.5 GB model) targets **no-GPU** boxes such as CI runners and dev laptops. It proves the serve → agent path works without a GPU (correctness and wiring, not performance); `bob profile auto` selects it when no GPU is detected, and `bob build --cpu` produces a CUDA-off engine to run it.
 
 ### Pro models (API-backed, no platform fee)
 
@@ -201,7 +201,7 @@ Or store it via onboarding (it writes the key to `config/user.json`, gitignored)
 
 ## Calling the API directly
 
-The endpoint speaks the OpenAI chat completions API, so any HTTP client works. Point any tool already configured for OpenAI at `http://localhost:8081/v1` and it works unchanged.
+The endpoint speaks the OpenAI chat completions API, so any HTTP client works. Point any tool already configured for OpenAI at `http://localhost:8081/v1`.
 
 Linux:
 ```bash
@@ -221,7 +221,7 @@ bob chat --code "write fizzbuzz in rust"
 bob chat --think "design a caching layer" --sys "Be concise." --max 1024
 ```
 
-The LiteLLM proxy port defaults to `8081` (`ports.litellmPort` in `config/defaults.json`). The underlying llama-swap engine is on `8080` (`ports.port`) but clients should use `8081` for retry logic, Langfuse tracing, and pro-model access.
+The LiteLLM proxy port defaults to `8081` (`ports.litellmPort` in `config/defaults.json`). The underlying llama-swap engine is on `8080` (`ports.port`), but clients should use `8081` for retry logic, Langfuse tracing, and pro-model access.
 
 ### Embeddings API
 
@@ -261,7 +261,7 @@ vector = resp.data[0].embedding   # list of 1024 floats
 
 ## Bob: the interactive assistant
 
-Bob wires a persona, interactive chat, and memory on top of the inference stack. All of this is opt-in from any client's perspective: the raw API, Continue, aider, and every other client are unaffected.
+Bob wires a persona, interactive chat, and memory on top of the inference stack. All of it is opt-in from any client's perspective: the raw API, Continue, aider, and every other client are unaffected.
 
 ### Persona config
 
@@ -302,7 +302,7 @@ bob memory clear --yes              # wipe all memories
 - At **session end** (`/exit`, `/session new`, …) durable facts are **consolidated**: the model extracts typed facts and *supersedes* contradictions instead of accumulating them ("I use vim" → later "I switched to vscode" leaves only vscode).
 - Set `memory.autoRecall = true` to also inject relevant memories on **every turn** (off by default; otherwise the agent recalls on demand via the `memory_recall` tool).
 
-Injected memory is capped at `memory.maxInjectedTokens` so it can't overflow the context window. Memory is always local: even with `--pro`, recall and embedding stay on BGE-M3 at `:8081`. Memory DB defaults to `data/bob.db` (gitignored); override with `memory.dbPath`.
+Injected memory is capped at `memory.maxInjectedTokens` so it cannot overflow the context window. Memory is always local: even with `--pro`, recall and embedding stay on BGE-M3 at `:8081`. Memory DB defaults to `data/bob.db` (gitignored); override with `memory.dbPath`.
 
 **Optional context-engineering upgrades** (all off by default, see [MEMORY.md](MEMORY.md)):
 
@@ -312,7 +312,7 @@ Injected memory is capped at `memory.maxInjectedTokens` so it can't overflow the
 
 ### First run: onboarding
 
-Setup runs an interactive onboarding flow at the end if `config/user.json` has no `bob` section yet:
+Setup runs an interactive onboarding flow at the end when `config/user.json` has no `bob` section yet:
 
 ```
 Bob: Hi. What's your name?
@@ -332,17 +332,17 @@ This writes your name and work context to `data/bob.db` (profile table) and your
 bob budget    # shows LiteLLM spend (if proxy is running) + configured caps
 ```
 
-Shows the configured `max_budget`/`budget_duration`, queries the LiteLLM proxy for spend data if it's running, and reports memory DB size at $0 cost (fully local). For detailed per-request cost breakdown, enable Langfuse tracing (see the [observability section](#observability-file-traces-and-langfuse)).
+Shows the configured `max_budget`/`budget_duration`, queries the LiteLLM proxy for spend data if it's running, and reports memory DB size at $0 cost (fully local). For a detailed per-request cost breakdown, enable Langfuse tracing (see the [observability section](#observability-file-traces-and-langfuse)).
 
 ## Voice
 
-Voice adds two-way audio to the terminal using whisper.cpp (STT) and piper (TTS). All processing is local: no cloud, no microphone data leaving the machine. Voice is **enabled by default** (`runtime.voice.enabled = true`); you only need to download the models once.
+Voice adds two-way audio to the terminal using whisper.cpp (STT) and piper (TTS). All processing is local: no cloud, no microphone data leaving the machine. Voice is **enabled by default** (`runtime.voice.enabled = true`); you only download the models once.
 
 **One-time model download:**
 ```
 bob setup-voice
 ```
-Downloads the whisper model (~74 MB for `base.en`), the piper voice, and the Qwen2-VL mmproj file, and builds whisper-server. `bob up` auto-starts the whisper server on port 8082 when the binary is present.
+Downloads the whisper model (~74 MB for `base.en`), the piper voice, and the Qwen2-VL mmproj file, then builds whisper-server. `bob up` auto-starts the whisper server on port 8082 when the binary is present.
 
 **Commands:**
 ```
@@ -398,7 +398,7 @@ The voice loop sanitises text before sending it to piper: it strips markdown sym
 
 ## Vision
 
-Vision uses Qwen2-VL-7B (a ~5 GB GGUF + a ~1.5 GB mmproj) to describe images and answer visual questions. The model loads on demand and unloads after 30 s of idle to free VRAM. Vision is **enabled by default** (`runtime.vision.enabled = true`).
+Vision uses Qwen2-VL-7B (a ~5 GB GGUF + a ~1.5 GB mmproj) to describe images and answer visual questions. The model loads on demand and unloads after 30 s idle to free VRAM. Vision is **enabled by default** (`runtime.vision.enabled = true`).
 
 **Setup:** `bob setup-voice` downloads the mmproj; the GGUF itself downloads via `bob fetch` (it's part of the 16gb profile).
 
@@ -414,7 +414,7 @@ bob screenshot --pro "Explain the code on screen"                       # cloud 
 
 `--pro` routes to DeepSeek V4 (deepseek-chat), which supports vision input, using the existing `DEEPSEEK_API_KEY`. Useful when local Qwen2-VL output is insufficient or the image needs stronger OCR/reasoning.
 
-`bob describe` resizes the image to max 1024 px on the longest edge before encoding. `bob screenshot` captures the primary display, saves a temp PNG, describes it, then deletes the temp file.
+`bob describe` resizes the image to max 1024 px on the longest edge before encoding. `bob screenshot` captures the primary display, saves a temp PNG, describes it, then deletes the PNG.
 
 **Pipeline examples:**
 ```
@@ -424,7 +424,7 @@ bob describe img.png | fabric --pattern summarize   # describe image, pipe to fa
 
 ## Agent
 
-The agent system runs a local model in a loop: it reasons about which tools to call, executes them, and iterates until it has a final answer. All processing is local; tools include web search (in-process `ddgs` metasearch, no service or Docker needed), git, file access, shell commands, and memory.
+The agent runs a local model in a loop: it reasons about which tools to call, executes them, and iterates until it has a final answer. All processing is local; tools include web search (in-process `ddgs` metasearch, no service or Docker needed), git, file access, shell commands, and memory.
 
 ### Running a goal
 
@@ -434,7 +434,7 @@ bob agent "search the web for the latest Unreal Engine 5 release notes and summa
 bob agent "check git status, find any TODO comments in modified files, and list them"
 ```
 
-The agent prints tool calls and results to stderr, then the final answer to stdout. Suppress the trace by redirecting stderr:
+The agent prints tool calls and results to stderr, then the final answer to stdout. Redirect stderr to suppress the trace:
 
 Linux:
 ```bash
@@ -454,7 +454,7 @@ bob agent "summarise the last 10 commits" 2>nul
 | `confirm` | Prompts before each tool execution | Untrusted goals or destructive tools |
 | `silent` | No output during execution; only the final answer | Scheduler, scripts, piped output |
 
-Override for a single run with `--agency confirm`; set the default in `config/user.json` under `bob.agent.agency`. `runtime.agent.maxSteps` (default 10) caps how many tool iterations one goal may take.
+Override for a single run with `--agency confirm`; set the default in `config/user.json` under `bob.agent.agency`. `runtime.agent.maxSteps` (default 10) caps the tool iterations per goal.
 
 ### Available tools
 
@@ -469,7 +469,7 @@ Override for a single run with `--agency confirm`; set the default in `config/us
 
 The `web` tool searches through the in-process `ddgs` metasearch provider by default (pure-Python, aggregates DuckDuckGo, Bing, and others). It needs no service, no daemon, and no Docker, and behaves identically on every OS. Optional providers: Brave or Tavily via an API key (`agent.searchProvider`), or the opt-in `searxng` Docker service. All providers fall back to `ddgs`, then to a last-ditch DuckDuckGo HTML scrape. Config keys: `agent.searchProvider` (default `ddgs`) and `agent.webSearchFallback` (default true).
 
-Plus the drop-in **plugins** (summarise, draft, search, play) which the agent can also call. Tools and plugins are **auto-discovered** from `scripts/tools/*.py` and `plugins/*/tool.py`; dropping in a file is the only registration step, there is no allowlist. To exclude one without deleting it, add its name to `agent.disabledTools` (a denylist) in config.
+The drop-in **plugins** (summarise, draft, search, play) are also callable by the agent. Tools and plugins are **auto-discovered** from `scripts/tools/*.py` and `plugins/*/tool.py`; dropping in a file is the only registration step, there is no allowlist. To exclude one without deleting it, add its name to `agent.disabledTools` (a denylist) in config.
 
 ```
 bob tools list         # every discovered tool + enabled/disabled status
@@ -491,7 +491,7 @@ bob agent schedule enable morning-summary
 bob agent schedule remove morning-summary   # remove permanently
 ```
 
-Schedules are stored in `data/schedules.json`. A recurring task, a Windows Scheduled Task or a Linux cron entry, registered by `bob agent install`: fires the runner every minute, checks which entries are due (5-field cron, 60 s double-fire guard), and runs them with `agency = 'silent'`. `bob agent status` shows the task state and recent log; `bob agent log` tails the agent log live (`-f` to follow). Remove the recurring task with `bob agent uninstall`. If `notify = true` is set on an entry, a desktop notification fires with the result (a Windows toast, or `notify-send` on Linux).
+Schedules are stored in `data/schedules.json`. A recurring task (a Windows Scheduled Task or a Linux cron entry) registered by `bob agent install` fires the runner every minute, checks which entries are due (5-field cron, 60 s double-fire guard), and runs them with `agency = 'silent'`. `bob agent status` shows the task state and recent log; `bob agent log` tails the agent log live (`-f` to follow). Remove the recurring task with `bob agent uninstall`. If `notify = true` is set on an entry, a desktop notification fires with the result (a Windows toast, or `notify-send` on Linux).
 
 ### Memory clip
 
@@ -500,7 +500,7 @@ bob clip https://example.com/article
 bob clip https://example.com/article --note "read for the caching section"
 ```
 
-One-shot web clip: fetches the URL, strips HTML, sends it to the chat model for a 3-to-5-sentence summary, prints it, then stores `url: summary` to Bob's memory DB. No agent loop, just one LLM call, fast.
+One-shot web clip: fetches the URL, strips HTML, sends it to the chat model for a 3-to-5-sentence summary, prints it, then stores `url: summary` to Bob's memory DB. No agent loop, one LLM call, fast.
 
 ### Tool-calling format
 
@@ -512,7 +512,7 @@ The default agent model (Hermes 3) uses its own tool-calling format: tool schema
 bob agent serve            # binds agent.serveHost:agent.agentPort (default 127.0.0.1:8084)
 ```
 
-Exposes the agent loop over HTTP for n8n / WebUI / other clients. Every endpoint except `/health` requires `Authorization: Bearer <token>` (the litellm key or an `agent.apiTokens` entry). Each token maps to an owner, and sessions are owner-scoped: a token only sees sessions its owner created. Supports one-shot `POST /v1/agent/completions`, token-streaming `POST /v1/agent/completions/stream` (SSE; cancels on client disconnect), and multi-turn `POST/GET/DELETE /v1/sessions`. Full endpoint contract, event schema, and n8n wiring: [AGENT-SERVER.md](AGENT-SERVER.md).
+Exposes the agent loop over HTTP for n8n / WebUI / other clients. Every endpoint except `/health` requires `Authorization: Bearer <token>` (the litellm key or an `agent.apiTokens` entry). Each token maps to an owner, and sessions are owner-scoped: a token sees only sessions its owner created. Supports one-shot `POST /v1/agent/completions`, token-streaming `POST /v1/agent/completions/stream` (SSE; cancels on client disconnect), and multi-turn `POST/GET/DELETE /v1/sessions`. Full endpoint contract, event schema, and n8n wiring: [AGENT-SERVER.md](AGENT-SERVER.md).
 
 Bob's tools are also exposed over MCP (stdio) with `bob agent mcp`, for MCP-aware clients.
 
@@ -524,7 +524,7 @@ bob doctor          # the above, plus runtime: endpoint reachable, GPU/VRAM, wri
 bob diagnose        # GPU, VRAM, CUDA, and model-file health check
 ```
 
-`bob setup check` (equivalently `bob doctor --quick`) verifies agent dependencies in order (venv, Python packages, config, tools directory, schedules file, fabric, SearXNG, n8n, LiteLLM proxy, BobAgent task, agent model file, tool loading honoring `agent.disabledTools`) and prints a fix command for each failure. `bob doctor` runs all of those plus a runtime pre-flight; use it as the first thing to run when something's off. Both are one core (`health.health_check`) behind a depth flag.
+`bob setup check` (equivalently `bob doctor --quick`) verifies agent dependencies in order (venv, Python packages, config, tools directory, schedules file, fabric, SearXNG, n8n, LiteLLM proxy, BobAgent task, agent model file, tool loading honoring `agent.disabledTools`) and prints a fix command for each failure. `bob doctor` runs all of those plus a runtime pre-flight; run it first when something's off. Both are one core (`health.health_check`) behind a depth flag.
 
 ## Deterministic invocation: `bob --run`
 
@@ -536,11 +536,11 @@ bob --run search '{"query": "TODO", "path": "src/"}'
 bob --run git '{"op": "status"}'
 ```
 
-This is the plumbing consumers (and the outside-terminal clients) use to invoke a single tool deterministically. List available tools with `bob tools list` and plugins with `bob plugins list`.
+This is the plumbing consumers (and outside-terminal clients) use to invoke a single tool deterministically. List available tools with `bob tools list` and plugins with `bob plugins list`.
 
 ## Skills
 
-A skill is a named tool-sequence or sub-agent, a reusable multi-step routine.
+A skill is a named tool-sequence or sub-agent: a reusable multi-step routine.
 
 ```
 bob skill              # list available skills
@@ -552,7 +552,7 @@ In the shell, `/skills` lists them and `/skill <name>` runs one.
 
 ## Qwen3 Thinking Mode
 
-Qwen3 models (`planner`, `chat`) support a reasoning scratchpad. `planner` has it on by default, appropriate for deep analysis. `chat` has it off by default via its system prompt (`/no_think`) because conversational responses don't benefit from the added latency. When enabled, the model internally reasons through the problem before responding. This produces better answers but:
+Qwen3 models (`planner`, `chat`) support a reasoning scratchpad. `planner` has it on by default, appropriate for deep analysis. `chat` has it off by default via its system prompt (`/no_think`) because conversational responses don't benefit from the added latency. When enabled, the model reasons through the problem internally before responding. This produces better answers but:
 
 - **Consumes `max_tokens` silently.** The scratchpad counts toward your token limit. For complex tasks, set `max_tokens` to at least 2000 (or 8192 for deep planning).
 - **Increases first-token latency.** The scratchpad runs before any visible output. For quick questions, use `/no_think` to skip it.
@@ -586,7 +586,7 @@ bob chat "What is 2+2? /no_think" --max 128
 
 ## Function Calling (Tool Use)
 
-The `coder` model supports OpenAI-style function calling. Define functions the model can request, then execute them in your application:
+The `coder` model supports OpenAI-style function calling. Define functions the model can request, then execute them in your app:
 
 ```python
 from openai import OpenAI
@@ -623,13 +623,13 @@ if choice.finish_reason == "tool_calls":
 
 ## Clients
 
-Client configs (Continue, aider) are linked into your home directory as part of setup, so both tools work with no in-app configuration. If you don't have symlink privileges, setup copies the files instead; re-run setup after editing the repo configs to sync the copies.
+Client configs (Continue, aider) are linked into your home directory during setup, so both tools work with no in-app configuration. Without symlink privileges, setup copies the files instead; re-run setup after editing the repo configs to sync the copies.
 
 ### VS Code: Continue.dev (autocomplete and chat)
 
 Continue.dev provides inline autocomplete and a chat panel inside VS Code. Setup links the repo's config into `~/.continue/config.yaml`, so all models are wired with no in-editor setup.
 
-Install the **Continue** extension from the VS Code Marketplace, then start the endpoint (`bob up` or just talk to Bob, it auto-starts). Open the Continue panel (`Ctrl+L`) and the `coder` and `planner` models appear immediately.
+Install the **Continue** extension from the VS Code Marketplace, then start the endpoint (`bob up`, or talk to Bob and it auto-starts). Open the Continue panel (`Ctrl+L`) and the `coder` and `planner` models appear immediately.
 
 **How models map to Continue roles:**
 
@@ -647,11 +647,11 @@ Install the **Continue** extension from the VS Code Marketplace, then start the 
 
 System prompts are set per-model and synced to clients by `bob gen`. `Ctrl+L` opens a new chat with any selected code attached; `Ctrl+I` opens an inline edit and shows a diff to accept or reject. Autocomplete fires as ghost text; `Tab` accepts. Use the model dropdown to switch roles.
 
-Context is 32768 tokens for all models except `planner` (16384). The first message to a large model is slower while it loads into VRAM; `fim` and `embed` stay pinned so autocomplete and RAG never trigger a reload.
+Context is 32768 tokens for all models except `planner` (16384). The first message to a large model is slower while it loads into VRAM; `fim` and `embed` stay pinned, so autocomplete and RAG never trigger a reload.
 
 #### Continue.dev MCP Servers
 
-Four MCP servers are wired into Continue automatically. They activate as context providers in the Continue chat panel:
+Four MCP servers are wired into Continue automatically, activating as context providers in the Continue chat panel:
 
 | Server | How to invoke | What it does |
 |--------|--------------|-------------|
@@ -670,7 +670,7 @@ If a server fails to load, Continue shows a warning badge on its name; click it 
 
 ### VS Code: Cline (agentic)
 
-Cline is a more autonomous agent that reads and writes files, runs commands, and works across many turns. It's not auto-wired; configure it once in its settings panel.
+Cline is a more autonomous agent that reads and writes files, runs commands, and works across many turns. It is not auto-wired; configure it once in its settings panel.
 
 Install the **Cline** extension, start the endpoint, then set the API provider to `OpenAI Compatible`:
 
@@ -680,11 +680,11 @@ Install the **Cline** extension, start the endpoint, then set the API provider t
 | API Key | `sk-local` (any non-empty string; the server ignores it) |
 | Model ID | `coder` |
 
-Set the context window to `16384` to match the server's limit. Leave image support off; these models are not multimodal in Cline. To split planning and editing, enable **Use different models for Plan and Act** and set Plan = `planner`, Act = `coder` (switching evicts the other model from VRAM, so there's a brief load pause).
+Set the context window to `16384` to match the server's limit. Leave image support off; these models are not multimodal in Cline. To split planning and editing, enable **Use different models for Plan and Act** and set Plan = `planner`, Act = `coder` (switching evicts the other model from VRAM, so expect a brief load pause).
 
 ### Terminal: aider (plan and edit separately)
 
-Aider has a genuine planning-versus-editing split: `planner` (Qwen3-30B) drafts the change, and `coder` (Qwen2.5-Coder-14B) turns it into file edits. You review the plan before any edit lands. Setup links the aider config (`config/aider/.aider.conf.yml`) into your home directory. Then:
+Aider has a genuine planning-versus-editing split: `planner` (Qwen3-30B) drafts the change, `coder` (Qwen2.5-Coder-14B) turns it into file edits. You review the plan before any edit lands. Setup links the aider config (`config/aider/.aider.conf.yml`) into your home directory. Then:
 
 ```
 cd <your-project>
@@ -704,13 +704,13 @@ Useful in-session commands:
 | `/undo` | revert aider's last committed edit |
 | `/drop` | remove files from context when it gets large |
 
-aider commits each accepted edit to git automatically; work on a branch so `/undo` can roll back cleanly. Both models use a 16k context window. The `openai/` prefix in the config (`openai/planner`, `openai/coder`) is required to route through a local endpoint and is already set.
+aider auto-commits each accepted edit to git; work on a branch so `/undo` can roll back cleanly. Both models use a 16k context window. The `openai/` prefix in the config (`openai/planner`, `openai/coder`) is required to route through a local endpoint and is already set.
 
 ## Shell AI Patterns: fabric
 
 fabric transforms piped text through a named prompt pattern: a structured prompt with a specific output format baked in. Where `bob chat` is a blank canvas, fabric patterns encode the *format* of the answer (commit message, executive summary, code-review checklist). Patterns live in `~/.config/fabric/patterns/`, each a directory with a `system.md`.
 
-It ships as a Go binary built from the `external/fabric` submodule. Run `bob fabric-setup` once to build and configure it (builds the `fabric` binary from `external/fabric/cmd/fabric/` and copies the 254 patterns into `~/.config/fabric/patterns/`). Then pipe any text:
+It ships as a Go binary built from the `external/fabric` submodule. Run `bob fabric-setup` once to build and configure it (it builds the `fabric` binary from `external/fabric/cmd/fabric/` and copies the 254 patterns into `~/.config/fabric/patterns/`). Then pipe any text:
 
 ```
 git diff --staged | fabric --pattern write_git_commit   # commit message from staged diff
@@ -721,7 +721,7 @@ cat meeting.txt   | fabric --pattern extract_wisdom     # action items from meet
 fabric -l                                               # list all 254 patterns
 ```
 
-fabric uses the `coder` model by default; pass `--model planner` for complex analysis. To update patterns after a submodule bump, re-run `bob fabric-setup` (patterns re-copied; the binary is rebuilt only if it's missing, delete it first to force a rebuild).
+fabric uses the `coder` model by default; pass `--model planner` for complex analysis. To update patterns after a submodule bump, re-run `bob fabric-setup` (patterns re-copied; the binary rebuilds only if missing, delete it first to force a rebuild).
 
 ## Ecosystem Services
 
@@ -741,7 +741,7 @@ All clients (Continue, aider, Cline, fabric, Open WebUI, `bob chat`) use `:8081`
 
 ### Opt-in services (Langfuse, SearXNG, n8n)
 
-A default install is 100% Docker-free: setup does not start any of these services. They are all opt-in, brought up on demand.
+A default install is 100% Docker-free: setup starts none of these services. They are all opt-in, brought up on demand.
 
 - **n8n** runs **native** on the Node toolchain, not in a container: `bob services n8n start`.
 - **SearXNG** is a **Docker** opt-in: `bob services searxng start`. If Docker is missing, this runs a guided install through the system package manager first. Port 8888.
@@ -768,17 +768,17 @@ After changing any of these, re-run `bob services start` to regenerate `.env` an
 - `tools/langfuse-data/`: Postgres DB with all Langfuse traces, projects, and API keys
 - `tools/n8n-data/`: n8n workflows, credentials, and execution history
 
-These survive `bob services stop`/`start`. They are deleted by `docker system prune -af`: back them up if you have valuable history.
+These survive `bob services stop`/`start`. `docker system prune -af` deletes them: back them up if you have valuable history.
 
 ---
 
 #### Observability: file traces and Langfuse
 
-The default trace sink is a local **file sink** (Docker-free): traces write to `logs/traces/<trace_id>.jsonl` and you read them with `bob traces` (`bob traces list`, `bob traces show <id>`). `agent.tracing` gates tracing (default off); `agent.tracingSink` is `file` (default) or `otlp`, and `otlp` exports to `agent.otlpEndpoint`.
+The default trace sink is a local **file sink** (Docker-free): traces write to `logs/traces/<trace_id>.jsonl` and you read them with `bob traces` (`bob traces list`, `bob traces show <id>`). `agent.tracing` gates tracing (default off); `agent.tracingSink` is `file` (default) or `otlp`, where `otlp` exports to `agent.otlpEndpoint`.
 
 **Langfuse** is an **opt-in** upgrade over the built-in file traces: a full dashboard for the same data. Start it with `bob services langfuse start`, then open `http://localhost:3001`. Default login: `admin@local.dev` / `admin123`.
 
-Langfuse records every bob request routed through LiteLLM: the full prompt, response, model name, latency, token counts, and retry events. Use it to debug unexpected answers, compare quant levels (run `bob eval` before/after a profile switch), audit agentic tool calls, and track token burn.
+Langfuse records every bob request routed through LiteLLM: full prompt, response, model name, latency, token counts, and retry events. Use it to debug unexpected answers, compare quant levels (run `bob eval` before/after a profile switch), audit agentic tool calls, and track token burn.
 
 **Enabling Langfuse tracing** (opt-in; Langfuse doesn't auto-capture, and only requests through LiteLLM are visible):
 
@@ -809,7 +809,7 @@ Langfuse records every bob request routed through LiteLLM: the full prompt, resp
 6. Point your client at `:8081` (or use `bob chat`, which goes through LiteLLM automatically).
 7. Requests appear in the Langfuse dashboard under **Traces** within a few seconds.
 
-The steps above route LiteLLM request logs to Langfuse. To also export the **agent's** own traces (the file-sink data) to Langfuse instead of local files, set `agent.tracingSink` to `otlp` and point `agent.otlpEndpoint` at the Langfuse OTLP endpoint, then run `bob gen`.
+The steps above route LiteLLM request logs to Langfuse. To also export the **agent's** own traces (the file-sink data) to Langfuse instead of local files, set `agent.tracingSink` to `otlp`, point `agent.otlpEndpoint` at the Langfuse OTLP endpoint, then run `bob gen`.
 
 > `config/litellm.yaml` is regenerated on every `bob gen` and `bob serve`; do not edit it directly. Use `config/user.json` for all persistent customization.
 
@@ -817,7 +817,7 @@ The steps above route LiteLLM request logs to Langfuse. To also export the **age
 
 #### SearXNG: private web search
 
-Open `http://localhost:8888` for a search UI. Queries fan out to Google, Bing, DuckDuckGo, and others; SearXNG aggregates the results. Your IP talks to SearXNG locally; SearXNG talks to providers on your behalf.
+Open `http://localhost:8888` for a search UI. Queries fan out to Google, Bing, DuckDuckGo, and others; SearXNG aggregates the results. Your IP talks to SearXNG locally, and SearXNG talks to providers on your behalf.
 
 **Using `@web` in Continue.dev:** with the SearXNG service running (`bob services searxng start`), the `searxng-search` MCP server is active. In any Continue chat, prefix a query:
 
@@ -840,7 +840,7 @@ Open `http://localhost:5678`. No login required on first run; set up an account 
 
 n8n is a visual workflow builder: each workflow is a graph of trigger nodes (webhook, schedule, file watch) connected to action nodes (HTTP request, email, code).
 
-**Connecting to the local LLM:** n8n runs native, so the host LLM is reachable at plain `http://localhost:8081`. Add an **HTTP Request** node:
+**Connecting to the local LLM:** n8n runs native, so the host LLM is reachable at `http://localhost:8081`. Add an **HTTP Request** node:
 - Method: `POST`
 - URL: `http://localhost:8081/v1/chat/completions`
 - Header: `Authorization: Bearer sk-local` (any non-empty string)
@@ -887,7 +887,7 @@ Persistent data in `tools/langfuse-data/` and `tools/n8n-data/` is preserved acr
 
 **Why:** VRAM savings from lower quant levels come at an accuracy cost. Speed and VRAM are easy to measure; `bob eval` closes the loop on whether a model or quant change degraded the answers.
 
-Requires the endpoint running first (or let it auto-start). The eval venv is created by setup.
+Requires the endpoint running first (or lets it auto-start). The eval venv is created by setup.
 
 ```
 bob eval coder gsm8k --limit 100   # quick smoke test (~8 min); math word problems
@@ -909,15 +909,15 @@ Scores well below these ranges usually mean the chat template wasn't applied cor
 
 ## Browser chat and RAG: Open WebUI
 
-Open WebUI is opt-in, install it at setup with `--with-webui` (Linux `./setup.sh --with-webui`, Windows `setup.bat --with-webui`). Once installed, `bob up` starts it on port 3000 (pre-wired to the local endpoint and embedding model), or `bob webui` launches it alone.
+Open WebUI is opt-in; install it at setup with `--with-webui` (Linux `./setup.sh --with-webui`, Windows `setup.bat --with-webui`). Once installed, `bob up` starts it on port 3000 (pre-wired to the local endpoint and embedding model), or `bob webui` launches it alone.
 
-Open WebUI uses the `embed` model for document search automatically. Add documents through the workspace panel; they're indexed locally and available in any chat via the RAG interface. You can create model presets in Workspace → Models (e.g. a low-temperature "Planner" preset).
+Open WebUI uses the `embed` model for document search automatically. Add documents through the workspace panel; they are indexed locally and available in any chat via the RAG interface. Create model presets in Workspace → Models (e.g. a low-temperature "Planner" preset).
 
 > **Agent model in WebUI:** Selecting the `agent` model in Open WebUI runs raw inference, tool schemas are not injected and `<tool_call>` blocks appear as plain text. For full tool use, run `bob agent "goal"` in the terminal, or start `bob agent serve` and call `http://localhost:8084/v1/agent/completions` from n8n or any HTTP client.
 
 ## Customizing your setup: config/user.json
 
-Configuration is all JSON now. There are three files:
+Configuration is all JSON. Three files:
 
 - `config/defaults.json`: the neutral single source of truth: `ports`, `roleTable`, and `runtime.*` defaults (persona, memory, vision, voice, agent). Both languages read it. Committed; don't edit for per-machine changes.
 - `config/models.json`: the model registry: profiles, roles, files, VRAM, SHA256, launch flags, peers. Committed.
@@ -933,7 +933,7 @@ Configuration is all JSON now. There are three files:
 }
 ```
 
-Config resolves the same way on every OS: live from `defaults.json` deep-merged with `user.json`. There is no generated `data/config.json` written or read.
+Config resolves the same way on every OS: live from `defaults.json` deep-merged with `user.json`. No generated `data/config.json` is written or read.
 
 After changing config, run `bob gen` to regenerate the runtime configs (`config/llama-swap.yaml`, `config/litellm.yaml`, and Open WebUI system prompts) from the registry, no server restart needed for the next `bob serve`:
 
@@ -956,7 +956,7 @@ bob show coder           # file path, size, SHA256, and disk status for one role
 bob models               # list all models with backing names and load state
 ```
 
-Switching profiles does not delete models from previous profiles; they stay in `models/`. Run `bob fetch` after switching to pull any files the new profile needs. To add or change a model, edit its entry in `config/models.json` (or override in `config/user.json`), then `bob fetch` to download and `bob gen`/`bob serve` to pick it up. The generated server configs (`config/llama-swap.yaml`, `config/litellm.yaml`) should never be edited by hand.
+Switching profiles does not delete models from previous profiles; they stay in `models/`. Run `bob fetch` after switching to pull any files the new profile needs. To add or change a model, edit its entry in `config/models.json` (or override in `config/user.json`), then `bob fetch` to download and `bob gen`/`bob serve` to pick it up. Never edit the generated server configs (`config/llama-swap.yaml`, `config/litellm.yaml`) by hand.
 
 ## Keeping the stack current
 

@@ -4,8 +4,8 @@ Bob remembers what matters across sessions. Facts you state, preferences you exp
 projects you work on are extracted, stored, ranked, and fed back into future conversations, locally,
 with zero extra VRAM.
 
-This page is the reference for the memory engine, persisted sessions, per-project memory, the
-`bob memory` CLI, the agent tools, and every `memory.*` config key.
+This page documents the memory engine, persisted sessions, per-project memory, the `bob memory` CLI,
+the agent tools, and every `memory.*` config key.
 
 - **Store:** SQLite (`data/bob.db`) + BGE-M3 embeddings (the `embed` model, already pinned at
   `:8081`; memory costs 0 extra VRAM and one embed call per store/recall).
@@ -68,18 +68,18 @@ returned, top `memory.recallK` first.
 ### Hybrid retrieval & cross-encoder rerank
 
 Recall runs dense (BGE-M3 cosine) by default. Set `memory.retrieval = "hybrid"` to also fuse a
-lexical BM25 ranking (SQLite FTS5) via Reciprocal Rank Fusion, so a lexically-exact hit a dense scan
-ranks poorly still surfaces.
+lexical BM25 ranking (SQLite FTS5) via Reciprocal Rank Fusion, so a lexically-exact hit that a dense
+scan ranks poorly still surfaces.
 
-On top of hybrid, `memory.rerank = true` adds a **cross-encoder rerank** — the second stage of the
+On top of hybrid, `memory.rerank = true` adds a **cross-encoder rerank**, the second stage of the
 standard retrieve-then-rerank pipeline. The top `memory.rerankTopN` fused candidates are re-scored by
 a reranker model that reads each (query, candidate) pair jointly, and that score (min-max normalized)
 replaces the semantic term before the recency/type/salience blend. This sharpens relevance and, under
 a `recallThreshold`, filters out the embedding-similarity noise floor that hybrid alone would inject.
 
-The reranker (`bge-reranker-v2-m3`, ~0.6 GB) **ships with every GPU profile**, but it is **loaded only
-on demand** — it is not pinned and not in the swap group, so nothing runs it and it costs no VRAM until a
-recall actually reranks; it unloads after an idle window (`ttl`). Turn it on with one flag:
+The reranker (`bge-reranker-v2-m3`, ~0.6 GB) **ships with every GPU profile** but is **loaded only
+on demand**: it is not pinned and not in the swap group, so it costs no VRAM until a recall actually
+reranks, and it unloads after an idle window (`ttl`). Turn it on with one flag:
 
 ```json
 { "memory": { "rerank": true } }
@@ -89,7 +89,7 @@ On a fresh install the model is already downloaded; when **updating an existing 
 with `bob fetch`, then `bob gen && bob restart`. The rerank call goes straight to the endpoint's
 `/v1/rerank` (LiteLLM's `/rerank` expects a cloud provider); override with `memory.rerankBaseUrl` for a
 remote reranker. **Loud-fail:** if no reranker is reachable, recall logs one warning and falls back to
-the hybrid order. Default off = today's behavior, unchanged.
+the hybrid order. Default off = today's behavior.
 
 ### Importance & salience
 
@@ -111,11 +111,11 @@ bob memory unpin 42
 When a session ends, Bob extracts durable facts in **one LLM call** that is also shown your existing
 facts. Each extracted fact is tagged `NEW` or `REPLACES:<id>`. A `REPLACES` **supersedes** the old
 row (marks it `superseded_by`, keeps it for audit) instead of piling a contradiction on top. So "I
-use vim" → later "I switched to vscode" leaves only the vscode fact active. Ambiguous cases default
-to `NEW` (conservative). Tunable window: `memory.reconcileTopK`.
+use vim" then later "I switched to vscode" leaves only the vscode fact active. Ambiguous cases
+default to `NEW`. Tunable window: `memory.reconcileTopK`.
 
-Every session also stores one prose **episodic** recap (with a deterministic fallback, so a session
-is never silently dropped even if the summarizer fails).
+Every session also stores one prose **episodic** recap, with a deterministic fallback so a session
+is never silently dropped even if the summarizer fails.
 
 ### Dedup & third-person normalization
 
@@ -150,13 +150,13 @@ profile/preference identity are never pruned.
 With `memory.scopeByProject = true` (default), `project`-type facts learned while you work in a repo
 are **scoped to that repo** (keyed by the git root, else the cwd). Recall in project A returns A's
 project facts plus all global facts, never project B's. Identity and preferences stay global. Turn it
-off to put everything in one global pool.
+off to pool everything globally.
 
 ### Core-memory blocks (agent-curated, always in context)
 
 Separate from the auto-recalled DB facts, Bob can keep a small set of named, size-capped **core-memory
 blocks** the agent rewrites *in its own loop* (the MemGPT/Letta pattern). Each block is always injected
-into context, so the model keeps seeing it without a recall call, and it persists across sessions.
+into context, so the model keeps seeing it without a recall call, and persists across sessions.
 
 Enable by declaring blocks and their character caps in `config/user.json`:
 
@@ -166,15 +166,16 @@ Enable by declaring blocks and their character caps in `config/user.json`:
 
 The agent edits them with the **`memory_block`** tool (`append` / `replace`); a block over its cap has
 its oldest characters trimmed so the newest edit is kept. Blocks are owner/scope-scoped and stored in a
-dedicated `core_blocks` table — kept out of the decaying `memories` table on purpose, since a live-edited
-note must not decay, dedup, or supersede like a fact. Empty (`{}`, the default) = off, no block injected.
+dedicated `core_blocks` table, deliberately kept out of the decaying `memories` table since a
+live-edited note must not decay, dedup, or supersede like a fact. Empty (`{}`, the default) = off, no
+block injected.
 
 ---
 
 ## Sessions
 
 The `bob` shell (run `bob` with no args) keeps **persisted, owner-scoped sessions** in
-`data/sessions.db` (path: `agent.sessionDbPath`). History survives across restarts, and leaving a
+`data/sessions.db` (path: `agent.sessionDbPath`). History survives restarts, and leaving a
 session triggers memory consolidation.
 
 | Command | Does |
@@ -197,17 +198,17 @@ session triggers memory consolidation.
    turns are **consolidated** into durable typed facts (gated on `memory.autoConsolidate`).
 
 Injected memory (core blocks + profile + autoRecall + `BOB.md`) is fit into `memory.maxInjectedTokens`
-before it goes into the system prompt, trimming autoRecall first, then profile, then `BOB.md`, then
-core blocks (kept longest), so injected memory can't overflow the context window.
+before the system prompt, trimming autoRecall first, then profile, then `BOB.md`, then core blocks
+(kept longest), so injected memory can't overflow the context window.
 
 ### Conversation paging (recall over dropped turns)
 
 Long runs compact older turns out of the live context window. With `agent.conversationPaging = true`,
-Bob persists the **full transcript** — every user, assistant, **and tool turn**, including one-shot
-`bob agent` runs that otherwise keep no history — to an owner-scoped `transcript` store *as it happens*,
+Bob persists the **full transcript** (every user, assistant, **and tool turn**, including one-shot
+`bob agent` runs that otherwise keep no history) to an owner-scoped `transcript` store *as it happens*,
 before compaction can drop it. The agent can then search it and page a specific earlier exchange back
 into context with the **`conversation_search`** tool (semantic + keyword, mirroring recall). A paged-in
-result is a normal tool result, so it's itself subject to compaction / tool-result clearing and can't
+result is a normal tool result, so it too is subject to compaction / tool-result clearing and can't
 re-overflow. Embedding is best-effort (the FTS keyword index is the always-present floor, so capture
 survives an embed-server outage). Off by default = no transcript persistence beyond today's sessions.
 
@@ -216,9 +217,8 @@ survives an embed-server outage). Off by default = no transcript persistence bey
 ## Project instruction files
 
 Alongside the learned DB facts, Bob reads **human-curated, git-committable** instruction files for
-the repo you launch it in: the analogue of a project README for the agent. They're concatenated
-broad → specific at session start (capped at `memory.bobMdMaxTokens`), gated on
-`memory.projectFiles`:
+the repo you launch it in: a project README for the agent. They're concatenated broad to specific at
+session start (capped at `memory.bobMdMaxTokens`), gated on `memory.projectFiles`:
 
 1. `~/.bob/BOB.md`: applies to all your projects
 2. `<repo>/AGENTS.md`: cross-tool agent-instructions standard, if present
@@ -269,7 +269,7 @@ When `memory.enabled`, these tools are available to the agent loop (and over MCP
   that have scrolled out of the current context.
 
 All operate only on the local `bob.db` via the embed server, scoped to the run's owner (and project
-scope). `memory_store` and `memory_block` are mutating (subject to the approval policy). See
+scope). `memory_store` and `memory_block` are mutating, subject to the approval policy. See
 [SECURITY.md](SECURITY.md).
 
 ---
@@ -315,18 +315,19 @@ All keys live in `config/defaults.json` under `runtime.memory` and can be overri
 | `projectFiles` | `true` | Read `BOB.md` / `AGENTS.md` project instruction files at session start. |
 | `bobMdMaxTokens` | `4000` | Cap on the concatenated project instruction files. |
 
-Conversation paging is an **`agent.*`** key: `agent.conversationPaging` (default `false`) turns on
+Conversation paging is an **`agent.*`** key: `agent.conversationPaging` (default `false`) enables
 full-transcript persistence and the `conversation_search` tool (see [Conversation paging](#conversation-paging-recall-over-dropped-turns)).
 
 ---
 
 ## Storage & privacy
 
-- `data/bob.db`: the memory store (SQLite, gitignored). Holds the typed `memories`, plus (lazily
-  created, only when used) the `core_blocks` and `transcript` tables. Schema is versioned; `bob memory
-  migrate` applies additive migrations in place (a legacy DB is upgraded automatically on first open).
+- `data/bob.db`: the memory store (SQLite, gitignored). Holds the typed `memories`, plus the
+  `core_blocks` and `transcript` tables (created lazily, only when used). Schema is versioned; `bob
+  memory migrate` applies additive migrations in place (a legacy DB is upgraded automatically on first
+  open).
 - `data/sessions.db`: persisted shell/server session transcripts (`agent.sessionDbPath`).
-- Nothing is sent to the cloud for memory: BGE-M3 runs locally. `--pro` only affects the chat
+- Nothing is sent to the cloud for memory: BGE-M3 runs locally. `--pro` affects only the chat
   response, never recall or embedding.
 - To wipe: `bob memory clear --yes` (memories) or delete `data/bob.db` (rebuilt empty on next use).
 

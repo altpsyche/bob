@@ -1,15 +1,14 @@
 # Manual Installation Guide
 
-This guide walks through every step that `install_prereqs.sh` / `install_prereqs.bat` and
-`setup.sh` / `setup.bat` perform, one command at a time. Use it when you want full control, are
-troubleshooting a failed automated install, or want to understand what the scripts actually do.
+This guide reproduces, one command at a time, every step that `install_prereqs.sh` /
+`install_prereqs.bat` and `setup.sh` / `setup.bat` perform. Use it when you want full control, are
+troubleshooting a failed automated install, or want to understand what the scripts do.
 
-**If you just want to get running quickly, use the one-command installer instead.** On Linux:
+**To get running quickly, use the one-command installer instead.** On Linux:
 `curl -fsSL https://raw.githubusercontent.com/altpsyche/bob/main/install/install.sh | sh`; on Windows
 PowerShell: `irm https://raw.githubusercontent.com/altpsyche/bob/main/install/install.ps1 | iex`. It
-clones the repo, runs both entry scripts, and verifies the result for you. See the
-[README](../README.md#quick-start) and [SETUP](SETUP.md) for details. This manual guide is the
-full-control, do-it-by-hand alternative to that installer.
+clones the repo, runs both entry scripts, and verifies the result. See the
+[README](../README.md#quick-start) and [SETUP](SETUP.md) for details.
 
 You can also run the two entry scripts directly. Each is a thin shell stub that hands off to the
 Python cold-start kernel:
@@ -17,8 +16,8 @@ Python cold-start kernel:
 - `install_prereqs.sh` / `install_prereqs.bat` → `python -m bob.kernel prereqs` (Tier 0: toolchain)
 - `setup.sh` / `setup.bat` → `python -m bob.kernel setup` (Tier 1: build, configure, start)
 
-Everything below reproduces those two kernel runs by hand. This document is for advanced users who
-prefer to drive each step manually.
+Everything below reproduces those two kernel runs by hand, for advanced users who prefer to drive each
+step manually.
 
 > **OS coverage.** Linux (glibc; apt/dnf/pacman/zypper, plus rpm-ostree on atomic Fedora) and Windows
 > 11 are supported. macOS is not supported, there is no package-manager provisioning path and the GPU
@@ -49,19 +48,19 @@ prefer to drive each step manually.
 
 ## 1. Install the toolchain (prerequisites)
 
-This is the manual equivalent of `python -m bob.kernel prereqs`. It installs the build toolchain
+The manual equivalent of `python -m bob.kernel prereqs`. It installs the build toolchain
 (compiler, `make`, `cmake`, `ninja`, `go`, `node`/`npm`, Python 3.12) plus, for a GPU build, the CUDA
 toolkit. Only **Git** must exist before you start.
 
 The kernel resolves the concrete package names per distro from a single table
-(`PACKAGE_MAP` in `scripts/osenv.py`). The commands below are that table, expanded.
+(`PACKAGE_MAP` in `scripts/osenv.py`); the commands below are that table, expanded.
 
 ### Linux
 
 Pick the block for your package manager. Add the CUDA toolkit only for a GPU build (skip it for the
-CPU-only tier). A default install is 100% Docker-free, so Docker is not required here. Cron is
-optional (needed only for scheduled agents, `bob agent install`); Docker is optional too (needed only
-if you later opt into the SearXNG or Langfuse add-on services in step 13).
+CPU-only tier). A default install is 100% Docker-free. Cron is optional (needed only for scheduled
+agents, `bob agent install`), as is Docker (needed only if you later opt into the SearXNG or Langfuse
+add-on services in step 13).
 
 **Debian / Ubuntu (apt):**
 ```bash
@@ -105,24 +104,24 @@ sudo zypper --non-interactive install cronie docker
 ```
 
 **Atomic Fedora (Bazzite / Silverblue / Kinoite, rpm-ostree):** the base OS is immutable, so packages
-are *layered* and apply on the next boot. The kernel reuses the `dnf` package names above:
+are *layered* and apply on the next boot, reusing the `dnf` package names above:
 ```bash
 sudo rpm-ostree install --idempotent --allow-inactive git curl gcc-c++ make cmake \
     ninja-build golang nodejs npm python3 python3-pip
 systemctl reboot        # layered packages apply on the next boot
 ```
 CUDA is deliberately **not** layered on an atomic host (it needs NVIDIA's repo + akmods and is fragile
-there). The recommended path for GPU work on Bazzite/Silverblue is a Fedora distrobox, plain `dnf`
-inside, native build and CUDA passthrough just work, and nothing touches the immutable host:
+there). For GPU work on Bazzite/Silverblue, use a Fedora distrobox: plain `dnf` inside, native build
+and CUDA passthrough just work, and nothing touches the immutable host:
 ```bash
 distrobox create --name bob --image fedora:latest --nvidia
 distrobox enter bob
 cd /path/to/bob && ./install_prereqs.sh && ./setup.sh
 ```
 
-**cmake version note (rolling distros).** llama.cpp and whisper.cpp reject cmake **4.x**. Arch/CachyOS
-and other rolling distros ship only 4.x. If `cmake --version` reports 4.x, the kernel downloads a pinned
-Kitware **cmake 3.31.7** into `tools/` and uses that. To do it by hand:
+**cmake version note (rolling distros).** llama.cpp and whisper.cpp reject cmake **4.x**, which is all
+Arch/CachyOS and other rolling distros ship. If `cmake --version` reports 4.x, the kernel downloads a
+pinned Kitware **cmake 3.31.7** into `tools/` and uses that. To do it by hand:
 ```bash
 cd tools
 curl -L -O https://github.com/Kitware/CMake/releases/download/v3.31.7/cmake-3.31.7-linux-x86_64.tar.gz
@@ -133,8 +132,8 @@ cd ..
 
 ### Windows
 
-The Windows path uses winget / scoop to install the **toolchain** (not Bob itself). Install these once;
-open a new terminal afterward so each lands on PATH.
+The Windows path uses winget / scoop to install the **toolchain** (not Bob itself). Install these once,
+then open a new terminal so each lands on PATH.
 
 ```bat
 :: Git, install from https://git-scm.com if not already present, then:
@@ -159,7 +158,7 @@ winget install Nvidia.CUDA --version 12.8 --accept-package-agreements --accept-s
 winget install Docker.DockerDesktop --accept-package-agreements --accept-source-agreements
 ```
 After installing Docker Desktop, **log out of Windows and back in**: Docker adds your user to the
-`docker-users` group and that only takes effect at login. Restart your terminal after CUDA installs to
+`docker-users` group, which only takes effect at login. Restart your terminal after CUDA installs to
 pick up the new PATH entries.
 
 ---
@@ -201,7 +200,7 @@ The build finds the CUDA toolkit by probing disk (`/usr/local/cuda*`, `/opt/cuda
 Linux; `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\vX.Y` on Windows). Blackwell (sm_120) needs
 CUDA **12.8+**.
 
-Identify your GPU's compute architecture, you need it for the cmake step:
+Identify your GPU's compute architecture (needed for the cmake step):
 ```bash
 nvidia-smi --query-gpu=compute_cap --format=csv,noheader
 # e.g. 12.0 (Blackwell), 8.9 (Ada), 8.6 (Ampere)
@@ -223,8 +222,7 @@ nvcc --version                          # confirm it resolves
 ```
 
 On rolling distros, the default `g++`/`gcc` is often newer than nvcc accepts. If so, point nvcc at an
-older host compiler (this is what `install_prereqs` wires into `/etc/profile.d/cuda.sh` and the fish
-drop-in):
+older host compiler (as `install_prereqs` wires into `/etc/profile.d/cuda.sh` and the fish drop-in):
 ```bash
 export NVCC_CCBIN=/usr/bin/g++-13       # an nvcc-compatible g++, if the default is too new
 ```
@@ -240,9 +238,8 @@ nvcc --version
 
 ## 4. Build llama.cpp
 
-This produces `bin/llama-server`. On Linux the build uses the **Ninja** generator; on Windows it uses
-the **Visual Studio 17 2022** generator. These are the exact flags `scripts/tools/build.py`
-(`build_llama`) passes.
+This produces `bin/llama-server`. Linux uses the **Ninja** generator; Windows uses the **Visual Studio
+17 2022** generator. These are the exact flags `scripts/tools/build.py` (`build_llama`) passes.
 
 ### Linux, CUDA build
 
@@ -315,15 +312,15 @@ bin\llama-server.exe --version
 > `-DCMAKE_CUDA_FLAGS="-allow-unsupported-compiler"` to the configure command, or install MSVC v14.4x
 > through the VS Installer to match CUDA 12.8.
 
-Once you've verified a good build, `bob build` (and `bob build --force`) will rebuild through the same
-code path in future.
+Once you've verified a good build, `bob build` (and `bob build --force`) rebuilds through the same code
+path in future.
 
 ---
 
 ## 5. Build llama-swap
 
-llama-swap is a small Go binary that fronts llama.cpp and swaps models on demand. Same command on every
-OS (`build_llama_swap` runs `go build -o bin/llama-swap .`):
+llama-swap is a small Go binary that fronts llama.cpp and swaps models on demand. The command is the
+same on every OS (`build_llama_swap` runs `go build -o bin/llama-swap .`):
 
 Linux:
 ```bash
@@ -348,9 +345,9 @@ If you don't have Go, drop a prebuilt llama-swap release binary into `bin/` inst
 ## 6. Create the Python virtual environments
 
 Bob keeps its Python tools in isolated venvs under `tools/` because Open WebUI, aider, and LiteLLM have
-conflicting dependency pins. They must be built with **Python 3.11 or 3.12** (3.13+ has Open WebUI
-conflicts). The kernel builds them with `osenv.new_bob_venv`; the manual equivalent is `python -m venv`
-plus a `pip install -r` of the matching requirements file.
+conflicting dependency pins. Build them with **Python 3.11 or 3.12** (3.13+ has Open WebUI conflicts).
+The kernel uses `osenv.new_bob_venv`; the manual equivalent is `python -m venv` plus a `pip install -r`
+of the matching requirements file.
 
 Two venvs are built by default; `venv-webui` is opt-in; `venv-eval` is provisioned on demand by the
 first `bob eval`.
@@ -362,7 +359,7 @@ first `bob eval`.
 | `venv-webui` | `tools/webui-requirements.txt` | no, opt-in (large: torch/transformers, multi-GB) |
 | `venv-eval` | `tools/eval-requirements.txt` | no, on demand for `bob eval` |
 
-> The `bob` command itself runs under `tools/venv-litellm/bin/python`, so build **venv-litellm first**,
+> The `bob` command itself runs under `tools/venv-litellm/bin/python`, so build **venv-litellm first**:
 > nothing else works until it exists. On Windows the venv layout is `tools\<venv>\Scripts\` and the
 > pinned `.lock` files are used in place of `.txt`.
 
@@ -401,8 +398,8 @@ Each install takes 2 to 10 minutes; `venv-webui` is by far the largest.
 
 This puts `bob` on your PATH so the remaining steps (`bob gen`, `bob fetch`, …) resolve.
 
-**Linux.** The repo-root `./bob` shim runs `tools/venv-litellm/bin/python -m bob`. Symlink it
-into `~/.local/bin`:
+**Linux.** The repo-root `./bob` shim runs `tools/venv-litellm/bin/python -m bob`. Symlink it into
+`~/.local/bin`:
 ```bash
 mkdir -p ~/.local/bin
 ln -sf "$(pwd)/bob" ~/.local/bin/bob
@@ -410,8 +407,8 @@ ln -sf "$(pwd)/bob" ~/.local/bin/bob
 #   fish:      fish_add_path ~/.local/bin
 #   bash/zsh:  add 'export PATH="$HOME/.local/bin:$PATH"' to your rc
 ```
-Open a new terminal, then `bob help` should print the catalog. If you'd rather not install it globally,
-you can run any command in-place as `./bob <verb>`.
+Open a new terminal, then `bob help` should print the catalog. To avoid a global install, run any
+command in-place as `./bob <verb>`.
 
 **Windows.** The kernel writes a `bob.cmd` shim (`python -m bob`) into your scoop shims directory. If
 you use scoop, `install_cli` does this; by hand, create `bob.cmd` somewhere on PATH:
@@ -429,9 +426,9 @@ then `bob help`.
 ## 8. Generate the runtime configs
 
 `bob gen` reads the model registry (`config/models.json`, plus your `config/user.json` overrides) and
-writes the generated runtime configs: `config/llama-swap.yaml` (local model routing) and
-`config/litellm.yaml` (the OpenAI-compatible proxy's model list). These are overwritten on every
-`bob gen`: do not edit them by hand.
+writes the runtime configs: `config/llama-swap.yaml` (local model routing) and `config/litellm.yaml`
+(the OpenAI-compatible proxy's model list). Both are overwritten on every `bob gen`: do not edit them
+by hand.
 
 ```bash
 bob gen                 # for the active profile
@@ -452,7 +449,7 @@ ls config/llama-swap.yaml config/litellm.yaml
 ## 9. Download models
 
 `bob fetch` downloads the GGUF files for the active profile into `models/`, verifying each against the
-SHA256 pinned in the registry. Downloads are resumable, re-run if interrupted.
+SHA256 pinned in the registry. Downloads are resumable; re-run if interrupted.
 
 ```bash
 bob fetch                    # download the active profile (~38 GB for 16gb, ~21 GB for 12gb)
@@ -481,7 +478,7 @@ To provide models yourself, copy the `.gguf` files into `models/` manually and s
 ## 10. Wire the editor clients (Continue + aider)
 
 This points VS Code's Continue extension and the aider CLI at the repo's config files (symlink, with a
-copy fallback where symlinks aren't permitted). The kernel does this in `setup_clients`; by hand:
+copy fallback where symlinks aren't permitted). The kernel does this in `setup_clients`. By hand:
 
 Linux:
 ```bash
@@ -512,7 +509,7 @@ code --install-extension saoudrizwan.claude-dev    # Cline
 ## 11. Build and configure fabric
 
 fabric is a Go binary that runs 250+ named LLM prompt patterns. `bob fabric-setup` builds it and wires
-`~/.config/fabric`; the manual equivalent (`setup_fabric` in `scripts/tools/build.py`):
+`~/.config/fabric`. The manual equivalent (`setup_fabric` in `scripts/tools/build.py`):
 
 Linux:
 ```bash
@@ -555,25 +552,25 @@ Replace `8081` if you changed `litellmPort` in `config/user.json`.
 ## 12. Voice and vision (whisper + piper)
 
 Optional Phase-2 feature. `bob setup-voice` builds `whisper.cpp` (STT), downloads the whisper model and
-the piper TTS binary + voice, and installs the audio deps into `venv-litellm`. It requires
-`venv-litellm` to already exist (step 6).
+the piper TTS binary + voice, and installs the audio deps into `venv-litellm`, which must already exist
+(step 6).
 
 ```bash
 bob setup-voice              # build whisper-server, fetch STT model + piper voice
 bob setup-voice --force      # rebuild / re-download everything
 ```
 
-Under the hood this builds `whisper.cpp` with the same CUDA/cmake seams as llama.cpp
-(`-DWHISPER_CUDA=ON` for a GPU, CPU fallback otherwise) into `bin/whisper-server` + `bin/whisper-cli`,
-downloads `ggml-small.bin` into `models/whisper/`, extracts piper into `bin/`, and drops the voice model
-into `bin/voices/`. Enable `voice.enabled` / `vision.enabled` in `config/user.json` to use it.
+This builds `whisper.cpp` with the same CUDA/cmake seams as llama.cpp (`-DWHISPER_CUDA=ON` for a GPU,
+CPU fallback otherwise) into `bin/whisper-server` + `bin/whisper-cli`, downloads `ggml-small.bin` into
+`models/whisper/`, extracts piper into `bin/`, and drops the voice model into `bin/voices/`. Enable
+`voice.enabled` / `vision.enabled` in `config/user.json` to use it.
 
 ---
 
 ## 13. Optional add-on services (Langfuse, SearXNG, n8n)
 
-Entirely opt-in. A default install is 100% Docker-free and needs none of these; add them only if you
-want their specific capability. Each starts on demand:
+Entirely opt-in. A default install is 100% Docker-free and needs none of these; add them only for their
+specific capability. Each starts on demand:
 
 - **n8n** (workflow automation) runs **natively** on the Node toolchain (no Docker). Start it with
   `bob services n8n start`.
@@ -590,7 +587,7 @@ want their specific capability. Each starts on demand:
 default `config/searxng/settings.yml`, installs Docker if needed for the Docker services, then pulls
 and starts that service. Manage them with `bob services start|stop|status|logs`.
 
-To drive the Docker opt-ins by hand instead, install Docker, ensure its daemon is running, then:
+To drive the Docker opt-ins by hand, install Docker, ensure its daemon is running, then:
 
 Linux:
 ```bash
@@ -635,9 +632,9 @@ bob services stop            # stop services (data is preserved)
 
 ## 14. Verify the installation
 
-First confirm the install itself is complete and correct. `python -m bob.kernel verify-install` checks
-the installed submodules and downloaded model SHAs against `versions.lock` (the one-command
-installer runs this automatically at the end):
+First confirm the install is complete and correct. `python -m bob.kernel verify-install` checks the
+installed submodules and downloaded model SHAs against `versions.lock` (the one-command installer runs
+this automatically at the end):
 ```bash
 python -m bob.kernel verify-install
 ```
@@ -665,9 +662,9 @@ bob bench
 bob services status
 ```
 
-You don't need to keep `bob serve` running for everyday use, inference **auto-starts on demand** the
+You don't need to keep `bob serve` running for everyday use: inference **auto-starts on demand** the
 first time you talk to Bob (`bob`, `bob chat`, `bob agent …`). `bob serve` (foreground) and `bob up`
-(background) are there for when you want the stack pre-warmed or serving outside-terminal clients.
+(background) are for when you want the stack pre-warmed or serving outside-terminal clients.
 
 If `bob bench` shows prefill around 1000 t/s rather than 4000+, the build fell back to a CPU path. Force
 a clean rebuild and confirm `CUDA_PATH` points at 12.8+:

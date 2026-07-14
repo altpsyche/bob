@@ -29,19 +29,23 @@ Or run any capability directly, for quick questions, scripts, and pipes:
 
 ## Stack
 
-| Tool | Role |
-|---|---|
-| Open WebUI `:3000` | Browser chat, RAG, image input, voice (wired in the admin panel) |
-| Continue.dev | VS Code autocomplete, chat, `@web`, `@codebase`, `@filesystem` |
-| Cline | VS Code agent: reads and writes files, runs commands |
-| aider | Terminal coding agent: review the plan before any file is touched |
-| fabric | 254 named LLM patterns, pipe any text through them |
-| Web search | Built-in `ddgs` metasearch (in-process, no service, no Docker); Brave/Tavily optional via key |
-| n8n `:5678` | Visual workflow automation. Native, opt-in (`bob services n8n start`) |
-| SearXNG `:8888` | Private self-hosted meta-search. Opt-in Docker (`bob services searxng start`) |
-| Langfuse `:3001` | LLM observability. Opt-in Docker; default trace sink is a local file (`bob traces`) |
-| API `:8081/v1` | OpenAI-compatible inference endpoint, drop-in for any client |
-| Agent API `:8084` | `bob agent serve`: REST + SSE agent loop, Bearer auth, owner-scoped sessions (loopback by default) |
+Core inference (the `:8081` API and the `bob` CLI) works out of the box. Everything else is optional:
+
+| Tool | Status | Role |
+|---|---|---|
+| API `:8081/v1` | core | OpenAI-compatible inference endpoint, drop-in for any client |
+| Agent API `:8084` | on demand (`bob agent serve`) | REST + SSE agent loop, Bearer auth, owner-scoped sessions (loopback) |
+| Web search | built in | `ddgs` metasearch (in-process, no Docker); Brave/Tavily optional via key |
+| Continue.dev | client | VS Code autocomplete, chat, `@web`, `@codebase`, `@filesystem` |
+| Cline | client | VS Code agent: reads and writes files, runs commands |
+| aider | client | terminal coding agent: review the plan before any file is touched |
+| fabric | client | 254 named LLM patterns, pipe any text through them |
+| Open WebUI `:3000` | opt-in at setup (`--with-webui`) | browser chat, RAG, image input, voice |
+| n8n `:5678` | opt-in, native (`bob services n8n start`) | visual workflow automation |
+| SearXNG `:8888` | opt-in, Docker (`bob services searxng start`) | private self-hosted meta-search |
+| Langfuse `:3001` | opt-in, Docker (`bob services langfuse start`) | observability dashboard (default trace sink is a local file, `bob traces`) |
+
+A default install has no Docker and starts none of these. The Docker-backed services (SearXNG, Langfuse) are not installed by default; starting one runs a guided Docker install first. Nothing else needs Docker.
 
 ## Hardware
 
