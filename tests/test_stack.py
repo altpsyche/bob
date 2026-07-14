@@ -65,12 +65,12 @@ class TestStatus(unittest.TestCase):
             self.assertIn(svc, out)
 
     def test_endpoint_up_marks_loaded_and_shows_full_service_table(self):
-        with mock.patch.object(stack, "_http_json", return_value={"data": [{"id": "planner"}]}), \
+        with mock.patch.object(stack, "_http_json", return_value={"data": [{"id": "ponder"}]}), \
              mock.patch.object(osenv, "docker_present", return_value=True), \
              mock.patch.object(osenv, "is_port_in_use", side_effect=lambda p, *a, **k: p in (8082, 8888)):
             out = stack.stack_status(CFG)
         self.assertIn("[running]", out)
-        self.assertRegex(out, r"planner\s+.*\bloaded\b")
+        self.assertRegex(out, r"ponder\s+.*\bloaded\b")
         self.assertRegex(out, r"coder\s+.*\bunloaded\b")
         # Full system view: every component is listed, with per-port up/down.
         self.assertRegex(out, r"UP\s+whisper\s+:8082")    # stt up

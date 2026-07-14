@@ -35,9 +35,9 @@ class TestModelsPythonSide(unittest.TestCase):
 
     def test_profile_roles_skip_metadata(self):
         roles = bob_models.profile_roles("16gb")
-        self.assertIn("planner", roles)
+        self.assertIn("ponder", roles)
         self.assertNotIn("_targetVRAM", roles)
-        self.assertEqual(roles["planner"]["gguf"], "qwen3-30b-a3b-q4.gguf")
+        self.assertEqual(roles["ponder"]["gguf"], "qwen3-30b-a3b-q4.gguf")
 
     def test_set_active_profile_writes_override(self):
         with tempfile.TemporaryDirectory() as d:

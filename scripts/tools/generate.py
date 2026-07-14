@@ -18,8 +18,8 @@ SCRIPTS = REPO / "scripts"
 
 MUTATING_TOOLS = {"gen"}
 
-# Canonical role order: planner,coder,chat,fim,embed first, then the rest sorted.
-_ROLE_ORDER = ["planner", "coder", "chat", "fim", "embed"]
+# Canonical role order: ponder,coder,chat,fim,embed first, then the rest sorted.
+_ROLE_ORDER = ["ponder", "coder", "chat", "fim", "embed"]
 
 
 def configure(config: dict) -> None:
@@ -103,12 +103,17 @@ def gen_llama_swap(profile: str = None) -> str:
 
     ngl = 0 if is_cpu else (d["ngl"] if d.get("ngl") is not None else 99)
     fa = "--flash-attn on" if (d.get("flashAttn") is not False and not is_cpu) else ""
+    # Pin reasoning extraction rather than trust the engine default (which a bump can flip, exactly the
+    # class of regression the -ngl 99 MoE change was): 'deepseek' routes a reasoning model's <think>
+    # content into the separate `reasoning_content` field, including streaming deltas, so the agent
+    # loop's content-only stream reader keeps it out of the transcript and memory.
+    reason = "--reasoning-format deepseek"
     batch = f"-b {d['batch']}" if d.get("batch") and d["batch"] != 512 else ""
     ub = f"-ub {d['ubatch']}" if d.get("ubatch") and d["ubatch"] != 512 else ""
     par = f"-np {d['parallel']}" if d.get("parallel") and d["parallel"] > 1 else ""
     thr = f"-t {d['threads']}" if d.get("threads") and d["threads"] > 0 else ""
     numa = f"--numa {d['numa']}" if d.get("numa") else ""
-    srv_parts = [p for p in [srv_bin, "--port ${PORT}", f"-ngl {ngl}", fa, batch, ub, numa, par, thr] if p]
+    srv_parts = [p for p in [srv_bin, "--port ${PORT}", f"-ngl {ngl}", fa, reason, batch, ub, numa, par, thr] if p]
     macros["srv"] = " ".join(srv_parts)
 
     legacy_kv = d["kvQuant"] if d.get("kvQuant") not in (None, "") else None
@@ -150,6 +155,14 @@ def gen_llama_swap(profile: str = None) -> str:
         model_no_mmap = (m["noMmap"] is True) if m.get("noMmap") is not None else global_no_mmap
         if model_no_mmap:
             parts.append("--no-mmap")
+        # MoE expert offload: keep the experts of the first N layers in system RAM so a MoE model whose
+        # weights overflow VRAM still fits alongside -ngl 99. Only the active experts (~3B for an A3B)
+        # stream from RAM per token, so it stays fast. Per-profile in config/models.json; skipped on the
+        # CPU tier (already all-CPU). Newer llama.cpp no longer auto-spills at -ngl 99, so this is how a
+        # big MoE runs on a small card.
+        n_cpu_moe = m.get("nCpuMoe")
+        if n_cpu_moe and not is_cpu:
+            parts.append(f"--n-cpu-moe {int(n_cpu_moe)}")
         if m.get("draftRole"):
             draft = by_role.get(m["draftRole"])
             if not draft:
@@ -298,9 +311,9 @@ def gen_litellm(profile: str = None) -> str:
 
 # --- gen-continue ---------------------------------------------------------------------------------
 
-_ROLE_ASSIGN = {"coder": ["chat", "edit", "apply"], "chat": ["chat"], "planner": ["chat", "edit"],
+_ROLE_ASSIGN = {"coder": ["chat", "edit", "apply"], "chat": ["chat"], "ponder": ["chat", "edit"],
                 "vision": ["chat"], "fim": ["autocomplete"], "embed": ["embed"]}
-_PRO_ASSIGN = {"chat": ["chat", "edit"], "coder": ["chat", "edit", "apply"], "planner": ["chat"],
+_PRO_ASSIGN = {"chat": ["chat", "edit"], "coder": ["chat", "edit", "apply"], "ponder": ["chat"],
                "vision": ["chat"]}
 _NAME_FOR = {"fim": "autocomplete", "embed": "embeddings"}
 

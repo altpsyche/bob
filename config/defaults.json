@@ -16,9 +16,9 @@
   "roleTable": {
     "chat":   { "base": "defaultRole", "pro": "proRole",      "fallback": "chat",    "proFallback": "chat-pro" },
     "voice":  { "base": "defaultRole", "pro": "proRole",      "fallback": "chat",    "proFallback": "chat-pro" },
-    "code":   { "base": "codeRole",    "pro": "proCodeRole",  "fallback": "coder",   "proFallback": "coder-pro" },
-    "think":  { "base": "thinkRole",   "pro": "proThinkRole", "fallback": "planner", "proFallback": "planner-pro" },
-    "agent":  { "base": "agentRole",   "pro": "agentRole",    "fallback": "agent",   "proFallback": "agent" },
+    "code":   { "base": "codeRole",    "pro": "proCodeRole",   "fallback": "coder",   "proFallback": "coder-pro" },
+    "ponder": { "base": "ponderRole",  "pro": "proPonderRole", "fallback": "ponder",  "proFallback": "ponder-pro" },
+    "agent":  { "base": "agentRole",   "pro": "agentRole",     "fallback": "agent",   "proFallback": "agent" },
     "vision": { "section": "vision",   "base": "visionRole",  "pro": "visionProRole", "fallback": "vision", "proFallback": "vision-pro" }
   },
 
@@ -117,6 +117,7 @@
       "llmRetries": 2,
       "llmRetryBackoffSec": 2.0,
       "allowPrivateFetch": false,
+      "think": false,
       "searchProvider": "ddgs",
       "webSearchFallback": true,
       "n8nVersion": "2.29.10",

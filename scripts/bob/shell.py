@@ -89,7 +89,9 @@ class _Cmd:
 _COMMANDS = [
     _Cmd("/agent", "run the agent loop on a one-shot goal", "_run_turn", args="<goal>"),
     _Cmd("/voice", "spoken conversation (mic → loop → speech)", "_cmd_voice"),
-    _Cmd("/model", "show or switch the role (chat, coder, planner, …)", "_cmd_model", args="[role]"),
+    _Cmd("/model", "show or switch the role (chat, coder, ponder, …)", "_cmd_model", args="[role]"),
+    _Cmd("/think", "reasoning mode on the current model: on | off", "_cmd_think",
+         args="[on|off]", subs=("on", "off")),
     _Cmd("/agency", "tool-approval mode: show | confirm | silent", "_cmd_agency",
          args="[level]", subs=("show", "confirm", "silent")),
     _Cmd("/session", "persisted conversation history", "_cmd_session",
@@ -410,7 +412,7 @@ class _TurnRenderer:
 
 class BobShell:
     def __init__(self, config, tools, skills, console=None, sessions=None, role=None,
-                 no_tools=False):
+                 no_tools=False, think=None):
         self.config = config
         self.tools = tools
         self.skills = skills
@@ -418,6 +420,10 @@ class BobShell:
         # conversation). Default (bare `bob`/`bob shell`) keeps the agent role + full toolset.
         self.role = role or config.get("routing", {}).get("agentRole", "chat")
         self.no_tools = no_tools
+        # Reasoning mode: a per-session toggle (/think on|off) applied to whichever model is current,
+        # separate from the model choice. Defaults from config (agent.think); `bob think`/`--think`
+        # launch it on. `enable_thinking` rides the request; the trace never enters the transcript.
+        self.think = config.get("agent", {}).get("think", False) if think is None else bool(think)
         self.agency = config.get("agent", {}).get("agency", "show")
         # Owner-scoped persisted sessions. The row is created LAZILY on the first turn
         # (session_id stays None until then) so opening `bob` and leaving leaves no empty session.
@@ -454,7 +460,7 @@ class BobShell:
     # -- construction ---------------------------------------------------------
 
     @classmethod
-    def build(cls, config=None, role=None, no_tools=False):
+    def build(cls, config=None, role=None, no_tools=False, think=None):
         """Build the shell with warm registries (one tool build, one skill build)."""
         from bob_core import load_config
         from bob_session import SessionStore
@@ -473,7 +479,7 @@ class BobShell:
         # restarts and is resumable from either surface.
         session_db = _SCRIPTS.parent / agent_cfg.get("sessionDbPath", "data/sessions.db")
         sessions = SessionStore(session_db, default_owner=agent_cfg.get("defaultOwner", "local"))
-        return cls(config, tools, skills, sessions=sessions, role=role, no_tools=no_tools)
+        return cls(config, tools, skills, sessions=sessions, role=role, no_tools=no_tools, think=think)
 
     # -- splash ---------------------------------------------------------------
 
@@ -657,7 +663,7 @@ class BobShell:
         `/model <role>`, `/skill <name>`, `/services start|stop <svc>`, `/session resume <ref>`. Each
         value is a zero-arg callable queried at completion time so it always reflects current state."""
         return {
-            ("/model",): self._known_roles,
+            ("/model",): self._model_choices,
             ("/skill",): lambda: [s["name"] for s in self.skills.list()],
             ("/services", "start"): self._service_names,
             ("/services", "stop"): self._service_names,
@@ -916,11 +922,38 @@ class BobShell:
         names = {v for v in list(routing.values()) + list(vision.values()) if isinstance(v, str)}
         return sorted(names)
 
+    def _role_tasks(self) -> list:
+        """The roleTable task names (chat, code, think, voice, vision, agent): the vocabulary
+        `bob chat --think/--code` and the roleTable speak. /model accepts these as aliases."""
+        from bob_core import load_defaults
+        return list(load_defaults().get("roleTable", {}).keys())
+
+    def _model_choices(self) -> list:
+        """Completion set for /model: the served model names PLUS the roleTable task aliases, so
+        `/model code`/`/model ponder` complete and work the way `bob code` / `/model ponder` do."""
+        return sorted(set(self._known_roles()) | set(self._role_tasks()))
+
     def _cmd_model(self, arg: str) -> None:
         if not arg:
             self.console.print(f"model/role: {self.role}")
             return
-        self.role = arg.strip()
+        arg = arg.strip()
+        if arg == "think":
+            # 'think' is the reasoning MODE now, not a model. Redirect old muscle memory.
+            self.console.print(f"[{self.theme.warn}]'think' is a mode, not a model.[/]  "
+                               f"[{self.theme.muted}]use /think on|off to toggle reasoning, or "
+                               f"/model ponder for the 30B reasoning model.[/]")
+            return
+        if arg in self._role_tasks():
+            # Task-name alias (code, voice, ponder, ...): resolve to the model this endpoint actually
+            # serves, so the shell speaks the same vocabulary as `bob code` and the roleTable.
+            from bob_core import get_role
+            model = get_role(self.config, arg)
+            self.role = model
+            note = "" if model == arg else f"  [{self.theme.muted}](task '{arg}')[/]"
+            self.console.print(f"[green]role → {model}[/]{note}")
+            return
+        self.role = arg
         known = self._known_roles()
         if known and self.role not in known:
             # Not a configured role — the turn would fail at the model call. Warn (don't silently
@@ -929,6 +962,24 @@ class BobShell:
                                f"[{self.theme.muted}](not a known role: {', '.join(known)})[/]")
         else:
             self.console.print(f"[green]role → {self.role}[/]")
+
+    def _cmd_think(self, arg: str) -> None:
+        """/think [on|off] toggles reasoning for the current model. No arg flips it. Reasoning runs on
+        whatever model is active (chat, ponder, ...); the trace stays in the model's reasoning channel
+        and never enters the transcript or memory."""
+        arg = (arg or "").strip().lower()
+        if arg in ("on", "true", "1"):
+            self.think = True
+        elif arg in ("off", "false", "0"):
+            self.think = False
+        elif not arg:
+            self.think = not self.think
+        else:
+            self.console.print(f"[{self.theme.warn}]usage: /think [on|off][/]")
+            return
+        state = "on" if self.think else "off"
+        self.console.print(f"[green]think → {state}[/]  "
+                           f"[{self.theme.muted}](reasoning on the current model: {self.role})[/]")
 
     def _cmd_agency(self, arg: str) -> None:
         arg = arg.strip().lower()
@@ -1285,7 +1336,7 @@ class BobShell:
                 goal, self.config, role=self.role, agency=self.agency,
                 registry=self.tools, history=self.history, stream=True,
                 cancel=cancel, approve=approve, owner=self.owner, scope=self.scope,
-                no_tools=self.no_tools, run_id=rid,
+                no_tools=self.no_tools, run_id=rid, think=self.think,
             )
 
         result = self._consume(factory)
@@ -1303,8 +1354,9 @@ class BobShell:
         + logging + tools automatically (the whole point of the one-engine unification — no separate
         streaming path, no 256-token cap, no separate persona). Each reply streams to the screen and is Ctrl-C
         cancellable; Ctrl-C while listening — or saying 'exit'/'stop'/'quit'/'goodbye' — leaves voice mode
-        back to the text prompt. Uses the shell's current role: reasoning/verbosity is a `/model` choice,
-        not a per-turn `/no_think` string hack (which would corrupt the persisted turn + memory)."""
+        back to the text prompt. Inherits the shell's current role and `/think` mode: reasoning rides the
+        request's `enable_thinking` kwarg (landing in the model's reasoning channel), never a `/no_think`
+        string hack in the message (which would corrupt the persisted turn + memory)."""
         import bob_voice
 
         t = self.theme
@@ -1610,15 +1662,16 @@ class BobShell:
         self._put(answers, False)
 
 
-def run(config=None, role=None, no_tools=False) -> int:
+def run(config=None, role=None, no_tools=False, think=None) -> int:
     """Entry point for `python -m bob shell` (and the no-arg interactive front door). `role` +
-    `no_tools` let `bob chat/code/think` launch the shell in chat mode (preset role, tools off)."""
+    `no_tools` let `bob chat/code/think` launch the shell in chat mode (preset role, tools off);
+    `think` presets reasoning mode on (`bob think` / `--think`)."""
     if not is_interactive():
         from bob.cli import _print_help
         _print_help()
         return 0
     _force_utf8()   # before build() creates the rich Console, so it inherits a UTF-8 stdout
-    return BobShell.build(config, role=role, no_tools=no_tools).run()
+    return BobShell.build(config, role=role, no_tools=no_tools, think=think).run()
 
 
 def run_voice(config=None, role=None, no_tools=False) -> int:

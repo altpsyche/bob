@@ -48,7 +48,7 @@ the cross OS CI acceptance gate runs on every PR.
   proxy. Any tool pointed at OpenAI works by changing one base URL.
 - VRAM profiles from 8 GB to 32 GB, auto selected from the detected GPU, plus a CPU tier for GPU-less
   machines.
-- Named roles (chat, coder, planner, vision, embed, fim, agent) with optional cloud "pro" peers
+- Named roles (chat, coder, ponder, vision, embed, fim, agent) with optional cloud "pro" peers
   (DeepSeek, GLM) routed transparently when you ask for them.
 
 ### An agent that acts, safely

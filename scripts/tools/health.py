@@ -26,7 +26,7 @@ SCRIPTS = REPO / "scripts"
 
 _OK, _BAD, _PENDING = "✓", "✗", "○"  # check, cross, hollow circle (pending/deferred)
 _SIZE_TOL_PCT = 0.10  # ±10% GGUF size tolerance
-_DIAG_ROLES = ["planner", "coder", "chat", "fim", "embed"]
+_DIAG_ROLES = ["ponder", "coder", "chat", "fim", "embed"]
 
 
 def configure(config: dict) -> None:

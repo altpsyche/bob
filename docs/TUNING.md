@@ -35,7 +35,7 @@ The `defaults` block in `config/models.json` controls the server launch flags an
 | `parallel` | `1` | Parallel request slots (`-np`). Set `>1` for multi-user or shared setups. |
 | `threads` | `-1` | CPU threads for BLAS. `-1` = auto. Tune if you're offloading layers to CPU. |
 | `noMmap` | `false` | Load model into heap RAM at startup (`--no-mmap`). Eliminates page faults on CPU-offloaded layers. Startup is slower; inference is smoother. Also supported per-model. |
-| `mlockBig` | `false` | Apply `--mlock` to swap-group models (planner/coder/chat). Pins CPU-resident pages in RAM. Windows: needs `SeLockMemoryPrivilege`. |
+| `mlockBig` | `false` | Apply `--mlock` to swap-group models (ponder/coder/chat). Pins CPU-resident pages in RAM. Windows: needs `SeLockMemoryPrivilege`. |
 | `numa` | `""` | NUMA strategy (`--numa`). Options: `""` (off), `"isolate"`, `"distribute"`, `"numactl"`. On 7950X3D: try `"isolate"` first. |
 | `webuiSecret` | `"bob-dev"` | Open WebUI session key. Change before exposing on a LAN. |
 | `maxTokens` | `512` | Default `max_tokens` for `bob chat`. |
@@ -81,7 +81,7 @@ registration step. To exclude a tool without deleting it, add its name to `agent
 | `agent.maxToolResultTokens` | `1000` | Per-tool-result cap (~4 chars/token) applied before a result is appended to history, so one huge tool output can't blow the budget. |
 | `agent.conversationPaging` | `false` | Persist the full transcript (incl. tool turns + one-shot CLI runs) to an owner-scoped store and offer the `conversation_search` tool to page dropped turns back. Grows `data/bob.db`. See [MEMORY.md](MEMORY.md#conversation-paging-recall-over-dropped-turns). |
 | `agent.compactSchemasAfter` | `12` | Once more than this many tools are loaded, inject **compact** tool schemas (param descriptions dropped) so the fixed per-turn prompt doesn't grow unbounded with tool count. |
-| `agent.requestTimeout` | `600` | Client-side LLM call timeout (s). Must be **≥** the litellm proxy's `request_timeout` (600) so thinking models (planner/R1) aren't cut off mid-response. |
+| `agent.requestTimeout` | `600` | Client-side LLM call timeout (s). Must be **≥** the litellm proxy's `request_timeout` (600) so thinking models (ponder/R1) aren't cut off mid-response. |
 | `agent.llmRetries` | `2` | Retries for a transient LLM error (5xx/timeout/conn) per step: total tries = this + 1. Covers the llama-swap model-swap race (a 500 "upstream command exited prematurely" on the first request after an idle-unload). Retried only before the first token surfaces. |
 | `agent.llmRetryBackoffSec` | `2.0` | Base backoff (s) before a retry; escalates per attempt (2s, 4s, …) to give a restarting backend time to come up. |
 | `agent.allowPrivateFetch` | `false` | When `false`, `web_fetch` blocks `file://`/non-http schemes and loopback/RFC-1918/link-local hosts (SSRF guard). Set `true` only if you deliberately need the agent to reach private hosts. |
@@ -199,7 +199,7 @@ Weight memory is approximately the parameter count multiplied by the bytes per w
 
 KV cache adds roughly 1 to 2 GB at a 4k context window, or 3 to 5 GB at 32k. The default q8_0/q8_0 quantization cuts these figures by roughly 50% versus unquantized f16. On pre-Blackwell GPUs, q5_1 keys and q4_0 values cut by ~75% at the cost of minor quality loss.
 
-For the models in this repo on 16 GB VRAM: the 14B Q4_K_M coder is about 9 to 10 GB for weights plus 1 to 2 GB for context, which fits comfortably. The 30B-A3B Q4 planner is about 18 GB for the full weight matrix, so it uses a small amount of RAM offload; but because only 3B parameters are active per token (it's a mixture-of-experts model), generation is still fast.
+For the models in this repo on 16 GB VRAM: the 14B Q4_K_M coder is about 9 to 10 GB for weights plus 1 to 2 GB for context, which fits comfortably. The 30B-A3B Q4 ponder is about 18 GB for the full weight matrix, so it uses a small amount of RAM offload; but because only 3B parameters are active per token (it's a mixture-of-experts model), generation is still fast.
 
 For mixture-of-experts models generally, VRAM requirements are based on the total parameter count, not the active count. Active parameters affect compute speed but not the memory needed to load the model. An 80B model with 3B active parameters at Q4 still needs roughly 45 GB for the weight matrix.
 
@@ -406,7 +406,7 @@ Pro (cloud) model prompts live inside the peer config as a `systemPrompt` field 
       "pro": {
         "coder":   { "model": "deepseek-chat",     "maxTokens": 4096, "systemPrompt": "You are an expert software engineer. Be direct. No preambles." },
         "chat":    { "model": "deepseek-chat",     "maxTokens": 4096, "systemPrompt": "Be helpful and concise." },
-        "planner": { "model": "deepseek-reasoner", "maxTokens": 8192 }
+        "ponder": { "model": "deepseek-reasoner", "maxTokens": 8192 }
       }
     }
   }
@@ -446,11 +446,11 @@ Pre-Blackwell users (RTX 20/30/40, sm_75 to 89) can override for more VRAM savin
 
 `noMmap: true` on a model entry (or in `defaults` to apply globally) forces llama.cpp to read the full model file into heap memory at startup instead of using memory-mapped I/O (the default).
 
-Under mmap, CPU-offloaded layer weights are read from disk on demand (page faults). For the 30B-A3B planner, which overflows VRAM by ~1.3 GB, every access to those offloaded layers is a potential disk seek during inference. With `--no-mmap`, all weights sit in heap RAM after startup: zero disk I/O during inference.
+Under mmap, CPU-offloaded layer weights are read from disk on demand (page faults). For the 30B-A3B ponder, which overflows VRAM by ~1.3 GB, every access to those offloaded layers is a potential disk seek during inference. With `--no-mmap`, all weights sit in heap RAM after startup: zero disk I/O during inference.
 
-**Trade-off:** startup takes roughly 1 s per GB of model size (a 17 GB planner = ~17 s on first load after a cold start). After that, the heap pages can be retained in RAM across swaps if `--mlock` is also set.
+**Trade-off:** startup takes roughly 1 s per GB of model size (a 17 GB ponder = ~17 s on first load after a cold start). After that, the heap pages can be retained in RAM across swaps if `--mlock` is also set.
 
-Set per-model in `config/models.json` (already done for the 16 GB planner, which has `"noMmap": true`), or globally in `config/user.json`:
+Set per-model in `config/models.json` (already done for the 16 GB ponder, which has `"noMmap": true`), or globally in `config/user.json`:
 
 ```json
 {
@@ -462,7 +462,7 @@ Verified: `--no-mmap` is fully supported on Windows (via `SetFilePointerEx` + `R
 
 ## Memory locking (--mlock)
 
-`--mlock` is already applied to `fim` and `embed` (always-resident models). Setting `mlockBig: true` in defaults extends locking to swap-group models (planner, coder, chat).
+`--mlock` is already applied to `fim` and `embed` (always-resident models). Setting `mlockBig: true` in defaults extends locking to swap-group models (ponder, coder, chat).
 
 Combined with `--no-mmap`, mlock fully pins model weights in physical RAM: no disk seeks, no OS eviction to the pagefile. Inference latency for CPU-offloaded layers becomes consistent rather than occasionally spiky.
 
@@ -484,7 +484,7 @@ Enable in `config/user.json`:
 }
 ```
 
-**RAM budget:** locking the 17 GB planner on a 64 GB system leaves ~45 GB free (safe). Do not enable on systems with 16 GB RAM.
+**RAM budget:** locking the 17 GB ponder on a 64 GB system leaves ~45 GB free (safe). Do not enable on systems with 16 GB RAM.
 
 ## NUMA strategy (7950X3D and multi-CCD CPUs)
 
@@ -507,21 +507,32 @@ Enable in `config/user.json`:
 }
 ```
 
-## MoE layer offloading (Qwen3-30B-A3B)
+## MoE expert offloading (`nCpuMoe`)
 
-The planner model (30B total parameters, 3B active per forward pass) exceeds 16 GB VRAM at Q4_K_M. At `-ngl 99`, llama.cpp fills GPU VRAM and spills excess layers to CPU RAM automatically: roughly 30 to 31 layers fit on GPU, with ~17 going to CPU.
+The ponder model (Qwen3-30B-A3B: 30B total, 3B active per token) exceeds 16 GB VRAM at Q4_K_M. Bob keeps
+it on the card with **`--n-cpu-moe N`**, which keeps the Mixture-of-Experts weights of the first N layers
+in system RAM while everything else stays on the GPU at `-ngl 99`. Because only ~3B experts activate per
+token, an A3B model streams those from RAM with little speed loss. On a 16 GB card, `nCpuMoe: 24` (24 of
+the 48 layers' experts in RAM) loads the 30B at ~11.7 GB VRAM, leaving headroom for the 16384 KV cache.
 
-llama-server has no `-n-cpu-moe` flag; MoE expert routing is controlled entirely via `-ngl`. The expert FFN blocks are large but tolerate CPU offload well because only a fraction of experts activate per token.
-
-With KV q8_0 quantization saving ~1.4 GB vs unquantized f16 (at ctx=16384), the auto-fit may shift 3 to 4 more layers onto GPU than a stock unquantized setup. To benchmark the impact, run `bob bench` at the baseline `ngl=99`, then override the planner's `ngl` explicitly in `config/user.json` and compare `tg128` (generation tokens/s):
+Set it per profile in `config/models.json` (already done for `16gb`):
 
 ```json
 {
   "profiles": {
-    "16gb": { "planner": { "flags": ["--temp", "0.3", "-ngl", "31"] } }
+    "16gb": { "ponder": { "nCpuMoe": 24 } }
   }
 }
 ```
+
+**Tuning:** lower `nCpuMoe` keeps more experts on the GPU (faster, more VRAM); raise it to fit a tighter
+card. `--cpu-moe` (all experts in RAM) is the safest floor for very small VRAM. Benchmark with `bob bench`
+after a change and watch `tg128` (generation tokens/s) plus VRAM headroom.
+
+> **Why this is needed:** older llama.cpp auto-spilled excess layers to CPU at `-ngl 99`. Current
+> llama.cpp does not: with an explicit `-ngl 99` it refuses to auto-fit and aborts with an out-of-memory
+> error for a model larger than VRAM. `nCpuMoe` is the deterministic replacement (and the path to running
+> even larger MoE models, e.g. an 80B-A3B, on a single small card).
 
 Run `bob gen && bob serve && bob bench` after editing.
 
@@ -541,7 +552,7 @@ The 7950X3D's V-Cache (96 MB L3) reduces main-memory pressure for CPU-resident l
 
 Expected speedup: **20 to 40% on generation-heavy tasks** (autocomplete, inline edits, code generation). No quality change: the large model rejects incorrect draft tokens and falls back to its own output.
 
-**Tokenizer constraint:** only the `coder` → `fim` pairing is safe. Qwen3 (used by `chat` and `planner`) has a different tokenizer vocabulary from Qwen2.5 (used by `coder` and `fim`). Mismatched vocabularies cause the large model to reject nearly all draft tokens, eliminating the speedup and potentially producing garbled output. Do not add `draftRole` to `chat` or `planner`.
+**Tokenizer constraint:** only the `coder` → `fim` pairing is safe. Qwen3 (used by `chat` and `ponder`) has a different tokenizer vocabulary from Qwen2.5 (used by `coder` and `fim`). Mismatched vocabularies cause the large model to reject nearly all draft tokens, eliminating the speedup and potentially producing garbled output. Do not add `draftRole` to `chat` or `ponder`.
 
 **Disable:** Remove `draftRole` from the `coder` entry in `config/models.json`, then run `bob gen`.
 
@@ -557,4 +568,4 @@ Windows:
 findstr "-md " config\llama-swap.yaml
 ```
 
-The `coder` cmd should contain `-md ${env.LLAMA_LOCAL_ROOT}/models/qwen-coder-3b-q8_0.gguf -ngld 99`. The `planner` and `chat` cmds must not contain `-md`.
+The `coder` cmd should contain `-md ${env.LLAMA_LOCAL_ROOT}/models/qwen-coder-3b-q8_0.gguf -ngld 99`. The `ponder` and `chat` cmds must not contain `-md`.

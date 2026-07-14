@@ -415,7 +415,9 @@ def update_stack(tag: str = None) -> int:
         if not ok:
             print("Update verification failed, rolling back the build output.", file=sys.stderr)
             if osenv.restore_build_output(BIN, bak):
-                print("Rolled bin/ back to the previous build. Your install is unchanged.", file=sys.stderr)
+                print("Rolled bin/ back to the previous build; the endpoint keeps running on it. The "
+                      "source tree and venv were already advanced to the new revisions; re-run "
+                      "`bob update` once the build issue is resolved to finish the move.", file=sys.stderr)
             return 1
         osenv.remove_build_output_backup(BIN, bak)
         print("Rebuild verified.", file=sys.stderr)

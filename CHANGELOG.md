@@ -24,6 +24,12 @@ command, and a normal install never trips over Docker. See [ROADMAP.md](ROADMAP.
 - **Guided Docker install.** Opting into a Docker service (`bob services searxng|langfuse start`) runs a
   guided Docker install through the same package-manager seam setup uses (apt/dnf/pacman/zypper/
   rpm-ostree/winget) when Docker is missing, then brings the service up.
+- **Reasoning mode (`/think`).** Reasoning is now a per-session mode on whatever model is active, not a
+  swap to a separate model: `/think on|off` in the shell (and `bob think` / `bob chat --think`) toggles
+  it, so your chat model can reason without switching to the bigger ponder. It rides the request's
+  `enable_thinking` chat-template kwarg to llama-server; the reasoning trace stays in the model's
+  reasoning channel and never enters the transcript or memory. Config default `agent.think` (off). The
+  30B ponder remains a separate, explicit `/model ponder`.
 
 ### Changed
 - **Docker-free default install.** Nothing in Bob's core needs Docker, and setup no longer provisions or
@@ -33,12 +39,25 @@ command, and a normal install never trips over Docker. See [ROADMAP.md](ROADMAP.
   lazy: they start only when asked, never at setup.
 - **Onboarding and entry clarity.** First-run polish for the "it doesn't know me yet" case, and a single
   unmistakable entry point for a new user.
+- **Renamed the reasoning model role `planner` to `ponder`** so it no longer collides with the new
+  `/think` reasoning mode: `planner` was both a model and (loosely) a "thinking" concept. The role is
+  now `ponder` everywhere (config, clients, docs); select it with `/model ponder`. "think" now means
+  only the mode, which any model can use.
 - **Refreshed vendored submodules to latest releases:** llama.cpp `b9827` to `b9993`, llama-swap `v230`
   to `v239`, fabric `v1.4.455` to `v1.4.458` (whisper.cpp is already ahead of its newest tag, so it stays
   put). `versions.lock` re-pinned; rebuilt and verified (unit suite green, live smoke green). Per-upstream
   details in [docs/VENDOR-CHANGELOG.md](docs/VENDOR-CHANGELOG.md).
 
 ### Fixed
+- **MoE models fit small cards again via `--n-cpu-moe`.** The b9993 engine bump stopped auto-spilling
+  excess layers at `-ngl 99`, so the 30B-A3B ponder OOM'd a 16 GB GPU on load. `generate.py` now emits
+  `--n-cpu-moe N` for MoE models that overflow VRAM (per-profile `nCpuMoe` in `config/models.json`; the
+  `16gb` profile uses 24 and `24gb` uses 12), keeping the experts of the first N layers in system RAM. `/model ponder` now
+  loads at ~11.7 GB, and this is the path to running an 80B-A3B class MoE on a single small card.
+- **`/model` accepts task names, not just served-model names.** The shell now takes roleTable task
+  names (`/model code`, `/model ponder`, `/model voice`) and resolves each to the served model, while
+  still accepting raw model names (`coder`, `ponder`, `chat`) and offering both in tab-completion.
+  Previously `/model` only knew the served-model names and warned "not a known role" for a task name.
 - **`bob update` now rebuilds every moved submodule, not just llama.cpp.** An update previously advanced
   all submodule source but rebuilt only the engine, silently leaving stale llama-swap / fabric / whisper
   binaries after a bump. It now rebuilds each of llama.cpp, whisper.cpp, llama-swap, and fabric whose

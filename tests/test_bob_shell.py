@@ -99,6 +99,24 @@ class TestDispatch(unittest.TestCase):
         self.assertEqual(sh.role, "coder")
         self.assertNotIn("not a known role", out.file.getvalue())
 
+    def test_model_task_alias_resolves_to_served_model(self):
+        sh, out = _make_shell()
+        sh.dispatch("/model ponder")                               # task-name alias (ponder)
+        self.assertEqual(sh.role, "ponder")                      # resolves to the served model
+        self.assertNotIn("not a known role", out.file.getvalue())
+        sh.dispatch("/model code")
+        self.assertEqual(sh.role, "coder")
+
+    def test_think_toggle_mutates_state(self):
+        sh, _ = _make_shell()
+        self.assertFalse(sh.think)                                # default off
+        sh.dispatch("/think on")
+        self.assertTrue(sh.think)
+        sh.dispatch("/think off")
+        self.assertFalse(sh.think)
+        sh.dispatch("/think")                                     # bare arg flips it
+        self.assertTrue(sh.think)
+
     def test_clear_help_describes_context_not_screen(self):
         sh, out = _make_shell()
         sh.dispatch("/help")

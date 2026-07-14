@@ -21,13 +21,13 @@ _CFG = {
     "routing": {
         "defaultRole": "chat", "proRole": "chat-pro",
         "codeRole": "coder", "proCodeRole": "coder-pro",
-        "thinkRole": "planner", "proThinkRole": "planner-pro",
+        "ponderRole": "ponder", "proPonderRole": "ponder-pro",
         "agentRole": "agent",
     },
     "vision": {"visionRole": "vision", "visionProRole": "vision-pro"},
 }
 # Tasks the role resolver accepts (no 'agent' there).
-_TASKS = ["chat", "code", "think", "vision", "voice"]
+_TASKS = ["chat", "code", "ponder", "vision", "voice"]
 
 
 class TestDefaultsPythonSide(unittest.TestCase):

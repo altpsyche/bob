@@ -32,7 +32,7 @@
     "name": "ondemand",
     "swap": true,
     "members": [
-      "planner",
+      "ponder",
       "coder",
       "chat",
       "vision",
@@ -52,7 +52,7 @@
           "model": "deepseek-chat",
           "systemPrompt": "Be helpful and concise."
         },
-        "planner": {
+        "ponder": {
           "maxTokens": 8192,
           "model": "deepseek-reasoner"
         },
@@ -129,7 +129,7 @@
         "sizeGB": 3.4,
         "gguf": "qwen-coder-3b-q8_0.gguf"
       },
-      "_targetVRAM": "16GB+ (tested RTX 5080; 30B planner uses light RAM offload)",
+      "_targetVRAM": "16GB+ (tested RTX 5080; 30B ponder uses light RAM offload)",
       "vision": {
         "mmproj": "mmproj-Qwen2-VL-7B-Instruct-f16.gguf",
         "supportsVision": true,
@@ -141,9 +141,10 @@
         "sizeGB": 5.2,
         "gguf": "qwen2-vl-7b-q4_k_m.gguf"
       },
-      "planner": {
+      "ponder": {
         "kv": true,
         "noMmap": true,
+        "nCpuMoe": 24,
         "repo": "Qwen/Qwen3-30B-A3B-GGUF",
         "path": "Qwen3-30B-A3B-Q4_K_M.gguf",
         "tokenizer": "Qwen/Qwen3-30B-A3B",
@@ -180,7 +181,7 @@
         "sizeGB": 10.7,
         "gguf": "qwen-coder-14b-q6_k.gguf"
       },
-      "_notes": "Q5_K_M planner (~21.3 GB), Q6_K coder/chat (~10.7 GB). Swaps big models as usual.",
+      "_notes": "Q5_K_M ponder (~21.3 GB), Q6_K coder/chat (~10.7 GB). Swaps big models as usual.",
       "vision": {
         "mmproj": "mmproj-Qwen2-VL-7B-Instruct-f16.gguf",
         "supportsVision": true,
@@ -247,8 +248,9 @@
         "sizeGB": 0.6,
         "gguf": "bge-reranker-v2-m3-q8_0.gguf"
       },
-      "planner": {
+      "ponder": {
         "kv": true,
+        "nCpuMoe": 12,
         "repo": "bartowski/Qwen3-30B-A3B-GGUF",
         "path": "Qwen3-30B-A3B-Q5_K_M.gguf",
         "tokenizer": "Qwen/Qwen3-30B-A3B",
@@ -327,7 +329,7 @@
         "sizeGB": 5.0,
         "gguf": "hermes-3-8b-q4_k_m.gguf"
       },
-      "planner": {
+      "ponder": {
         "kv": true,
         "repo": "Qwen/Qwen3-8B-GGUF",
         "path": "Qwen3-8B-Q4_K_M.gguf",
@@ -352,7 +354,7 @@
         "sizeGB": 15.0,
         "gguf": "qwen-coder-14b-q8_0.gguf"
       },
-      "_notes": "Near-lossless quants (Q6_K planner ~24 GB, Q8_0 coder/chat ~15 GB). Swaps big models. 48GB+ for true no-swap.",
+      "_notes": "Near-lossless quants (Q6_K ponder ~24 GB, Q8_0 coder/chat ~15 GB). Swaps big models. 48GB+ for true no-swap.",
       "vision": {
         "mmproj": "mmproj-Qwen2-VL-7B-Instruct-f16.gguf",
         "supportsVision": true,
@@ -419,7 +421,7 @@
         "sizeGB": 0.6,
         "gguf": "bge-reranker-v2-m3-q8_0.gguf"
       },
-      "planner": {
+      "ponder": {
         "kv": true,
         "repo": "bartowski/Qwen3-30B-A3B-GGUF",
         "path": "Qwen3-30B-A3B-Q6_K.gguf",
@@ -499,7 +501,7 @@
         "sizeGB": 5.0,
         "gguf": "hermes-3-8b-q4_k_m.gguf"
       },
-      "planner": {
+      "ponder": {
         "kv": true,
         "repo": "Qwen/Qwen3-14B-GGUF",
         "path": "Qwen3-14B-Q4_K_M.gguf",

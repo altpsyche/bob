@@ -1,5 +1,5 @@
 """Planning + reflection + self-repair, three config-gated loop phases (all default off →
-identical to the plain loop). Plan: a bounded planner turn injects a step list before the loop. Verify: a
+identical to the plain loop). Plan: a bounded ponder turn injects a step list before the loop. Verify: a
 critic turn before the final answer; on "not DONE" it injects the critique and continues. Self-repair:
 a failed tool call is retried once (catches a flaky tool)."""
 import unittest
@@ -24,7 +24,7 @@ def _recording_client(calls, turns):
         def __init__(self):
             self.chat = SimpleNamespace(completions=self)
 
-        def create(self, model, messages, tools, stream, timeout):
+        def create(self, model, messages, tools, stream, timeout, **kwargs):
             calls.append([m.get("content", "") for m in messages])
             i = state["i"]
             state["i"] += 1

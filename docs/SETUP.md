@@ -182,7 +182,7 @@ For a detailed walkthrough of what the Docker-backed services do internally, plu
 
 ```bash
 bob up                    # starts llama-swap (:8080) + LiteLLM proxy (:8081)  (+ Open WebUI :3000 if set up with --with-webui)
-bob models                # should list: planner, coder, chat, fim, embed, vision, agent
+bob models                # should list: ponder, coder, chat, fim, embed, vision, agent
 bob bench                 # performance check (see expected numbers below)
 bob chat coder "hi"       # end-to-end sanity check (routes via :8081 LiteLLM proxy)
 bob diagnose              # re-run hardware summary at any time; flags any unresolved issues
@@ -193,7 +193,7 @@ bob plugins list     # should show: summarise, draft, search, play (built-in plu
 
 **Agent system:** `bob doctor` (superset of `bob setup check`) validates all agent dependencies (the Hermes 3 model file, tool loading, scheduled task registration) plus a runtime pre-flight (endpoint, GPU/VRAM, writable `logs/`+`data/`, `config.json` parses) and a **reproducibility** block (installed submodule commits + present-model checksums vs [`versions.lock`](../versions.lock)). On any failure it prints the exact fix command. Run `bob setup check` (or `bob doctor --quick`) for just the dependency subset.
 
-**Pro models** (optional): set the `DEEPSEEK_API_KEY` and `ZHIPU_API_KEY` environment variables, then run `bob gen`. The pro models (`chat-pro`, `planner-pro`, `coder-pro`) become available via the LiteLLM proxy at `:8081`. See [USAGE.md § Pro models](USAGE.md#pro-models-api-backed-no-platform-fee).
+**Pro models** (optional): set the `DEEPSEEK_API_KEY` and `ZHIPU_API_KEY` environment variables, then run `bob gen`. The pro models (`chat-pro`, `ponder-pro`, `coder-pro`) become available via the LiteLLM proxy at `:8081`. See [USAGE.md § Pro models](USAGE.md#pro-models-api-backed-no-platform-fee).
 
 **Voice and Vision (Phase 2):** included in `setup` automatically (builds whisper, downloads the STT model, piper TTS, and vision mmproj). To skip: `./setup.sh --skip-voice`. See [USAGE.md § Voice](USAGE.md#voice-phase-2) and [USAGE.md § Vision](USAGE.md#vision-phase-2).
 

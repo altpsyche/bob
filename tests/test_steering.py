@@ -60,7 +60,7 @@ class TestLoopDrains(unittest.TestCase):
             def __init__(self):
                 self.chat = SimpleNamespace(completions=self)
 
-            def create(self, model, messages, tools, stream, timeout):
+            def create(self, model, messages, tools, stream, timeout, **kwargs):
                 calls.append([m.get("content", "") for m in messages])
                 i = state["i"]
                 state["i"] += 1

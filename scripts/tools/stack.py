@@ -274,7 +274,7 @@ def stack_status(config: dict) -> str:
 
 
 # canonical role order (mirrors models.py)
-_ROLE_ORDER = ["planner", "coder", "chat", "fim", "embed"]
+_ROLE_ORDER = ["ponder", "coder", "chat", "fim", "embed"]
 
 
 def stack_logs(config: dict, lines: int = 50) -> str:

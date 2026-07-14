@@ -284,7 +284,7 @@ class TestAgentLoop(unittest.TestCase):
             def __init__(self):
                 self.chat = SimpleNamespace(completions=self)
 
-            def create(self, model, messages, tools, stream, timeout):
+            def create(self, model, messages, tools, stream, timeout, **kwargs):
                 return _Boom()
 
         bob_core.get_llm_client = lambda config=None: _C()
@@ -311,7 +311,7 @@ class TestAgentLoop(unittest.TestCase):
             def __init__(self):
                 self.chat = SimpleNamespace(completions=self)
 
-            def create(self, model, messages, tools, stream, timeout):
+            def create(self, model, messages, tools, stream, timeout, **kwargs):
                 captured.append([dict(m) for m in messages])
                 i = state["i"]
                 state["i"] += 1
@@ -349,7 +349,7 @@ class TestAgentLoop(unittest.TestCase):
             def __init__(self):
                 self.chat = SimpleNamespace(completions=self)
 
-            def create(self, model, messages, tools, stream, timeout):
+            def create(self, model, messages, tools, stream, timeout, **kwargs):
                 captured.append([dict(m) for m in messages])
                 i = state["i"]
                 state["i"] += 1
@@ -469,7 +469,7 @@ class TestAgentLoop(unittest.TestCase):
             def __init__(self):
                 self.chat = type("C", (), {"completions": self})()
 
-            def create(self, model, messages, tools, stream, timeout):
+            def create(self, model, messages, tools, stream, timeout, **kwargs):
                 captured["messages"] = messages
                 from types import SimpleNamespace
                 chunk = SimpleNamespace(choices=[SimpleNamespace(
@@ -493,7 +493,7 @@ class TestAgentLoop(unittest.TestCase):
             def __init__(self):
                 self.chat = type("C", (), {"completions": self})()
 
-            def create(self, model, messages, tools, stream, timeout):
+            def create(self, model, messages, tools, stream, timeout, **kwargs):
                 captured["model"] = model
                 captured["messages"] = messages
                 return iter([SimpleNamespace(choices=[SimpleNamespace(
@@ -519,7 +519,7 @@ class TestAgentLoop(unittest.TestCase):
             def __init__(self):
                 self.chat = type("C", (), {"completions": self})()
 
-            def create(self, model, messages, tools, stream, timeout):
+            def create(self, model, messages, tools, stream, timeout, **kwargs):
                 captured["model"] = model
                 captured["messages"] = messages
                 return iter([SimpleNamespace(choices=[SimpleNamespace(
@@ -539,7 +539,7 @@ class TestAgentLoop(unittest.TestCase):
             def __init__(self):
                 self.chat = type("C", (), {"completions": self})()
 
-            def create(self, model, messages, tools, stream, timeout):
+            def create(self, model, messages, tools, stream, timeout, **kwargs):
                 captured["model"] = model
                 return iter([SimpleNamespace(choices=[SimpleNamespace(
                     delta=SimpleNamespace(content="ok", tool_calls=None))])])
@@ -563,7 +563,7 @@ class TestAgentLoop(unittest.TestCase):
                                "I see a cat."]
                 self._i = 0
 
-            def create(self, model, messages, tools, stream, timeout):
+            def create(self, model, messages, tools, stream, timeout, **kwargs):
                 calls.append({"model": model, "messages": messages})
                 content = self._turns[min(self._i, len(self._turns) - 1)]
                 self._i += 1
@@ -712,7 +712,7 @@ class TestProfileInjection(unittest.TestCase):
             def __init__(self):
                 self.chat = SimpleNamespace(completions=self)
 
-            def create(self, model, messages, tools, stream, timeout):
+            def create(self, model, messages, tools, stream, timeout, **kwargs):
                 captured.setdefault("messages", [dict(m) for m in messages])
                 return _common._FakeStream([_common._content_chunk("done")])
 
@@ -753,7 +753,7 @@ class TestProfileInjection(unittest.TestCase):
             def __init__(self):
                 self.chat = SimpleNamespace(completions=self)
 
-            def create(self, model, messages, tools, stream, timeout):
+            def create(self, model, messages, tools, stream, timeout, **kwargs):
                 return _common._FakeStream([_common._content_chunk("done")])
 
         bob_core.get_llm_client = lambda config=None: _C()
@@ -773,7 +773,7 @@ class TestProfileInjection(unittest.TestCase):
             def __init__(self):
                 self.chat = SimpleNamespace(completions=self)
 
-            def create(self, model, messages, tools, stream, timeout):
+            def create(self, model, messages, tools, stream, timeout, **kwargs):
                 captured.setdefault("messages", [dict(m) for m in messages])
                 return _common._FakeStream([_common._content_chunk("done")])
 

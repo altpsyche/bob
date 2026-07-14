@@ -98,9 +98,61 @@ class TestDefaultOffByteIdentical(_LoopBase):
         bob_core.get_llm_client = lambda config=None: _recording_client(calls)
         list(bob_loop.run_agent_events("go", self._cfg(), agency="silent", registry=self._reg()))
         self.assertEqual(len(calls), 1)
-        self.assertEqual(set(calls[0]), {"model", "messages", "tools", "stream", "timeout"})
+        # Base request + the reasoning-mode carrier (extra_body). No constraint kwargs when off.
+        self.assertEqual(set(calls[0]), {"model", "messages", "tools", "stream", "timeout", "extra_body"})
         self.assertNotIn("tool_choice", calls[0])
         self.assertIsNone(calls[0]["tools"])          # hermes mode passes tools=None today
+        # think defaults off -> enable_thinking False rides extra_body (stable per request; the prompt
+        # tokens are unchanged, so prefix/KV caching is unaffected).
+        self.assertEqual(calls[0]["extra_body"], {"chat_template_kwargs": {"enable_thinking": False}})
+
+    def test_think_param_enables_reasoning(self):
+        calls = []
+        bob_core.get_llm_client = lambda config=None: _recording_client(calls)
+        list(bob_loop.run_agent_events("go", self._cfg(), agency="silent", registry=self._reg(), think=True))
+        self.assertEqual(calls[0]["extra_body"], {"chat_template_kwargs": {"enable_thinking": True}})
+
+    def test_think_falls_back_to_config_default(self):
+        # think=None (the caller didn't pass one) uses agent.think from config.
+        calls = []
+        bob_core.get_llm_client = lambda config=None: _recording_client(calls)
+        list(bob_loop.run_agent_events("go", self._cfg(think=True), agency="silent", registry=self._reg()))
+        self.assertEqual(calls[0]["extra_body"], {"chat_template_kwargs": {"enable_thinking": True}})
+
+    def test_extra_body_scoped_to_local_models(self):
+        # A cloud peer (chat-pro is not a locally served role) must NOT receive the chat-template
+        # kwarg: llama-server consumes it; DeepSeek/GLM don't take it.
+        calls = []
+        bob_core.get_llm_client = lambda config=None: _recording_client(calls)
+        cfg = self._cfg()
+        cfg["routing"] = dict(cfg["routing"], agentRole="chat-pro")
+        list(bob_loop.run_agent_events("go", cfg, agency="silent", registry=self._reg()))
+        self.assertNotIn("extra_body", calls[0])
+
+    def test_reasoning_content_never_enters_the_transcript(self):
+        # llama-server (--reasoning-format deepseek) streams reasoning in a separate reasoning_content
+        # field; the content-only stream reader must drop it so it never reaches the answer or memory.
+        def _reasoning_client(calls):
+            class _C:
+                def __init__(self):
+                    self.chat = SimpleNamespace(completions=self)
+
+                def create(self, **kwargs):
+                    calls.append(dict(kwargs))
+                    reasoning = SimpleNamespace(choices=[SimpleNamespace(
+                        delta=SimpleNamespace(content=None, reasoning_content="secret chain of thought",
+                                              tool_calls=None))])
+                    answer = _common._content_chunk("42 is the answer")
+                    return _common._FakeStream([reasoning, answer])
+            return _C()
+
+        calls = []
+        bob_core.get_llm_client = lambda config=None: _reasoning_client(calls)
+        events = list(bob_loop.run_agent_events("go", self._cfg(), agency="silent",
+                                                registry=self._reg(), think=True))
+        final = next(e["result"] for e in events if e["type"] == "final")
+        self.assertIn("42 is the answer", final)
+        self.assertNotIn("secret chain of thought", final)
 
 
 class TestConstraintAttached(_LoopBase):

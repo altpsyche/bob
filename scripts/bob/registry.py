@@ -29,7 +29,7 @@ COMMANDS = [
      "args": "[--pro|--think|--code] [--raw] [--max N] [--sys <text>] [prompt]", "handler": "chat"},
     {"name": "code", "group": "Talk", "summary": "Code-focused chat (coder / coder-pro)",
      "args": "[--pro] [--raw] [--max N] [prompt]", "handler": "code"},
-    {"name": "think", "group": "Talk", "summary": "Deep-reasoning chat (planner / planner-pro)",
+    {"name": "think", "group": "Talk", "summary": "Chat with reasoning on (the model thinks first)",
      "args": "[--pro] [--raw] [--max N] [prompt]", "handler": "think"},
     {"name": "voice", "group": "Talk", "summary": "Spoken conversation: mic -> loop -> speech (on the agent loop)",
      "args": "[--pro] [--agent]", "handler": "voice"},

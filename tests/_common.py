@@ -19,7 +19,7 @@ def fake_config(**over):
         "routing": {
             "defaultRole": "chat", "proRole": "chat-pro",
             "codeRole": "coder", "proCodeRole": "coder-pro",
-            "thinkRole": "planner", "proThinkRole": "planner-pro",
+            "ponderRole": "ponder", "proPonderRole": "ponder-pro",
             "agentRole": "agent",
         },
         "vision": {"visionRole": "vision", "visionProRole": "vision-pro"},

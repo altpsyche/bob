@@ -109,14 +109,14 @@ class TestArgCompletion(unittest.TestCase):
         comp = _make_shell()._session_kwargs()["completer"]
         texts = {c.text for c in _completions(comp, "/model ")}
         self.assertIn("coder", texts)
-        self.assertIn("planner", texts)
+        self.assertIn("ponder", texts)
         self.assertIn("agent", texts)
 
     def test_model_fuzzy_filters_roles(self):
         comp = _make_shell()._session_kwargs()["completer"]
         texts = {c.text for c in _completions(comp, "/model cod")}
         self.assertIn("coder", texts)
-        self.assertNotIn("planner", texts)          # narrowed by the typed word
+        self.assertNotIn("ponder", texts)          # narrowed by the typed word
 
     def test_skill_completes_names(self):
         comp = _make_shell(skills=("deep-research", "repo-brief"))._session_kwargs()["completer"]

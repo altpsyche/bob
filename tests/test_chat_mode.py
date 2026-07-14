@@ -106,9 +106,9 @@ class TestChatHandler(unittest.TestCase):
         self.captured = {}
 
         def fake_run_agent(goal, config, role=None, agency=None, stream=False,
-                           no_tools=False, max_tokens=None, **kw):
+                           no_tools=False, max_tokens=None, think=None, **kw):
             self.captured = {"goal": goal, "role": role, "stream": stream,
-                             "no_tools": no_tools, "max_tokens": max_tokens}
+                             "no_tools": no_tools, "max_tokens": max_tokens, "think": think}
             return ("ok", False)
 
         bob_loop.run_agent = fake_run_agent
@@ -127,16 +127,23 @@ class TestChatHandler(unittest.TestCase):
     def test_code_and_think_route_roles(self):
         self.cli._chat("code", ["x"])
         self.assertEqual(self.captured["role"], "coder")
+        self.assertFalse(self.captured["think"])
+        # `bob think` is reasoning ON the chat model (a mode), not a swap to the ponder model.
         self.cli._chat("think", ["x"])
-        self.assertEqual(self.captured["role"], "planner")
+        self.assertEqual(self.captured["role"], "chat")
+        self.assertTrue(self.captured["think"])
 
     def test_pro_flag(self):
         self.cli._chat("chat", ["--pro", "x"])
         self.assertEqual(self.captured["role"], "chat-pro")
 
     def test_think_code_flags_override_task(self):
+        # --code still routes to the coder model; --think toggles reasoning mode on the chat model.
+        self.cli._chat("chat", ["--code", "x"])
+        self.assertEqual(self.captured["role"], "coder")
         self.cli._chat("chat", ["--think", "x"])
-        self.assertEqual(self.captured["role"], "planner")
+        self.assertEqual(self.captured["role"], "chat")
+        self.assertTrue(self.captured["think"])
 
     def test_max_and_raw(self):
         self.cli._chat("chat", ["--max", "50", "--raw", "hi"])
@@ -145,20 +152,21 @@ class TestChatHandler(unittest.TestCase):
         self.assertEqual(self.captured["goal"], "hi")
 
     def test_legacy_known_role_syntax(self):
-        self.cli._chat("chat", ["planner", "solve", "this"])
-        self.assertEqual(self.captured["role"], "planner")
+        self.cli._chat("chat", ["ponder", "solve", "this"])
+        self.assertEqual(self.captured["role"], "ponder")
         self.assertEqual(self.captured["goal"], "solve this")
 
     def test_no_prompt_launches_shell_chat_mode(self):
         import bob.shell as shell
         orig = shell.run
         seen = {}
-        shell.run = lambda config=None, role=None, no_tools=False: seen.update(role=role, no_tools=no_tools) or 0
+        shell.run = lambda config=None, role=None, no_tools=False, think=None: seen.update(
+            role=role, no_tools=no_tools, think=think) or 0
         try:
             self.cli._chat("chat", [])
         finally:
             shell.run = orig
-        self.assertEqual(seen, {"role": "chat", "no_tools": True})
+        self.assertEqual(seen, {"role": "chat", "no_tools": True, "think": False})
 
 
 if __name__ == "__main__":

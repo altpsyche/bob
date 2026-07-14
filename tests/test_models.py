@@ -36,10 +36,10 @@ class TestModelsList(unittest.TestCase):
         return r
 
     def test_endpoint_up_marks_loaded(self):
-        with mock.patch("requests.get", return_value=self._resp(["planner"])):
+        with mock.patch("requests.get", return_value=self._resp(["ponder"])):
             out = models_mod.models_list(CFG)
         self.assertIn("Profile: 16gb", out)
-        self.assertRegex(out, r"planner\s+.*loaded")
+        self.assertRegex(out, r"ponder\s+.*loaded")
         self.assertRegex(out, r"coder\s+.*unloaded")
 
     def test_endpoint_down_shows_unknown_state(self):
@@ -230,9 +230,9 @@ class TestCliArgParsing(unittest.TestCase):
         return rc, seen
 
     def test_positional_and_flags(self):
-        rc, seen = self._dispatch(["planner", "hellaswag", "--shots", "5", "--limit", "50"])
+        rc, seen = self._dispatch(["ponder", "hellaswag", "--shots", "5", "--limit", "50"])
         self.assertEqual(rc, 0)
-        self.assertEqual(seen["args"][:2], ("planner", "hellaswag"))
+        self.assertEqual(seen["args"][:2], ("ponder", "hellaswag"))
         self.assertEqual(seen["kw"]["shots"], 5)
         self.assertEqual(seen["kw"]["limit"], 50)
 

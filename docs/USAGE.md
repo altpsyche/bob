@@ -18,7 +18,7 @@ You can also run any capability directly, without opening the shell, for quick q
 
 | Command | What it does |
 |---|---|
-| `bob chat "…"` | One-shot chat (great for pipes). `--think` deep reasoning, `--code` coding, `--pro` cloud. |
+| `bob chat "…"` | One-shot chat (great for pipes). `--think` reasoning mode, `--code` coding, `--pro` cloud. |
 | `bob agent "goal"` | Agentic task loop: plans, uses tools, executes steps. Schedulable via cron. |
 | `bob voice` | Continuous voice loop: speak, Bob replies out loud. Whisper STT + piper TTS. |
 | `bob describe <image>` · `bob screenshot` | Describe an image or the screen. `--pro` routes to cloud vision. |
@@ -49,7 +49,7 @@ In the shell:
 | *(type anything)* | an agent turn; Bob answers and can use tools (streamed, Markdown-rendered) |
 | `/agent <goal>` | run the agent loop explicitly on a goal |
 | `/voice` | drop into the spoken voice loop |
-| `/model [role]` · `/agency [show\|confirm\|silent]` | switch model / tool-approval mode |
+| `/model [role]` · `/think [on\|off]` · `/agency [show\|confirm\|silent]` | switch model (accepts task names `code`/`ponder`/`vision` or model names `coder`/`ponder`/`chat`) / toggle reasoning on the current model / tool-approval mode |
 | `/tools` · `/skills` · `/help` | the catalog (grouped commands + tools + skills) |
 | `/skill [name]` | list or run a skill (tool-sequence or sub-agent) |
 | `/session new\|list\|resume <id>\|show` · `/status` · `/clear` | persisted sessions (`data/sessions.db`) + state; leaving a session consolidates it into memory |
@@ -67,29 +67,32 @@ For scripting, piping, and quick questions without entering the shell:
 
 ```
 bob chat          # opens the routed REPL, multi-turn, empty line to exit
-bob think         # same but uses the planner (Qwen3-30B), deeper reasoning
+bob think         # same, with reasoning turned ON (the chat model thinks before answering)
 bob code          # same but uses the coder (Qwen2.5-Coder-14B), code focus
 ```
 
+`think` is a reasoning **mode**, not a model swap: `bob think` and `bob chat --think` keep the chat
+model and turn its thinking on. For the bigger 30B reasoning model, pick it explicitly with
+`/model ponder` in the shell (and `/think on`). Reasoning runs in the model's reasoning channel and
+never enters the answer text or memory.
+
 **Routing flags** (combine freely):
 
-| Command | Routes to |
-|---------|----------|
-| `bob chat` | chat (local) |
-| `bob chat --pro` | chat-pro (DeepSeek API) |
-| `bob chat --think` | planner (local) |
-| `bob chat --think --pro` | planner-pro (DeepSeek R1) |
-| `bob chat --code` | coder (local) |
-| `bob chat --code --pro` | coder-pro (DeepSeek API) |
-| `bob think --pro` | planner-pro |
-| `bob code --pro` | coder-pro |
+| Command | Model | Reasoning |
+|---------|-------|-----------|
+| `bob chat` | chat (local) | off |
+| `bob chat --pro` | chat-pro (DeepSeek API) | off |
+| `bob chat --think` / `bob think` | chat (local) | on |
+| `bob chat --code` / `bob code` | coder (local) | off |
+| `bob chat --code --pro` / `bob code --pro` | coder-pro (DeepSeek API) | off |
 
 **Common flags** (for `chat`, and where noted `code`/`think`):
 
 | Flag | Effect |
 |------|--------|
 | `--pro` | Route to the cloud (DeepSeek) peer for this role |
-| `--think` / `--code` | (`chat` only) switch to the planner / coder role |
+| `--think` | Turn reasoning on for this session (the model thinks before answering) |
+| `--code` | (`chat` only) switch to the coder role |
 | `--raw` | Emit plain text only, no spinner, no colour, no Markdown rendering (good for pipes) |
 | `--max N` | Cap the response at N tokens |
 | `--sys <text>` | Override the system prompt for this call (`chat` only) |
@@ -134,9 +137,9 @@ bob restart   # stop then start the endpoint
 bob stop      # stop all services and free VRAM
 ```
 
-The endpoint logs go to `logs/llama-swap.log`; tail them live with `bob logs`. The server loads a model into VRAM on first request and unloads it after idle. The exceptions are `fim` (autocomplete) and `embed` (embeddings), which are pinned and never unloaded. Only one large model (`planner`, `coder`, or `chat`) is resident at a time; switching between them takes a few seconds.
+The endpoint logs go to `logs/llama-swap.log`; tail them live with `bob logs`. The server loads a model into VRAM on first request and unloads it after idle. The exceptions are `fim` (autocomplete) and `embed` (embeddings), which are pinned and never unloaded. Only one large model (`ponder`, `coder`, or `chat`) is resident at a time; switching between them takes a few seconds.
 
-**mlock:** `fim` and `embed` are pinned in physical RAM with `--mlock`, preventing the OS from paging their weights to disk under memory pressure (e.g. simultaneous VS Code autocomplete, chat, and Open WebUI load). This locks roughly 4 GB of physical RAM permanently. On systems with less than 32 GB of RAM, disable it by overriding the `fim`/`embed` entries in `config/user.json` and re-running `bob gen`. Setting `mlockBig` on the swap-group models (planner, coder, chat) extends mlock to their CPU-offloaded pages; on Windows this needs `SeLockMemoryPrivilege` (`bob mlock --grant` checks and grants it), on Linux you raise the memlock limit instead (`ulimit -l unlimited` or `/etc/security/limits.conf`).
+**mlock:** `fim` and `embed` are pinned in physical RAM with `--mlock`, preventing the OS from paging their weights to disk under memory pressure (e.g. simultaneous VS Code autocomplete, chat, and Open WebUI load). This locks roughly 4 GB of physical RAM permanently. On systems with less than 32 GB of RAM, disable it by overriding the `fim`/`embed` entries in `config/user.json` and re-running `bob gen`. Setting `mlockBig` on the swap-group models (ponder, coder, chat) extends mlock to their CPU-offloaded pages; on Windows this needs `SeLockMemoryPrivilege` (`bob mlock --grant` checks and grants it), on Linux you raise the memlock limit instead (`ulimit -l unlimited` or `/etc/security/limits.conf`).
 
 **Start automatically at login (optional):**
 
@@ -156,7 +159,7 @@ bob up --no-open
 
 | Name | Role | Backing model |
 |---|---|---|
-| `planner` | heavy reasoning and architecture | Qwen3-30B-A3B Q4 |
+| `ponder` | heavy reasoning and architecture | Qwen3-30B-A3B Q4 |
 | `coder` | coding chat and agentic edits | Qwen2.5-Coder-14B Q4_K_M |
 | `chat` | general conversation | Qwen3-14B Q4_K_M |
 | `fim` | autocomplete (pinned) | Qwen-Coder-3B Q8_0 |
@@ -164,7 +167,7 @@ bob up --no-open
 | `vision` | image description and visual Q&A | Qwen2-VL-7B Q4_K_M + mmproj |
 | `agent` | local tool use and autonomous tasks | Hermes-3-Llama-3.1-8B Q5_K_M |
 
-Every model's GGUF file, HuggingFace source, context size, and launch flags are defined once in [config/models.json](../config/models.json). The downloader and the runtime config both read from it. Clients reference the role names above (`coder`, `planner`, etc.), so swapping the backing model for a role never requires touching any client configuration.
+Every model's GGUF file, HuggingFace source, context size, and launch flags are defined once in [config/models.json](../config/models.json). The downloader and the runtime config both read from it. Clients reference the role names above (`coder`, `ponder`, etc.), so swapping the backing model for a role never requires touching any client configuration.
 
 The `12gb` profile uses smaller variants (~21 GB on disk instead of ~38 GB). The `8gb` profile targets cards like the RTX 3070 and 4060 and is marked unvalidated. The `24gb` and `32gb` profiles ship near-lossless quants for bigger cards. Switch with `bob profile 12gb`, `bob profile auto` to detect from VRAM, or pass `--profile <name>` to setup before the first model download.
 
@@ -177,7 +180,7 @@ Additional model names are available via the LiteLLM proxy (`:8081`) when the co
 | Name | Role | Provider | Backing model | Approx. cost |
 |---|---|---|---|---|
 | `chat-pro` | general conversation | DeepSeek | deepseek-chat (V4) | ~$0.27/M in |
-| `planner-pro` | heavy reasoning | DeepSeek | deepseek-reasoner (R1) | ~$0.55/M in |
+| `ponder-pro` | heavy reasoning | DeepSeek | deepseek-reasoner (R1) | ~$0.55/M in |
 | `coder-pro` | coding | DeepSeek | deepseek-chat (V4) | ~$0.27/M in |
 | `vision-pro` | cloud vision | DeepSeek | deepseek-chat (V4, vision-capable) | ~$0.27/M in |
 
@@ -550,39 +553,37 @@ bob skill <name> --show # show a skill's definition without running it
 
 In the shell, `/skills` lists them and `/skill <name>` runs one.
 
-## Qwen3 Thinking Mode
+## Reasoning mode (`/think`)
 
-Qwen3 models (`planner`, `chat`) support a reasoning scratchpad. `planner` has it on by default, appropriate for deep analysis. `chat` has it off by default via its system prompt (`/no_think`) because conversational responses don't benefit from the added latency. When enabled, the model reasons through the problem internally before responding. This produces better answers but:
+The Qwen3 models (`chat`, `ponder`) can reason before answering. In Bob this is a **mode** on whatever
+model is active, not a separate model: toggle it with `/think on|off` in the shell, `bob think` /
+`bob chat --think` from the terminal, or the `agent.think` config default (off). It applies to whichever
+role is current, so your `chat` model can reason without switching to `ponder`.
 
-- **Consumes `max_tokens` silently.** The scratchpad counts toward your token limit. For complex tasks, set `max_tokens` to at least 2000 (or 8192 for deep planning).
-- **Increases first-token latency.** The scratchpad runs before any visible output. For quick questions, use `/no_think` to skip it.
+When on, the model reasons internally first. Bob passes the `enable_thinking` chat-template kwarg to
+llama-server, so the reasoning trace lands in the model's separate reasoning channel and **never enters
+the answer text, the transcript, or memory** (no `/no_think` string is injected into your message).
 
-### Disabling the scratchpad
+Reasoning has two costs:
 
-Append `/no_think` to your prompt. Via the API:
+- **Consumes output tokens.** The reasoning counts toward the token budget. If you cap output with
+  `--max`, set it high enough (2000+, or 8192 for deep planning) or the reasoning can crowd out the
+  answer.
+- **Increases first-token latency.** Reasoning runs before any visible output. For quick questions,
+  leave `/think` off.
 
-Linux:
-```bash
-curl http://localhost:8081/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"chat","max_tokens":512,"messages":[{"role":"user","content":"What is 2+2? /no_think"}]}'
-```
+### When to use it
 
-Or via `bob chat` (identical on every OS):
-```
-bob chat "What is 2+2? /no_think" --max 128
-```
+| Mode | When | `--max` guidance |
+|------|------|------------------|
+| `/think off` (default) | Quick Q&A, simple edits, conversation | 128 to 512 |
+| `/think on` | Complex reasoning, architecture, planning | 2000 to 8192 |
 
-### When to use each mode
+For the bigger 30B reasoning model, switch to it explicitly with `/model ponder` (and turn `/think on`).
 
-| Mode | When to use | `max_tokens` |
-|------|------------|-------------|
-| Default (thinking on) | Complex reasoning, code architecture, planning | 2000 to 8192 |
-| `/no_think` | Quick Q&A, simple edits, autocomplete-like tasks | 128 to 512 |
-
-**In Continue.dev:** The `chat` model has `/no_think` set in its system prompt by default. For `planner`, add `/no_think` to your message to skip the scratchpad on simpler tasks. Continue always uses the configured `maxTokens`; make sure it's large enough for planning tasks.
-
-**In aider:** The planner model is used for architecture; thinking mode is appropriate. aider auto-adjusts context size; no special configuration needed.
+**External clients (Continue.dev, aider):** they call the proxy directly and bypass Bob's `/think`, so
+they get the model's native default (Qwen3 reasons by default). To suppress reasoning there, append
+`/no_think` to a message; the Qwen3 chat template honors it.
 
 ## Function Calling (Tool Use)
 
@@ -619,7 +620,7 @@ if choice.finish_reason == "tool_calls":
         # Execute the function, add the result to messages, continue the conversation...
 ```
 
-**Supported:** `coder` (Qwen2.5-Coder-14B). **Not supported:** `planner`, `chat`. Qwen3 tool-use quality varies; use `coder` for agentic tasks. In Cline, point at `coder` for best results; in aider, tool use is handled internally.
+**Supported:** `coder` (Qwen2.5-Coder-14B). **Not supported:** `ponder`, `chat`. Qwen3 tool-use quality varies; use `coder` for agentic tasks. In Cline, point at `coder` for best results; in aider, tool use is handled internally.
 
 ## Clients
 
@@ -629,25 +630,25 @@ Client configs (Continue, aider) are linked into your home directory during setu
 
 Continue.dev provides inline autocomplete and a chat panel inside VS Code. Setup links the repo's config into `~/.continue/config.yaml`, so all models are wired with no in-editor setup.
 
-Install the **Continue** extension from the VS Code Marketplace, then start the endpoint (`bob up`, or talk to Bob and it auto-starts). Open the Continue panel (`Ctrl+L`) and the `coder` and `planner` models appear immediately.
+Install the **Continue** extension from the VS Code Marketplace, then start the endpoint (`bob up`, or talk to Bob and it auto-starts). Open the Continue panel (`Ctrl+L`) and the `coder` and `ponder` models appear immediately.
 
 **How models map to Continue roles:**
 
 | Continue role | Model | Purpose |
 |---|---|---|
 | Chat, edit, apply | `coder` (Qwen2.5-Coder-14B) | default coding chat and inline edits |
-| Chat, edit | `planner` (Qwen3-30B-A3B) | architecture discussion and heavy reasoning |
+| Chat, edit | `ponder` (Qwen3-30B-A3B) | architecture discussion and heavy reasoning |
 | Chat | `chat` (Qwen3-14B) | general conversation; thinking off by default |
 | Chat, edit | `chat-pro` (DeepSeek V4, API) | general conversation via API |
 | Chat, edit, apply | `coder-pro` (DeepSeek V4, API) | coding via API |
-| Chat | `planner-pro` (DeepSeek R1, API) | heavy reasoning via API |
+| Chat | `ponder-pro` (DeepSeek R1, API) | heavy reasoning via API |
 | Chat | `vision` (Qwen2-VL-7B, local) | image description and visual Q&A |
 | Autocomplete | `fim` (Qwen-Coder-3B, pinned) | as-you-type ghost text completions |
 | Embed | `embed` (bge-m3, pinned) | `@codebase` and `@docs` RAG indexing |
 
 System prompts are set per-model and synced to clients by `bob gen`. `Ctrl+L` opens a new chat with any selected code attached; `Ctrl+I` opens an inline edit and shows a diff to accept or reject. Autocomplete fires as ghost text; `Tab` accepts. Use the model dropdown to switch roles.
 
-Context is 32768 tokens for all models except `planner` (16384). The first message to a large model is slower while it loads into VRAM; `fim` and `embed` stay pinned, so autocomplete and RAG never trigger a reload.
+Context is 32768 tokens for all models except `ponder` (16384). The first message to a large model is slower while it loads into VRAM; `fim` and `embed` stay pinned, so autocomplete and RAG never trigger a reload.
 
 #### Continue.dev MCP Servers
 
@@ -680,18 +681,18 @@ Install the **Cline** extension, start the endpoint, then set the API provider t
 | API Key | `sk-local` (any non-empty string; the server ignores it) |
 | Model ID | `coder` |
 
-Set the context window to `16384` to match the server's limit. Leave image support off; these models are not multimodal in Cline. To split planning and editing, enable **Use different models for Plan and Act** and set Plan = `planner`, Act = `coder` (switching evicts the other model from VRAM, so expect a brief load pause).
+Set the context window to `16384` to match the server's limit. Leave image support off; these models are not multimodal in Cline. To split planning and editing, enable **Use different models for Plan and Act** and set Plan = `ponder`, Act = `coder` (switching evicts the other model from VRAM, so expect a brief load pause).
 
 ### Terminal: aider (plan and edit separately)
 
-Aider has a genuine planning-versus-editing split: `planner` (Qwen3-30B) drafts the change, `coder` (Qwen2.5-Coder-14B) turns it into file edits. You review the plan before any edit lands. Setup links the aider config (`config/aider/.aider.conf.yml`) into your home directory. Then:
+Aider has a genuine planning-versus-editing split: `ponder` (Qwen3-30B) drafts the change, `coder` (Qwen2.5-Coder-14B) turns it into file edits. You review the plan before any edit lands. Setup links the aider config (`config/aider/.aider.conf.yml`) into your home directory. Then:
 
 ```
 cd <your-project>
 bob aider
 ```
 
-The config sets `architect: true` (request → `planner` first) and `auto-accept-architect: false` (you see the plan and press Enter to apply, or refine first). Each turn triggers a VRAM swap between `planner` and `coder`.
+The config sets `architect: true` (request → `ponder` first) and `auto-accept-architect: false` (you see the plan and press Enter to apply, or refine first). Each turn triggers a VRAM swap between `ponder` and `coder`.
 
 Useful in-session commands:
 
@@ -704,7 +705,7 @@ Useful in-session commands:
 | `/undo` | revert aider's last committed edit |
 | `/drop` | remove files from context when it gets large |
 
-aider auto-commits each accepted edit to git; work on a branch so `/undo` can roll back cleanly. Both models use a 16k context window. The `openai/` prefix in the config (`openai/planner`, `openai/coder`) is required to route through a local endpoint and is already set.
+aider auto-commits each accepted edit to git; work on a branch so `/undo` can roll back cleanly. Both models use a 16k context window. The `openai/` prefix in the config (`openai/ponder`, `openai/coder`) is required to route through a local endpoint and is already set.
 
 ## Shell AI Patterns: fabric
 
@@ -721,7 +722,7 @@ cat meeting.txt   | fabric --pattern extract_wisdom     # action items from meet
 fabric -l                                               # list all 254 patterns
 ```
 
-fabric uses the `coder` model by default; pass `--model planner` for complex analysis. To update patterns after a submodule bump, re-run `bob fabric-setup` (patterns re-copied; the binary rebuilds only if missing, delete it first to force a rebuild).
+fabric uses the `coder` model by default; pass `--model ponder` for complex analysis. To update patterns after a submodule bump, re-run `bob fabric-setup` (patterns re-copied; the binary rebuilds only if missing, delete it first to force a rebuild).
 
 ## Ecosystem Services
 
@@ -735,7 +736,7 @@ bob litellm status   # show PID and uptime
 bob litellm stop     # stop the background proxy
 ```
 
-All clients (Continue, aider, Cline, fabric, Open WebUI, `bob chat`) use `:8081` by default. The proxy exposes all local model names (`coder`, `planner`, `chat`, `fim`, `embed`) plus the pro model names (`chat-pro`, `planner-pro`, `coder-pro`, `vision-pro`) when API keys are set. Direct `:8080` access to llama-swap still works for local models but bypasses retry logic and Langfuse tracing.
+All clients (Continue, aider, Cline, fabric, Open WebUI, `bob chat`) use `:8081` by default. The proxy exposes all local model names (`coder`, `ponder`, `chat`, `fim`, `embed`) plus the pro model names (`chat-pro`, `ponder-pro`, `coder-pro`, `vision-pro`) when API keys are set. Direct `:8080` access to llama-swap still works for local models but bypasses retry logic and Langfuse tracing.
 
 `config/litellm.yaml` is generated automatically by `bob gen` and `bob serve`; do not edit it by hand.
 
@@ -851,7 +852,7 @@ n8n is a visual workflow builder: each workflow is a graph of trigger nodes (web
 
 The response is `choices[0].message.content`; wire that to whatever you want. Prefer the LiteLLM proxy at `:8081` over the direct endpoint `:8080`: it adds automatic retry while a model is mid-swap. (If you instead run n8n in Docker yourself, use `http://host.docker.internal:8081` for the host from inside the container.)
 
-**Example workflows:** PR summarizer (GitHub webhook → fetch diff → `coder` → comment); daily digest (schedule → RSS → `planner` → email); commit-message generator (git hook webhook → staged diff → message). n8n schedules run in UTC by default; set `n8nTimezone` in `config/user.json` and re-run `bob services start` for local time.
+**Example workflows:** PR summarizer (GitHub webhook → fetch diff → `coder` → comment); daily digest (schedule → RSS → `ponder` → email); commit-message generator (git hook webhook → staged diff → message). n8n schedules run in UTC by default; set `n8nTimezone` in `config/user.json` and re-run `bob services start` for local time.
 
 **Starter workflow:** a ready-to-import workflow lives at `tools/n8n-workflows/daily-research-digest.json` (see `tools/n8n-workflows/README.md`). Import it (top-right menu → **Import from file**), edit the **Config** node (`discord_url`, `rss_feed_url`, `keywords_csv`), Save, then toggle **Active**.
 
@@ -893,7 +894,7 @@ Requires the endpoint running first (or lets it auto-start). The eval venv is cr
 bob eval coder gsm8k --limit 100   # quick smoke test (~8 min); math word problems
 bob eval coder gsm8k               # full (~90 min)
 bob eval coder humaneval           # code generation (~3 hr)
-bob eval planner mmlu              # general knowledge (~90 min)
+bob eval ponder mmlu              # general knowledge (~90 min)
 bob eval coder gsm8k --shots 5     # 5-shot variant (slightly higher scores, longer)
 ```
 
@@ -911,7 +912,7 @@ Scores well below these ranges usually mean the chat template wasn't applied cor
 
 Open WebUI is opt-in; install it at setup with `--with-webui` (Linux `./setup.sh --with-webui`, Windows `setup.bat --with-webui`). Once installed, `bob up` starts it on port 3000 (pre-wired to the local endpoint and embedding model), or `bob webui` launches it alone.
 
-Open WebUI uses the `embed` model for document search automatically. Add documents through the workspace panel; they are indexed locally and available in any chat via the RAG interface. Create model presets in Workspace → Models (e.g. a low-temperature "Planner" preset).
+Open WebUI uses the `embed` model for document search automatically. Add documents through the workspace panel; they are indexed locally and available in any chat via the RAG interface. Create model presets in Workspace → Models (e.g. a low-temperature preset for careful, deliberate answers).
 
 > **Agent model in WebUI:** Selecting the `agent` model in Open WebUI runs raw inference, tool schemas are not injected and `<tool_call>` blocks appear as plain text. For full tool use, run `bob agent "goal"` in the terminal, or start `bob agent serve` and call `http://localhost:8084/v1/agent/completions` from n8n or any HTTP client.
 

@@ -39,7 +39,7 @@ All clients → LiteLLM :8081 (retry, budget cap, Langfuse tracing)
 
 | Role | Backend | Notes |
 |------|---------|-------|
-| `planner` | Qwen3-30B-A3B Q4 (local) | Thinking mode, reasoning |
+| `ponder` | Qwen3-30B-A3B Q4 (local) | Thinking mode, reasoning |
 | `coder` | Qwen2.5-Coder-14B Q4 (local) | Function calling, speculative decode |
 | `chat` | Qwen3-14B Q4 (local) | General conversation |
 | `fim` | Qwen2.5-Coder-3B (local, pinned) | Autocomplete, never unloads |
@@ -47,7 +47,7 @@ All clients → LiteLLM :8081 (retry, budget cap, Langfuse tracing)
 | `vision` | Qwen2-VL-7B Q4 + mmproj (local, on-demand) | Image description and visual Q&A |
 | `chat-pro` | DeepSeek API | Cloud, $0 platform fee |
 | `coder-pro` | DeepSeek API | Cloud |
-| `planner-pro` | DeepSeek Reasoner API | Cloud, strongest reasoning |
+| `ponder-pro` | DeepSeek Reasoner API | Cloud, strongest reasoning |
 | `vision-pro` | DeepSeek V4 API (vision-capable) | Cloud vision; uses existing DEEPSEEK_API_KEY |
 | `agent` | Hermes-3-Llama-3.1-8B Q5 (local) | Hermes 3 XML tool-call format; agent loop |
 
@@ -142,7 +142,7 @@ You are Bob, a personal AI assistant running privately on this machine. You are 
   routing = @{
     defaultRole  = 'chat'      # used by `bob chat` with no flags
     proRole      = 'chat-pro'  # used by `bob chat --pro`
-    thinkRole    = 'planner'   # used by `bob think` / `bob chat --think`
+    thinkRole    = 'ponder'   # used by `bob think` / `bob chat --think`
     codeRole     = 'coder'     # used by `bob code`
     autoFallback = $false      # $true = fall back to local if cloud fails
   }
@@ -169,8 +169,8 @@ You are Bob, a personal AI assistant running privately on this machine. You are 
 bob chat                       → defaultRole ('chat')
 bob chat "question"            → defaultRole, single-shot with persona
 bob chat --pro "question"      → proRole ('chat-pro'), cloud
-bob chat --think "reason X"    → thinkRole ('planner'), local deep think
-bob chat --think --pro "..."   → 'planner-pro', cloud strongest
+bob chat --think "reason X"    → thinkRole ('ponder'), local deep think
+bob chat --think --pro "..."   → 'ponder-pro', cloud strongest
 bob chat --model coder "..."   → explicit override (backward compat)
 bob chat chat "..."            → old syntax still works
 ```
@@ -180,8 +180,8 @@ bob chat chat "..."            → old syntax still works
 ```
 bob code "write me X"         → codeRole ('coder')
 bob code --pro "..."          → 'coder-pro'
-bob think "plan X"            → thinkRole ('planner')
-bob think --pro "..."         → 'planner-pro'
+bob think "plan X"            → thinkRole ('ponder')
+bob think --pro "..."         → 'ponder-pro'
 ```
 
 **REPL mechanics** (in the `'chat'` case of `bob.ps1`):
@@ -383,7 +383,7 @@ bob plugins list    # show all installed plugins with type and description
 
 **Built-in Phase 3 plugins:**
 - `summarise` (`bob summarise <file>` or `cat file | bob summarise`): feeds text to local LLM, streams a summary. `--length short|medium|long`
-- `draft` (`bob draft "<prompt>" --type email|pr|slack|doc`): drafts text from a one-liner using the planner/chat role; output is clean, ready to paste
+- `draft` (`bob draft "<prompt>" --type email|pr|slack|doc`): drafts text from a one-liner using the ponder/chat role; output is clean, ready to paste
 - `search` (`bob search "<query>" [--path dir]`): ripgrep files then LLM synthesises the results; `--raw` skips LLM
 - `play` (`bob play <search query>`): opens Spotify URI if installed, falls back to YouTube Music in browser
 

@@ -54,7 +54,7 @@ From inside the shell:
 | *(type a message)* | Chat with Bob, or describe a task to run |
 | `/agent <goal>` | Run the agent loop on a one-shot goal |
 | `/voice` | Spoken conversation (mic → loop → speech) |
-| `/model [role]` | Show or switch the role (`chat`, `coder`, `planner`, …) |
+| `/model [role]` | Show or switch the role (`chat`, `coder`, `ponder`, …) |
 | `/agency [level]` | Tool-approval mode: `show` \| `confirm` \| `silent` |
 | `/session [new\|list\|resume <id>\|show]` | Persisted conversation history |
 | `/skill [name]` · `/skills` · `/tools` | List/run a skill · list skills · list tools |
@@ -83,9 +83,9 @@ Check what's running:
 bob status
 ```
 
-The models are listed: `planner`, `coder`, `chat`, `fim`, `embed`, `vision`, `agent`. None are loaded into VRAM yet; they load on first use and stay until idle. `fim` (autocomplete) and `embed` (search indexing) are pinned and never unload.
+The models are listed: `ponder`, `coder`, `chat`, `fim`, `embed`, `vision`, `agent`. None are loaded into VRAM yet; they load on first use and stay until idle. `fim` (autocomplete) and `embed` (search indexing) are pinned and never unload.
 
-> **Pro models:** If you've set `DEEPSEEK_API_KEY` and `ZHIPU_API_KEY`, three additional models are available via the LiteLLM proxy at `:8081`: `chat-pro`, `planner-pro`, `coder-pro`. These route directly to DeepSeek and Zhipu APIs, no local GPU required, no platform fee. See [USAGE.md § Pro models](USAGE.md#pro-models-api-backed-no-platform-fee).
+> **Pro models:** If you've set `DEEPSEEK_API_KEY` and `ZHIPU_API_KEY`, three additional models are available via the LiteLLM proxy at `:8081`: `chat-pro`, `ponder-pro`, `coder-pro`. These route directly to DeepSeek and Zhipu APIs, no local GPU required, no platform fee. See [USAGE.md § Pro models](USAGE.md#pro-models-api-backed-no-platform-fee).
 
 > **Tip, start at login:** To bring the background stack up automatically every login, run `bob up --no-open` from a startup entry: on Linux a user systemd unit or a `@reboot` cron line; on Windows a Task Scheduler task set to "At log on".
 
@@ -120,7 +120,7 @@ The services are available at:
 Run `bob` and type. Bob streams the response; keep typing to continue. Switch the role without leaving:
 
 ```
-> /model planner        # deeper reasoning, thinking mode on
+> /model ponder        # deeper reasoning, thinking mode on
 > /model coder          # code-focused
 > /model                # show the current role
 ```
@@ -140,10 +140,10 @@ bob chat --pro "explain CAP theorem with a concrete example"
 
 ```bash
 bob chat            # default: chat (general conversation, Qwen3-14B)
-bob think           # planner: Qwen3-30B, deep reasoning, thinking mode on
+bob think           # ponder: Qwen3-30B, deep reasoning, thinking mode on
 bob code            # coder: Qwen2.5-Coder-14B, code-focused
 bob chat --pro      # chat-pro: DeepSeek via API (needs DEEPSEEK_API_KEY)
-bob think --pro     # planner-pro: strongest reasoning, via API
+bob think --pro     # ponder-pro: strongest reasoning, via API
 bob code --pro      # coder-pro: via API
 ```
 
@@ -192,13 +192,13 @@ The `chat` model is used by default. The first word takes a moment while the mod
 
 ### Switching models
 
-At the top of the chat, click the model dropdown and switch to `planner`, the larger reasoning model, better for complex questions, architecture discussions, or anything you want it to think through before answering.
+At the top of the chat, click the model dropdown and switch to `ponder`, the larger reasoning model, better for complex questions, architecture discussions, or anything you want it to think through before answering.
 
 Switch back to `coder` for programming questions; it's faster and more precise on code tasks.
 
 ### Thinking mode and /no_think
 
-The `planner` and `chat` models use a reasoning scratchpad by default, thinking through the problem silently before responding. This produces better answers for hard questions but adds latency.
+The `ponder` and `chat` models use a reasoning scratchpad by default, thinking through the problem silently before responding. This produces better answers for hard questions but adds latency.
 
 For quick questions where you don't need deep reasoning:
 ```
@@ -266,9 +266,9 @@ add input validation: raise ValueError if the string is empty
 
 A diff appears inline. Press `Ctrl+Enter` (or click Accept) to apply it, or `Ctrl+Del` to reject and try again.
 
-### Switching between coder and planner
+### Switching between coder and ponder
 
-The model dropdown is at the bottom of the Continue chat panel. Use `coder` for everyday edits and quick questions; switch to `planner` for architecture or deeper reasoning. Switching models causes a brief VRAM swap (a few seconds).
+The model dropdown is at the bottom of the Continue chat panel. Use `coder` for everyday edits and quick questions; switch to `ponder` for architecture or deeper reasoning. Switching models causes a brief VRAM swap (a few seconds).
 
 ---
 
@@ -303,10 +303,10 @@ Review what it's about to do before clicking **Approve**. If the plan looks wron
 ### Plan mode vs Act mode
 
 In Cline settings, enable **"Use different models for Plan and Act"**:
-- Plan model: `planner`
+- Plan model: `ponder`
 - Act model: `coder`
 
-With this on, Cline uses `planner` to work out the approach, then switches to `coder` to write the code. This costs a VRAM swap, but the plans are significantly better for complex tasks.
+With this on, Cline uses `ponder` to work out the approach, then switches to `coder` to write the code. This costs a VRAM swap, but the plans are significantly better for complex tasks.
 
 > **Tip:** Keep Cline tasks focused. If the conversation history gets long, start a new task; long histories consume context window quickly.
 
@@ -314,7 +314,7 @@ With this on, Cline uses `planner` to work out the approach, then switches to `c
 
 ## Feature 5: Aider (Terminal Plan-then-Edit)
 
-**What it is:** A terminal coding agent with a genuine planning step. `planner` describes the changes in plain English; `coder` turns that into file edits. You review the plan before any file is touched.
+**What it is:** A terminal coding agent with a genuine planning step. `ponder` describes the changes in plain English; `coder` turns that into file edits. You review the plan before any file is touched.
 
 Open a terminal, navigate to a project, and start aider:
 
@@ -340,7 +340,7 @@ bob aider
 ```
 
 What happens:
-1. `planner` reads the files and writes a prose description of the changes it will make
+1. `ponder` reads the files and writes a prose description of the changes it will make
 2. You see the plan in the terminal
 3. Press **Enter** to proceed, or type feedback to refine the plan
 4. `coder` generates the diff and applies it
@@ -399,7 +399,7 @@ fabric -l
 
 Fabric uses the `coder` model by default. For deeper analysis:
 ```bash
-cat architecture-doc.md | fabric --pattern analyze_claims --model planner
+cat architecture-doc.md | fabric --pattern analyze_claims --model ponder
 ```
 
 ---
@@ -504,7 +504,7 @@ git diff --staged | jq -Rs '{diff: .}' | \
 |---|---|---|
 | PR summary | GitHub webhook on PR open | Fetches the diff → asks `coder` → posts summary comment |
 | Code review | Webhook from CI | Sends changed files to `coder` → returns review checklist |
-| Release notes | Git tag push | Reads commit log → asks `planner` → writes formatted release notes |
+| Release notes | Git tag push | Reads commit log → asks `ponder` → writes formatted release notes |
 | Chat memory | Webhook | Stores conversation history in n8n static data, calls `chat` model |
 
 ---
@@ -853,7 +853,7 @@ The same `bob <verb>` commands work identically on Linux and Windows.
 |---|---|
 | Open the interactive shell | `bob` |
 | Run one agentic goal (in shell) | `/agent <goal>` |
-| Switch role (in shell) | `/model [chat\|coder\|planner]` |
+| Switch role (in shell) | `/model [chat\|coder\|ponder]` |
 | Voice conversation (in shell) | `/voice` |
 | Stop local inference (in shell) | `/stop` |
 
@@ -926,7 +926,7 @@ The same `bob <verb>` commands work identically on Linux and Windows.
 | Code review | `cat file.py \| fabric --pattern code_review` |
 | Explain an error | `cat error.log \| fabric --pattern explain_code` |
 | List all patterns | `fabric -l` |
-| Use planner model | `cat doc.md \| fabric --pattern analyze_claims --model planner` |
+| Use ponder model | `cat doc.md \| fabric --pattern analyze_claims --model ponder` |
 
 ### LiteLLM proxy
 
@@ -1030,7 +1030,7 @@ For a first read-through, here's a short sequence that touches every feature:
 
 1. `bob`: open the shell, type a question, get a streaming answer, `/exit` to leave
 2. `bob diagnose`: confirm GPU, CUDA, and model files are all healthy
-3. `bob think "design a plugin architecture for a game engine"`: one-shot with the planner
+3. `bob think "design a plugin architecture for a game engine"`: one-shot with the ponder
 4. `bob remember "working on X project"` then `bob recall "current project"`: test memory store/search
 5. `bob up --with-services`: pre-warm inference + the opt-in add-on services in the background
 6. Open http://localhost:3000 (after `setup.sh --with-webui` or `bob webui`): chat with Open WebUI, try `/no_think`

@@ -14,7 +14,7 @@ REPO = Path(__file__).resolve().parent.parent.parent
 SCRIPTS = REPO / "scripts"
 
 # Stable role order so output is deterministic regardless of dict enumeration.
-_ROLE_ORDER = ["planner", "coder", "chat", "fim", "embed"]
+_ROLE_ORDER = ["ponder", "coder", "chat", "fim", "embed"]
 
 
 def configure(config: dict) -> None:
@@ -30,7 +30,7 @@ MUTATING_TOOLS = {"profile_switch"}
 # --- helpers --------------------------------------------------------------------------------------
 
 def _ordered_roles(roles: dict) -> list:
-    """Role names in the canonical order (planner,coder,chat,fim,embed, then the rest sorted)."""
+    """Role names in the canonical order (ponder,coder,chat,fim,embed, then the rest sorted)."""
     known = [r for r in _ROLE_ORDER if r in roles]
     rest = sorted(r for r in roles if r not in _ROLE_ORDER)
     return known + rest
@@ -207,7 +207,7 @@ def profile_switch(name: str, config: dict) -> str:
     return "\n".join(lines)
 
 
-_VERIFY_ROLES = ["planner", "coder", "chat", "fim", "embed", "vision", "agent"]
+_VERIFY_ROLES = ["ponder", "coder", "chat", "fim", "embed", "vision", "agent"]
 
 
 def verify_urls(profile: str, config: dict) -> str:
@@ -394,7 +394,7 @@ TOOL_DEFS = [
         "name": "model_show",
         "description": "Show one role's model details: file, VRAM, HuggingFace repo/path, on-disk size, SHA256. Read-only.",
         "parameters": {"type": "object", "properties": {
-            "role": {"type": "string", "description": "Role name (planner/coder/chat/fim/embed/vision/agent)."}},
+            "role": {"type": "string", "description": "Role name (ponder/coder/chat/fim/embed/vision/agent)."}},
             "required": ["role"]}}},
     {"type": "function", "function": {
         "name": "profiles_list",

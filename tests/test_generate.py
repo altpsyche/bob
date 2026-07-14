@@ -59,9 +59,10 @@ class TestLlamaSwap(unittest.TestCase):
     def test_macros_and_group(self):
         out = self._gen("16gb")
         server = osenv.exe_name("llama-server")   # llama-server.exe on Windows
-        self.assertIn(f'srv: "${{env.LLAMA_LOCAL_ROOT}}/bin/{server} --port ${{PORT}} -ngl 99 --flash-attn on"', out)
+        self.assertIn(f'srv: "${{env.LLAMA_LOCAL_ROOT}}/bin/{server} --port ${{PORT}} -ngl 99 --flash-attn on '
+                      f'--reasoning-format deepseek"', out)
         self.assertIn('kv: "--cache-type-k q8_0 --cache-type-v q8_0"', out)
-        self.assertIn("members: [planner, coder, chat, vision, agent]", out)
+        self.assertIn("members: [ponder, coder, chat, vision, agent]", out)
 
     def test_draft_and_setparams_and_ttl(self):
         out = self._gen("16gb")
@@ -71,6 +72,21 @@ class TestLlamaSwap(unittest.TestCase):
         self.assertIn("setParams: { temperature: 0.7, top_p: 0.9 }", out)
         # fim/embed ttl 0
         self.assertRegex(out, r"fim:\n.*\n\s+ttl: 0")
+
+    def test_moe_offload_emitted_for_overflow_model(self):
+        out = self._gen("16gb")
+        ponder = next(ln for ln in out.splitlines() if "qwen3-30b-a3b" in ln)
+        self.assertIn("--n-cpu-moe 24", ponder)   # 30B MoE spills experts to RAM so it fits 16GB
+        chat = next(ln for ln in out.splitlines() if "qwen3-14b" in ln)
+        self.assertNotIn("--n-cpu-moe", chat)     # dense model that fits: no offload
+
+    def test_moe_offload_per_profile(self):
+        # The 30B-A3B ponder overflows the 16gb and 24gb cards (b9993 no longer auto-spills at -ngl 99),
+        # so each carries its own tuned offload; the 32gb Q6_K fits with headroom and gets none.
+        out24 = self._gen("24gb")
+        self.assertIn("--n-cpu-moe 12", next(ln for ln in out24.splitlines() if "qwen3-30b-a3b" in ln))
+        out32 = self._gen("32gb")
+        self.assertNotIn("--n-cpu-moe", next(ln for ln in out32.splitlines() if "qwen3-30b-a3b" in ln))
 
     def test_vision_expands_srv_without_flashattn(self):
         # mmproj is incompatible with flash-attn -> that model's cmd uses an inline srv sans --flash-attn
@@ -94,7 +110,7 @@ class TestLitellm(unittest.TestCase):
 
     def test_local_and_pro_models(self):
         out = self._gen()
-        self.assertIn("  - model_name: planner\n    litellm_params:\n      model: openai/planner", out)
+        self.assertIn("  - model_name: ponder\n    litellm_params:\n      model: openai/ponder", out)
         self.assertIn("      supports_vision: true", out)   # vision
         # pro models: deepseek peer, roles sorted
         self.assertIn("  - model_name: chat-pro", out)

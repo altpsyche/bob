@@ -1,14 +1,14 @@
-# aider config — architect mode: planner model drafts, editor model applies.
+# aider config, architect mode: ponder model drafts, editor model applies.
 # aider auto-discovers .aider.conf.yml in your home dir, git root, or cwd.
 # Copy or symlink to your home dir, or run aider with --config C:\bob\config\aider\.aider.conf.yml
 #
 # IMPORTANT: local OpenAI-compatible models must be prefixed "openai/" (case-sensitive).
 
 architect: true
-model: openai/planner               # planning / architect model
+model: openai/ponder               # planning / architect model
 editor-model: openai/coder          # model that writes the edits
 editor-edit-format: diff
 openai-api-base: http://localhost:8081/v1
 openai-api-key: sk-local
 auto-accept-architect: false        # review the plan before edits are applied
-map-tokens: 1024                    # cap repo map; default 4096-8192 overflows planner's 16k context
+map-tokens: 1024                    # cap repo map; default 4096-8192 overflows ponder's 16k context

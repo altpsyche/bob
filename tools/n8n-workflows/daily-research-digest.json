@@ -337,7 +337,7 @@
         "width": 560,
         "height": 280,
         "color": 4,
-        "content": "## Configuration - Edit the Config node\n\n**`rss_feed_url`** — RSS feed to digest\nDefault: Hacker News front page (`https://hnrss.org/frontpage`)\nOther options: `https://huggingface.co/blog/feed.xml`, any RSS URL\n\n**`keywords_csv`** — Comma-separated filter (empty = all articles)\nExample: `AI, open source, security, rust`\n\n**`max_items`** — Articles per run (default 8, Discord max 10)\n\n**`model`** — Local model alias: `chat` (default), `planner`, `coder`\n\n**`discord_url`** — Paste your Discord webhook URL\nDiscord > Server Settings > Integrations > Webhooks > New Webhook > Copy URL"
+        "content": "## Configuration - Edit the Config node\n\n**`rss_feed_url`** — RSS feed to digest\nDefault: Hacker News front page (`https://hnrss.org/frontpage`)\nOther options: `https://huggingface.co/blog/feed.xml`, any RSS URL\n\n**`keywords_csv`** — Comma-separated filter (empty = all articles)\nExample: `AI, open source, security, rust`\n\n**`max_items`** — Articles per run (default 8, Discord max 10)\n\n**`model`** — Local model alias: `chat` (default), `ponder`, `coder`\n\n**`discord_url`** — Paste your Discord webhook URL\nDiscord > Server Settings > Integrations > Webhooks > New Webhook > Copy URL"
       }
     },
     {
@@ -363,7 +363,7 @@
         "width": 520,
         "height": 180,
         "color": 3,
-        "content": "## Local Stack Endpoints (inside Docker)\n\n| Service | URL |\n|---------|-----|\n| LLM (llama-swap) | `host.docker.internal:8080` |\n| LiteLLM proxy | `host.docker.internal:8081` |\n| Whisper STT | `host.docker.internal:8082` |\n| Piper TTS | `host.docker.internal:8083` |\n| SearXNG | `host.docker.internal:8888` |\n\nAuth: `Bearer sk-local`\nModels: `chat`, `planner`, `coder`, `fim`, `embed`, `vision`\n`vision`: POST image_url content parts to `host.docker.internal:8081/v1/chat/completions` — see **vision-describe** workflow\nDedup: article URLs stored 7 days in workflow static data"
+        "content": "## Local Stack Endpoints (inside Docker)\n\n| Service | URL |\n|---------|-----|\n| LLM (llama-swap) | `host.docker.internal:8080` |\n| LiteLLM proxy | `host.docker.internal:8081` |\n| Whisper STT | `host.docker.internal:8082` |\n| Piper TTS | `host.docker.internal:8083` |\n| SearXNG | `host.docker.internal:8888` |\n\nAuth: `Bearer sk-local`\nModels: `chat`, `ponder`, `coder`, `fim`, `embed`, `vision`\n`vision`: POST image_url content parts to `host.docker.internal:8081/v1/chat/completions` — see **vision-describe** workflow\nDedup: article URLs stored 7 days in workflow static data"
       }
     }
   ],

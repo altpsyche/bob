@@ -44,7 +44,7 @@ Other options in Config:
 | Field | Default | Notes |
 |-------|---------|-------|
 | `max_items` | 8 | Max articles per run. Discord allows 10 embeds per message. |
-| `model` | `chat` | Local model alias. `chat` is fast; `planner` gives deeper analysis. |
+| `model` | `chat` | Local model alias. `chat` is fast; `ponder` gives deeper analysis. |
 
 ### On-demand research via webhook
 
@@ -115,4 +115,4 @@ Some feeds that work well with this workflow:
 | LLM timeout or empty summary | Model still loading (llama-swap) | Wait 30s and re-run; or switch `model` to `chat` |
 | All articles show "Single source" | SearXNG engines not returning results | Open `http://localhost:8888/preferences` and enable more engines |
 | "No new articles" on every run | Dedup marked everything as seen | Clear workflow static data: workflow menu > Settings > Clear static data |
-| Summaries start with "The article..." | Model ignoring system prompt | Switch `model` to `planner` for better instruction following |
+| Summaries start with "The article..." | Model ignoring system prompt | Switch `model` to `ponder` for better instruction following |

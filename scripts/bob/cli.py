@@ -276,8 +276,8 @@ def _handle_skill(rest: list) -> int:
     return 0
 
 
-_CHAT_KNOWN_ROLES = {"chat", "coder", "planner", "fim", "embed",
-                     "chat-pro", "coder-pro", "planner-pro"}
+_CHAT_KNOWN_ROLES = {"chat", "coder", "ponder", "fim", "embed",
+                     "chat-pro", "coder-pro", "ponder-pro"}
 
 
 def _chat(task: str, rest: list) -> int:
@@ -289,9 +289,13 @@ def _chat(task: str, rest: list) -> int:
     rest = list(rest)
     pro = "--pro" in rest
     raw = "--raw" in rest
-    if "--think" in rest:
-        task = "think"
-    elif "--code" in rest:
+    # `think` is a reasoning MODE on the current model, not a swap to a separate model: `bob think` and
+    # `--think` reason on the chat model (use `/model ponder` in the shell for the bigger 30B). The
+    # 30B ponder stays reachable as its own role; think just toggles reasoning on whatever runs.
+    think = task == "think" or "--think" in rest
+    if task == "think":
+        task = "chat"
+    if "--code" in rest:
         task = "code"
 
     max_tokens = None
@@ -330,12 +334,12 @@ def _chat(task: str, rest: list) -> int:
         # Interactive: the shell in chat mode (preset role, tools off) — inherits persisted
         # sessions, autoRecall/consolidate, rich streaming, and approval.
         from bob.shell import run as shell_run
-        return shell_run(config=config, role=role, no_tools=True)
+        return shell_run(config=config, role=role, no_tools=True, think=think)
 
     # One-shot: run_agent prints the answer (streams + newline unless --raw, which prints bare text).
     import bob_loop
     bob_loop.run_agent(" ".join(prompt), config, role=role, agency="silent",
-                       stream=not raw, no_tools=True, max_tokens=max_tokens)
+                       stream=not raw, no_tools=True, max_tokens=max_tokens, think=think)
     return 0
 
 
@@ -887,7 +891,7 @@ def _handle_models(rest: list) -> int:
 
 def _handle_show(rest: list) -> int:
     if not rest:
-        print("usage: bob show <role>   (roles: planner coder chat fim embed vision agent)",
+        print("usage: bob show <role>   (roles: ponder coder chat fim embed vision agent)",
               file=sys.stderr)
         return 1
     print(_models_mod().model_show(rest[0], _cfg()))

@@ -16,8 +16,8 @@ class TestGetRole(unittest.TestCase):
     def test_code_think_agent(self):
         self.assertEqual(bob_core.get_role(self.cfg, "code"), "coder")
         self.assertEqual(bob_core.get_role(self.cfg, "code", pro=True), "coder-pro")
-        self.assertEqual(bob_core.get_role(self.cfg, "think"), "planner")
-        self.assertEqual(bob_core.get_role(self.cfg, "think", pro=True), "planner-pro")
+        self.assertEqual(bob_core.get_role(self.cfg, "ponder"), "ponder")
+        self.assertEqual(bob_core.get_role(self.cfg, "ponder", pro=True), "ponder-pro")
         self.assertEqual(bob_core.get_role(self.cfg, "agent"), "agent")
 
     def test_vision_uses_vision_section(self):

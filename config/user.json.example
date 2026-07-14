@@ -9,7 +9,7 @@
   },
 
   "profiles": {
-    "_example_16gb": { "planner": { "ctx": 8192 } }
+    "_example_16gb": { "ponder": { "ctx": 8192 } }
   },
 
   "prompts": {

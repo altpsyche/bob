@@ -708,13 +708,28 @@ _VERIFY_SYSTEM = (
 )
 
 
-def _single_turn(client, role, messages, cancel, timeout, hermes) -> str:
+def _is_local_model(model: str, config: dict) -> bool:
+    """True if `model` is a locally served (llama-swap) role rather than a cloud peer. Scopes the
+    reasoning chat-template kwarg to local models: llama-server consumes `enable_thinking`, cloud peers
+    (DeepSeek/GLM) have their own reasoning behavior and don't take it. Best-effort: on any lookup
+    failure treat it as local, so local reasoning suppression (the common path) still applies."""
+    try:
+        import bob_models
+        return model in bob_models.profile_roles()
+    except Exception:
+        return True
+
+
+def _single_turn(client, role, messages, cancel, timeout, hermes, extra_body=None) -> str:
     """One internal, non-emitting LLM turn (plan or verify). Consumed as a stream so `cancel` is
     honored, but yields no 'token' events; returns the assistant content ('' on empty / cancel / error
-    so a plan/verify hiccup degrades to today's behavior rather than failing the run)."""
+    so a plan/verify hiccup degrades to today's behavior rather than failing the run). `extra_body`
+    carries the same reasoning-mode kwarg as the main loop so internal turns reason consistently."""
     try:
-        resp = client.chat.completions.create(model=role, messages=messages, tools=None,
-                                               stream=True, timeout=timeout)
+        kwargs = dict(model=role, messages=messages, tools=None, stream=True, timeout=timeout)
+        if extra_body is not None:
+            kwargs["extra_body"] = extra_body
+        resp = client.chat.completions.create(**kwargs)
         gen = _consume_stream(resp, cancel=cancel, emit_tokens=False, hermes=hermes)
         msg = None
         while True:
@@ -1249,6 +1264,7 @@ def run_agent_events(
     images: list = None,
     system_prompt: str = None,
     resume: str = None,
+    think: bool = None,
 ):
     """Generator core of the agent loop. Yields event dicts:
         {"type": "token",             "text": str}                          # final-answer deltas (stream=True)
@@ -1277,6 +1293,16 @@ def run_agent_events(
     # An image-bearing turn routes to the vision role unless the caller pinned a role.
     if images and role is None:
         effective_role = get_role(config, "vision")
+    # Reasoning ("think") is a MODE on whichever model is active, not a model swap: forward the
+    # `enable_thinking` chat-template kwarg to llama-server via extra_body. `think=None` -> the config
+    # default (agent.think). llama-server is pinned to --reasoning-format deepseek, so any reasoning
+    # lands in a separate `reasoning_content` field the stream reader drops, so it never reaches the
+    # transcript or memory. Scoped to locally served models; cloud peers don't take the kwarg.
+    enable_thinking = agent_cfg.get("think", False) if think is None else bool(think)
+    reasoning_extra_body = (
+        {"chat_template_kwargs": {"enable_thinking": enable_thinking}}
+        if _is_local_model(effective_role, config) else None
+    )
     effective_agency = agency or agent_cfg.get("agency", "show")
     max_steps = int(agent_cfg.get("maxSteps", 10))
     # Loop-pathology guard: a (small) model can fixate on one tool and call it with identical args
@@ -1332,7 +1358,7 @@ def run_agent_events(
     # Max concurrent side-effect-free tools per step. Default 1 = sequential.
     max_parallel_tools = int(agent_cfg.get("maxParallelTools", 1))
     # Client-side timeout must be >= the proxy's request_timeout (600s): thinking models
-    # (planner/R1) can run >2 min before first output. A low value would cut them off.
+    # (ponder/R1) can run >2 min before first output. A low value would cut them off.
     request_timeout = int(agent_cfg.get("requestTimeout", 600))
 
     rid = run_id or uuid.uuid4().hex[:8]   # server passes its request id so one id spans client→server→loop
@@ -1596,12 +1622,12 @@ def run_agent_events(
                          policy=policy, tracer=tracer, trace_span=run_span)
     if resumed is not None and resumed.get("todos"):
         run_ctx.todos = resumed["todos"]   # restore the living TODO list so recitation/recall continue
-    # Plan phase: one bounded planner turn whose step list is injected as context before the loop.
+    # Plan phase: one bounded ponder turn whose step list is injected as context before the loop.
     if plan_enabled and resumed is None:
         plan_text = _single_turn(client, effective_role,
                                  [{"role": "system", "content": _PLAN_SYSTEM},
                                   {"role": "user", "content": goal}],
-                                 cancel, request_timeout, hermes_mode)
+                                 cancel, request_timeout, hermes_mode, extra_body=reasoning_extra_body)
         if plan_text.strip():
             messages.insert(1, {"role": "system", "content": f"Plan for this task:\n{plan_text.strip()}"})
             log.info(f"[{rid}] plan injected ({len(plan_text)}c)")
@@ -1707,12 +1733,17 @@ def run_agent_events(
                 try:
                     # We never pass cache_prompt, so llama.cpp's default (prompt/KV caching ON)
                     # applies; the stable-prefix assembly above is what makes that reuse pay off. Adding
-                    # the kwarg would also change request bytes and break OpenAI-compat, so we don't.
-                    # Default (no constraint/stable-prefix opt-in) => exactly {model, messages, tools, stream, timeout}.
+                    # that kwarg would change request bytes and break OpenAI-compat, so we don't.
                     base_kwargs = dict(model=effective_role, messages=send_messages, tools=tools,
                                        stream=True, timeout=request_timeout)
                     if max_tokens:   # --max — cap output tokens; None/0 omits it (unchanged)
                         base_kwargs["max_tokens"] = max_tokens
+                    # Reasoning mode: forwarded via extra_body so the OpenAI client passes the
+                    # non-standard chat-template kwarg straight through the proxy to llama-server. The
+                    # enable_thinking value is fixed per run and the prompt bytes are unchanged, so the
+                    # KV prefix cache is unaffected. Absent for cloud peers (reasoning_extra_body=None).
+                    if reasoning_extra_body is not None:
+                        base_kwargs["extra_body"] = reasoning_extra_body
                     if constrain_active:
                         # Attach the structured tools + tool_choice='auto' so the backend
                         # grammar-constrains any tool call. On rejection, latch the constraint off for
@@ -1823,7 +1854,7 @@ def run_agent_events(
                     critique = _single_turn(client, effective_role,
                         [{"role": "system", "content": _VERIFY_SYSTEM},
                          {"role": "user", "content": f"Goal:\n{goal}\n\nProposed final answer:\n{final}"}],
-                        cancel, request_timeout, hermes_mode)
+                        cancel, request_timeout, hermes_mode, extra_body=reasoning_extra_body)
                     if critique.strip() and not critique.strip().upper().startswith("DONE"):
                         log.info(f"[{rid}] verify: not done — continuing ({critique[:120]!r})")
                         messages.append({"role": "user", "content":
@@ -1985,6 +2016,7 @@ def run_agent(
     max_tokens: int = None,
     images: list = None,
     resume: str = None,
+    think: bool = None,
 ) -> tuple[str | None, bool]:
     """Blocking wrapper over run_agent_events for the CLI: prints tool previews to stderr,
     streams/echoes the final answer to stdout, and returns (result, exit_requested).
@@ -2002,6 +2034,7 @@ def run_agent(
         exit_on_tools=exit_on_tools, registry=registry, stream=stream, history=history,
         cancel=cancel, run_id=run_id, approve=approve, owner=owner, agent_depth=agent_depth,
         scope=scope, no_tools=no_tools, max_tokens=max_tokens, images=images, resume=resume,
+        think=think,
     ):
         t = ev["type"]
         if t == "token":
