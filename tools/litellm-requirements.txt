@@ -12,3 +12,4 @@ PyYAML>=6.0
 yt-dlp>=2024.1.0
 ddgs>=9.0.0
 faster-whisper>=1.2.0
+python-multipart>=0.0.9

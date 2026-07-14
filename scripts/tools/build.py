@@ -428,7 +428,8 @@ def update_stack(tag: str = None) -> int:
     submodule sync, venv reinstall, then rebuild EVERY compiled submodule that actually moved (llama.cpp,
     whisper.cpp, llama-swap, fabric) under one bin/ snapshot with per-binary verify + rollback on failure,
     relock, fetch any newly-added models (resume + skip-present, so code-only updates download nothing),
-    then doctor. Returns 0 on success, 1 on a handled failure. CLI-only + long."""
+    offer to prune models the release dropped, provision voice assets (STT model + piper + audio deps,
+    matching a fresh setup), then doctor. Returns 0 on success, 1 on a handled failure. CLI-only + long."""
     import osenv
 
     cpu = osenv.gpu_info() is None
@@ -505,6 +506,18 @@ def update_stack(tag: str = None) -> int:
     # Reconcile disk to the new lock: offer to reclaim space from models a release dropped (e.g. the old
     # coder after the 1.2 refresh). Opt-in, guarded, never fatal.
     _prune_orphan_models()
+
+    # Provision voice assets for the configured backend (STT model + piper voice + audio deps) so an
+    # update leaves a fully working default, identical to a fresh `bob setup` (which runs setup_voice at
+    # step 10). Idempotent (skip-present) and best-effort — voice is optional and must never fail update.
+    if _cfg.get("voice", {}).get("enabled"):
+        print("Provisioning voice assets...", file=sys.stderr)
+        try:
+            import provision
+            provision.configure(_cfg)
+            print(provision.setup_voice(smoke=False), file=sys.stderr)
+        except Exception as e:  # noqa: BLE001 — voice is optional; never fail the update over it
+            print(f"voice provisioning skipped ({e}); run `bob setup-voice`.", file=sys.stderr)
 
     print("Running bob doctor...", file=sys.stderr)
     import health

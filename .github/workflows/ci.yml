@@ -187,12 +187,19 @@ jobs:
       - name: End-to-end smoke
         run: python scripts/smoke.py --up
 
+      # Prove fresh-install voice works by default: the faster-whisper STT server serves the /inference
+      # contract on CPU. Fetches the tiny CT2 model (~75 MB, cached with models/) and does a synthetic-WAV
+      # round-trip under venv-litellm. Gating — a broken default voice backend blocks the PR.
+      - name: Voice STT smoke (faster-whisper CPU)
+        shell: bash
+        run: python scripts/smoke_voice.py
+
       # Surface why the endpoint died (the smoke only says "check: bob logs" — CI has no `bob logs`).
       - name: Dump service logs on failure
         if: failure()
         shell: bash
         run: |
-          for log in logs/llama-swap.log logs/litellm.log; do
+          for log in logs/llama-swap.log logs/litellm.log logs/whisper.log; do
             echo "===== $log ====="
             if [ -f "$log" ]; then tail -n 120 "$log"; else echo "(missing)"; fi
           done

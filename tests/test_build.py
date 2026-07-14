@@ -225,7 +225,7 @@ class TestSetupFabric(_BuildTreeMixin, unittest.TestCase):
 class TestUpdateStack(unittest.TestCase):
     # update over git + build + lock + doctor with a bin/ rollback; every piece is mocked so no
     # git/network/compiler runs. CLI-only.
-    def _run(self, before, after, verify=True, tag=None, changed="llama.cpp"):
+    def _run(self, before, after, verify=True, tag=None, changed="llama.cpp", cfg=None):
         """Run update_stack with everything mocked; return (rc, mocks-by-name, git-calls). `changed`
         picks which submodule moves (before -> after); every other submodule stays put, so the test
         controls exactly which component the update should rebuild."""
@@ -263,10 +263,13 @@ class TestUpdateStack(unittest.TestCase):
             # update_stack fetches any newly-added models (best-effort). Keep the unit hermetic — never
             # touch the network / attempt a real GGUF download.
             "fetch_models": mock.patch("provision.fetch_models", return_value="models: all present"),
+            # voice provisioning on update (setup_voice) — mocked so an enabled cfg never hits the network.
+            "setup_voice": mock.patch("provision.setup_voice", return_value="voice ok"),
+            "prov_configure": mock.patch("provision.configure"),
             "h_configure": mock.patch.object(health, "configure"),
             "health_check": mock.patch.object(health, "health_check", return_value="doctor-ok"),
         }
-        build_mod.configure(CFG)
+        build_mod.configure(cfg or CFG)
         with contextlib.ExitStack() as es:
             mocks = {k: es.enter_context(v) for k, v in specs.items()}
             rc = build_mod.update_stack(tag=tag)
@@ -309,6 +312,17 @@ class TestUpdateStack(unittest.TestCase):
         rc, _, git = self._run("x", "x", tag="v0.2.0")
         self.assertEqual(rc, 0)
         self.assertTrue(any("checkout" in c and "v0.2.0" in c for c in git))
+
+    def test_provisions_voice_when_enabled(self):
+        # update must leave a fully working default: provision voice (STT model + piper + audio deps)
+        # the same as a fresh setup, so voice works post-update without a manual `bob setup-voice`.
+        rc, mocks, _ = self._run("abc", "abc", cfg={"litellmPort": 8081, "voice": {"enabled": True}})
+        self.assertEqual(rc, 0)
+        mocks["setup_voice"].assert_called_once()
+
+    def test_skips_voice_when_disabled(self):
+        rc, mocks, _ = self._run("abc", "abc")   # CFG has no voice block
+        mocks["setup_voice"].assert_not_called()
 
 
 class TestCliArgParsing(unittest.TestCase):
