@@ -111,6 +111,9 @@ class TestArgCompletion(unittest.TestCase):
         self.assertIn("coder", texts)
         self.assertIn("ponder", texts)
         self.assertIn("agent", texts)
+        # /model is a model selector: task words are not switch targets and must not clutter the picker.
+        self.assertNotIn("code", texts)
+        self.assertNotIn("voice", texts)
 
     def test_model_fuzzy_filters_roles(self):
         comp = _make_shell()._session_kwargs()["completer"]

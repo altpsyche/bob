@@ -91,21 +91,35 @@ class TestDispatch(unittest.TestCase):
         sh, out = _make_shell()
         sh.dispatch("/model definitely-not-a-role")
         self.assertEqual(sh.role, "definitely-not-a-role")        # not blocked (custom models allowed)
-        self.assertIn("not a known role", out.file.getvalue())    # but no longer silent
+        self.assertIn("not a known model", out.file.getvalue())   # but no longer silent
 
     def test_model_known_role_switches_cleanly(self):
         sh, out = _make_shell()
         sh.dispatch("/model coder")                               # a configured routing value
         self.assertEqual(sh.role, "coder")
-        self.assertNotIn("not a known role", out.file.getvalue())
+        self.assertNotIn("not a known model", out.file.getvalue())
 
-    def test_model_task_alias_resolves_to_served_model(self):
+    def test_model_name_that_is_also_a_task_switches(self):
         sh, out = _make_shell()
-        sh.dispatch("/model ponder")                               # task-name alias (ponder)
-        self.assertEqual(sh.role, "ponder")                      # resolves to the served model
-        self.assertNotIn("not a known role", out.file.getvalue())
+        sh.dispatch("/model ponder")                              # 'ponder' is a served model name
+        self.assertEqual(sh.role, "ponder")
+        self.assertNotIn("not a known model", out.file.getvalue())
+
+    def test_model_task_word_redirects_without_switching(self):
+        # /model is a model selector: a task word ('code') names its model instead of switching to a
+        # second spelling, so the served model keeps one canonical identity.
+        sh, out = _make_shell()
+        before = sh.role
         sh.dispatch("/model code")
-        self.assertEqual(sh.role, "coder")
+        self.assertEqual(sh.role, before)                         # did NOT switch
+        self.assertIn("coder", out.file.getvalue())               # named the model to use
+
+    def test_model_mode_word_redirects_without_switching(self):
+        sh, out = _make_shell()
+        before = sh.role
+        sh.dispatch("/model think")                               # 'think' is a mode, not a model
+        self.assertEqual(sh.role, before)
+        self.assertIn("mode", out.file.getvalue())
 
     def test_think_toggle_mutates_state(self):
         sh, _ = _make_shell()

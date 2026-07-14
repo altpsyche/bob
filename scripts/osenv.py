@@ -1142,6 +1142,24 @@ def best_cuda_root(cuda_arch: int = 0):
     return ok[0][1] if ok else None
 
 
+def cuda_missing_message() -> str:
+    """The right 'CUDA toolkit not found' guidance for THIS host. On an atomic/ostree host (Bazzite /
+    Silverblue / Kinoite) the toolkit can't be built against the read-only /usr, so steer to a Fedora
+    distrobox (where CUDA + the native build just work) or a CPU build; elsewhere point at install_prereqs
+    / a newer toolkit. One source of truth for the build (`bob build`) and `bob update`."""
+    if is_atomic_linux():
+        return ("CUDA Toolkit >= 12.8 not found, and this is an atomic/ostree host (Bazzite / Silverblue /"
+                " Kinoite) where the toolkit can't be built against the read-only system. Run Bob in a"
+                " Fedora distrobox (CUDA passthrough + the native build just work there):\n"
+                "    distrobox create --name bob --image fedora:latest --nvidia\n"
+                "    distrobox enter bob\n"
+                f"    cd {REPO} && ./install_prereqs.sh && ./setup.sh\n"
+                "or build CPU-only on the host: ./install_prereqs.sh --cpu && ./setup.sh --cpu")
+    return ("CUDA Toolkit >= 12.8 not found. Blackwell (sm_120) needs 12.8+ (12.8/12.9/13.x). Run"
+            " ./install_prereqs.sh (installs the toolkit for your GPU), install a newer toolkit from"
+            " https://developer.nvidia.com/cuda-downloads, pass cuda_root=..., or build --cpu.")
+
+
 def cuda_host_compiler():
     """The g++ nvcc should use as -ccbin (Linux CUDA), or None to use the default. Honors $NVCC_CCBIN, else
     the newest versioned g++-NN older than the default g++ (a too-new default fails nvcc). None on Windows."""

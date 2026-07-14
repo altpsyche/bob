@@ -132,5 +132,57 @@ class TestMlockLinux(unittest.TestCase):
             self.assertIn("limits.conf", out)
 
 
+class TestCudaMissingMessage(unittest.TestCase):
+    def test_atomic_host_recommends_distrobox(self):
+        with mock.patch("osenv.is_atomic_linux", return_value=True):
+            msg = osenv.cuda_missing_message()
+        self.assertIn("distrobox", msg)
+        self.assertIn("atomic", msg.lower())
+
+    def test_mutable_host_points_at_install_prereqs(self):
+        with mock.patch("osenv.is_atomic_linux", return_value=False):
+            msg = osenv.cuda_missing_message()
+        self.assertIn("install_prereqs", msg)
+        self.assertNotIn("distrobox", msg)
+
+
+class TestEnsureCudaToolkit(unittest.TestCase):
+    """The Tier-0 CUDA-toolkit seam shared by install_prereqs and `bob update`."""
+
+    def _mod(self):
+        from bob import install_prereqs
+        return install_prereqs
+
+    def test_cpu_build_needs_nothing(self):
+        self.assertIsNone(self._mod().ensure_cuda_toolkit(cpu=True))
+
+    def test_returns_present_toolkit(self):
+        with mock.patch("osenv.gpu_arch", return_value={"CudaArch": 120}), \
+             mock.patch("osenv.best_cuda_root", return_value="/usr/local/cuda-12.8"):
+            self.assertEqual(self._mod().ensure_cuda_toolkit(cpu=False), "/usr/local/cuda-12.8")
+
+    def test_atomic_host_raises_distrobox_guidance(self):
+        with mock.patch("osenv.gpu_arch", return_value={"CudaArch": 120}), \
+             mock.patch("osenv.best_cuda_root", return_value=None), \
+             mock.patch("osenv.os_name", return_value="linux"), \
+             mock.patch("osenv.is_atomic_linux", return_value=True):
+            with self.assertRaises(RuntimeError) as cm:
+                self._mod().ensure_cuda_toolkit(cpu=False)
+        self.assertIn("distrobox", str(cm.exception))
+
+    def test_mutable_installs_then_resolves(self):
+        seq = [None, "/usr/local/cuda-12.9"]   # absent, then present after the package install
+        with mock.patch("osenv.gpu_arch", return_value={"CudaArch": 120}), \
+             mock.patch("osenv.best_cuda_root", side_effect=lambda a: seq.pop(0)), \
+             mock.patch("osenv.os_name", return_value="linux"), \
+             mock.patch("osenv.is_atomic_linux", return_value=False), \
+             mock.patch("osenv.linux_package_manager", return_value="dnf"), \
+             mock.patch("osenv.resolve_package_name", return_value="cuda-toolkit"), \
+             mock.patch("osenv.install_package") as ip:
+            root = self._mod().ensure_cuda_toolkit(cpu=False)
+        ip.assert_called_once()
+        self.assertEqual(root, "/usr/local/cuda-12.9")
+
+
 if __name__ == "__main__":
     unittest.main()

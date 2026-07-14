@@ -84,27 +84,41 @@ def _set_linux_cuda_path(root: str, host_cxx: str = None) -> None:
                   file=sys.stderr)
 
 
-def _install_linux_cuda(manager: str) -> None:
-    """Install the CUDA toolkit (if absent) + wire it onto PATH. The build discovers the toolkit by
-    probing disk, so PATH is a convenience. Blackwell (sm_120) needs >= 12.8. Port of Install-LinuxCuda."""
-    cuda_pkg = osenv.resolve_package_name("cuda", manager)
+def ensure_cuda_toolkit(cpu: bool = False):
+    """Tier-0 CUDA-toolkit seam, shared by install_prereqs AND `bob update` so an update ensures the same
+    prerequisite a fresh setup does (instead of failing mid-rebuild). Returns a toolkit root >= the GPU's
+    floor, or None for a CPU build. On a mutable Linux distro it installs the toolkit via the package seam
+    when absent, then re-probes. Raises RuntimeError with host-appropriate guidance when a GPU build still
+    has no usable toolkit — the distrobox recipe on an atomic host (where /usr is read-only), else the
+    install/newer-toolkit hint (osenv.cuda_missing_message is the single source)."""
+    if cpu:
+        return None
     arch = (osenv.gpu_arch() or {}).get("CudaArch", 120)
     root = osenv.best_cuda_root(arch)
     if root:
-        print(f"  CUDA toolkit present: {root} (skipping install)", file=sys.stderr)
-    else:
-        print(f"  install {cuda_pkg} (CUDA toolkit) ...", file=sys.stderr)
-        try:
-            osenv.install_package(cuda_pkg)
-        except (RuntimeError, KeyError) as e:
-            print(f"  {cuda_pkg} failed: {e}", file=sys.stderr)
-        root = osenv.best_cuda_root(arch)
+        return root
+    if osenv.os_name() == "linux" and not osenv.is_atomic_linux():
+        mgr = osenv.linux_package_manager()
+        if mgr:
+            pkg = osenv.resolve_package_name("cuda", mgr)
+            print(f"  install {pkg} (CUDA toolkit) ...", file=sys.stderr)
+            try:
+                osenv.install_package(pkg)
+            except (RuntimeError, KeyError) as e:
+                print(f"  {pkg} failed: {e}", file=sys.stderr)
+            root = osenv.best_cuda_root(arch)
+            if root:
+                return root
+    raise RuntimeError(osenv.cuda_missing_message())
 
-    if not root:
-        print("  CUDA toolkit >= 12.8 not found after install (looked in /usr/local/cuda*, /opt/cuda, "
-              "$CUDA_PATH). Blackwell (sm_120) needs CUDA 12.8+. If your distro's package is older, install "
-              "a newer toolkit from https://developer.nvidia.com/cuda-downloads and re-run, or build "
-              "CPU-only: ./install_prereqs.sh --cpu && ./setup.sh --cpu", file=sys.stderr)
+
+def _install_linux_cuda(manager: str) -> None:
+    """Install the CUDA toolkit (if absent) + wire it onto PATH. The build discovers the toolkit by
+    probing disk, so PATH is a convenience. Blackwell (sm_120) needs >= 12.8. Port of Install-LinuxCuda."""
+    try:
+        root = ensure_cuda_toolkit(cpu=False)
+    except RuntimeError as e:
+        print(f"  {e}", file=sys.stderr)
         return
     host_cxx = osenv.cuda_host_compiler()
     print(f"  CUDA toolkit : {root}", file=sys.stderr)

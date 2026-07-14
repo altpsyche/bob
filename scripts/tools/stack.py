@@ -378,10 +378,24 @@ def _start_whisper_bg(config: dict) -> str:
     return f"whisper-server: http://localhost:{stt_port} (PID {pid}), {tail}"
 
 
+def _stt_health_ok(port: int) -> bool:
+    """True when the STT server answers /health with a loaded model. Accurate readiness: the model loads
+    before the port binds and /health reports 'ok' only once loading finished, so this can't false-positive
+    on a still-loading (or an outgoing, refusing) server the way a bare port-open check can."""
+    import json as _json
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"http://localhost:{port}/health", timeout=2) as r:  # noqa: S310
+            return _json.loads(r.read().decode("utf-8", "replace")).get("status") == "ok"
+    except Exception:  # noqa: BLE001 — refused/other == not ready yet
+        return False
+
+
 def _start_faster_whisper_bg(config: dict) -> str:
     """Start the faster-whisper (CTranslate2) STT server under venv-litellm. Same sttPort + /inference
-    contract as whisper.cpp, so the client and lifecycle are engine-agnostic. Model loads once at startup,
-    so the port-open poll doubles as a readiness check (allow extra time for a cold model load)."""
+    contract as whisper.cpp, so the client and lifecycle are engine-agnostic. The model loads once before
+    the port binds, and a GPU cold-load can take several seconds, so readiness is a /health poll (not a
+    bare port check) after waiting for any prior server to release the port."""
     osenv = _osenv()
     from bob_core import _port
 
@@ -398,11 +412,14 @@ def _start_faster_whisper_bg(config: dict) -> str:
         return f"faster-whisper already running (PID {pid})."
     osenv.stop_processes_by_name("whisper-server")  # reap a stale whisper.cpp server on engine switch
     _pidfile("whisper").unlink(missing_ok=True)
+    # Wait for a prior STT server to release the port so a restart never overlaps (and the readiness
+    # check below can't see the outgoing server).
+    _poll(lambda: not osenv.is_port_in_use(stt_port), timeout=10, interval=0.3)
     new_pid = osenv.start_detached(
         [str(py), str(server)], pidfile=_pidfile("whisper"), log_path=_logfile("whisper"),
         env={"STT_PORT": str(stt_port), "STT_MODEL": size, "STT_MODEL_DIR": str(model_dir),
              "STT_COMPUTE_TYPE": voice.get("sttComputeType", "auto")})
-    ready = _poll(lambda: osenv.is_port_in_use(stt_port), timeout=60, interval=0.5)
+    ready = _poll(lambda: _stt_health_ok(stt_port), timeout=90, interval=0.5)
     tail = "ready" if ready else "may not be ready yet — check logs/whisper.log"
     return f"faster-whisper: http://localhost:{stt_port} (PID {new_pid}, model={size}), {tail}"
 

@@ -49,7 +49,7 @@ In the shell:
 | *(type anything)* | an agent turn; Bob answers and can use tools (streamed, Markdown-rendered) |
 | `/agent <goal>` | run the agent loop explicitly on a goal |
 | `/voice` | drop into the spoken voice loop |
-| `/model [role]` · `/think [on\|off]` · `/agency [show\|confirm\|silent]` | switch model (accepts task names `code`/`ponder`/`vision` or model names `coder`/`ponder`/`chat`) / toggle reasoning on the current model / tool-approval mode |
+| `/model [model]` · `/think [on\|off]` · `/agency [show\|confirm\|silent]` | switch the served model (`coder`, `ponder`, `chat`, `vision`, `agent`, or a `-pro` peer) / toggle reasoning on the current model / tool-approval mode |
 | `/tools` · `/skills` · `/help` | the catalog (grouped commands + tools + skills) |
 | `/skill [name]` | list or run a skill (tool-sequence or sub-agent) |
 | `/session new\|list\|resume <id>\|show` · `/status` · `/clear` | persisted sessions (`data/sessions.db`) + state; leaving a session consolidates it into memory |
@@ -347,7 +347,7 @@ Voice adds two-way audio to the terminal using faster-whisper (STT) and piper (T
 ```
 bob setup-voice
 ```
-Downloads the faster-whisper STT model, the piper voice, and the Qwen2-VL mmproj file, and installs the STT Python deps. `bob up` auto-starts the STT server on port 8082. (Only when `voice.sttEngine = 'whisper.cpp'` does setup build `whisper-server` and fetch the ggml model instead.)
+Downloads the faster-whisper STT model, the piper voice, and the Qwen2-VL mmproj file, and installs the STT Python deps. `bob up` auto-starts the STT server on port 8082. On an NVIDIA GPU, setup also installs the CUDA-12 runtime libs (cuBLAS/cuDNN) so STT runs on the GPU; otherwise, or if those libs are missing at runtime, the server falls back to CPU int8 automatically (fast enough for single-utterance voice). (Only when `voice.sttEngine = 'whisper.cpp'` does setup build `whisper-server` and fetch the ggml model instead.)
 
 **Commands:**
 ```

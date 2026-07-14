@@ -214,7 +214,7 @@ class TestSetupVoice(unittest.TestCase):
                         "ports": {"sttPort": 8082}, "sttPort": 8082})
 
     def _run(self, force=False, server_exists=False, piper_exists=False, pip_exists=True, dls=None,
-             engine="faster-whisper"):
+             engine="faster-whisper", gpu=None):
         prov.configure({"voice": {"sttEngine": engine, "sttModel": "base.en",
                                   "ttsVoice": "en_GB-alan-medium"},
                         "ports": {"sttPort": 8082}, "sttPort": 8082})
@@ -235,6 +235,7 @@ class TestSetupVoice(unittest.TestCase):
         with mock.patch("osenv.bin_exe", side_effect=bin_exe), \
              mock.patch("osenv.venv_exe", return_value=pip), \
              mock.patch("osenv.os_name", return_value="linux"), \
+             mock.patch("osenv.gpu_info", return_value=gpu), \
              mock.patch.object(build_mod, "build_whisper", return_value="whisper built") as bw, \
              mock.patch.object(prov, "_dl_file", side_effect=lambda url, dest, label, force, out: dls.append((label, url))), \
              mock.patch.object(prov, "_install_piper") as ip, \
@@ -276,6 +277,17 @@ class TestSetupVoice(unittest.TestCase):
         _, m = self._run()   # engine defaults to faster-whisper
         pip_calls = [c.args[0] for c in m["pip"].call_args_list]
         self.assertTrue(any("faster-whisper" in c for c in pip_calls))
+
+    def test_gpu_stt_libs_installed_when_gpu_present(self):
+        # optional GPU upgrade: with an NVIDIA GPU detected, install the cu12 cuBLAS/cuDNN wheels.
+        _, m = self._run(gpu={"name": "RTX 5080"})
+        pip_calls = [c.args[0] for c in m["pip"].call_args_list]
+        self.assertTrue(any("nvidia-cublas-cu12" in c for c in pip_calls))
+
+    def test_gpu_stt_libs_skipped_without_gpu(self):
+        _, m = self._run(gpu=None)   # CPU tier: no cu12 wheels, CPU int8 is used
+        pip_calls = [c.args[0] for c in m["pip"].call_args_list]
+        self.assertFalse(any("nvidia-cublas-cu12" in c for c in pip_calls))
 
     def test_installs_piper_when_absent(self):
         _, m = self._run(piper_exists=False)

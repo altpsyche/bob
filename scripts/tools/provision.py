@@ -411,6 +411,14 @@ def setup_voice(force: bool = False, smoke: bool = True) -> str:
     if stt_engine != "whisper.cpp":
         subprocess.run([str(pip), "install", "--quiet", "faster-whisper"])
         out.append("  faster-whisper installed")
+        # GPU STT is an optional upgrade: when an NVIDIA GPU is present, install the CUDA-12 runtime
+        # wheels so CTranslate2 can run faster-whisper on the GPU (the server preloads them; if they are
+        # absent or fail it falls back to CPU int8, so this is best-effort and CPU still works by default).
+        if osenv.gpu_info() is not None:
+            rc = subprocess.run([str(pip), "install", "--quiet",
+                                 "nvidia-cublas-cu12", "nvidia-cudnn-cu12>=9,<10"]).returncode
+            out.append("  GPU STT libs (cu12 cuBLAS/cuDNN) installed" if rc == 0
+                       else "  GPU STT libs skipped (falling back to CPU int8)")
 
     # [4/4] smoke test (best-effort)
     if smoke:

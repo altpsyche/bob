@@ -561,7 +561,9 @@ bob setup-voice --force      # re-download everything
 
 By default (`voice.sttEngine = 'faster-whisper'`) this fetches the CTranslate2 STT model into
 `models/faster-whisper/<size>/` and installs `faster-whisper`; the server runs under `venv-litellm` on port
-8082, exposing the same `POST /inference` contract. When `voice.sttEngine = 'whisper.cpp'` it instead
+8082, exposing the same `POST /inference` contract. On an NVIDIA GPU it also installs the CUDA-12 runtime
+wheels (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`) so CTranslate2 runs on the GPU; the server preloads
+them and falls back to CPU int8 when they are absent or mismatched, so voice works either way. When `voice.sttEngine = 'whisper.cpp'` it instead
 builds `whisper.cpp` with the same CUDA/cmake seams as llama.cpp (`-DWHISPER_CUDA=ON` for a GPU, CPU
 fallback otherwise) into `bin/whisper-server` + `bin/whisper-cli` and downloads `ggml-<size>.bin` into
 `models/whisper/`. Either way it extracts piper into `bin/` and drops the voice model into `bin/voices/`.

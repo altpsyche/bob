@@ -89,7 +89,7 @@ class _Cmd:
 _COMMANDS = [
     _Cmd("/agent", "run the agent loop on a one-shot goal", "_run_turn", args="<goal>"),
     _Cmd("/voice", "spoken conversation (mic → loop → speech)", "_cmd_voice"),
-    _Cmd("/model", "show or switch the role (chat, coder, ponder, …)", "_cmd_model", args="[role]"),
+    _Cmd("/model", "show or switch the model (chat, coder, ponder, …)", "_cmd_model", args="[model]"),
     _Cmd("/think", "reasoning mode on the current model: on | off", "_cmd_think",
          args="[on|off]", subs=("on", "off")),
     _Cmd("/agency", "tool-approval mode: show | confirm | silent", "_cmd_agency",
@@ -929,39 +929,48 @@ class BobShell:
         return list(load_defaults().get("roleTable", {}).keys())
 
     def _model_choices(self) -> list:
-        """Completion set for /model: the served model names PLUS the roleTable task aliases, so
-        `/model code`/`/model ponder` complete and work the way `bob code` / `/model ponder` do."""
-        return sorted(set(self._known_roles()) | set(self._role_tasks()))
+        """Completion set for /model: the served model names only. /model is a model selector, so the
+        roleTable task words (code, voice) and the /think mode are deliberately NOT offered here — they
+        are a different vocabulary. Typing one gets redirected to the model or mode to use (see
+        _cmd_model), and `bob code` / `--code` / `/voice` / `/think` remain the task and mode entrypoints."""
+        return self._known_roles()
+
+    # Task/mode words that are NOT models: reached via their own commands. /model names the right target
+    # instead of silently accepting a second spelling for the same thing (code -> the coder model, etc.).
+    _MODE_REDIRECT = {
+        "think": "use /think on|off to toggle reasoning, or /model ponder for the reasoning model.",
+        "voice": "use /voice to start a spoken conversation.",
+    }
 
     def _cmd_model(self, arg: str) -> None:
+        known = self._known_roles()
         if not arg:
-            self.console.print(f"model/role: {self.role}")
+            self.console.print(f"model: [{self.theme.accent}]{self.role}[/]")
+            if known:
+                self.console.print(f"[{self.theme.muted}]available: {', '.join(known)}[/]")
             return
         arg = arg.strip()
-        if arg == "think":
-            # 'think' is the reasoning MODE now, not a model. Redirect old muscle memory.
-            self.console.print(f"[{self.theme.warn}]'think' is a mode, not a model.[/]  "
-                               f"[{self.theme.muted}]use /think on|off to toggle reasoning, or "
-                               f"/model ponder for the 30B reasoning model.[/]")
+        if arg in self._MODE_REDIRECT:
+            self.console.print(f"[{self.theme.warn}]'{arg}' is a mode, not a model.[/]  "
+                               f"[{self.theme.muted}]{self._MODE_REDIRECT[arg]}[/]")
             return
-        if arg in self._role_tasks():
-            # Task-name alias (code, voice, ponder, ...): resolve to the model this endpoint actually
-            # serves, so the shell speaks the same vocabulary as `bob code` and the roleTable.
+        if arg in self._role_tasks() and arg not in known:
+            # A roleTable task word (e.g. code): resolve to the model it maps to and name it, rather than
+            # switching to a second spelling. Keeps one canonical identity for the served model.
             from bob_core import get_role
             model = get_role(self.config, arg)
-            self.role = model
-            note = "" if model == arg else f"  [{self.theme.muted}](task '{arg}')[/]"
-            self.console.print(f"[green]role → {model}[/]{note}")
+            self.console.print(f"[{self.theme.warn}]'{arg}' is a task, not a model.[/]  "
+                               f"[{self.theme.muted}]its model is [{self.theme.accent}]{model}[/] — "
+                               f"use /model {model}.[/]")
             return
         self.role = arg
-        known = self._known_roles()
-        if known and self.role not in known:
-            # Not a configured role — the turn would fail at the model call. Warn (don't silently
-            # accept) and point at the valid set, but still switch so a custom LiteLLM model isn't blocked.
-            self.console.print(f"[{self.theme.warn}]role → {self.role}[/]  "
-                               f"[{self.theme.muted}](not a known role: {', '.join(known)})[/]")
+        if known and arg not in known:
+            # Not a configured role, but allow it: a custom LiteLLM model may not be in Bob's routing.
+            # Warn (don't silently accept) and point at the valid set, but still switch.
+            self.console.print(f"[{self.theme.warn}]model → {self.role}[/]  "
+                               f"[{self.theme.muted}](not a known model: {', '.join(known)})[/]")
         else:
-            self.console.print(f"[green]role → {self.role}[/]")
+            self.console.print(f"[green]model → {self.role}[/]")
 
     def _cmd_think(self, arg: str) -> None:
         """/think [on|off] toggles reasoning for the current model. No arg flips it. Reasoning runs on

@@ -225,7 +225,8 @@ class TestSetupFabric(_BuildTreeMixin, unittest.TestCase):
 class TestUpdateStack(unittest.TestCase):
     # update over git + build + lock + doctor with a bin/ rollback; every piece is mocked so no
     # git/network/compiler runs. CLI-only.
-    def _run(self, before, after, verify=True, tag=None, changed="llama.cpp", cfg=None):
+    def _run(self, before, after, verify=True, tag=None, changed="llama.cpp", cfg=None,
+             gpu=None, cuda_ok=True):
         """Run update_stack with everything mocked; return (rc, mocks-by-name, git-calls). `changed`
         picks which submodule moves (before -> after); every other submodule stays put, so the test
         controls exactly which component the update should rebuild."""
@@ -258,7 +259,12 @@ class TestUpdateStack(unittest.TestCase):
             "restore": mock.patch("osenv.restore_build_output", return_value=True),
             "remove_bak": mock.patch("osenv.remove_build_output_backup"),
             "bin_exe": mock.patch("osenv.bin_exe", return_value=exe),
-            "gpu_info": mock.patch("osenv.gpu_info", return_value=None),
+            "gpu_info": mock.patch("osenv.gpu_info", return_value=gpu),
+            # Tier-0 CUDA ensure that a GPU rebuild gates on (mutable install path is exercised in
+            # install_prereqs tests): return a root when CUDA is available, else raise the guidance.
+            "ensure_cuda": mock.patch("bob.install_prereqs.ensure_cuda_toolkit",
+                                      side_effect=lambda cpu=False: "/usr/local/cuda" if cuda_ok
+                                      else (_ for _ in ()).throw(RuntimeError("use a Fedora distrobox"))),
             "write_lock": mock.patch("bob.versions.write_lock"),
             # update_stack fetches any newly-added models (best-effort). Keep the unit hermetic — never
             # touch the network / attempt a real GGUF download.
@@ -312,6 +318,25 @@ class TestUpdateStack(unittest.TestCase):
         rc, _, git = self._run("x", "x", tag="v0.2.0")
         self.assertEqual(rc, 0)
         self.assertTrue(any("checkout" in c and "v0.2.0" in c for c in git))
+
+    def test_gpu_rebuild_aborts_when_cuda_missing(self):
+        # atomic host / no toolkit: a GPU rebuild fails fast BEFORE snapshotting bin/, install untouched.
+        rc, mocks, _ = self._run("aaa", "bbb", changed="llama.cpp", gpu={"CudaArch": 120}, cuda_ok=False)
+        self.assertEqual(rc, 1)
+        mocks["ensure_cuda"].assert_called_once()
+        mocks["backup"].assert_not_called()          # never touched bin/
+        mocks["build_llama"].assert_not_called()
+
+    def test_gpu_rebuild_proceeds_when_cuda_present(self):
+        rc, mocks, _ = self._run("aaa", "bbb", changed="llama.cpp", gpu={"CudaArch": 120}, cuda_ok=True)
+        self.assertEqual(rc, 0)
+        mocks["ensure_cuda"].assert_called_once()
+        mocks["build_llama"].assert_called_once()
+
+    def test_cpu_rebuild_skips_cuda_ensure(self):
+        rc, mocks, _ = self._run("aaa", "bbb", changed="llama.cpp", gpu=None)   # cpu tier
+        self.assertEqual(rc, 0)
+        mocks["ensure_cuda"].assert_not_called()
 
     def test_provisions_voice_when_enabled(self):
         # update must leave a fully working default: provision voice (STT model + piper + audio deps)

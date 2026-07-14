@@ -22,6 +22,7 @@
 /models/*.part
 /models/.hf-cache/
 /models/whisper/
+/models/faster-whisper/
 
 # Phase 2 voice assets (reproduced by scripts/setup-voice.ps1)
 /bin/voices/

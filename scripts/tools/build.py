@@ -110,8 +110,7 @@ def build_llama(cpu: bool = False, arch: int = 0, force: bool = False, cuda_root
             cuda_root = osenv.best_cuda_root(arch) or ""
             if not cuda_root:
                 if arch >= 120:
-                    raise RuntimeError("CUDA Toolkit >= 12.8 not found. Blackwell (sm_120) needs 12.8+ "
-                                       "(12.8/12.9/13.x). Install it, pass cuda_root=..., or build --cpu.")
+                    raise RuntimeError(osenv.cuda_missing_message())
                 raise RuntimeError(f"No compatible CUDA toolkit for sm_{arch}. Install CUDA 12.x, pass "
                                    "cuda_root=..., or build --cpu.")
         lines += [f"Architecture : sm_{arch}", f"CUDA toolkit : {cuda_root}"]
@@ -462,6 +461,18 @@ def update_stack(tag: str = None) -> int:
         print("Submodules unchanged, no rebuild needed.", file=sys.stderr)
     else:
         summary = ", ".join(f"{n} {_short(before[n])} to {_short(_git_head(s))}" for n, s, _, _, _ in moved)
+        # Tier-0 gate before we touch bin/: a GPU rebuild of a CUDA component needs the toolkit. Ensure it
+        # up front (the same seam a fresh setup uses) so update self-heals on a mutable distro and fails
+        # fast with the right guidance — the distrobox recipe on an atomic host — leaving the install
+        # untouched instead of building halfway and rolling back.
+        if not cpu and any(n in ("llama.cpp", "whisper.cpp") for n, *_ in moved):
+            try:
+                from bob import install_prereqs
+                install_prereqs.ensure_cuda_toolkit(cpu=cpu)
+            except RuntimeError as e:
+                print(f"Cannot rebuild for your GPU: {e}", file=sys.stderr)
+                print("Update aborted before any change — your install is unchanged.", file=sys.stderr)
+                return 1
         print(f"Rebuilding moved submodules: {summary} (bin/ snapshotted for rollback)...", file=sys.stderr)
         bak = osenv.backup_build_output(BIN)
         ok = True

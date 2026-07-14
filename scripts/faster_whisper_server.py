@@ -34,6 +34,40 @@ _model = None
 _model_ref = ""
 
 
+def _preload_cuda_libs() -> None:
+    """Make the CT2 GPU path find its CUDA runtime. faster-whisper's CTranslate2 needs cuBLAS/cuDNN for
+    the CUDA major it was built against (12); when the `nvidia-*-cu12` wheels are installed in this venv
+    their libraries live under site-packages/nvidia/ where CT2's own dlopen won't look. Preload them by
+    absolute path (RTLD_GLOBAL on POSIX; add_dll_directory on Windows) so CT2 resolves them at encode
+    time, without depending on LD_LIBRARY_PATH being set at exec. A no-op when the wheels aren't installed,
+    so _load_model then falls back to CPU int8. cuBLAS is loaded before cuDNN (cuDNN depends on it)."""
+    import ctypes
+    import sysconfig
+
+    purelib = sysconfig.get_paths().get("purelib")
+    if not purelib:
+        return
+    nvidia = Path(purelib) / "nvidia"
+    if not nvidia.is_dir():
+        return
+    win = os.name == "nt"
+    for sub in ("cublas", "cudnn"):
+        libdir = nvidia / sub / ("bin" if win else "lib")
+        if not libdir.is_dir():
+            continue
+        if win:
+            try:
+                os.add_dll_directory(str(libdir))
+            except OSError:
+                pass
+        else:
+            for lib in sorted(libdir.glob("*.so*")):
+                try:
+                    ctypes.CDLL(str(lib), mode=ctypes.RTLD_GLOBAL)
+                except OSError:
+                    pass
+
+
 def _resolve_device_and_compute() -> tuple:
     """Pick device + CT2 compute type. 'auto' -> CUDA/float16 when a GPU is visible, else CPU/int8."""
     device = STT_DEVICE
@@ -51,14 +85,37 @@ def _resolve_device_and_compute() -> tuple:
     return device, compute
 
 
+def _warmup(model) -> None:
+    """Force an encode so a missing/mismatched CUDA runtime (CT2 needs cuBLAS/cuDNN for the exact CUDA
+    major it was built against) surfaces here, at load, rather than as a 500 on the first turn.
+    Transcribing a short silent buffer runs detect_language -> encode, which is where a GPU library
+    mismatch throws."""
+    import numpy as np
+    segments, _info = model.transcribe(np.zeros(16000, dtype="float32"), vad_filter=False)
+    list(segments)   # segments is a generator; consume it to actually run the compute
+
+
 def _load_model():
-    """Build the WhisperModel from a pinned local dir when present, else the size name (auto-download)."""
+    """Load the CT2 model from a pinned local dir when present, else the size name (auto-download). Tries
+    the resolved device but, if the GPU path can't actually run (the CT2 wheel's cuBLAS/cuDNN major must
+    match the installed CUDA, which it may not), falls back to CPU int8 so STT always works by default."""
+    _preload_cuda_libs()   # let CT2 find bundled cu12 cuBLAS/cuDNN before it imports/encodes
     from faster_whisper import WhisperModel
 
     global _model, _model_ref
     ref = STT_MODEL_DIR if (STT_MODEL_DIR and Path(STT_MODEL_DIR).exists()) else STT_MODEL
     device, compute = _resolve_device_and_compute()
-    _model = WhisperModel(ref, device=device, compute_type=compute)
+    try:
+        model = WhisperModel(ref, device=device, compute_type=compute)
+        _warmup(model)
+    except Exception as e:  # noqa: BLE001 — any GPU/library failure: degrade to CPU, never fail to load
+        if device == "cpu":
+            raise
+        print(f"faster-whisper: {device} path unavailable ({e}); falling back to cpu/int8", file=sys.stderr)
+        device, compute = "cpu", "int8"
+        model = WhisperModel(ref, device=device, compute_type=compute)
+        _warmup(model)
+    _model = model
     _model_ref = f"{ref} ({device}/{compute})"
     print(f"faster-whisper: loaded {_model_ref}", file=sys.stderr)
 
