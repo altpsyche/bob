@@ -22,14 +22,15 @@ dependency locks, the minimum toolchain, and the model manifest (repo, revision,
 reports the running release. `bob update` moves between releases lockfile to lockfile, rebuilds only what
 changed, verifies, and rolls back on failure.
 
-> **1.0 is the current line.** Bob started as a Windows first, two language (PowerShell plus Python)
+> **1.1 is the current line.** Bob started as a Windows first, two language (PowerShell plus Python)
 > experiment. That whole plan is now complete: one command, one engine, cross platform, reproducible, and
-> test backed. 1.0 marks the point where Bob is a coherent product rather than a build out. Everything
-> below 1.0 is history; everything above it is the plan.
+> test backed. 1.0 marked the point where Bob became a coherent product rather than a build out; 1.1 makes
+> it easy to install and get started, with one command per OS and a Docker-free default. Everything up to
+> and including 1.1 is shipped; everything above it is the plan.
 
 ---
 
-## 1.0 today: a private, local first AI that chats, sees, speaks, and codes
+## Today: a private, local first AI that chats, sees, speaks, and codes
 
 The complete picture of what Bob does now. Everything here is shipped and covered by the test suite, and
 the cross OS CI acceptance gate runs on every PR.
@@ -93,6 +94,11 @@ the cross OS CI acceptance gate runs on every PR.
 ### Runs where you run
 - Linux (apt, dnf, pacman, zypper, including atomic Fedora via rpm-ostree) and Windows 11, on NVIDIA CUDA
   or the CPU tier.
+- One command to install per OS (`curl -fsSL <url>/install.sh | sh` on Linux,
+  `irm <url>/install.ps1 | iex` on Windows): it clones with submodules, provisions, and verifies against
+  `versions.lock`, and is idempotent on re run.
+- Docker-free by default: nothing in the core needs it. Add-on services (SearXNG, n8n, Langfuse) are
+  opt-in and lazy, and only Langfuse still needs Docker, with a guided install when you choose it.
 - One engine, zero PowerShell: a pure Python runtime, provisioning, and CI.
 - Reproducible installs and a `bob update` that rolls back on failure, `bob doctor` for health, and a
   fresh install CI acceptance matrix on both operating systems every PR.
@@ -104,28 +110,12 @@ the cross OS CI acceptance gate runs on every PR.
 Each line below is grounded in where local AI and coding agents actually are in 2026 (sources at the
 bottom). Version numbers are targets, not commitments; scope moves between them as things land.
 
-### 1.1 easy to install and get started
-Lower the barrier to entry so a new machine goes from nothing to a working Bob in one step, and a normal
-install never trips over Docker.
-
-- **One command install.** A hosted install script that replaces the clone plus two script dance with a
-  single line per OS: `curl -fsSL https://get.bob.sh | sh` on Linux and macOS, and
-  `irm https://get.bob.sh/install.ps1 | iex` on Windows. The script clones (with submodules), runs the
-  prereq and setup steps, verifies against `versions.lock`, and is idempotent on re run. Linux and Windows
-  ship first; the macOS path arrives with macOS support in 2.0 (see below).
-- **A Docker-free default install.** Nothing in Bob's core needs Docker; only three optional add-on
-  services do, and setup doesn't install Docker, so a default install can't reach them today. Make the two
-  that can run native do so out of the box: SearXNG (private search) in a venv, and n8n (workflow builder)
-  on the Node toolchain setup already installs. That leaves only Langfuse (observability), which ships
-  container-only, as an explicit Docker opt-in, and for the Docker-averse we point Bob's existing
-  OpenTelemetry traces at a lighter native sink instead. When you do opt into Langfuse, Bob makes Docker
-  painless: a guided install through the same package-manager seam setup already uses, then a single
-  command that brings up Langfuse and its Postgres from the pinned compose file, with clear steps to reach
-  the dashboard. Web search already falls back to a direct provider when SearXNG is down, so it never
-  requires Docker either. The goal: a normal install never trips over Docker, and Docker becomes something
-  you choose (and are walked through) only for the Langfuse dashboard.
-- **Onboarding and entry clarity.** Finish the first run polish (the "it doesn't know me yet" case) and
-  make the single entry point unmistakable for a new user.
+### 1.1 easy to install and get started (shipped)
+Delivered: one command install per OS (clone with submodules, provision, verify against `versions.lock`,
+idempotent on re run), a Docker-free default (native `ddgs` web search, native n8n, SearXNG and Langfuse
+as explicit opt-ins with a local file trace sink for the Docker-averse), and first run onboarding plus a
+single unmistakable entry point. Linux and Windows ship now; the macOS path arrives with 2.0. See
+[CHANGELOG.md](CHANGELOG.md) for the detail.
 
 ### 1.2 sharper daily driver
 Refresh what's already here so it keeps pace, and close the rough edges from real use.

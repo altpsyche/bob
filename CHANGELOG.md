@@ -8,8 +8,10 @@ rebuilds only what changed, verifies, and rolls back on failure.
 
 ## [Unreleased]
 
-Toward 1.1 (easy to install and get started): a new machine goes from nothing to a working Bob in one
-command, and a normal install never trips over Docker. See [ROADMAP.md](ROADMAP.md) for the full plan.
+## [1.1.0] (2026-07-14)
+
+Easy to install and get started: a new machine goes from nothing to a working Bob in one command, and a
+normal install never trips over Docker. See [ROADMAP.md](ROADMAP.md) for where Bob is headed next.
 
 ### Added
 - **One-command install.** A hosted install script per OS replaces the clone plus two-script dance:
