@@ -17,7 +17,7 @@
   },
 
   "peers": {
-    "_example_deepseek": { "pro": { "coder": { "model": "deepseek-chat", "maxTokens": 8192 } } }
+    "_example_deepseek": { "pro": { "coder": { "model": "deepseek-v4-flash", "maxTokens": 8192 } } }
   },
 
   "bob": {

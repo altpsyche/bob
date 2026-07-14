@@ -114,7 +114,7 @@ class TestLitellm(unittest.TestCase):
         self.assertIn("      supports_vision: true", out)   # vision
         # pro models: deepseek peer, roles sorted
         self.assertIn("  - model_name: chat-pro", out)
-        self.assertIn("      model: deepseek/deepseek-chat", out)
+        self.assertIn("      model: deepseek/deepseek-v4-flash", out)
         self.assertIn("      api_key: os.environ/DEEPSEEK_API_KEY", out)
 
     def test_settings(self):

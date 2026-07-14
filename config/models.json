@@ -44,21 +44,21 @@
       "pro": {
         "coder": {
           "maxTokens": 4096,
-          "model": "deepseek-chat",
+          "model": "deepseek-v4-flash",
           "systemPrompt": "You are an expert software engineer. Be direct. No preambles."
         },
         "chat": {
           "maxTokens": 4096,
-          "model": "deepseek-chat",
+          "model": "deepseek-v4-flash",
           "systemPrompt": "Be helpful and concise."
         },
         "ponder": {
           "maxTokens": 8192,
-          "model": "deepseek-reasoner"
+          "model": "deepseek-v4-pro"
         },
         "vision": {
           "maxTokens": 2048,
-          "model": "deepseek-chat"
+          "model": "deepseek-v4-flash"
         }
       },
       "enabled": true,

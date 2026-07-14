@@ -8,6 +8,12 @@ rebuilds only what changed, verifies, and rolls back on failure.
 
 ## [Unreleased]
 
+### Fixed
+- **DeepSeek cloud peer moved to the V4 model IDs.** The `deepseek` pro peer used `deepseek-chat` and
+  `deepseek-reasoner`, which DeepSeek deprecates on 2026-07-24. Updated to `deepseek-v4-flash`
+  (chat/coder/vision) and `deepseek-v4-pro` (ponder). Base URL and OpenAI-compatible routing through
+  LiteLLM are unchanged; this is a model-string swap only. GLM and Kimi peers are refreshed in 1.2.
+
 ## [1.1.0] (2026-07-14)
 
 Easy to install and get started: a new machine goes from nothing to a working Bob in one command, and a
