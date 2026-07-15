@@ -330,22 +330,23 @@ jobs:
             cp -P bin/*.so* "$staging"/
             if [ "$TIER" = "cuda" ]; then     # + the CUDA runtime libs so the package is driver-only
               for lib in libcudart libcublas libcublasLt; do
-                f=$(find /usr/local/cuda -name "${lib}.so.*" 2>/dev/null | head -1 || true)
+                # -L follows the /usr/local/cuda symlink (find would not descend it otherwise).
+                f=$(find -L /usr/local/cuda -name "${lib}.so.*" 2>/dev/null | head -1 || true)
                 [ -n "$f" ] && cp -L "$f" "$staging"/ || echo "WARN: $lib not found to bundle"
               done
+              ls "$staging"/libcudart.so.* >/dev/null 2>&1 || { echo "FAIL: CUDA runtime libs not bundled"; exit 1; }
             fi
             # rpath $ORIGIN on the binary and every real lib so each resolves its siblings from its own dir.
             for f in "$staging"/llama-server "$staging"/*.so*; do
               if [ -f "$f" ] && [ ! -L "$f" ]; then patchelf --set-rpath "\$ORIGIN" "$f" 2>/dev/null || true; fi
             done
             ls -la "$staging"
-            # Self-verify the package is complete: no unresolved shared libs (this is driver-less, so ldd
-            # resolves everything via $ORIGIN except the lazily-dlopened driver, which is not a DT_NEEDED).
-            # A missing lib here fails the job, so a broken archive can never be uploaded.
-            if ldd "$staging/llama-server" | grep -i "not found"; then
-              echo "FAIL: llama-server has unresolved shared libraries in the package"; exit 1
-            fi
-            echo "package link check: all shared libs resolve"
+            # Self-verify the package: every needed lib resolves via $ORIGIN EXCEPT libcuda.so.1, the NVIDIA
+            # driver, which is absent in this driver-less build container and is provided by the user driver at
+            # runtime. Any other unresolved lib fails the job, so a broken archive can never be uploaded.
+            missing=$(ldd "$staging/llama-server" 2>/dev/null | grep -i "not found" | grep -v "libcuda.so.1" || true)
+            if [ -n "$missing" ]; then echo "FAIL: unresolved shared libraries:"; echo "$missing"; exit 1; fi
+            echo "package link check ok (libcuda.so.1 comes from the NVIDIA driver at runtime)"
             tar -C dist -czf "dist/$name.tar.gz" "$name"
           '
 
