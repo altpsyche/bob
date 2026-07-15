@@ -328,6 +328,10 @@ jobs:
             # libs (no voice/vision libs to exclude).
             cp -P bin/llama-server "$staging"/
             cp -P bin/*.so* "$staging"/
+            # OpenMP runtime: llama.cpp links libgomp.so.1, present in the build image but absent on minimal
+            # systems, so bundle it for portability (both tiers).
+            gomp=$(find -L /usr/lib /lib -name "libgomp.so.1*" 2>/dev/null | head -1 || true)
+            [ -n "$gomp" ] && cp -L "$gomp" "$staging/libgomp.so.1" || { echo "FAIL: libgomp not found"; exit 1; }
             if [ "$TIER" = "cuda" ]; then     # + the CUDA runtime libs so the package is driver-only
               for lib in libcudart libcublas libcublasLt; do
                 # -L follows the /usr/local/cuda symlink (find would not descend it otherwise). The binary
