@@ -222,8 +222,15 @@ def ensure_engine(cpu: bool = False, from_source: bool = False, force: bool = Fa
             except (RuntimeError, OSError) as e:
                 print(f"prebuilt engine unavailable ({e}); building from source.", file=sys.stderr)
 
-    # Source fallback: NOW resolve the toolkit (self_heal) and apply the stop/warn block policy.
-    decision = apply_block_policy(resolve_build_tier(cpu=cpu, self_heal=self_heal), on_block)
+    # Source fallback. When self_heal=True (setup / `bob build`) ensure_engine OWNS the decision: resolve the
+    # toolkit and apply the stop/warn block policy. When self_heal=False the CALLER (`bob update`) has already
+    # resolved + ensured the tier and passed it in as `cpu`, so we trust that and must NOT re-block — a second
+    # best_cuda_root probe here (which can miss a just-installed toolkit, or find none on CI) would wrongly
+    # downgrade a GPU rebuild to CPU. That double-decision was the exact drift this seam exists to prevent.
+    if self_heal:
+        decision = apply_block_policy(resolve_build_tier(cpu=cpu, self_heal=True), on_block)
+    else:
+        decision = {**resolve_build_tier(cpu=cpu, self_heal=False), "blocked": False}
     is_cpu = decision["tier"] == "cpu"
     _tools_on_path()
     import build

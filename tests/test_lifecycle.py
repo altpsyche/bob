@@ -358,6 +358,22 @@ class TestEnsureEnginePrebuiltFirst(unittest.TestCase):
         self.assertEqual(res["source"], "source")
         bl.assert_called_once()
 
+    def test_update_style_call_trusts_gpu_decision_no_reblock(self):
+        # Regression (CI): `bob update` resolves the tier itself and calls ensure_engine with self_heal=False.
+        # The seam must TRUST that GPU decision and not re-block into CPU just because best_cuda_root reads None
+        # here (a just-installed toolkit the probe misses, or a GPU-less CI runner). Otherwise a GPU rebuild
+        # silently downgrades to CPU.
+        build = __import__("build")
+        with mock.patch("osenv.gpu_info", return_value=_BLACKWELL), \
+             mock.patch("osenv.gpu_arch", return_value=_BLACKWELL), \
+             mock.patch("osenv.best_cuda_root", return_value=None), \
+             mock.patch.object(lifecycle, "_select_engine_row", return_value=None), \
+             mock.patch.object(build, "build_llama", return_value="built") as bl:
+            res = lifecycle.ensure_engine(cpu=False, on_block="warn", self_heal=False)
+        self.assertEqual(res["source"], "source")
+        self.assertEqual(res["tier"], "gpu")
+        self.assertFalse(bl.call_args.kwargs["cpu"])   # GPU rebuild, not a spurious CPU downgrade
+
     def test_from_source_skips_prebuilt(self):
         build = __import__("build")
         with mock.patch("osenv.gpu_info", return_value=None), mock.patch("osenv.gpu_arch", return_value=None), \
