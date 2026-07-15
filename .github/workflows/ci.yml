@@ -319,16 +319,33 @@ jobs:
             staging="dist/$name"; mkdir -p "$staging"
             if [ "$TIER" = "cuda" ]; then
               PYTHONPATH=scripts python3 -m bob build --dist --cuda-archs "75;80;89;120"
-              cp bin/llama-server "$staging"/
+            else
+              PYTHONPATH=scripts python3 -m bob build --dist --cpu
+            fi
+            # Bundle the binary AND llama.cpp shared libs (libllama, libggml*, libllama-server-impl, libmtmd,
+            # ...). The build puts these next to the binary; without them the engine will not start. -P keeps
+            # the SONAME symlink chain. The publish container builds only llama.cpp, so bin/ holds exactly its
+            # libs (no voice/vision libs to exclude).
+            cp -P bin/llama-server "$staging"/
+            cp -P bin/*.so* "$staging"/
+            if [ "$TIER" = "cuda" ]; then     # + the CUDA runtime libs so the package is driver-only
               for lib in libcudart libcublas libcublasLt; do
                 f=$(find /usr/local/cuda -name "${lib}.so.*" 2>/dev/null | head -1 || true)
                 [ -n "$f" ] && cp -L "$f" "$staging"/ || echo "WARN: $lib not found to bundle"
               done
-              patchelf --set-rpath "\$ORIGIN" "$staging/llama-server"   # find bundled libs next to the binary
-            else
-              PYTHONPATH=scripts python3 -m bob build --dist --cpu
-              cp bin/llama-server "$staging"/
             fi
+            # rpath $ORIGIN on the binary and every real lib so each resolves its siblings from its own dir.
+            for f in "$staging"/llama-server "$staging"/*.so*; do
+              if [ -f "$f" ] && [ ! -L "$f" ]; then patchelf --set-rpath "\$ORIGIN" "$f" 2>/dev/null || true; fi
+            done
+            ls -la "$staging"
+            # Self-verify the package is complete: no unresolved shared libs (this is driver-less, so ldd
+            # resolves everything via $ORIGIN except the lazily-dlopened driver, which is not a DT_NEEDED).
+            # A missing lib here fails the job, so a broken archive can never be uploaded.
+            if ldd "$staging/llama-server" | grep -i "not found"; then
+              echo "FAIL: llama-server has unresolved shared libraries in the package"; exit 1
+            fi
+            echo "package link check: all shared libs resolve"
             tar -C dist -czf "dist/$name.tar.gz" "$name"
           '
 
