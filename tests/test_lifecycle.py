@@ -308,6 +308,27 @@ class TestCommitMatchGuard(unittest.TestCase):
             self.assertIsNone(lifecycle._select_engine_row("llama-server", "linux", "x86_64", "cpu"))
 
 
+class TestPrebuiltAvailable(unittest.TestCase):
+    """lifecycle.prebuilt_available: True iff a row resolves for this host+tier; never raises."""
+
+    def test_true_when_row_resolves(self):
+        with mock.patch("osenv.gpu_info", return_value={"Gen": "Blackwell"}), \
+             mock.patch("osenv.gpu_arch", return_value={"CudaArch": 120}), \
+             mock.patch("osenv.best_cuda_root", return_value=None), \
+             mock.patch.object(lifecycle, "_select_engine_row", return_value={"url": "x"}):
+            self.assertTrue(lifecycle.prebuilt_available(cpu=False))
+
+    def test_false_when_no_row(self):
+        with mock.patch("osenv.gpu_info", return_value=None), \
+             mock.patch("osenv.gpu_arch", return_value=None), \
+             mock.patch.object(lifecycle, "_select_engine_row", return_value=None):
+            self.assertFalse(lifecycle.prebuilt_available(cpu=True))
+
+    def test_never_raises(self):
+        with mock.patch.object(lifecycle, "resolve_build_tier", side_effect=RuntimeError("boom")):
+            self.assertFalse(lifecycle.prebuilt_available())
+
+
 class TestInstallPrebuilt(unittest.TestCase):
     """The real download + SHA-verify + extract + stage path, driven by a local tar.gz over file://."""
 

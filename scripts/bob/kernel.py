@@ -538,7 +538,13 @@ def setup(skip_models: bool = False, skip_build: bool = False, skip_voice: bool 
 
     _step(4, total, "C++ toolchain (compiler required for llama.cpp build)")
     server_exe = osenv.bin_exe("llama-server")
-    if not skip_build and not server_exe.exists():
+    from bob import lifecycle
+    # A driver-only prebuilt engine needs NO compiler (it's downloaded, not built), so don't demand one when a
+    # matching prebuilt is available on the default path — this lets an atomic host (compiler layered but not
+    # active until the next boot) run setup straight away instead of being forced to reboot for a build it
+    # won't do. --from-source always needs the compiler.
+    prebuilt_ok = (not from_source) and lifecycle.prebuilt_available(cpu=cpu)
+    if not skip_build and not server_exe.exists() and not prebuilt_ok:
         if is_win:  # pragma: no cover
             print("  (Windows: ensure VS2022 'Desktop development with C++' is installed)", file=sys.stderr)
         elif _have("g++") or _have("gcc") or _have("cc"):
@@ -546,6 +552,8 @@ def setup(skip_models: bool = False, skip_build: bool = False, skip_voice: bool 
         else:
             raise RuntimeError("No C++ compiler found — run ./install_prereqs.sh, then re-run. "
                                "(Pass --skip-build if you have a prebuilt bin/llama-server.)")
+    elif prebuilt_ok and not server_exe.exists():
+        print("  C++ toolchain not required (a driver-only prebuilt engine is available)", file=sys.stderr)
     else:
         print("  C++ toolchain check skipped (build not needed)", file=sys.stderr)
 

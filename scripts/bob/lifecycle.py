@@ -226,6 +226,20 @@ def _select_engine_row(component: str, os_name: str, cpu_arch: str, tier: str):
     return None
 
 
+def prebuilt_available(cpu: bool = False) -> bool:
+    """True if a prebuilt llama-server row resolves for THIS host at the given tier intent — i.e. ensure_engine
+    could stage a driver-only binary here with no CUDA toolkit. `bob update` uses this so a GPU box that merely
+    lacks a toolkit (e.g. an atomic host with read-only /usr) is NOT downgraded to a CPU engine when a matching
+    GPU prebuilt exists; without it, update shipped CPU on a box where a fresh setup gets GPU. Never raises;
+    offline / no manifest / no matching row / commit skew -> False (caller then follows the tier decision)."""
+    try:
+        tier = resolve_build_tier(cpu=cpu, self_heal=False)["tier"]
+        return _select_engine_row("llama-server", osenv.os_name(),
+                                  osenv.normalized_cpu_arch(), tier) is not None
+    except Exception:  # noqa: BLE001 — advisory only; a probe failure must never block an update
+        return False
+
+
 def _binary_runs(exe) -> bool:
     """True if the staged binary actually executes here (runs `--version` without an OS/loader error). This is
     the safety net that makes prebuilt-for-all-distros honest: a binary built against a newer glibc than the

@@ -457,6 +457,40 @@ def _latest_release_tag() -> str:
         return ""
 
 
+def _pending_rebuild_path():
+    """Where update_stack records components whose rebuild is still owed. It lives under the data dir (NOT
+    bin/), so a bin/ rollback can't erase it — that survival is the whole point."""
+    import osenv
+    return osenv.data_dir() / "update-pending.json"
+
+
+def _read_pending_rebuild() -> list:
+    """Component names a prior `bob update` advanced the tree for but did not finish rebuilding (empty when
+    none). See update_stack: after a mid-rebuild failure the tree/venv are already on the new revisions while
+    bin/ was rolled back, so git shows nothing 'moved' on the next run — this marker is what makes the re-run
+    actually rebuild instead of falsely reporting 'no rebuild needed' and stranding a stale engine."""
+    import json
+    try:
+        data = json.loads(_pending_rebuild_path().read_text(encoding="utf-8"))
+        return [c for c in data if isinstance(c, str)] if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def _write_pending_rebuild(names) -> None:
+    import json
+    p = _pending_rebuild_path()
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(sorted(set(names))), encoding="utf-8")
+    except OSError:
+        pass  # advisory only; a missing marker just means the next update re-derives from git
+
+
+def _clear_pending_rebuild() -> None:
+    _pending_rebuild_path().unlink(missing_ok=True)
+
+
 def _on_branch() -> bool:
     """True if HEAD is on a branch (a dev on main / the latest channel), False on a detached checkout (a
     stable user sitting on a release tag, where `git pull` has no upstream to fast-forward)."""
@@ -465,6 +499,20 @@ def _on_branch() -> bool:
                               capture_output=True, timeout=10).returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
+
+
+def _tracking_branch() -> str:
+    """The branch the 'latest' channel tracks: origin's default branch (usually 'main'), or 'main' as a
+    fallback. Used when a user explicitly switches from a detached release tag back to the latest channel."""
+    try:
+        r = subprocess.run(["git", "-C", str(REPO), "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"],
+                           capture_output=True, text=True, timeout=10)
+        ref = r.stdout.strip()
+        if ref.startswith("origin/"):
+            return ref[len("origin/"):]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return "main"
 
 
 def _head_is_release_tag() -> bool:
@@ -515,40 +563,76 @@ def update_stack(tag: str = None, from_source: bool = False, channel: str = None
     import osenv
     from bob import lifecycle
 
+    if channel is not None and channel not in ("stable", "latest"):
+        print(f"unknown --channel '{channel}'; valid values are 'stable' or 'latest'. Using the channel "
+              "inferred from the checkout instead.", file=sys.stderr)
+    explicit_channel = channel in ("stable", "latest")
     channel = resolve_update_channel(channel)
+    on_tag = _head_is_release_tag()
+
+    # Fetch FIRST, so tag selection below sees newly-published release tags (fetching after would make a
+    # stable user miss a fresh release until their next run). Best-effort: offline / no origin / a non-github
+    # remote must not hard-fail — an already-current box is then a clean no-op, and a genuinely-needed newer
+    # tag simply isn't found (nothing to move to).
+    print("Fetching updates...", file=sys.stderr)
+    try:
+        _run(["git", "-C", str(REPO), "fetch", "--tags", "--quiet"])
+    except RuntimeError as e:
+        print(f"  (fetch skipped: {e}; proceeding with the local git state)", file=sys.stderr)
+
+    # Channel transitions actually move the checkout. Without this an explicit --channel was a near no-op:
+    # 'latest' on a detached tag did nothing, and 'stable' on a branch just fast-forwarded the branch.
+    switch_branch = None
     if not tag and channel == "stable":
-        tag = _stable_target_tag()   # newest v* tag, or '' when HEAD is already at/ahead of it (no downgrade)
-        if tag:
-            print(f"channel 'stable' -> moving to release {tag}", file=sys.stderr)
+        if explicit_channel and not on_tag:
+            # Switching latest -> stable: jump to the newest release tag (a deliberate channel change, not a
+            # downgrade, so the no-downgrade guard that keeps a stable user put does not apply here).
+            tag = _latest_release_tag()
+            print(f"channel 'stable' -> switching to release {tag or '(none published)'}", file=sys.stderr)
         else:
-            print("channel 'stable': already at or ahead of the latest release; fast-forwarding.",
-                  file=sys.stderr)
+            tag = _stable_target_tag()   # staying on stable: newest tag, or '' if already at/ahead (no downgrade)
+            if tag:
+                print(f"channel 'stable' -> moving to release {tag}", file=sys.stderr)
+            else:
+                print("channel 'stable': already at or ahead of the latest release; fast-forwarding.",
+                      file=sys.stderr)
+    elif not tag and channel == "latest" and explicit_channel and on_tag:
+        # Switching stable -> latest: leave the detached release tag for the tracking branch (bleeding edge).
+        switch_branch = _tracking_branch()
+        print(f"channel 'latest' -> switching to branch '{switch_branch}'", file=sys.stderr)
 
     # The tier decision is single-sourced through lifecycle.resolve_build_tier (shared with setup + `bob
     # build`), never re-derived from hardware here. This provisional read is cheap (self_heal=False installs
     # nothing); it's refined with a self-healing, warn-policy decision below only if a CUDA component moved.
     cpu = lifecycle.resolve_build_tier(self_heal=False)["tier"] == "cpu"
+    # Per-component build tier, late-bound (the lambdas read these at call time; they are refined below once we
+    # know which submodules actually moved). llama-server is prebuilt-first: a driver-only GPU prebuilt needs
+    # no toolkit, so llama-server keeps its own flag that a missing toolkit must NOT flip to CPU while a GPU
+    # prebuilt is available. whisper.cpp has no prebuilt, so it follows the source-build tier decision.
+    cpu_llama = cpu
+    cpu_whisper = cpu
     # (name, source dir, produced binary, verify-by-running-`--version`, rebuild fn). Every native
     # component the update can rebuild; a submodule is rebuilt only when its committed commit moved, so a
     # code-only update stays a no-op and a llama-swap/fabric bump no longer leaves a stale binary behind.
     # The llama-server rebuild goes through the single lifecycle seam (prebuilt-first, source fallback), so an
-    # update is a fast driver-only binary swap when a prebuilt exists and identical to setup otherwise. cpu is
-    # the already-decided tier (late-bound), so ensure_engine never re-blocks; on_block='warn' is belt-and-braces.
+    # update is a fast driver-only binary swap when a prebuilt exists and identical to setup otherwise.
+    # self_heal=False so ensure_engine never re-blocks; on_block='warn' is belt-and-braces.
     components = [
         ("llama.cpp",   SRC_LLAMA,   "llama-server",  True,
-         lambda: lifecycle.ensure_engine(cpu=cpu, from_source=from_source, force=True, on_block="warn",
+         lambda: lifecycle.ensure_engine(cpu=cpu_llama, from_source=from_source, force=True, on_block="warn",
                                          self_heal=False, config=_cfg)["detail"]),
-        ("whisper.cpp", SRC_WHISPER, "whisper-server", False, lambda: build_whisper(force=True, cpu_only=cpu)),
+        ("whisper.cpp", SRC_WHISPER, "whisper-server", False, lambda: build_whisper(force=True, cpu_only=cpu_whisper)),
         ("llama-swap",  SRC_SWAP,    "llama-swap",    True,  lambda: build_llama_swap(force=True)),
         ("fabric",      SRC_FABRIC,  "fabric",        True,  lambda: setup_fabric(force=True)),
     ]
     before = {name: _git_head(src) for name, src, _, _, _ in components}
 
-    print("Fetching updates...", file=sys.stderr)
-    _run(["git", "-C", str(REPO), "fetch", "--tags", "--quiet"])
     if tag:
         print(f"Checking out release '{tag}'...", file=sys.stderr)
         _run(["git", "-C", str(REPO), "checkout", tag])
+    elif switch_branch:
+        _run(["git", "-C", str(REPO), "checkout", switch_branch])
+        _run(["git", "-C", str(REPO), "pull", "--ff-only"])
     else:
         # Stable users sit on a DETACHED HEAD at a release tag, where `git pull` has no upstream. Only
         # fast-forward when actually on a branch (devs on main / the latest channel); otherwise there is
@@ -563,20 +647,37 @@ def update_stack(tag: str = None, from_source: bool = False, channel: str = None
 
     _reinstall_venv()
 
-    moved = [c for c in components if before[c[0]] != _git_head(c[1])]
+    # A component is rebuilt when its commit moved OR when a prior update left its rebuild owed (the tree
+    # advanced but bin/ was rolled back after a build failure). The second set is what makes a re-run finish
+    # the move instead of seeing an unchanged tree and skipping — the failure the marker exists to heal.
+    owed = set(_read_pending_rebuild())
+    moved = [c for c in components if before[c[0]] != _git_head(c[1]) or c[0] in owed]
     if not moved:
         print("Submodules unchanged, no rebuild needed.", file=sys.stderr)
+        _clear_pending_rebuild()
     else:
         summary = ", ".join(f"{n} {_short(before[n])} to {_short(_git_head(s))}" for n, s, _, _, _ in moved)
         # Single tier decision (shared with setup + `bob build`), self-healing the toolkit on a mutable
         # distro. on_block='warn' keeps a running box alive: a GPU box that lost its toolkit (e.g. an atomic
         # host with read-only /usr) does NOT hard-fail the update. It warns loudly, records CPU in the tier
         # marker, and rebuilds CPU so the update completes, while `bob diagnose` keeps flagging the idle GPU.
-        # The rebuild lambdas read `cpu` at call time, so reassigning it here re-tiers them.
+        # The rebuild lambdas read cpu_llama / cpu_whisper at call time, so refining them here re-tiers them.
         if any(n in ("llama.cpp", "whisper.cpp") for n, *_ in moved):
             decision = lifecycle.apply_block_policy(lifecycle.resolve_build_tier(), on_block="warn")
-            cpu = decision["tier"] == "cpu"
+            # whisper.cpp is source-only, so it follows the (possibly CPU-downgraded) decision directly.
+            cpu_whisper = decision["tier"] == "cpu"
+            # llama-server: a GPU prebuilt makes the toolkit unnecessary, so a toolkit-driven CPU downgrade
+            # must NOT force llama-server to CPU when a matching GPU prebuilt is available. Only follow the
+            # downgrade when there is genuinely no GPU prebuilt to fall back on (then it's a real source build).
+            # --from-source ignores prebuilts, so the guard only applies to the default (prebuilt) path — else
+            # a --from-source rebuild on a toolkit-less GPU box would take the GPU source path and crash
+            # instead of doing the intended CPU fallback.
+            keep_gpu_via_prebuilt = not from_source and lifecycle.prebuilt_available(cpu=False)
+            cpu_llama = decision["tier"] == "cpu" and not keep_gpu_via_prebuilt
         print(f"Rebuilding moved submodules: {summary} (bin/ snapshotted for rollback)...", file=sys.stderr)
+        # Record the owed rebuilds BEFORE touching bin/, so a crash or a rolled-back failure leaves a marker
+        # that the next run honors. Cleared only once every rebuild verifies.
+        _write_pending_rebuild(n for n, *_ in moved)
         bak = osenv.backup_build_output(BIN)
         ok = True
         for name, _src, binname, use_version, fn in moved:
@@ -594,15 +695,22 @@ def update_stack(tag: str = None, from_source: bool = False, channel: str = None
         if not ok:
             print("Update verification failed, rolling back the build output.", file=sys.stderr)
             if osenv.restore_build_output(BIN, bak):
-                print("Rolled bin/ back to the previous build; the endpoint keeps running on it. The "
-                      "source tree and venv were already advanced to the new revisions; re-run "
-                      "`bob update` once the build issue is resolved to finish the move.", file=sys.stderr)
-            return 1
+                print("Rolled bin/ back to the previous build; the endpoint keeps running on it. The source "
+                      "tree and venv were already advanced to the new revisions; the owed rebuild is recorded, "
+                      "so re-running `bob update` once the build issue is resolved WILL finish the move.",
+                      file=sys.stderr)
+            return 1  # pending-rebuild marker intentionally kept so the re-run rebuilds
         osenv.remove_build_output_backup(BIN, bak)
+        _clear_pending_rebuild()
         print("Rebuild verified.", file=sys.stderr)
 
-    from bob import versions
-    versions.write_lock()
+    # Relock to the new revisions. Best-effort: the rebuild already verified, so a lock-write hiccup must not
+    # fail (or crash) an otherwise-successful update — warn and let `bob lock` redo it.
+    try:
+        from bob import versions
+        versions.write_lock()
+    except Exception as e:  # noqa: BLE001 — advisory; never fail a verified update over relocking
+        print(f"relock skipped ({e}); run `bob lock` to refresh versions.lock.", file=sys.stderr)
 
     # Pull any models a release just added to the active profile (e.g. the rerank model). Resume +
     # SHA256-verify; already-present GGUFs are skipped, so this only downloads what's genuinely new —
@@ -633,10 +741,14 @@ def update_stack(tag: str = None, from_source: bool = False, channel: str = None
         except Exception as e:  # noqa: BLE001 — voice is optional; never fail the update over it
             print(f"voice provisioning skipped ({e}); run `bob setup-voice`.", file=sys.stderr)
 
+    # Closing doctor is informational — never let it fail (or, via a non-RuntimeError, crash) a verified update.
     print("Running bob doctor...", file=sys.stderr)
-    import health
-    health.configure(_cfg)
-    print(health.health_check(_cfg, doctor=True))
+    try:
+        import health
+        health.configure(_cfg)
+        print(health.health_check(_cfg, doctor=True))
+    except Exception as e:  # noqa: BLE001 — advisory; the update already succeeded
+        print(f"doctor skipped ({e}); run `bob doctor`.", file=sys.stderr)
     return 0
 
 

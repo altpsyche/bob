@@ -257,10 +257,13 @@ class TestUpdateStack(unittest.TestCase):
     # update over git + build + lock + doctor with a bin/ rollback; every piece is mocked so no
     # git/network/compiler runs. CLI-only.
     def _run(self, before, after, verify=True, tag=None, changed="llama.cpp", cfg=None,
-             gpu=None, cuda_ok=True, on_branch=True):
+             gpu=None, cuda_ok=True, on_branch=True, prebuilt=False, from_source=False, pending_path=None,
+             channel=None, on_tag=False, latest_tag="", stable_target=""):
         """Run update_stack with everything mocked; return (rc, mocks-by-name, git-calls). `changed`
         picks which submodule moves (before -> after); every other submodule stays put, so the test
-        controls exactly which component the update should rebuild."""
+        controls exactly which component the update should rebuild. `prebuilt` = whether a GPU prebuilt
+        engine is available (lifecycle.prebuilt_available); the engine manifest resolver is stubbed to
+        None so the source path (build_llama, mocked) runs hermetically regardless — no network."""
         import contextlib
         import health
         import tempfile
@@ -268,6 +271,9 @@ class TestUpdateStack(unittest.TestCase):
         exe = Path(tempfile.mkdtemp()) / "bin-artifact"
         exe.write_text("ELF")  # so bin_exe(...).exists() is True after a rebuild
         self.addCleanup(__import__("shutil").rmtree, exe.parent, True)
+        # Isolate the pending-rebuild marker to a temp path (never the real data/ dir). Callers can pass a
+        # shared pending_path to chain two update_stack runs (fail -> re-run) in one test.
+        pend = pending_path or (exe.parent / "update-pending.json")
         src_of = {"llama.cpp": build_mod.SRC_LLAMA, "whisper.cpp": build_mod.SRC_WHISPER,
                   "llama-swap": build_mod.SRC_SWAP, "fabric": build_mod.SRC_FABRIC}
         changed_src = src_of[changed]
@@ -291,11 +297,24 @@ class TestUpdateStack(unittest.TestCase):
             "remove_bak": mock.patch("osenv.remove_build_output_backup"),
             "bin_exe": mock.patch("osenv.bin_exe", return_value=exe),
             "on_branch": mock.patch.object(build_mod, "_on_branch", return_value=on_branch),
+            # Git-state helpers for channel logic — mocked so the update tests never depend on the real repo's
+            # tags/branch. Defaults (on a branch, no tags) reproduce a dev-on-main / latest checkout.
+            "head_is_tag": mock.patch.object(build_mod, "_head_is_release_tag", return_value=on_tag),
+            "latest_tag": mock.patch.object(build_mod, "_latest_release_tag", return_value=latest_tag),
+            "stable_target": mock.patch.object(build_mod, "_stable_target_tag", return_value=stable_target),
+            "tracking_branch": mock.patch.object(build_mod, "_tracking_branch", return_value="main"),
             "gpu_info": mock.patch("osenv.gpu_info", return_value=gpu),
             # Tier-0 CUDA ensure that a GPU rebuild gates on (mutable install path is exercised in
             # install_prereqs tests): return a root when CUDA is available, else raise the guidance.
             "ensure_cuda": mock.patch("bob.install_prereqs.ensure_cuda_toolkit",
                                       side_effect=lambda cpu=False: "/usr/local/cuda" if cuda_ok else None),
+            # Keep the llama-server rebuild hermetic: ensure_engine runs for real, but with no prebuilt row it
+            # falls straight to the (mocked) source build_llama — so no manifest fetch / binary download.
+            "select_row": mock.patch("bob.lifecycle._select_engine_row", return_value=None),
+            # Whether a GPU prebuilt is available for this host (drives the update tier split for llama-server).
+            "prebuilt_avail": mock.patch("bob.lifecycle.prebuilt_available", return_value=prebuilt),
+            # Isolate the owed-rebuild marker so tests never write the real data/ dir.
+            "pending_path": mock.patch.object(build_mod, "_pending_rebuild_path", return_value=pend),
             "write_lock": mock.patch("bob.versions.write_lock"),
             # update_stack fetches any newly-added models (best-effort). Keep the unit hermetic — never
             # touch the network / attempt a real GGUF download.
@@ -309,7 +328,7 @@ class TestUpdateStack(unittest.TestCase):
         build_mod.configure(cfg or CFG)
         with contextlib.ExitStack() as es:
             mocks = {k: es.enter_context(v) for k, v in specs.items()}
-            rc = build_mod.update_stack(tag=tag)
+            rc = build_mod.update_stack(tag=tag, from_source=from_source, channel=channel)
         return rc, mocks, git
 
     def test_unchanged_skips_rebuild_but_relocks(self):
@@ -376,6 +395,47 @@ class TestUpdateStack(unittest.TestCase):
         self.assertEqual(rc, 0)
         mocks["ensure_cuda"].assert_not_called()
 
+    def test_gpu_prebuilt_keeps_gpu_when_toolkit_missing(self):
+        # THE update-path fix: a GPU box with no toolkit (atomic host) but a matching GPU prebuilt must NOT be
+        # downgraded to a CPU engine — setup gets the GPU prebuilt, so update must too. llama-server stays GPU.
+        rc, mocks, _ = self._run("aaa", "bbb", changed="llama.cpp",
+                                 gpu={"CudaArch": 120}, cuda_ok=False, prebuilt=True)
+        self.assertEqual(rc, 0)
+        self.assertFalse(mocks["build_llama"].call_args.kwargs["cpu"])   # GPU tier kept, not downgraded
+
+    def test_whisper_still_downgrades_to_cpu_when_toolkit_missing(self):
+        # whisper.cpp has NO prebuilt, so a missing toolkit DOES downgrade it to a CPU source build even when a
+        # llama-server GPU prebuilt is available — the prebuilt-awareness is scoped to the component that has one.
+        rc, mocks, _ = self._run("aaa", "bbb", changed="whisper.cpp",
+                                 gpu={"CudaArch": 120}, cuda_ok=False, prebuilt=True)
+        self.assertEqual(rc, 0)
+        self.assertTrue(mocks["build_whisper"].call_args.kwargs["cpu_only"])
+        mocks["build_llama"].assert_not_called()
+
+    def test_failed_rebuild_is_finished_on_rerun(self):
+        # H1: a rebuild that fails rolls bin/ back, but the tree/venv already advanced. The owed-rebuild
+        # marker must make the NEXT run rebuild even though git now shows the submodule unchanged (else the
+        # box is stranded on a stale engine with the tree ahead — the "re-run to finish" message would lie).
+        import tempfile
+        pend = Path(tempfile.mkdtemp()) / "update-pending.json"
+        self.addCleanup(__import__("shutil").rmtree, pend.parent, True)
+        rc1, _, _ = self._run("aaa", "bbb", changed="llama.cpp", verify=False, pending_path=pend)
+        self.assertEqual(rc1, 1)
+        self.assertTrue(pend.exists())                       # owed rebuild recorded, kept across the failure
+        # Re-run: git shows nothing moved (tree already at bbb), but the marker forces the rebuild.
+        rc2, mocks2, _ = self._run("bbb", "bbb", changed="llama.cpp", verify=True, pending_path=pend)
+        self.assertEqual(rc2, 0)
+        mocks2["build_llama"].assert_called_once()           # rebuilt despite an unchanged tree
+        self.assertFalse(pend.exists())                      # marker cleared once the rebuild verified
+
+    def test_from_source_no_toolkit_falls_back_to_cpu_not_crash(self):
+        # --from-source ignores prebuilts, so a toolkit-less GPU box must do a CPU source fallback (warn
+        # policy) rather than take the GPU source path and crash — even when a GPU prebuilt is published.
+        rc, mocks, _ = self._run("aaa", "bbb", changed="llama.cpp",
+                                 gpu={"CudaArch": 120}, cuda_ok=False, prebuilt=True, from_source=True)
+        self.assertEqual(rc, 0)
+        self.assertTrue(mocks["build_llama"].call_args.kwargs["cpu"])   # CPU fallback, no crash
+
     def test_provisions_voice_when_enabled(self):
         # update must leave a fully working default: provision voice (STT model + piper + audio deps)
         # the same as a fresh setup, so voice works post-update without a manual `bob setup-voice`.
@@ -386,6 +446,20 @@ class TestUpdateStack(unittest.TestCase):
     def test_skips_voice_when_disabled(self):
         rc, mocks, _ = self._run("abc", "abc")   # CFG has no voice block
         mocks["setup_voice"].assert_not_called()
+
+    def test_channel_latest_from_tag_switches_to_branch(self):
+        # Explicit --channel latest while on a detached release tag must leave the tag for the tracking branch
+        # (previously a no-op: it printed "nothing newer" and stayed on the tag).
+        rc, _, git = self._run("x", "x", channel="latest", on_tag=True, on_branch=False)
+        self.assertEqual(rc, 0)
+        self.assertTrue(any("checkout" in c and "main" in c for c in git))
+
+    def test_channel_stable_from_branch_switches_to_newest_tag(self):
+        # Explicit --channel stable while on a branch must jump to the newest release tag (previously it just
+        # fast-forwarded the branch and stayed on latest).
+        rc, _, git = self._run("x", "x", channel="stable", on_tag=False, latest_tag="v2.0.0")
+        self.assertEqual(rc, 0)
+        self.assertTrue(any("checkout" in c and "v2.0.0" in c for c in git))
 
 
 class TestUpdateChannel(unittest.TestCase):
