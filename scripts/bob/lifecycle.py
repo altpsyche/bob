@@ -43,8 +43,8 @@ def resolve_build_tier(cpu: bool = False, self_heal: bool = True) -> dict:
       4. GPU + no toolkit + no consent         -> tier=gpu, blocked=True  (remedy = osenv.cuda_missing_message())
 
     Rule 4 is the whole fix: a GPU box with no toolkit and no --cpu is *blocked*, never a silent CPU build.
-    (Phase 2 will additionally treat "a prebuilt engine exists" as satisfying rule 3, so a driver-only box is
-    no longer blocked — the download layer plugs in here.)"""
+    A driver-only box (no toolkit but a matching prebuilt engine available) never reaches rule 4's block:
+    ensure_engine resolves and stages the prebuilt BEFORE it ever consults this tier decision's block."""
     arch = (osenv.gpu_arch() or {}).get("CudaArch", 0)
     if cpu:
         return {"tier": "cpu", "cuda_root": None, "arch": arch, "blocked": False,
@@ -111,9 +111,7 @@ def _pinned_submodule_commit(component: str):
 
 
 def _current_release_tag():
-    """The v* release tag HEAD is exactly at (a 'stable' checkout), or None. The prebuilt manifest is
-    published per release, so a checkout that isn't on a release tag (main / dev) has no manifest and builds
-    from source."""
+    """The v* release tag HEAD is exactly at (a 'stable' checkout), or None."""
     import subprocess
     try:
         r = subprocess.run(["git", "-C", str(osenv.REPO), "describe", "--exact-match", "--tags", "HEAD"],
@@ -122,6 +120,27 @@ def _current_release_tag():
         return t if r.returncode == 0 and t.startswith("v") else None
     except (OSError, subprocess.SubprocessError):
         return None
+
+
+def _latest_release_tag():
+    """The newest v* release tag known to this checkout, or None. Lets a checkout that is NOT sitting exactly
+    on a release tag (main, or a commit or two past the last tag) still resolve a prebuilt engine: the
+    commit-match guard in _select_engine_row then accepts a row only when its builtFromCommit equals the
+    llama.cpp commit THIS checkout pins, so pulling a newer tag's manifest can never ship a mismatched engine
+    — a checkout that bumped llama.cpp past every released engine simply finds no match and builds from
+    source. Without this, a driver-only atomic host on `main` (where a source build is impossible) had no
+    engine at all even when the pinned commit exactly matched a published prebuilt."""
+    import subprocess
+    try:
+        r = subprocess.run(["git", "-C", str(osenv.REPO), "tag", "--list", "v*", "--sort=-v:refname"],
+                           capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in r.stdout.splitlines():
+        t = line.strip()
+        if t.startswith("v"):
+            return t
+    return None
 
 
 def _repo_slug():
@@ -145,8 +164,10 @@ def _manifest_rows(raw: dict) -> dict:
 def _load_engine_manifest() -> dict:
     """The engine manifest to resolve a prebuilt from. Resolution order:
       1. a local `config/engines.json` override (real rows only) — for dev/test/air-gapped pinning;
-      2. else the `engines.json` published as a release asset for the tag this checkout is on;
-      3. else {} (main / no tag / offline / fetch failure) -> ensure_engine builds from source.
+      2. else the `engines.json` published as a release asset — for the tag this checkout is exactly on, or,
+         when it isn't on a tag, the newest known release tag (the commit-match guard in _select_engine_row
+         keeps that safe — see _latest_release_tag);
+      3. else {} (no tags / offline / fetch failure) -> ensure_engine builds from source.
     The manifest travels WITH the release rather than being committed back to the repo, so adding platforms,
     components, or channels never churns the repo. Rows are keyed '<component>-<os>-<arch>-<tier>'."""
     import json
@@ -158,7 +179,7 @@ def _load_engine_manifest() -> dict:
                 return rows
         except (OSError, ValueError):
             pass
-    tag = _current_release_tag()
+    tag = _current_release_tag() or _latest_release_tag()
     slug = _repo_slug()
     if not tag or not slug:
         return {}
@@ -169,6 +190,17 @@ def _load_engine_manifest() -> dict:
             return _manifest_rows(json.loads(r.read().decode("utf-8")))
     except Exception:  # noqa: BLE001 — no manifest / offline / bad JSON -> source build
         return {}
+
+
+# The manifest (and the CI publish matrix / release-asset names) call the accelerated tier "cuda"; the
+# internal build-tier decision (resolve_build_tier) calls it "gpu". They name the SAME engine, so a GPU host
+# must resolve a "cuda" prebuilt row. Match them as synonyms rather than by string equality — plain equality
+# was the bug that left every GPU host falling through to a source build.
+_TIER_SYNONYMS = {"gpu": ("gpu", "cuda"), "cuda": ("gpu", "cuda"), "cpu": ("cpu",)}
+
+
+def _tier_matches(want: str, have) -> bool:
+    return have in _TIER_SYNONYMS.get(want, (want,))
 
 
 def _select_engine_row(component: str, os_name: str, cpu_arch: str, tier: str):
@@ -183,7 +215,7 @@ def _select_engine_row(component: str, os_name: str, cpu_arch: str, tier: str):
     pinned = _pinned_submodule_commit(component)
     for row in engines.values():
         if not (row.get("component") == component and row.get("os") == os_name
-                and row.get("cpuArch") == cpu_arch and row.get("tier") == tier):
+                and row.get("cpuArch") == cpu_arch and _tier_matches(tier, row.get("tier"))):
             continue
         built = row.get("builtFromCommit")
         if built and pinned and built != pinned:

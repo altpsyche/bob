@@ -256,9 +256,14 @@ class TestDiagnoseDeep(unittest.TestCase):
         self.assertIn("no supported manager", out)
         self.assertIn("issue(s) noted", out)
 
-    def test_cuda_missing_for_gpu_is_an_issue(self):
+    def test_cuda_missing_for_gpu_is_informational_not_a_false_install_promise(self):
+        # No local toolkit is fine on the default path — the engine is a driver-only prebuilt. The row must
+        # say the toolkit is source-build-only, and must NOT claim "setup will install" (the old lie that
+        # then contradicted the build step on an atomic host).
         out = self._diag(best_cuda=None)
-        self.assertIn("needs 12.8 (required for Blackwell)", out)
+        self.assertIn("driver-only prebuilt", out)
+        self.assertIn("--from-source GPU build needs 12.8 (required for Blackwell)", out)
+        self.assertNotIn("setup will install", out)
 
     def test_numa_config_mismatch_is_an_issue(self):
         out = self._diag(numa=1, numa_cfg="isolate")

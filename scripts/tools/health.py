@@ -416,10 +416,14 @@ def diagnose(config: dict) -> str:
         if best:
             row("CUDA", f"{Path(best).name}  ok")
         else:
+            # No local toolkit is NOT an issue on the default path: the engine is a driver-only prebuilt
+            # (CUDA runtime libs bundled), so it needs the NVIDIA driver but no nvcc. The toolkit is required
+            # only for a --from-source GPU build. Flagging it here was the false "setup will install" that
+            # then contradicted the build step on an atomic host, where the toolkit can't be layered at all.
             need = "12.8 (required for Blackwell)" if gpu["CudaArch"] >= 120 else "12.x"
             found = f"found: {', '.join(installed)}" if installed else "none installed"
-            row("CUDA", f"needs {need}  ({found})  — setup will install")
-            issues += 1
+            row("CUDA", f"{found}  — the default engine is a driver-only prebuilt (no toolkit needed); "
+                        f"only a --from-source GPU build needs {need}")
     else:
         label = (sorted(installed)[-1] + "  (no GPU detected)" if installed
                  else "not installed  (no GPU detected — skipping)")

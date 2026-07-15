@@ -90,6 +90,7 @@ class TestEnsureEngine(unittest.TestCase):
         build = __import__("build")
         with mock.patch("osenv.gpu_info", return_value=_BLACKWELL), \
              mock.patch("osenv.gpu_arch", return_value=_BLACKWELL), \
+             mock.patch.object(lifecycle, "_select_engine_row", return_value=None), \
              mock.patch("bob.install_prereqs.ensure_cuda_toolkit", return_value=None), \
              mock.patch("osenv.cuda_missing_message", return_value="use a distrobox"), \
              mock.patch.object(build, "build_llama") as bl:
@@ -101,6 +102,7 @@ class TestEnsureEngine(unittest.TestCase):
         build = __import__("build")
         with mock.patch("osenv.gpu_info", return_value=_BLACKWELL), \
              mock.patch("osenv.gpu_arch", return_value=_BLACKWELL), \
+             mock.patch.object(lifecycle, "_select_engine_row", return_value=None), \
              mock.patch("bob.install_prereqs.ensure_cuda_toolkit", return_value="/usr/local/cuda-12.8"), \
              mock.patch.object(build, "build_llama", return_value="Built.") as bl:
             res = lifecycle.ensure_engine(cpu=False, on_block="stop")
@@ -114,6 +116,7 @@ class TestEnsureEngine(unittest.TestCase):
         build = __import__("build")
         with mock.patch("osenv.gpu_info", return_value=None), \
              mock.patch("osenv.gpu_arch", return_value=None), \
+             mock.patch.object(lifecycle, "_select_engine_row", return_value=None), \
              mock.patch.object(build, "build_llama", return_value="Built.") as bl:
             res = lifecycle.ensure_engine(cpu=True, on_block="stop")
         self.assertEqual(res["tier"], "cpu")
@@ -214,7 +217,8 @@ class TestNoTierDriftOutsideSeam(unittest.TestCase):
 
 class TestEngineManifestResolution(unittest.TestCase):
     """_load_engine_manifest: local config/engines.json override (dev/test), else the release-hosted
-    engines.json for the checkout's tag, else {} (source). The manifest is NOT in versions.lock."""
+    engines.json for the checkout's exact tag or (off a tag) the newest release tag, else {} (source). The
+    manifest is NOT in versions.lock."""
 
     def setUp(self):
         import json
@@ -234,8 +238,22 @@ class TestEngineManifestResolution(unittest.TestCase):
         self.assertEqual(list(lifecycle._load_engine_manifest()), ["llama-server-linux-x86_64-cuda"])
 
     def test_no_local_no_tag_is_empty(self):
-        with mock.patch.object(lifecycle, "_current_release_tag", return_value=None):
+        with mock.patch.object(lifecycle, "_current_release_tag", return_value=None), \
+             mock.patch.object(lifecycle, "_latest_release_tag", return_value=None):
             self.assertEqual(lifecycle._load_engine_manifest(), {})
+
+    def test_off_tag_falls_back_to_latest_release(self):
+        # On main (not exactly on a tag) the manifest still resolves from the newest release tag; the
+        # commit-match guard in _select_engine_row is what keeps that safe.
+        payload = self._json.dumps({
+            "llama-server-linux-x86_64-cuda": {"component": "llama-server"}}).encode()
+        cm = mock.MagicMock()
+        cm.__enter__.return_value.read.return_value = payload
+        with mock.patch.object(lifecycle, "_current_release_tag", return_value=None), \
+             mock.patch.object(lifecycle, "_latest_release_tag", return_value="v1.2.0"), \
+             mock.patch.object(lifecycle, "_repo_slug", return_value="owner/repo"), \
+             mock.patch("urllib.request.urlopen", return_value=cm):
+            self.assertEqual(list(lifecycle._load_engine_manifest()), ["llama-server-linux-x86_64-cuda"])
 
     def test_release_manifest_fetched_on_tag(self):
         payload = self._json.dumps({"_comment": "x",
@@ -259,7 +277,10 @@ class TestCommitMatchGuard(unittest.TestCase):
     commit, so a prebuilt is never a different llama.cpp version than a source build would produce here."""
 
     def _row(self, built):
-        r = {"component": "llama-server", "os": "linux", "cpuArch": "x86_64", "tier": "gpu"}
+        # The published manifest names the accelerated tier "cuda" (the CI matrix + asset vocabulary); the
+        # tier decision asks for "gpu". The row here uses "cuda" on purpose so these also cover the synonym
+        # bridge (query "gpu" must resolve a "cuda" row).
+        r = {"component": "llama-server", "os": "linux", "cpuArch": "x86_64", "tier": "cuda"}
         if built is not None:
             r["builtFromCommit"] = built
         return r
@@ -280,6 +301,11 @@ class TestCommitMatchGuard(unittest.TestCase):
 
     def test_unknown_pinned_is_allowed(self):
         self.assertIsNotNone(self._select("abc123", None))    # git unavailable: don't break the install
+
+    def test_cpu_query_does_not_match_cuda_row(self):
+        with mock.patch.object(lifecycle, "_load_engine_manifest", return_value={"r": self._row("abc123")}), \
+             mock.patch.object(lifecycle, "_pinned_submodule_commit", return_value="abc123"):
+            self.assertIsNone(lifecycle._select_engine_row("llama-server", "linux", "x86_64", "cpu"))
 
 
 class TestInstallPrebuilt(unittest.TestCase):
