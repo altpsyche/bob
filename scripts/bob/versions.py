@@ -19,7 +19,6 @@ REPO = Path(__file__).resolve().parent.parent.parent  # scripts/bob/versions.py 
 LOCK_FILE = REPO / "versions.lock"
 VERSION_FILE = REPO / "VERSION"
 MANIFEST_FILE = REPO / "models" / "manifest.json"
-ENGINES_FILE = REPO / "config" / "engines.json"
 
 # The submodules ND pins (all four in .gitmodules).
 LOCK_SUBMODULES = ["external/llama.cpp", "external/llama-swap", "external/whisper.cpp", "external/fabric"]
@@ -181,55 +180,11 @@ def lock_model_manifest(models_config: Optional[dict] = None, repo: Optional[Pat
     return models
 
 
-_ENGINE_FIELDS = ("component", "os", "cpuArch", "tier", "url", "sha256", "builtFromCommit",
-                  "cudaArchs", "cudaMajor", "libs")
-
-
-def lock_engines_manifest(repo: Optional[Path] = None) -> dict:
-    """The prebuilt-engine manifest for the lock, read from config/engines.json (the committed single source
-    the CI publish job updates). Keys starting with '_' (schema doc/example) are skipped; each real row is
-    normalized to a stable field order and sorted by key, so `bob lock` regenerates it deterministically and
-    the sync gate stays valid. Absent file -> {} (the mechanism stays dormant, ensure_engine builds from
-    source). sha256 lowercased for a stable compare."""
-    repo = repo or REPO
-    ef = repo / "config" / "engines.json"
-    if not ef.exists():
-        return {}
-    try:
-        raw = json.loads(ef.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    engines = {}
-    for key in sorted(k for k in raw if not k.startswith("_")):
-        row = raw[key] or {}
-        entry = {}
-        for f in _ENGINE_FIELDS:
-            if f in row:
-                entry[f] = str(row[f]).lower() if f == "sha256" and row[f] else row[f]
-        engines[key] = entry
-    return engines
-
-
-def upsert_engine_rows(new_rows: dict, path: Optional[Path] = None) -> Path:
-    """Merge published engine rows (keyed '<component>-<os>-<cpuArch>-<tier>') into config/engines.json,
-    preserving the schema doc (_-prefixed) keys and writing real rows back sorted. The CI finalize step calls
-    this after a publish so the manifest update is deterministic and reviewable (then `bob lock` folds it into
-    versions.lock). Idempotent: re-publishing the same tag overwrites the same rows."""
-    path = path or ENGINES_FILE
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    except (OSError, ValueError):
-        raw = {}
-    docs = {k: v for k, v in raw.items() if k.startswith("_")}
-    rows = {k: v for k, v in raw.items() if not k.startswith("_")}
-    rows.update(new_rows or {})
-    merged = {**docs, **{k: rows[k] for k in sorted(rows)}}
-    path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
-    return path
-
-
 def build_lock_object(repo: Optional[Path] = None, models_config: Optional[dict] = None) -> dict:
-    """The full lock object, keys in a deterministic order (matches New-VersionsLockObject)."""
+    """The full lock object, keys in a deterministic order (matches New-VersionsLockObject). The lock is the
+    SOURCE trust root (submodules + models); prebuilt engine binaries are distributed via a per-release
+    manifest asset (see scripts/bob/lifecycle.py), not committed here, so the lock never churns as platforms
+    or engines are added."""
     return {
         "lockVersion": 1,
         "release": bob_version(),
@@ -238,7 +193,6 @@ def build_lock_object(repo: Optional[Path] = None, models_config: Optional[dict]
         "requirements": dict(LOCK_REQUIREMENTS),
         "tools": dict(LOCK_TOOLS),
         "models": lock_model_manifest(models_config, repo),
-        "engines": lock_engines_manifest(repo),
     }
 
 

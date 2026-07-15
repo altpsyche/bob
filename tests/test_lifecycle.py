@@ -212,9 +212,9 @@ class TestNoTierDriftOutsideSeam(unittest.TestCase):
         self.assertIn("resolve_build_tier", body)
 
 
-class TestEnginesManifest(unittest.TestCase):
-    """versions.lock_engines_manifest reads config/engines.json (the CI publish source), skips _ doc keys,
-    normalizes rows, and lands in build_lock_object deterministically."""
+class TestEngineManifestResolution(unittest.TestCase):
+    """_load_engine_manifest: local config/engines.json override (dev/test), else the release-hosted
+    engines.json for the checkout's tag, else {} (source). The manifest is NOT in versions.lock."""
 
     def setUp(self):
         import json
@@ -223,39 +223,35 @@ class TestEnginesManifest(unittest.TestCase):
         (self.repo / "config").mkdir()
         self.cfg = self.repo / "config" / "engines.json"
         self._json = json
+        p = mock.patch.object(osenv, "REPO", self.repo)
+        p.start()
+        self.addCleanup(p.stop)
 
-    def test_absent_file_is_empty(self):
-        from bob import versions
-        self.assertEqual(versions.lock_engines_manifest(self.repo), {})
-
-    def test_skips_underscore_keys_and_normalizes(self):
-        from bob import versions
+    def test_local_override_used_and_skips_docs(self):
         self.cfg.write_text(self._json.dumps({
-            "_comment": "doc", "_example": {"component": "x"},
-            "llama-server-linux-x86_64-cuda": {
-                "component": "llama-server", "os": "linux", "cpuArch": "x86_64", "tier": "gpu",
-                "url": "https://example/asset.tar.gz", "sha256": "ABCDEF", "cudaMajor": "12"}}),
-            encoding="utf-8")
-        eng = versions.lock_engines_manifest(self.repo)
-        self.assertEqual(list(eng), ["llama-server-linux-x86_64-cuda"])   # _ keys skipped
-        self.assertEqual(eng["llama-server-linux-x86_64-cuda"]["sha256"], "abcdef")  # lowercased
-        self.assertEqual(eng["llama-server-linux-x86_64-cuda"]["tier"], "gpu")
+            "_comment": "doc",
+            "llama-server-linux-x86_64-cuda": {"component": "llama-server", "tier": "gpu"}}), encoding="utf-8")
+        self.assertEqual(list(lifecycle._load_engine_manifest()), ["llama-server-linux-x86_64-cuda"])
 
-    def test_build_lock_object_includes_engines(self):
-        from bob import versions
-        with mock.patch.object(versions, "submodule_commits", return_value={}), \
-             mock.patch.object(versions, "lock_model_manifest", return_value={}):
-            obj = versions.build_lock_object(self.repo)
-        self.assertIn("engines", obj)
+    def test_no_local_no_tag_is_empty(self):
+        with mock.patch.object(lifecycle, "_current_release_tag", return_value=None):
+            self.assertEqual(lifecycle._load_engine_manifest(), {})
 
-    def test_upsert_preserves_docs_overwrites_and_sorts(self):
-        from bob import versions
-        self.cfg.write_text(self._json.dumps({"_comment": "doc", "b-row": {"component": "old"}}), encoding="utf-8")
-        versions.upsert_engine_rows({"a-row": {"component": "y"}, "b-row": {"component": "new"}}, path=self.cfg)
-        raw = self._json.loads(self.cfg.read_text(encoding="utf-8"))
-        self.assertIn("_comment", raw)                                  # schema/doc key preserved
-        self.assertEqual([k for k in raw if not k.startswith("_")], ["a-row", "b-row"])  # sorted
-        self.assertEqual(raw["b-row"]["component"], "new")              # re-publish overwrites the row
+    def test_release_manifest_fetched_on_tag(self):
+        payload = self._json.dumps({"_comment": "x",
+                                    "llama-server-linux-x86_64-cuda": {"component": "llama-server"}}).encode()
+        cm = mock.MagicMock()
+        cm.__enter__.return_value.read.return_value = payload
+        with mock.patch.object(lifecycle, "_current_release_tag", return_value="v1.2.0"), \
+             mock.patch.object(lifecycle, "_repo_slug", return_value="owner/repo"), \
+             mock.patch("urllib.request.urlopen", return_value=cm):
+            self.assertEqual(list(lifecycle._load_engine_manifest()), ["llama-server-linux-x86_64-cuda"])
+
+    def test_fetch_failure_is_empty(self):
+        with mock.patch.object(lifecycle, "_current_release_tag", return_value="v1.2.0"), \
+             mock.patch.object(lifecycle, "_repo_slug", return_value="owner/repo"), \
+             mock.patch("urllib.request.urlopen", side_effect=OSError("offline")):
+            self.assertEqual(lifecycle._load_engine_manifest(), {})
 
 
 class TestCommitMatchGuard(unittest.TestCase):
@@ -269,8 +265,7 @@ class TestCommitMatchGuard(unittest.TestCase):
         return r
 
     def _select(self, built, pinned):
-        from bob import versions
-        with mock.patch.object(versions, "load_lock", return_value={"engines": {"r": self._row(built)}}), \
+        with mock.patch.object(lifecycle, "_load_engine_manifest", return_value={"r": self._row(built)}), \
              mock.patch.object(lifecycle, "_pinned_submodule_commit", return_value=pinned):
             return lifecycle._select_engine_row("llama-server", "linux", "x86_64", "gpu")
 

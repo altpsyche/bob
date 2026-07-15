@@ -17,17 +17,18 @@ rebuilds only what changed, verifies, and rolls back on failure.
   alive instead of hard-failing. This was the drift that let a great GPU sit idle on CPU inference.
 - **Prebuilt, driver-only engines (Bob stops being the outlier).** Bob installs a prebuilt `llama-server`
   that bundles the CUDA runtime libs, so a target box needs only the NVIDIA driver, never the CUDA Toolkit,
-  and never compiles. It is downloaded and SHA256-verified against a new `engines` manifest in
-  `versions.lock` (committed source: `config/engines.json`, published by CI). Source build stays the
-  reproducible fallback via `--from-source`, and the default install no longer pulls the multi-GB CUDA
-  Toolkit. Atomic hosts (Bazzite/Silverblue) work driver-only on the default path, no distrobox needed.
+  and never compiles. Each release publishes an `engines.json` manifest **as a release asset**; the engine is
+  downloaded, SHA256-verified against that manifest, and its CI build provenance is attested (verifiable with
+  `gh attestation verify`). Source build stays the reproducible fallback via `--from-source`, and the default
+  install no longer pulls the multi-GB CUDA Toolkit. Atomic hosts (Bazzite/Silverblue) work driver-only on the
+  default path, no distrobox needed.
 - **Broad, safe coverage.** One fat multi-arch CUDA binary covers every supported NVIDIA generation
   (Turing through Blackwell); the Linux binaries are built in an old-glibc container so they run on
   essentially every current distro, and a runtime self-check falls back to a source build if a binary can
   not launch (e.g. an unusually old glibc), so no machine is ever left with a non-starting engine. Windows
   engines are built by Bob too (bundled DLLs beside the .exe). arm64 Linux and AMD/Intel GPUs have no
-  prebuilt yet and fall back to a source build / the CPU tier. A CI `publish-engines` + `finalize-engines`
-  pair builds, uploads, and opens the `config/engines.json` bump PR, so activating a release is one merge.
+  prebuilt yet and fall back to a source build / the CPU tier. A tagged release builds + uploads the engines
+  and their manifest as release assets automatically, so no repo write-back or merge is needed to activate it.
 - **`bob diagnose` / `bob status` flag an idle GPU.** A new `bin/.build-tier.json` marker records the tier
   bin/ was built at; diagnose emits a loud, actionable line when an NVIDIA GPU is present but the engine is
   CPU-only, so the silent-degradation case is impossible to miss.
@@ -44,8 +45,11 @@ rebuilds only what changed, verifies, and rolls back on failure.
   install paths can neither diverge in version nor leave a machine with a non-running engine.
 
 ### Added
-- `config/engines.json` — the committed prebuilt-engine manifest (component/os/arch/tier -> URL + SHA256 +
-  provenance) the CI `publish-engines` job updates and `bob lock` folds into `versions.lock`.
+- Per-release **`engines.json` manifest asset** (component/os/arch/tier -> URL + SHA256 + the commit it was
+  built from) that `lifecycle.ensure_engine` fetches and verifies; `config/engines.json` is an optional local
+  override for development, testing, or an air-gapped mirror. The manifest lives with the release, not the
+  repo, so `versions.lock` stays the source trust root (submodules + models) and never churns as engines are
+  added.
 
 ## [1.2.0] (2026-07-14)
 

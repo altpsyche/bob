@@ -110,21 +110,76 @@ def _pinned_submodule_commit(component: str):
         return None
 
 
+def _current_release_tag():
+    """The v* release tag HEAD is exactly at (a 'stable' checkout), or None. The prebuilt manifest is
+    published per release, so a checkout that isn't on a release tag (main / dev) has no manifest and builds
+    from source."""
+    import subprocess
+    try:
+        r = subprocess.run(["git", "-C", str(osenv.REPO), "describe", "--exact-match", "--tags", "HEAD"],
+                           capture_output=True, text=True, timeout=10)
+        t = r.stdout.strip()
+        return t if r.returncode == 0 and t.startswith("v") else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _repo_slug():
+    """'owner/repo' from the origin remote, or None (used to build the release-asset URL)."""
+    import re
+    import subprocess
+    try:
+        url = subprocess.run(["git", "-C", str(osenv.REPO), "remote", "get-url", "origin"],
+                             capture_output=True, text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"github\.com[:/]([^/]+/[^/]+?)(?:\.git)?/?$", url)
+    return m.group(1) if m else None
+
+
+def _manifest_rows(raw: dict) -> dict:
+    """Real engine rows from a manifest dict (drop the '_'-prefixed schema/doc keys)."""
+    return {k: v for k, v in (raw or {}).items() if not k.startswith("_")}
+
+
+def _load_engine_manifest() -> dict:
+    """The engine manifest to resolve a prebuilt from. Resolution order:
+      1. a local `config/engines.json` override (real rows only) — for dev/test/air-gapped pinning;
+      2. else the `engines.json` published as a release asset for the tag this checkout is on;
+      3. else {} (main / no tag / offline / fetch failure) -> ensure_engine builds from source.
+    The manifest travels WITH the release rather than being committed back to the repo, so adding platforms,
+    components, or channels never churns the repo. Rows are keyed '<component>-<os>-<arch>-<tier>'."""
+    import json
+    local = osenv.REPO / "config" / "engines.json"
+    if local.exists():
+        try:
+            rows = _manifest_rows(json.loads(local.read_text(encoding="utf-8")))
+            if rows:
+                return rows
+        except (OSError, ValueError):
+            pass
+    tag = _current_release_tag()
+    slug = _repo_slug()
+    if not tag or not slug:
+        return {}
+    import urllib.request
+    url = f"https://github.com/{slug}/releases/download/{tag}/engines.json"
+    try:
+        with urllib.request.urlopen(url, timeout=20) as r:  # noqa: S310 — release asset over https
+            return _manifest_rows(json.loads(r.read().decode("utf-8")))
+    except Exception:  # noqa: BLE001 — no manifest / offline / bad JSON -> source build
+        return {}
+
+
 def _select_engine_row(component: str, os_name: str, cpu_arch: str, tier: str):
-    """The versions.lock `engines` row for this (component, os, arch, tier), or None. The lock's engines
-    block is generated from config/engines.json (the CI publish job's output); an absent/empty block means
-    no prebuilt is available, so ensure_engine builds from source.
+    """The engine manifest row for this (component, os, arch, tier), or None (-> source build). The manifest
+    is fetched from the release the checkout is on (see _load_engine_manifest), not the repo.
 
     Commit-match guard: a matching row is used ONLY when its builtFromCommit equals the commit this checkout
     pins the submodule to (when both are known). That makes a prebuilt provably the same llama.cpp version a
-    source build would produce here, so the two paths can never silently diverge (e.g. on `latest`/main, whose
-    commit no published release built, the guard skips the prebuilt and source builds instead). If either
-    commit can't be determined (git unavailable, or an unversioned row) the guard does not block."""
-    from bob import versions
-    try:
-        engines = versions.load_lock().get("engines") or {}
-    except (RuntimeError, ValueError, OSError):
-        return None
+    source build would produce here, so the two paths can never silently diverge. If either commit can't be
+    determined (git unavailable, or an unversioned row) the guard does not block."""
+    engines = _load_engine_manifest()
     pinned = _pinned_submodule_commit(component)
     for row in engines.values():
         if not (row.get("component") == component and row.get("os") == os_name

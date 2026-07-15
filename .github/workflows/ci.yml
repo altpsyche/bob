@@ -277,21 +277,22 @@ jobs:
   # 2.31) so the binary runs on essentially every current distro (manylinux principle: build old, run
   # newer); a host with a still-older glibc is caught by lifecycle._binary_runs and safely falls back to a
   # source build. The CUDA archive bundles the CUDA runtime libs and the binary's rpath is set to $ORIGIN
-  # (patchelf), so a target box needs only the NVIDIA driver. Assets upload to the GitHub release; the
-  # finalize-engines job then folds their URLs + SHA256s into config/engines.json (read into versions.lock
-  # by `bob lock`), which lifecycle.ensure_engine downloads + SHA-verifies + stages.
+  # (patchelf), so a target box needs only the NVIDIA driver. Each binary uploads to the GitHub release with
+  # a build-provenance attestation; the publish-manifest job assembles their rows into an engines.json release
+  # asset that lifecycle.ensure_engine fetches + SHA-verifies + stages. Windows engines are built the same way
+  # by publish-engines-windows (below), so every asset matches the exact pinned llama.cpp commit.
   #
-  # Windows CUDA is NOT built here: its engines.json row pins the official llama.cpp Windows CUDA release
-  # asset (a maintainer adds it, since matching a llama.cpp build tag to Bob's pinned submodule commit is a
-  # judgement call). arm64 Linux and AMD/Intel (Vulkan/ROCm) GPUs have no row today, so they fall back to a
-  # source build (AMD/Intel land the CPU tier until a Vulkan backend is added). NVIDIA Turing..Blackwell are
-  # all covered by the one fat multi-arch CUDA binary.
+  # arm64 Linux and AMD/Intel (Vulkan/ROCm) GPUs have no asset today, so they fall back to a source build
+  # (AMD/Intel land the CPU tier until a Vulkan backend is added). NVIDIA Turing..Blackwell are all covered by
+  # the one fat multi-arch CUDA binary.
   publish-engines-linux:
     name: publish-engines (linux ${{ matrix.tier }}, release tags)
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write            # upload release assets
+      id-token: write            # build provenance attestation (sigstore)
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -352,7 +353,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "${GITHUB_REF_NAME}" "${{ steps.pkg.outputs.asset }}" --clobber
 
-      - name: Stash the engines.json row for finalize
+      - name: Attest build provenance (tamper-evident, verify with `gh attestation verify`)
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: ${{ steps.pkg.outputs.asset }}
+
+      - name: Stash the engines.json row for the manifest job
         uses: actions/upload-artifact@v4
         with:
           name: engine-row-linux-${{ matrix.tier }}
@@ -368,6 +374,8 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: write
+      id-token: write            # build provenance attestation (sigstore)
+      attestations: write
     env:
       PYTHONPATH: scripts
     strategy:
@@ -424,60 +432,47 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "${GITHUB_REF_NAME}" "${{ steps.pkg.outputs.asset }}" --clobber
-      - name: Stash the engines.json row for finalize
+      - name: Attest build provenance (tamper-evident, verify with `gh attestation verify`)
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: ${{ steps.pkg.outputs.asset }}
+      - name: Stash the engines.json row for the manifest job
         uses: actions/upload-artifact@v4
         with:
           name: engine-row-windows-${{ matrix.tier }}
           path: rows/*.json
 
-  # Fold the published rows into config/engines.json and open a bump PR, so activating plug-and-play for a
-  # release is a single review-and-merge rather than a manual edit. `bob lock` then records the rows in
-  # versions.lock; lifecycle.ensure_engine downloads + SHA-verifies them on the next install/update.
-  finalize-engines:
-    name: finalize-engines (bump config/engines.json)
+  # Assemble the engine manifest from the published rows and upload it AS A RELEASE ASSET (engines.json).
+  # No commit, no PR, no repo write-back: lifecycle.ensure_engine fetches this manifest for the release tag
+  # a checkout is on, then downloads + SHA-verifies the matching binary. Adding platforms/components/channels
+  # never churns the repo, so this scales as the build matrix grows. Only `contents: write` (asset upload) is
+  # needed; there is no pull-request permission and nothing to merge to activate a release.
+  publish-manifest:
+    name: publish-manifest (engines.json release asset)
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [publish-engines-linux, publish-engines-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
-    env:
-      PYTHONPATH: scripts
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: main
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
       - uses: actions/download-artifact@v4
         with:
           pattern: engine-row-*
           path: rows
           merge-multiple: true
-      - name: Merge rows into config/engines.json + regenerate versions.lock
+      - name: Assemble engines.json from the published rows
         shell: bash
         run: |
-          python - <<'PY'
+          python3 - <<'PY'
           import glob, json
-          from bob import versions
           rows = {}
           for f in glob.glob("rows/*.json"):
               rows.update(json.load(open(f)))
-          versions.upsert_engine_rows(rows)
-          versions.write_lock()   # fold the engines block into versions.lock deterministically
+          open("engines.json", "w").write(json.dumps(rows, indent=2) + "\n")
           print("engines.json rows:", list(rows))
           PY
-      - name: Open the bump PR
+      - name: Upload engines.json to the release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          branch="engines-bump-${GITHUB_REF_NAME}"
-          git config user.name "bob-ci"; git config user.email "ci@bob.local"
-          git checkout -b "$branch"
-          git add config/engines.json versions.lock
-          git commit -m "chore: publish prebuilt engines for ${GITHUB_REF_NAME}"
-          git push -u origin "$branch"
-          gh pr create --base main --head "$branch" --title "Publish prebuilt engines for ${GITHUB_REF_NAME}" \
-            --body "Auto-generated: prebuilt engine rows + versions.lock for ${GITHUB_REF_NAME}. Merging activates driver-only plug-and-play for this release."
+        run: gh release upload "${GITHUB_REF_NAME}" engines.json --clobber --repo "${GITHUB_REPOSITORY}"

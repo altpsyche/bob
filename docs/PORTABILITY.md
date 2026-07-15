@@ -97,13 +97,17 @@ the step-by-step for advanced users.**
 
 ## Reproducibility & releases
 
-[`versions.lock`](../versions.lock) (neutral JSON, read on every OS) pins submodule commits, per-venv
-requirements, minimum toolchain versions, the prebuilt-engine manifest (per os/arch/tier: URL → sha256
-→ the commit it was built from), and the model manifest (repo → revision → sha256). It is generated
-from those sources (`bob lock`), staleness-gated in CI, and installs run *from the lock*: each prebuilt
-engine and model download is checksum-verified, fail-loud on mismatch. A prebuilt is used only when it
-was built from the pinned submodule commit, so it is never a different version than a source build.
-`bob doctor` reports drift, `bob version` reports the release, and `bob update` moves between releases
-(a fast prebuilt swap where available) and rolls the build output back on a failed upgrade.
+[`versions.lock`](../versions.lock) (neutral JSON, read on every OS) is the **source** trust root: it
+pins submodule commits, per-venv requirements, minimum toolchain versions, and the model manifest
+(repo → revision → sha256). It is generated from those sources (`bob lock`), staleness-gated in CI, and
+model downloads run *from the lock*, each checksum-verified, fail-loud on mismatch. Prebuilt engine
+binaries are delivered separately, via an `engines.json` **manifest published as a release asset** (per
+os/arch/tier: URL → sha256 → the commit it was built from); `lifecycle.ensure_engine` fetches it for the
+release a checkout is on, SHA-verifies the download, and uses a prebuilt only when it was built from the
+pinned submodule commit, so it is never a different version than a source build. CI attaches build
+provenance to each engine (verify with `gh attestation verify`). Keeping binary delivery out of the lock
+means the lock never churns as platforms or engines are added. `bob doctor` reports drift, `bob version`
+reports the release, and `bob update` moves between releases (a fast prebuilt swap where available) and
+rolls the build output back on a failed upgrade.
 
 macOS/Metal and AMD/ROCm remain non-goals for now; `scripts/osenv.py` is where they slot in.

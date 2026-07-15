@@ -188,7 +188,7 @@ class TestBuildAndText(unittest.TestCase):
              mock.patch("bob.versions.bob_version", return_value="9.9.9"):
             obj = versions.build_lock_object()
         self.assertEqual(list(obj), ["lockVersion", "release", "submodules", "toolchain",
-                                     "requirements", "tools", "models", "engines"])
+                                     "requirements", "tools", "models"])
         self.assertEqual(obj["release"], "9.9.9")
         self.assertEqual(obj["toolchain"], versions.LOCK_TOOLCHAIN)
 
