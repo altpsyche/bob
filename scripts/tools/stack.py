@@ -268,6 +268,16 @@ def stack_status(config: dict) -> str:
             vram = f"{spec.get('sizeGB', '?')} GB" if is_loaded else "--"
             lines.append(f"{role:<10} {label:<36} {vram:<9} {state}")
 
+    # Engine build-tier badge — surfaces a GPU box running a CPU-only engine right on the dashboard.
+    marker = _osenv().build_tier_marker()
+    if marker:
+        tier = marker.get("tier", "?")
+        gpu = _osenv().gpu_arch()
+        if tier == "cpu" and gpu:
+            lines.append(f"Engine:   CPU-only build  (GPU {gpu['Gen']} idle -- see: bob diagnose)")
+        else:
+            lines.append(f"Engine:   {tier} build ({marker.get('source', 'source')})")
+
     lines += _service_health_lines(config)
     lines.append("")
     return "\n".join(lines)

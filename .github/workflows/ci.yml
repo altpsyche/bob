@@ -253,11 +253,88 @@ jobs:
         shell: bash
         run: |
           python -m bob.kernel venv litellm
-          python -m bob build             # native-from-source CUDA (auto-detected arch)
+          python -m bob build --from-source   # native-from-source CUDA (auto-detected arch)
           python -m bob.kernel build-swap  # the llama-swap proxy (Go)
           python -m bob profile auto       # size to the card's VRAM
           python -m bob fetch              # active profile's models (verified vs versions.lock)
           python -m bob up -NoOpen
 
+      - name: Assert the source build recorded a GPU tier marker
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, sys
+          m = json.load(open("bin/.build-tier.json"))
+          assert m["tier"] == "gpu" and m["source"] == "source", m
+          print("engine tier marker OK:", m)
+          PY
+
       - name: End-to-end smoke (real inference)
         run: python scripts/smoke.py --up
+
+  # Build + publish the prebuilt, DRIVER-ONLY engine binaries for a tagged release (the outlier fix: users
+  # download these instead of compiling). CUDA builds in a CUDA *devel* container (building needs the toolkit,
+  # NOT a GPU); the CPU tier builds on the runner. Each archive bundles the CUDA runtime libs so a target box
+  # needs only the NVIDIA driver. Assets upload to the GitHub release; their URLs + SHA256s then populate
+  # config/engines.json (read into versions.lock by `bob lock`), which lifecycle.ensure_engine downloads +
+  # SHA-verifies + stages. Windows CUDA is NOT built here: its engines.json row pins the official llama.cpp
+  # Windows CUDA release asset (see docs/FALLBACKS.md).
+  #
+  # One piece still needs the real release setup: committing config/engines.json back with the uploaded asset
+  # URLs + SHA256s (a follow-up job/PR that opens a bump PR), so `bob lock` records them and ensure_engine can
+  # find a matching row. The fat multi-arch CUDA build is handled by `bob build --dist` (no local GPU needed).
+  publish-engines:
+    name: publish-engines (linux ${{ matrix.tier }}, release tags)
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write            # upload release assets
+    strategy:
+      fail-fast: false
+      matrix:
+        tier: [cuda, cpu]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build the ${{ matrix.tier }} engine (CUDA in a devel container — no GPU needed to compile)
+        shell: bash
+        run: |
+          set -e
+          if [ "${{ matrix.tier }}" = "cuda" ]; then
+            docker run --rm -v "$PWD":/bob -w /bob nvidia/cuda:12.8.0-devel-ubuntu22.04 bash -c '
+              apt-get update -y && apt-get install -y git cmake ninja-build g++ python3
+              # Fat multi-arch CUDA binary (Turing..Blackwell), no GPU needed to compile.
+              PYTHONPATH=scripts python3 -m bob build --dist --cuda-archs "75;80;89;120"
+            '
+          else
+            sudo apt-get update -y && sudo apt-get install -y cmake ninja-build g++
+            PYTHONPATH=scripts python3 -m bob build --dist --cpu
+          fi
+
+      - name: Package (bundle the CUDA runtime libs) + checksum
+        id: pkg
+        shell: bash
+        run: |
+          set -e
+          name="llama-server-linux-x86_64-${{ matrix.tier }}"
+          staging="dist/$name"; mkdir -p "$staging"
+          cp bin/llama-server "$staging"/
+          if [ "${{ matrix.tier }}" = "cuda" ]; then
+            for lib in libcudart libcublas libcublasLt; do
+              f=$(find / -name "${lib}.so.*" 2>/dev/null | head -1 || true)
+              [ -n "$f" ] && cp "$f" "$staging"/ || echo "WARN: $lib not found to bundle"
+            done
+          fi
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          sha=$(sha256sum "dist/$name.tar.gz" | cut -d' ' -f1)
+          echo "asset=dist/$name.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "PUBLISH $name  sha256=$sha   (put this in config/engines.json — TODO(2))"
+
+      - name: Upload the asset to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" "${{ steps.pkg.outputs.asset }}" --clobber

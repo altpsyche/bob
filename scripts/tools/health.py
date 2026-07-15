@@ -332,6 +332,22 @@ def _cuda_installed() -> list:
     return uniq
 
 
+def engine_tier_report(gpu, marker):
+    """(row_value, extra_lines, is_issue) for the engine build-tier row in diagnose. Reads only the osenv
+    CUDA probes (no side effects). The loud CPU-on-GPU case is the safety net for the silent idle-GPU bug:
+    a GPU box whose bin/ was built CPU-only is flagged as an issue with a one-command remedy."""
+    import osenv
+    if marker is None:
+        return "no build-tier marker yet  (run: bob build)", [], False
+    tier = marker.get("tier", "?")
+    if tier == "cpu" and gpu:
+        remedy = ("a CUDA toolkit is present: rebuild for GPU with  bob build --force"
+                  if osenv.best_cuda_root(gpu["CudaArch"]) else osenv.cuda_missing_message())
+        return (f"CPU-only build, but {gpu['Gen']} detected  ->  YOUR GPU IS IDLE",
+                remedy.splitlines(), True)
+    return f"{tier} build ({marker.get('source', 'source')})", [], False
+
+
 def diagnose(config: dict) -> str:
     """System + model readiness — the full report: GPU arch/VRAM,
     system RAM, active-profile fit, endpoint, Linux package manager, CUDA toolkit resolution, mlock
@@ -408,6 +424,15 @@ def diagnose(config: dict) -> str:
         label = (sorted(installed)[-1] + "  (no GPU detected)" if installed
                  else "not installed  (no GPU detected — skipping)")
         row("CUDA", label)
+
+    # Engine build tier vs hardware — the loud safety net for the silent "GPU box running a CPU engine" bug
+    # that shipped a great GPU idle for months. The tier marker records what bin/ was actually built at.
+    val, extra, is_issue = engine_tier_report(gpu, osenv.build_tier_marker())
+    row("Engine", val)
+    for ln in extra:
+        lines.append(f"             {ln}")
+    if is_issue:
+        issues += 1
 
     # mlock privilege
     st = osenv.mlock_status()

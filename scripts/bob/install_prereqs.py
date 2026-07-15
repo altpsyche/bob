@@ -86,11 +86,11 @@ def _set_linux_cuda_path(root: str, host_cxx: str = None) -> None:
 
 def ensure_cuda_toolkit(cpu: bool = False):
     """Tier-0 CUDA-toolkit seam, shared by install_prereqs AND `bob update` so an update ensures the same
-    prerequisite a fresh setup does (instead of failing mid-rebuild). Returns a toolkit root >= the GPU's
-    floor, or None for a CPU build. On a mutable Linux distro it installs the toolkit via the package seam
-    when absent, then re-probes. Raises RuntimeError with host-appropriate guidance when a GPU build still
-    has no usable toolkit — the distrobox recipe on an atomic host (where /usr is read-only), else the
-    install/newer-toolkit hint (osenv.cuda_missing_message is the single source)."""
+    prerequisite a fresh setup does. Returns a toolkit root >= the GPU's floor, or None when none is
+    available (a CPU build, or a GPU box with no reachable toolkit — e.g. an atomic host with read-only
+    /usr). On a mutable Linux distro it installs the toolkit via the package seam when absent, then
+    re-probes. Never raises: callers decide what to do with None — setup and update fall back to a CPU
+    build, matching each other; osenv.cuda_missing_message() is the shared guidance for that case."""
     if cpu:
         return None
     arch = (osenv.gpu_arch() or {}).get("CudaArch", 120)
@@ -107,18 +107,15 @@ def ensure_cuda_toolkit(cpu: bool = False):
             except (RuntimeError, KeyError) as e:
                 print(f"  {pkg} failed: {e}", file=sys.stderr)
             root = osenv.best_cuda_root(arch)
-            if root:
-                return root
-    raise RuntimeError(osenv.cuda_missing_message())
+    return root
 
 
 def _install_linux_cuda(manager: str) -> None:
     """Install the CUDA toolkit (if absent) + wire it onto PATH. The build discovers the toolkit by
     probing disk, so PATH is a convenience. Blackwell (sm_120) needs >= 12.8. Port of Install-LinuxCuda."""
-    try:
-        root = ensure_cuda_toolkit(cpu=False)
-    except RuntimeError as e:
-        print(f"  {e}", file=sys.stderr)
+    root = ensure_cuda_toolkit(cpu=False)
+    if not root:
+        print(f"  {osenv.cuda_missing_message()}", file=sys.stderr)
         return
     host_cxx = osenv.cuda_host_compiler()
     print(f"  CUDA toolkit : {root}", file=sys.stderr)
@@ -140,10 +137,11 @@ Inside the box it's plain Fedora (dnf) — the native build and CUDA passthrough
 touches the immutable host."""
 
 
-def _layer_atomic(pkgs: list, mgr: str, cpu: bool) -> int:
+def _layer_atomic(pkgs: list, mgr: str, cpu: bool, from_source: bool = False) -> int:
     """Layer the toolchain on an rpm-ostree host in one transaction. CUDA is intentionally NOT layered on
-    the host (it needs NVIDIA's repo + akmods and is fragile on atomic) — the printed note steers GPU users
-    to a Fedora distrobox, which is the blessed dev path on Bazzite/Silverblue anyway."""
+    the host (it needs NVIDIA's repo + akmods and is fragile on atomic). On the DEFAULT (prebuilt) path the
+    driver-only engine runs on the host as-is, so no distrobox is needed; the distrobox note is printed only
+    for a --from-source GPU build, where a Fedora distrobox is the blessed Bazzite/Silverblue path."""
     print(f"  layering {len(pkgs)} package(s) via rpm-ostree: {' '.join(pkgs)}", file=sys.stderr)
     try:
         osenv.install_packages(pkgs, manager=mgr)
@@ -152,9 +150,11 @@ def _layer_atomic(pkgs: list, mgr: str, cpu: bool) -> int:
             f"rpm-ostree layering failed: {e}\nOn an atomic host the recommended path is a Fedora "
             "distrobox instead:\n    distrobox create --name bob --image fedora:latest --nvidia && "
             "distrobox enter bob\nthen run ./install_prereqs.sh + ./setup.sh inside it.")
-    suffix = " --cpu" if cpu else ""
-    nvidia = "" if cpu else " --nvidia"
-    print("\n" + _ATOMIC_NOTE.format(cpu=suffix, nvidia=nvidia, repo=REPO), file=sys.stderr)
+    if from_source and not cpu:
+        print("\n" + _ATOMIC_NOTE.format(cpu="", nvidia=" --nvidia", repo=REPO), file=sys.stderr)
+    else:
+        print("\n  Atomic host: the driver-only prebuilt engine runs on the host as-is (no distrobox needed). "
+              "The toolchain layer applies on the NEXT BOOT — reboot, then run ./setup.sh.", file=sys.stderr)
     return 0
 
 
@@ -183,11 +183,14 @@ def _prime_sudo(mgr: str, pkgs: list, cpu: bool) -> None:
         "  • OR configure passwordless sudo, then re-run ./install_prereqs.sh.")
 
 
-def _install_linux(cpu: bool) -> int:
+def _install_linux(cpu: bool, from_source: bool = False) -> int:
     """Port of Install-LinuxPrereqs: toolchain via PACKAGE_MAP (ONE batched install = one sudo prompt), a
     venv-compatible Python, a build-usable cmake 3.x, optional CUDA + cron + docker. On an atomic/ostree
     host (rpm-ostree) the toolchain LAYERS and applies on the next boot. Fails non-zero if the toolchain
-    install fails."""
+    install fails.
+
+    The multi-GB CUDA Toolkit is installed ONLY with from_source=True: the default install uses the
+    driver-only prebuilt engine (CUDA runtime libs bundled), so it needs the NVIDIA driver but never nvcc."""
     mgr = osenv.linux_package_manager()
     if not mgr:
         raise RuntimeError("No supported package manager (apt/dnf/pacman/zypper/rpm-ostree) found. "
@@ -206,7 +209,7 @@ def _install_linux(cpu: bool) -> int:
     _prime_sudo(mgr, pkgs, cpu)
 
     if atomic:
-        return _layer_atomic(pkgs, mgr, cpu)
+        return _layer_atomic(pkgs, mgr, cpu, from_source)
 
     print(f"  installing {len(pkgs)} package(s): {' '.join(pkgs)}", file=sys.stderr)
     try:
@@ -235,6 +238,15 @@ def _install_linux(cpu: bool) -> int:
 
     if cpu:
         print("  --cpu: skipping CUDA toolkit (CPU-only tier).", file=sys.stderr)
+    elif not from_source:
+        # Prebuilt engines bundle the CUDA runtime libs (driver-only), so a default install does NOT pull the
+        # multi-GB CUDA Toolkit. nvcc is needed only for a --from-source GPU build (ensure_engine self-heals
+        # the toolkit then on a mutable distro, or ./install_prereqs.sh --from-source installs it up front).
+        if _have("nvidia-smi"):
+            print("  NVIDIA GPU present — the driver-only prebuilt engine needs no CUDA Toolkit. For a source "
+                  "GPU build instead, re-run with --from-source.", file=sys.stderr)
+        else:
+            print("  No NVIDIA GPU (nvidia-smi absent) — CPU tier.", file=sys.stderr)
     elif _have("nvidia-smi"):
         _install_linux_cuda(mgr)
     else:
@@ -272,9 +284,9 @@ def _install_linux(cpu: bool) -> int:
 _VSWHERE = r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
 
 
-def _install_windows(cpu: bool) -> int:  # pragma: no cover — exercised only on Windows (+ CI acceptance)
+def _install_windows(cpu: bool, from_source: bool = False) -> int:  # pragma: no cover — Windows only (+ CI acceptance)
     """Windows path: VS2022 C++, Node+uv, Go+Python312 (scoop/winget),
-    CUDA (GPU-aware), cmake 3.x, Docker Desktop."""
+    CUDA (GPU-aware, only with --from-source), cmake 3.x, Docker Desktop."""
     if not _have("git"):
         raise RuntimeError("git not found. Install Git from https://git-scm.com, then re-run install_prereqs.bat.")
     have_scoop = _have("scoop")
@@ -323,9 +335,13 @@ def _install_windows(cpu: bool) -> int:  # pragma: no cover — exercised only o
     else:
         _winget("Python.Python.3.12")
 
-    # CUDA (GPU-aware).
+    # CUDA (GPU-aware). Installed only for a --from-source GPU build; the default install uses the driver-only
+    # prebuilt engine (CUDA runtime libs bundled), so nvcc is not needed.
     if cpu:
         print("  --cpu: skipping CUDA toolkit (CPU-only tier).", file=sys.stderr)
+    elif not from_source:
+        print("  Prebuilt engine is driver-only — skipping the CUDA Toolkit. For a source GPU build, re-run "
+              "with --from-source.", file=sys.stderr)
     else:
         gpu = osenv.gpu_arch()
         arch = gpu["CudaArch"] if gpu else 120
@@ -381,19 +397,21 @@ def _install_windows(cpu: bool) -> int:  # pragma: no cover — exercised only o
     return 0
 
 
-def install_prereqs(cpu: bool = False) -> int:
+def install_prereqs(cpu: bool = False, from_source: bool = False) -> int:
     """Install all Bob prerequisites (toolchain + a venv-compatible Python). Dispatches Linux vs Windows.
-    Returns 0 on success; raises RuntimeError on a fatal toolchain failure."""
+    from_source additionally installs the CUDA Toolkit for a source GPU build; the default is driver-only
+    (the prebuilt engine bundles the runtime libs). Returns 0 on success; raises on a fatal toolchain failure."""
     if osenv.os_name() == "windows":
-        return _install_windows(cpu)
-    return _install_linux(cpu)
+        return _install_windows(cpu, from_source)
+    return _install_linux(cpu, from_source)
 
 
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     cpu = "--cpu" in argv or "-Cpu" in argv
+    from_source = "--from-source" in argv or "-FromSource" in argv
     try:
-        return install_prereqs(cpu=cpu)
+        return install_prereqs(cpu=cpu, from_source=from_source)
     except RuntimeError as e:
         print(str(e), file=sys.stderr)
         return 1

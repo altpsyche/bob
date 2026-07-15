@@ -11,16 +11,24 @@ bob diagnose    # system + model health check
 
 | Layer | Primary | Fallback 1 | Fallback 2 (no build required) |
 |---|---|---|---|
-| Inference engine | llama.cpp (source build, CUDA 12.8) | Official prebuilt llama.cpp (CUDA 12.4 zip) | Ollama |
+| Inference engine | Bob prebuilt llama-server (driver-only, CUDA libs bundled) | Source build (`bob build --from-source`, CUDA 12.8) | Ollama |
 | Proxy / model router | llama-swap (Go build) | llama-swap release binary | Ollama's built-in model swapping |
 | Chat and RAG UI | Open WebUI (Python 3.12, port 3000) | AnythingLLM desktop installer | LM Studio |
 | IDE autocomplete | Continue.dev | twinny | LM Studio + Continue |
 | Plan and edit separately | aider architect mode | Cline Plan/Act | Cline single-model |
 | Embeddings | bge-m3 | nomic-embed-text | Open WebUI's built-in nomic |
 
-## Engine won't build
+## Engine: prebuilt by default, source on request
 
-`bob build` detects your GPU and CUDA version automatically and should work on RTX 3000, 4000, and 5000 series cards, on both Windows and Linux (the OS-specific bits, Visual Studio + CUDA DLLs on Windows, Ninja + `.so` on Linux, go through the `scripts/osenv.py` seam). If the build fails anyway, the options below are ordered from least to most disruptive.
+By default Bob installs a **prebuilt, driver-only `llama-server`**: it bundles the CUDA runtime libs, so the target box needs only the NVIDIA driver, never the CUDA Toolkit, and nothing compiles. The binary is downloaded and SHA256-verified against the `engines` manifest in `versions.lock` (committed source: `config/engines.json`). This is what makes every distro, including atomic Fedora (Bazzite/Silverblue), work without a toolkit or a distrobox. `bob update` swaps the prebuilt in seconds rather than recompiling.
+
+**Want a source build instead?** Pass `--from-source` (`bob build --from-source`, `./setup.sh --from-source`, `./install_prereqs.sh --from-source`). That path installs the CUDA Toolkit, builds from the pinned submodule, and is the reproducibility ground truth. On an atomic host a source GPU build needs a Fedora distrobox (the prebuilt path does not).
+
+**Is my GPU actually being used?** `bob diagnose` reports the engine tier from `bin/.build-tier.json` and flags loudly if an NVIDIA GPU is present but the engine is CPU-only. That is the first thing to check if inference feels slow.
+
+## Engine won't build (source path)
+
+`bob build --from-source` detects your GPU and CUDA version automatically and should work on RTX 3000, 4000, and 5000 series cards, on both Windows and Linux (the OS-specific bits, Visual Studio + CUDA DLLs on Windows, Ninja + `.so` on Linux, go through the `scripts/osenv.py` seam). If the build fails anyway, the options below are ordered from least to most disruptive.
 
 **No GPU?** Build the CPU tier:
 

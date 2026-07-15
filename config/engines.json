@@ -1,0 +1,15 @@
+{
+  "_comment": "Prebuilt engine binaries, driver-only (the CUDA runtime libs are bundled next to the binary, so a target box needs only the NVIDIA driver, never the CUDA Toolkit). This is the committed single source the CI release-publish job updates after it builds + uploads the assets; `bob lock` reads it into versions.lock's `engines` block, and `lifecycle.ensure_engine` downloads + SHA-verifies + stages the matching row (falling back to a source build when no row matches or the download fails). Keys starting with '_' are ignored. Each real row is keyed '<component>-<os>-<cpuArch>-<tier>' and carries: component (llama-server|whisper-server), os (linux|windows), cpuArch (x86_64), tier (gpu|cpu), url, sha256 (of the downloadable archive), builtFromCommit (the pinned submodule commit the asset was built from), cudaArchs (embedded SM archs), cudaMajor, and libs (bundled runtime-lib filenames staged alongside the binary).",
+  "_example": {
+    "component": "llama-server",
+    "os": "linux",
+    "cpuArch": "x86_64",
+    "tier": "gpu",
+    "url": "https://github.com/altpsyche/bob/releases/download/vX.Y.Z/llama-server-linux-x86_64-cuda.tar.gz",
+    "sha256": "",
+    "builtFromCommit": "",
+    "cudaArchs": "75;80;89;120",
+    "cudaMajor": "12",
+    "libs": ["libcudart.so.12", "libcublas.so.12", "libcublasLt.so.12"]
+  }
+}

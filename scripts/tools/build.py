@@ -78,12 +78,19 @@ def _resolve_cmake(generator: str) -> str:
 
 # --- build llama.cpp (CUDA or CPU) ----------------------------------------------------------------
 
-def build_llama(cpu: bool = False, arch: int = 0, force: bool = False, cuda_root: str = "") -> str:
+def build_llama(cpu: bool = False, arch: int = 0, force: bool = False, cuda_root: str = "",
+                cuda_archs: str = "") -> str:
     """(Re)build llama.cpp -> bin/llama-server. Auto-detects arch + CUDA root (osenv) unless given; CPU
-    build with cpu=True. Atomic bin/ swap; Windows stages CUDA runtime DLLs."""
+    build with cpu=True. Atomic bin/ swap; Windows stages CUDA runtime DLLs.
+
+    cuda_archs (e.g. '75;80;89;120') builds a FAT distribution binary that runs on every listed NVIDIA gen,
+    with NO local GPU required (only the CUDA toolkit) — the mode the CI publish job uses to produce the
+    prebuilt asset. It implies a CUDA build and bypasses nvidia-smi arch detection."""
     import os
     import osenv
 
+    if cuda_archs:
+        cpu = False   # a distribution CUDA build is GPU-tier by definition
     exe = osenv.exe_name("llama-server")
     win = osenv.os_name() == "windows"
     flags = osenv.resolve_build_cmake_flags(cpu=cpu, arch=arch)
@@ -96,24 +103,36 @@ def build_llama(cpu: bool = False, arch: int = 0, force: bool = False, cuda_root
     cuda_host_cxx = None
     cuda_major = "12"
     lines = []
+    arch_cmake = ""   # the value handed to -DCMAKE_CUDA_ARCHITECTURES (single arch, or a fat ';'-list)
     if flags["Cuda"]:
-        if arch == 0:
-            gpu = osenv.gpu_arch()
-            if gpu:
-                arch = gpu["CudaArch"]
-                lines.append(f"Detected GPU: {gpu['Gen']} (sm_{arch})")
-            else:
-                lines.append("Could not detect GPU via nvidia-smi — defaulting to sm_120 (Blackwell). "
-                             "Pass arch=... to override, or use --cpu.")
-                arch = 120
-        if not cuda_root:
-            cuda_root = osenv.best_cuda_root(arch) or ""
+        if cuda_archs:
+            # Distribution build: an explicit arch list, no GPU detection. Needs the toolkit, not a GPU.
+            arch_cmake = cuda_archs
+            lines.append(f"Distribution build: CUDA archs [{cuda_archs}] (no nvidia-smi detection)")
             if not cuda_root:
-                if arch >= 120:
-                    raise RuntimeError(osenv.cuda_missing_message())
-                raise RuntimeError(f"No compatible CUDA toolkit for sm_{arch}. Install CUDA 12.x, pass "
-                                   "cuda_root=..., or build --cpu.")
-        lines += [f"Architecture : sm_{arch}", f"CUDA toolkit : {cuda_root}"]
+                cuda_root = osenv.best_cuda_root(120) or ""
+                if not cuda_root:
+                    raise RuntimeError("distribution CUDA build needs a CUDA toolkit (>= 12.8); none found. "
+                                       "Install one, pass cuda_root=..., or run in a CUDA devel container.")
+        else:
+            if arch == 0:
+                gpu = osenv.gpu_arch()
+                if gpu:
+                    arch = gpu["CudaArch"]
+                    lines.append(f"Detected GPU: {gpu['Gen']} (sm_{arch})")
+                else:
+                    lines.append("Could not detect GPU via nvidia-smi — defaulting to sm_120 (Blackwell). "
+                                 "Pass arch=... to override, or use --cpu.")
+                    arch = 120
+            if not cuda_root:
+                cuda_root = osenv.best_cuda_root(arch) or ""
+                if not cuda_root:
+                    if arch >= 120:
+                        raise RuntimeError(osenv.cuda_missing_message())
+                    raise RuntimeError(f"No compatible CUDA toolkit for sm_{arch}. Install CUDA 12.x, pass "
+                                       "cuda_root=..., or build --cpu.")
+            arch_cmake = str(arch)
+        lines += [f"CUDA archs   : {arch_cmake}", f"CUDA toolkit : {cuda_root}"]
         nvcc = Path(cuda_root) / "bin" / osenv.exe_name("nvcc")
         if not win:
             cuda_host_cxx = osenv.cuda_host_compiler()
@@ -138,12 +157,12 @@ def build_llama(cpu: bool = False, arch: int = 0, force: bool = False, cuda_root
 
     if flags["Cuda"] and win:  # pragma: no cover
         cfg = [cmake, "-B", "build", "-G", "Visual Studio 17 2022", "-T", f"cuda={cuda_root}",
-               "-DGGML_CUDA=ON", f"-DCMAKE_CUDA_ARCHITECTURES={arch}", "-DGGML_CUDA_FORCE_CUBLAS=OFF",
+               "-DGGML_CUDA=ON", f"-DCMAKE_CUDA_ARCHITECTURES={arch_cmake}", "-DGGML_CUDA_FORCE_CUBLAS=OFF",
                f"-DCUDAToolkit_ROOT={cuda_root}"]
     elif flags["Cuda"]:
         nvcc = Path(cuda_root) / "bin" / osenv.exe_name("nvcc")
         cfg = [cmake, "-B", "build", "-G", flags["Generator"], "-DGGML_CUDA=ON",
-               f"-DCMAKE_CUDA_COMPILER={nvcc}", f"-DCMAKE_CUDA_ARCHITECTURES={arch}",
+               f"-DCMAKE_CUDA_COMPILER={nvcc}", f"-DCMAKE_CUDA_ARCHITECTURES={arch_cmake}",
                "-DGGML_CUDA_FORCE_CUBLAS=OFF", f"-DCUDAToolkit_ROOT={cuda_root}", "-DCMAKE_BUILD_TYPE=Release"]
         if cuda_host_cxx:
             cfg.append(f"-DCMAKE_CUDA_HOST_COMPILER={cuda_host_cxx}")
@@ -184,6 +203,11 @@ def build_llama(cpu: bool = False, arch: int = 0, force: bool = False, cuda_root
         shutil.rmtree(tmp, ignore_errors=True)
         raise
     shutil.rmtree(tmp, ignore_errors=True)
+    # Record the tier bin/ was built at so update/diagnose/status can notice a GPU box on a CPU engine.
+    # Marker path derives from BIN (this module's, which tests patch), so the write stays inside that tree.
+    osenv.write_build_tier_marker(tier=("gpu" if flags["Cuda"] else "cpu"),
+                                  arch=(arch if flags["Cuda"] else 0),
+                                  cuda=(cuda_major if flags["Cuda"] else None), source="source", bin_dir=BIN)
     return f"Built. llama-server at: {BIN / exe}"
 
 
@@ -422,21 +446,50 @@ def _prune_orphan_models() -> None:
     print(f"Pruned {freed / 1e9:.1f} GB of old models.", file=sys.stderr)
 
 
-def update_stack(tag: str = None) -> int:
-    """Release-aware update with rollback: fetch/checkout (default: ff the current branch; tag= a release),
-    submodule sync, venv reinstall, then rebuild EVERY compiled submodule that actually moved (llama.cpp,
-    whisper.cpp, llama-swap, fabric) under one bin/ snapshot with per-binary verify + rollback on failure,
-    relock, fetch any newly-added models (resume + skip-present, so code-only updates download nothing),
-    offer to prune models the release dropped, provision voice assets (STT model + piper + audio deps,
-    matching a fresh setup), then doctor. Returns 0 on success, 1 on a handled failure. CLI-only + long."""
-    import osenv
+def _latest_release_tag() -> str:
+    """The newest v* release tag by version order, or '' if there are none. Powers `--channel stable`."""
+    try:
+        r = subprocess.run(["git", "-C", str(REPO), "tag", "--list", "v*", "--sort=-v:refname"],
+                           capture_output=True, text=True, timeout=10)
+        tags = [t for t in r.stdout.splitlines() if t.strip()]
+        return tags[0].strip() if tags else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
 
-    cpu = osenv.gpu_info() is None
+
+def update_stack(tag: str = None, from_source: bool = False, channel: str = None) -> int:
+    """Release-aware update with rollback: fetch/checkout, submodule sync, venv reinstall, then rebuild EVERY
+    compiled submodule that actually moved (the llama-server rebuild goes through the prebuilt-first lifecycle
+    seam, so a release update is a fast driver-only binary swap) under one bin/ snapshot with per-binary verify
+    + rollback on failure, relock, fetch newly-added models, offer to prune dropped ones, provision voice, then
+    doctor. Channel selects what to move to when no explicit tag: 'stable' = the latest v* release tag,
+    'latest' (default) = fast-forward the current branch. from_source forces a source engine build. Returns 0
+    on success, 1 on a handled failure. CLI-only + long."""
+    import osenv
+    from bob import lifecycle
+
+    if not tag and channel == "stable":
+        tag = _latest_release_tag()
+        if tag:
+            print(f"channel 'stable' -> latest release {tag}", file=sys.stderr)
+        else:
+            print("channel 'stable' requested but no v* release tag found; fast-forwarding instead.",
+                  file=sys.stderr)
+
+    # The tier decision is single-sourced through lifecycle.resolve_build_tier (shared with setup + `bob
+    # build`), never re-derived from hardware here. This provisional read is cheap (self_heal=False installs
+    # nothing); it's refined with a self-healing, warn-policy decision below only if a CUDA component moved.
+    cpu = lifecycle.resolve_build_tier(self_heal=False)["tier"] == "cpu"
     # (name, source dir, produced binary, verify-by-running-`--version`, rebuild fn). Every native
     # component the update can rebuild; a submodule is rebuilt only when its committed commit moved, so a
     # code-only update stays a no-op and a llama-swap/fabric bump no longer leaves a stale binary behind.
+    # The llama-server rebuild goes through the single lifecycle seam (prebuilt-first, source fallback), so an
+    # update is a fast driver-only binary swap when a prebuilt exists and identical to setup otherwise. cpu is
+    # the already-decided tier (late-bound), so ensure_engine never re-blocks; on_block='warn' is belt-and-braces.
     components = [
-        ("llama.cpp",   SRC_LLAMA,   "llama-server",  True,  lambda: build_llama(force=True, cpu=cpu)),
+        ("llama.cpp",   SRC_LLAMA,   "llama-server",  True,
+         lambda: lifecycle.ensure_engine(cpu=cpu, from_source=from_source, force=True, on_block="warn",
+                                         self_heal=False, config=_cfg)["detail"]),
         ("whisper.cpp", SRC_WHISPER, "whisper-server", False, lambda: build_whisper(force=True, cpu_only=cpu)),
         ("llama-swap",  SRC_SWAP,    "llama-swap",    True,  lambda: build_llama_swap(force=True)),
         ("fabric",      SRC_FABRIC,  "fabric",        True,  lambda: setup_fabric(force=True)),
@@ -461,18 +514,14 @@ def update_stack(tag: str = None) -> int:
         print("Submodules unchanged, no rebuild needed.", file=sys.stderr)
     else:
         summary = ", ".join(f"{n} {_short(before[n])} to {_short(_git_head(s))}" for n, s, _, _, _ in moved)
-        # Tier-0 gate before we touch bin/: a GPU rebuild of a CUDA component needs the toolkit. Ensure it
-        # up front (the same seam a fresh setup uses) so update self-heals on a mutable distro and fails
-        # fast with the right guidance — the distrobox recipe on an atomic host — leaving the install
-        # untouched instead of building halfway and rolling back.
-        if not cpu and any(n in ("llama.cpp", "whisper.cpp") for n, *_ in moved):
-            try:
-                from bob import install_prereqs
-                install_prereqs.ensure_cuda_toolkit(cpu=cpu)
-            except RuntimeError as e:
-                print(f"Cannot rebuild for your GPU: {e}", file=sys.stderr)
-                print("Update aborted before any change — your install is unchanged.", file=sys.stderr)
-                return 1
+        # Single tier decision (shared with setup + `bob build`), self-healing the toolkit on a mutable
+        # distro. on_block='warn' keeps a running box alive: a GPU box that lost its toolkit (e.g. an atomic
+        # host with read-only /usr) does NOT hard-fail the update. It warns loudly, records CPU in the tier
+        # marker, and rebuilds CPU so the update completes, while `bob diagnose` keeps flagging the idle GPU.
+        # The rebuild lambdas read `cpu` at call time, so reassigning it here re-tiers them.
+        if any(n in ("llama.cpp", "whisper.cpp") for n, *_ in moved):
+            decision = lifecycle.apply_block_policy(lifecycle.resolve_build_tier(), on_block="warn")
+            cpu = decision["tier"] == "cpu"
         print(f"Rebuilding moved submodules: {summary} (bin/ snapshotted for rollback)...", file=sys.stderr)
         bak = osenv.backup_build_output(BIN)
         ok = True

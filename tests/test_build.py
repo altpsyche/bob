@@ -160,6 +160,9 @@ class TestBuildLlama(_BuildTreeMixin, unittest.TestCase):
         self.assertIn("Ninja", configure)
         self.assertTrue((self.bin / "llama-server").exists())  # atomic swap landed the binary
         self.assertIn("Built", out)
+        marker = osenv.build_tier_marker(bin_dir=self.bin)   # tier marker written into THIS bin/ (hermetic)
+        self.assertEqual(marker["tier"], "gpu")
+        self.assertEqual(marker["arch"], 120)
 
     def test_cpu_build_disables_cuda(self):
         cap = []
@@ -170,6 +173,7 @@ class TestBuildLlama(_BuildTreeMixin, unittest.TestCase):
         configure = next(c for c in cap if any("GGML_CUDA" in a for a in c))
         self.assertIn("-DGGML_CUDA=OFF", configure)
         self.assertFalse(any("CUDA_ARCHITECTURES" in a for a in configure))
+        self.assertEqual(osenv.build_tier_marker(bin_dir=self.bin)["tier"], "cpu")   # marker records CPU tier
 
     def test_cuda_missing_root_raises(self):
         with mock.patch("osenv.os_name", return_value="linux"), \
@@ -178,6 +182,21 @@ class TestBuildLlama(_BuildTreeMixin, unittest.TestCase):
             with self.assertRaises(RuntimeError) as cm:
                 build_mod.build_llama(cpu=False, force=True)
             self.assertIn("12.8", str(cm.exception))
+
+    def test_dist_multiarch_cuda_build_needs_no_gpu(self):
+        # The CI publish path: a fat multi-arch CUDA binary built with NO local GPU (only the toolkit).
+        cap = []
+        with mock.patch("osenv.os_name", return_value="linux"), \
+             mock.patch("osenv.gpu_arch", return_value=None), \
+             mock.patch("osenv.best_cuda_root", return_value="/opt/cuda"), \
+             mock.patch("osenv.cuda_host_compiler", return_value=None), \
+             mock.patch("osenv.assert_cuda_host_compiler_ok"), \
+             mock.patch.object(build_mod, "_resolve_cmake", return_value="cmake"), \
+             mock.patch.object(build_mod, "_run", side_effect=self._fake_run(cap)):
+            build_mod.build_llama(cuda_archs="75;80;89;120", force=True)
+        configure = next(c for c in cap if "-DGGML_CUDA=ON" in c)
+        self.assertIn("-DCMAKE_CUDA_ARCHITECTURES=75;80;89;120", configure)   # fat binary, no nvidia-smi
+        self.assertEqual(osenv.build_tier_marker(bin_dir=self.bin)["tier"], "gpu")
 
 
 class TestBuildLlamaSwap(_BuildTreeMixin, unittest.TestCase):
@@ -263,8 +282,7 @@ class TestUpdateStack(unittest.TestCase):
             # Tier-0 CUDA ensure that a GPU rebuild gates on (mutable install path is exercised in
             # install_prereqs tests): return a root when CUDA is available, else raise the guidance.
             "ensure_cuda": mock.patch("bob.install_prereqs.ensure_cuda_toolkit",
-                                      side_effect=lambda cpu=False: "/usr/local/cuda" if cuda_ok
-                                      else (_ for _ in ()).throw(RuntimeError("use a Fedora distrobox"))),
+                                      side_effect=lambda cpu=False: "/usr/local/cuda" if cuda_ok else None),
             "write_lock": mock.patch("bob.versions.write_lock"),
             # update_stack fetches any newly-added models (best-effort). Keep the unit hermetic — never
             # touch the network / attempt a real GGUF download.
@@ -319,19 +337,18 @@ class TestUpdateStack(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertTrue(any("checkout" in c and "v0.2.0" in c for c in git))
 
-    def test_gpu_rebuild_aborts_when_cuda_missing(self):
-        # atomic host / no toolkit: a GPU rebuild fails fast BEFORE snapshotting bin/, install untouched.
+    def test_gpu_rebuild_falls_back_to_cpu_when_cuda_missing(self):
+        # no toolkit (e.g. atomic host): update rebuilds CPU-tier like setup does, so it still completes.
         rc, mocks, _ = self._run("aaa", "bbb", changed="llama.cpp", gpu={"CudaArch": 120}, cuda_ok=False)
-        self.assertEqual(rc, 1)
+        self.assertEqual(rc, 0)
         mocks["ensure_cuda"].assert_called_once()
-        mocks["backup"].assert_not_called()          # never touched bin/
-        mocks["build_llama"].assert_not_called()
+        self.assertTrue(mocks["build_llama"].call_args.kwargs["cpu"])    # fell back to a CPU rebuild
 
-    def test_gpu_rebuild_proceeds_when_cuda_present(self):
+    def test_gpu_rebuild_uses_gpu_when_cuda_present(self):
         rc, mocks, _ = self._run("aaa", "bbb", changed="llama.cpp", gpu={"CudaArch": 120}, cuda_ok=True)
         self.assertEqual(rc, 0)
         mocks["ensure_cuda"].assert_called_once()
-        mocks["build_llama"].assert_called_once()
+        self.assertFalse(mocks["build_llama"].call_args.kwargs["cpu"])   # GPU rebuild
 
     def test_cpu_rebuild_skips_cuda_ensure(self):
         rc, mocks, _ = self._run("aaa", "bbb", changed="llama.cpp", gpu=None)   # cpu tier
@@ -354,10 +371,14 @@ class TestCliArgParsing(unittest.TestCase):
     def test_tag_flag_parsed(self):
         seen = {}
         fake = mock.Mock()
-        fake.update_stack = mock.Mock(side_effect=lambda tag=None: seen.update(tag=tag) or 0)
+        fake.update_stack = mock.Mock(
+            side_effect=lambda tag=None, from_source=False, channel=None: seen.update(
+                tag=tag, from_source=from_source, channel=channel) or 0)
         with mock.patch.object(cli, "_build_mod", return_value=fake):
-            cli._handle_update(["--tag", "v1.2.3"])
+            cli._handle_update(["--tag", "v1.2.3", "--from-source", "--channel", "stable"])
         self.assertEqual(seen["tag"], "v1.2.3")
+        self.assertTrue(seen["from_source"])
+        self.assertEqual(seen["channel"], "stable")
 
 
 if __name__ == "__main__":

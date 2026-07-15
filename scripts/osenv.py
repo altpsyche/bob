@@ -656,6 +656,18 @@ def bin_exe(base: str) -> Path:
     return REPO / "bin" / exe_name(base)
 
 
+def normalized_cpu_arch() -> str:
+    """CPU architecture as used in prebuilt-engine asset names: 'x86_64' (incl. amd64/x64), 'arm64' (incl.
+    aarch64), else platform.machine() lowercased. The one place the machine string is normalized so the
+    engine-manifest lookup and any asset naming agree."""
+    m = (platform.machine() or "").lower()
+    if m in ("x86_64", "amd64", "x64"):
+        return "x86_64"
+    if m in ("arm64", "aarch64"):
+        return "arm64"
+    return m or "x86_64"
+
+
 def home_config_dir(app: str) -> Path:
     """Per-app config dir: %USERPROFILE%\\.config\\<app> on Windows; $XDG_CONFIG_HOME/<app> (or
     ~/.config/<app>) on POSIX."""
@@ -1025,6 +1037,44 @@ def _rm_rf(p: Path) -> None:
             p.unlink()
         except OSError:
             pass
+
+
+# --- build-tier marker (records which tier bin/ was actually built at) ------------------------
+# A local, gitignored artifact under bin/ — deliberately NOT in versions.lock, since the same lock must
+# yield a GPU build on one machine and a CPU build on another. It is the single fact that lets `bob update`,
+# `bob diagnose`, and `bob status` notice a GPU box running a CPU-tier engine (the silent-degradation bug).
+
+def build_tier_marker_path(bin_dir=None) -> Path:
+    """Path to the marker under `bin_dir` (default: repo bin/). Callers that stage into a non-default bin/
+    (the build executor, and tests that patch it) pass their own so the write stays inside that tree."""
+    return (Path(bin_dir) if bin_dir else (REPO / "bin")) / ".build-tier.json"
+
+
+def write_build_tier_marker(tier: str, arch: int = 0, cuda: str = None, source: str = "source",
+                            bin_dir=None) -> None:
+    """Record the tier the engine in bin/ was built at. Called by the build executor (build_llama), so every
+    path that produces an engine records the fact. Best-effort: a write failure must never fail a good build."""
+    import datetime
+    marker = {"tier": tier, "arch": int(arch or 0), "cuda": cuda, "source": source,
+              "builtAt": datetime.datetime.now().isoformat(timespec="seconds")}
+    try:
+        p = build_tier_marker_path(bin_dir)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(marker, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def build_tier_marker(bin_dir=None):
+    """The recorded build tier for bin/, or None when unknown (never built here / marker missing/corrupt)."""
+    p = build_tier_marker_path(bin_dir)
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
 
 
 # --- CUDA toolkit discovery (the hardest seam; used by diagnose + build) --------------

@@ -54,7 +54,7 @@ def _step(current: int, total: int, name: str, hint: str = "") -> None:
 # --- bootstrap -----------------------------------------------------------------------------------
 
 def bootstrap(skip_models: bool = False, skip_build: bool = False, profile: str = None,
-              with_webui: bool = False, cpu: bool = False) -> None:
+              with_webui: bool = False, cpu: bool = False, from_source: bool = False) -> None:
     """Submodules -> build engine + proxy + fabric -> Python venvs -> gen configs -> fetch models.
     Re-runnable; heavy steps skippable. Imports the capability fns directly."""
     _tools_on_path()
@@ -81,22 +81,15 @@ def bootstrap(skip_models: bool = False, skip_build: bool = False, profile: str 
         elif sug:
             print(f"VRAM ~{vram} GB -> profile '{active}' (good fit).", file=sys.stderr)
 
-    gpu = osenv.gpu_arch()
-    cuda_root = osenv.best_cuda_root(gpu["CudaArch"] if gpu else 120)
-
     print("\n=== Prereqs ===", file=sys.stderr)
     if not _have("git"):
         raise RuntimeError("git missing")
     print("git    : ok", file=sys.stderr)
     print("cmake  : " + ("ok" if _have("cmake") else "not on PATH (auto-install handles this)"), file=sys.stderr)
-    if gpu:
-        print(f"GPU    : {gpu['Gen']} (sm_{gpu['CudaArch']})", file=sys.stderr)
-    print("CUDA   : " + (f"ok — {cuda_root}" if cuda_root else "MISSING — install CUDA 12.x before building"),
-          file=sys.stderr)
-    print("go     : " + ("ok" if _have("go") else "missing — will need a llama-swap release binary instead"),
+    print("go     : " + ("ok" if _have("go") else "missing (will need a llama-swap release binary instead)"),
           file=sys.stderr)
     py = osenv.bob_venv_python()
-    print("python : " + (py if py else "MISSING — install Python 3.12 (or ensure uv is available)"),
+    print("python : " + (py if py else "MISSING (install Python 3.12, or ensure uv is available)"),
           file=sys.stderr)
 
     # Submodules.
@@ -104,19 +97,17 @@ def bootstrap(skip_models: bool = False, skip_build: bool = False, profile: str 
     if subprocess.run(["git", "-C", str(REPO), "submodule", "update", "--init", "--recursive"]).returncode != 0:
         raise RuntimeError("submodule init failed")
 
-    # Build engine + proxy + fabric.
+    # Build engine + proxy + fabric. The tier decision (GPU vs CPU, toolkit ensure, fail-loud on a GPU box with
+    # no toolkit) lives in ONE place now: lifecycle.ensure_engine — so setup cannot drift from `bob build` /
+    # `bob update`. on_block='stop' means a fresh setup fails loud with the one-command route (a Fedora
+    # distrobox on atomic, ./install_prereqs.sh on a mutable distro) rather than silently shipping a CPU-tier
+    # build on GPU hardware; --cpu is the consent escape hatch.
     build.configure(config)
     if not skip_build:
-        if cuda_root and not cpu:
-            label = f"{gpu['Gen']} sm_{gpu['CudaArch']}" if gpu else "sm_120 (default)"
-            print(f"\n=== Build llama.cpp ({label}) ===", file=sys.stderr)
-            build.build_llama(arch=(gpu["CudaArch"] if gpu else 0))
-        else:
-            # CPU tier: either forced (--cpu) or no CUDA toolkit detected — so a GPU-less box (or a user
-            # who asked for it) still gets a working, if slower, llama-server.
-            why = "--cpu requested" if cpu else "no CUDA toolkit found"
-            print(f"\n=== Build llama.cpp (CPU-only — {why}) ===", file=sys.stderr)
-            build.build_llama(cpu=True)
+        print("\n=== Build llama.cpp ===", file=sys.stderr)
+        from bob import lifecycle
+        result = lifecycle.ensure_engine(cpu=cpu, from_source=from_source, on_block="stop", config=config)
+        print(f"  tier: {result['tier']} ({result['reason']})\n  {result['detail']}", file=sys.stderr)
 
         print("\n=== Build llama-swap ===", file=sys.stderr)
         if _have("go"):
@@ -499,7 +490,8 @@ def verify_install() -> int:
 # --- setup (the 12-step orchestrator) ------------------------------------------------------------
 
 def setup(skip_models: bool = False, skip_build: bool = False, skip_voice: bool = False,
-          launch: bool = False, profile: str = None, with_webui: bool = False, cpu: bool = False) -> int:
+          launch: bool = False, profile: str = None, with_webui: bool = False, cpu: bool = False,
+          from_source: bool = False) -> int:
     """The fresh-machine orchestrator. Idempotent; safe to re-run. Prerequisites must be installed first
     via `python3 -m bob.kernel prereqs`."""
     _tools_on_path()
@@ -567,7 +559,8 @@ def setup(skip_models: bool = False, skip_build: bool = False, skip_voice: bool 
         print("  (Windows: winget/VS-bundled cmake handled by install_prereqs)", file=sys.stderr)
 
     _step(6, total, "Bootstrap: submodules -> build -> venvs+tools -> models", "first build takes 5-15 min")
-    bootstrap(skip_models=skip_models, skip_build=skip_build, profile=profile, with_webui=with_webui, cpu=cpu)
+    bootstrap(skip_models=skip_models, skip_build=skip_build, profile=profile, with_webui=with_webui, cpu=cpu,
+              from_source=from_source)
 
     _step(7, total, "Wire clients (Continue + aider)")
     try:
@@ -664,7 +657,7 @@ def build_swap() -> str:
 _FLAG_ALIASES = {
     "-skipmodels": "--skip-models", "-skipbuild": "--skip-build", "-skipvoice": "--skip-voice",
     "-launch": "--launch", "-withwebui": "--with-webui", "-cpu": "--cpu", "--cpu": "--cpu",
-    "-profile": "--profile",
+    "-profile": "--profile", "-fromsource": "--from-source",
 }
 
 
@@ -679,6 +672,8 @@ def main(argv=None) -> int:
 
     sp = sub.add_parser("prereqs", help="install toolchain + a venv-compatible Python (Tier 0)")
     sp.add_argument("--cpu", action="store_true", help="CPU-only tier (skip the CUDA toolkit)")
+    sp.add_argument("--from-source", action="store_true",
+                    help="also install the CUDA Toolkit for a source GPU build (default is driver-only prebuilt)")
 
     for cmdname in ("setup", "bootstrap"):
         s = sub.add_parser(cmdname, help="fresh-machine bring-up (Tier 1)")
@@ -688,6 +683,8 @@ def main(argv=None) -> int:
         s.add_argument("--launch", action="store_true")
         s.add_argument("--with-webui", action="store_true")
         s.add_argument("--cpu", action="store_true", help="force the CPU build tier (skip CUDA)")
+        s.add_argument("--from-source", action="store_true",
+                       help="build the engine from source instead of the prebuilt binary")
         s.add_argument("--profile", default=None)
 
     sv = sub.add_parser("venv", help="create tools/venv-<name> (litellm|aider|eval|webui)")
@@ -700,14 +697,14 @@ def main(argv=None) -> int:
     try:
         if args.cmd == "prereqs":
             from bob import install_prereqs
-            return install_prereqs.install_prereqs(cpu=args.cpu)
+            return install_prereqs.install_prereqs(cpu=args.cpu, from_source=args.from_source)
         if args.cmd == "setup":
             return setup(skip_models=args.skip_models, skip_build=args.skip_build,
                          skip_voice=args.skip_voice, launch=args.launch, profile=args.profile,
-                         with_webui=args.with_webui, cpu=args.cpu)
+                         with_webui=args.with_webui, cpu=args.cpu, from_source=args.from_source)
         if args.cmd == "bootstrap":
             bootstrap(skip_models=args.skip_models, skip_build=args.skip_build, profile=args.profile,
-                      with_webui=args.with_webui, cpu=args.cpu)
+                      with_webui=args.with_webui, cpu=args.cpu, from_source=args.from_source)
             return 0
         if args.cmd == "venv":
             for n in args.names:

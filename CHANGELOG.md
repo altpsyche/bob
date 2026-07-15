@@ -8,6 +8,29 @@ rebuilds only what changed, verifies, and rolls back on failure.
 
 ## [Unreleased]
 
+### Changed
+- **One install/update lifecycle seam; a GPU box can no longer silently run CPU.** The four entry points that
+  used to decide the build tier independently (`bob setup`, `bob build`, `bob update`, and the internal build)
+  now route through one seam ([scripts/bob/lifecycle.py](scripts/bob/lifecycle.py): `resolve_build_tier` +
+  `ensure_engine`). A GPU box with no reachable CUDA toolkit and no `--cpu` consent is BLOCKED with a
+  one-command route rather than quietly building the CPU tier; `bob update` warns and keeps a running box
+  alive instead of hard-failing. This was the drift that let a great GPU sit idle on CPU inference.
+- **Prebuilt, driver-only engines (Bob stops being the outlier).** Bob installs a prebuilt `llama-server`
+  that bundles the CUDA runtime libs, so a target box needs only the NVIDIA driver, never the CUDA Toolkit,
+  and never compiles. It is downloaded and SHA256-verified against a new `engines` manifest in
+  `versions.lock` (committed source: `config/engines.json`, published by CI). Source build stays the
+  reproducible fallback via `--from-source`, and the default install no longer pulls the multi-GB CUDA
+  Toolkit. Atomic hosts (Bazzite/Silverblue) work driver-only on the default path, no distrobox needed.
+- **`bob diagnose` / `bob status` flag an idle GPU.** A new `bin/.build-tier.json` marker records the tier
+  bin/ was built at; diagnose emits a loud, actionable line when an NVIDIA GPU is present but the engine is
+  CPU-only, so the silent-degradation case is impossible to miss.
+- **`bob update --channel stable|latest` and `--from-source`.** A prebuilt update is a fast driver-only
+  binary swap rather than a recompile; `stable` tracks the latest release tag.
+
+### Added
+- `config/engines.json` — the committed prebuilt-engine manifest (component/os/arch/tier -> URL + SHA256 +
+  provenance) the CI `publish-engines` job updates and `bob lock` folds into `versions.lock`.
+
 ## [1.2.0] (2026-07-14)
 
 Sharper daily driver: a current local coder, refreshed cloud peers, and a faster, tougher voice path.

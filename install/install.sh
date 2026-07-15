@@ -50,13 +50,18 @@ fi
 
 cd "$BOB_HOME"
 
-# Forward only --cpu to the prereq step (its argparse accepts nothing else); pass all args to setup.
-CPU=""
-for a in "$@"; do [ "$a" = "--cpu" ] && CPU="--cpu"; done
+# Forward the prereq-relevant flags (--cpu, --from-source) to the prereq step; pass all args to setup.
+PREREQ_FLAGS=""
+for a in "$@"; do
+  case "$a" in
+    --cpu) PREREQ_FLAGS="$PREREQ_FLAGS --cpu" ;;
+    --from-source) PREREQ_FLAGS="$PREREQ_FLAGS --from-source" ;;
+  esac
+done
 
 log "Installing prerequisites ..."
 # shellcheck disable=SC2086
-./install_prereqs.sh $CPU
+./install_prereqs.sh $PREREQ_FLAGS
 log "Running setup ..."
 ./setup.sh "$@"
 log "Verifying against versions.lock ..."

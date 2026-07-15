@@ -33,9 +33,12 @@ if (Test-Path (Join-Path $BobHome '.git')) {
 
 Set-Location $BobHome
 
-$cpu = if ($args -contains '--cpu') { '--cpu' } else { '' }
+# Forward the prereq-relevant flags (--cpu, --from-source) to the prereq step; pass all args to setup.
+$prereqFlags = @()
+if ($args -contains '--cpu') { $prereqFlags += '--cpu' }
+if ($args -contains '--from-source') { $prereqFlags += '--from-source' }
 Log 'Installing prerequisites ...'
-& .\install_prereqs.bat $cpu
+& .\install_prereqs.bat @prereqFlags
 Log 'Running setup ...'
 & .\setup.bat @args
 Log 'Verifying against versions.lock ...'

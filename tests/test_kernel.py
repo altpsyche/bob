@@ -248,7 +248,12 @@ class TestKernelDispatch(unittest.TestCase):
     def test_prereqs_subcommand_delegates(self):
         with mock.patch.object(install_prereqs, "install_prereqs", return_value=0) as ip:
             self.assertEqual(kernel.main(["prereqs", "--cpu"]), 0)
-            ip.assert_called_once_with(cpu=True)
+            ip.assert_called_once_with(cpu=True, from_source=False)
+
+    def test_prereqs_from_source_delegates(self):
+        with mock.patch.object(install_prereqs, "install_prereqs", return_value=0) as ip:
+            self.assertEqual(kernel.main(["prereqs", "--from-source"]), 0)
+            ip.assert_called_once_with(cpu=False, from_source=True)
 
     def test_make_venv_unknown_name_raises(self):
         with self.assertRaises(RuntimeError):

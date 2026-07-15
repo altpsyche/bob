@@ -161,14 +161,13 @@ class TestEnsureCudaToolkit(unittest.TestCase):
              mock.patch("osenv.best_cuda_root", return_value="/usr/local/cuda-12.8"):
             self.assertEqual(self._mod().ensure_cuda_toolkit(cpu=False), "/usr/local/cuda-12.8")
 
-    def test_atomic_host_raises_distrobox_guidance(self):
+    def test_atomic_host_returns_none(self):
+        # atomic host can't install/build a toolkit -> None (callers fall back to a CPU build, like setup).
         with mock.patch("osenv.gpu_arch", return_value={"CudaArch": 120}), \
              mock.patch("osenv.best_cuda_root", return_value=None), \
              mock.patch("osenv.os_name", return_value="linux"), \
              mock.patch("osenv.is_atomic_linux", return_value=True):
-            with self.assertRaises(RuntimeError) as cm:
-                self._mod().ensure_cuda_toolkit(cpu=False)
-        self.assertIn("distrobox", str(cm.exception))
+            self.assertIsNone(self._mod().ensure_cuda_toolkit(cpu=False))
 
     def test_mutable_installs_then_resolves(self):
         seq = [None, "/usr/local/cuda-12.9"]   # absent, then present after the package install

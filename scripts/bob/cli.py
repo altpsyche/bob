@@ -782,19 +782,39 @@ def _build_mod():
 
 
 def _handle_build(rest: list) -> int:
-    """bob build [--cpu] [--force] — (re)build llama.cpp. Auto-selects the CPU tier when no GPU."""
-    import osenv
+    """bob build [--cpu] [--force] [--from-source] — (re)build llama.cpp via the single lifecycle seam. Auto
+    -selects the CPU tier when there's no GPU; on a GPU box with no CUDA toolkit and no --cpu it fails loud
+    with the one-command route rather than silently building the CPU tier.
+
+    bob build --dist [--cpu] [--cuda-archs "75;80;89;120"] — build a DISTRIBUTION artifact (the CI publish
+    path): bypasses the local-GPU tier decision and, for the GPU tier, builds a fat multi-arch CUDA binary
+    with no local GPU required (only the toolkit)."""
     rest = list(rest)
     force = "--force" in rest
-    cpu = "--cpu" in rest or osenv.gpu_info() is None
-    if cpu and "--cpu" not in rest:
-        print("No GPU detected — building the CPU-only tier. Use 'bob build --cpu' to force, or install "
-              "CUDA for a GPU build.", file=sys.stderr)
+    cpu = "--cpu" in rest
+    from_source = "--from-source" in rest
+
+    if "--dist" in rest:
+        archs = (rest[rest.index("--cuda-archs") + 1]
+                 if "--cuda-archs" in rest and rest.index("--cuda-archs") + 1 < len(rest)
+                 else "75;80;89;120")
+        try:
+            print(_build_mod().build_llama(cpu=True, force=True) if cpu
+                  else _build_mod().build_llama(cuda_archs=archs, force=True))
+        except RuntimeError as e:
+            print(f"build failed: {e}", file=sys.stderr)
+            return 1
+        return 0
+
+    from bob import lifecycle
     try:
-        print(_build_mod().build_llama(cpu=cpu, force=force))
+        result = lifecycle.ensure_engine(cpu=cpu, from_source=from_source, force=force, on_block="stop")
     except RuntimeError as e:
         print(f"build failed: {e}", file=sys.stderr)
         return 1
+    print(result["detail"])
+    if result["tier"] == "cpu" and not cpu:
+        print("Built the CPU tier (no GPU detected).", file=sys.stderr)
     return 0
 
 
@@ -810,15 +830,18 @@ def _handle_fabric_setup(rest: list) -> int:
 
 
 def _handle_update(rest: list) -> int:
-    """bob update [--tag <ref>] — release-aware update with rebuild + rollback."""
+    """bob update [--tag <ref>] [--channel stable|latest] [--from-source] — release-aware update. A prebuilt
+    engine makes the rebuild a fast driver-only binary swap; --from-source forces a source build."""
     rest = list(rest)
-    tag = None
-    if "--tag" in rest:
-        i = rest.index("--tag")
-        if i + 1 < len(rest):
-            tag = rest[i + 1]
+
+    def _val(flag):
+        return rest[rest.index(flag) + 1] if flag in rest and rest.index(flag) + 1 < len(rest) else None
+
+    tag = _val("--tag")
+    channel = _val("--channel")
+    from_source = "--from-source" in rest
     try:
-        return _build_mod().update_stack(tag=tag)
+        return _build_mod().update_stack(tag=tag, from_source=from_source, channel=channel)
     except RuntimeError as e:
         print(f"update failed: {e}", file=sys.stderr)
         return 1
