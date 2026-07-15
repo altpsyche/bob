@@ -258,6 +258,35 @@ class TestEnginesManifest(unittest.TestCase):
         self.assertEqual(raw["b-row"]["component"], "new")              # re-publish overwrites the row
 
 
+class TestCommitMatchGuard(unittest.TestCase):
+    """_select_engine_row only returns a prebuilt row whose builtFromCommit matches the pinned submodule
+    commit, so a prebuilt is never a different llama.cpp version than a source build would produce here."""
+
+    def _row(self, built):
+        r = {"component": "llama-server", "os": "linux", "cpuArch": "x86_64", "tier": "gpu"}
+        if built is not None:
+            r["builtFromCommit"] = built
+        return r
+
+    def _select(self, built, pinned):
+        from bob import versions
+        with mock.patch.object(versions, "load_lock", return_value={"engines": {"r": self._row(built)}}), \
+             mock.patch.object(lifecycle, "_pinned_submodule_commit", return_value=pinned):
+            return lifecycle._select_engine_row("llama-server", "linux", "x86_64", "gpu")
+
+    def test_matching_commit_is_used(self):
+        self.assertIsNotNone(self._select("abc123", "abc123"))
+
+    def test_mismatched_commit_is_skipped(self):
+        self.assertIsNone(self._select("abc123", "def456"))   # version skew -> skip -> source
+
+    def test_missing_builtfrom_is_allowed(self):
+        self.assertIsNotNone(self._select(None, "abc123"))    # unversioned row: guard does not block
+
+    def test_unknown_pinned_is_allowed(self):
+        self.assertIsNotNone(self._select("abc123", None))    # git unavailable: don't break the install
+
+
 class TestInstallPrebuilt(unittest.TestCase):
     """The real download + SHA-verify + extract + stage path, driven by a local tar.gz over file://."""
 

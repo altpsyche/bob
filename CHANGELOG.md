@@ -31,8 +31,17 @@ rebuilds only what changed, verifies, and rolls back on failure.
 - **`bob diagnose` / `bob status` flag an idle GPU.** A new `bin/.build-tier.json` marker records the tier
   bin/ was built at; diagnose emits a loud, actionable line when an NVIDIA GPU is present but the engine is
   CPU-only, so the silent-degradation case is impossible to miss.
-- **`bob update --channel stable|latest` and `--from-source`.** A prebuilt update is a fast driver-only
-  binary swap rather than a recompile; `stable` tracks the latest release tag.
+- **Release channels: `stable` vs `latest`.** `stable` tracks the latest `v*` release tag (which carries the
+  tested prebuilt engines); `latest` tracks main (source-built bleeding edge). The channel is inferred from
+  the checkout (a release tag -> stable, a branch -> latest) so it never disagrees with git state; an explicit
+  `bob update --channel <x>` or the installer's `--dev` flag overrides it. Fresh installs default to `stable`
+  (the installer checks out the latest release tag), and `stable` never downgrades a checkout already at or
+  ahead of the latest release. A prebuilt update is a fast driver-only binary swap rather than a recompile.
+- **Commit-match guard keeps prebuilt and source in lockstep.** A prebuilt engine is used only when its
+  `builtFromCommit` equals the commit this checkout pins the submodule to, so a prebuilt is never a different
+  llama.cpp version than a `--from-source` build would produce here (on `latest`/main, whose commit no release
+  built, the guard skips the prebuilt and builds from source). Paired with the runtime self-check, the two
+  install paths can neither diverge in version nor leave a machine with a non-running engine.
 
 ### Added
 - `config/engines.json` — the committed prebuilt-engine manifest (component/os/arch/tier -> URL + SHA256 +

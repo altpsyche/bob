@@ -457,23 +457,61 @@ def _latest_release_tag() -> str:
         return ""
 
 
+def _head_is_release_tag() -> bool:
+    """True when HEAD is exactly a v* release tag (a 'stable' checkout). Lets the channel be INFERRED from the
+    git state: a fresh install that checked out a tag tracks stable; a dev on a branch tracks latest. No
+    separate persisted setting to drift from the actual checkout."""
+    try:
+        r = subprocess.run(["git", "-C", str(REPO), "describe", "--exact-match", "--tags", "HEAD"],
+                           capture_output=True, text=True, timeout=10)
+        return r.returncode == 0 and r.stdout.strip().startswith("v")
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def resolve_update_channel(explicit: str = None) -> str:
+    """The effective release channel: 'stable' (track v* release tags, which carry the tested prebuilt engines)
+    or 'latest' (track the branch, i.e. main, source-built bleeding edge). An explicit choice wins; otherwise
+    it is inferred from the checkout (a release tag -> stable, a branch -> latest), so it never disagrees with
+    the git state and needs no separate persisted flag."""
+    if explicit in ("stable", "latest"):
+        return explicit
+    return "stable" if _head_is_release_tag() else "latest"
+
+
+def _stable_target_tag() -> str:
+    """The tag `--channel stable` should move to, or '' to stay put. The newest v* tag, UNLESS HEAD already
+    contains it (an ancestor) — never downgrade a checkout that is already at or ahead of the latest release."""
+    tag = _latest_release_tag()
+    if not tag:
+        return ""
+    try:
+        rc = subprocess.run(["git", "-C", str(REPO), "merge-base", "--is-ancestor", tag, "HEAD"],
+                            capture_output=True, timeout=10).returncode
+        return "" if rc == 0 else tag   # rc==0: tag is an ancestor of HEAD (already at/ahead) -> stay
+    except (OSError, subprocess.SubprocessError):
+        return tag
+
+
 def update_stack(tag: str = None, from_source: bool = False, channel: str = None) -> int:
     """Release-aware update with rollback: fetch/checkout, submodule sync, venv reinstall, then rebuild EVERY
     compiled submodule that actually moved (the llama-server rebuild goes through the prebuilt-first lifecycle
     seam, so a release update is a fast driver-only binary swap) under one bin/ snapshot with per-binary verify
     + rollback on failure, relock, fetch newly-added models, offer to prune dropped ones, provision voice, then
-    doctor. Channel selects what to move to when no explicit tag: 'stable' = the latest v* release tag,
-    'latest' (default) = fast-forward the current branch. from_source forces a source engine build. Returns 0
-    on success, 1 on a handled failure. CLI-only + long."""
+    doctor. Channel (explicit, else inferred from the checkout) selects what to move to when no explicit tag:
+    'stable' = the latest v* release tag (which carries the tested prebuilt engines), 'latest' = fast-forward
+    the current branch (source-built bleeding edge). from_source forces a source engine build. Returns 0 on
+    success, 1 on a handled failure. CLI-only + long."""
     import osenv
     from bob import lifecycle
 
+    channel = resolve_update_channel(channel)
     if not tag and channel == "stable":
-        tag = _latest_release_tag()
+        tag = _stable_target_tag()   # newest v* tag, or '' when HEAD is already at/ahead of it (no downgrade)
         if tag:
-            print(f"channel 'stable' -> latest release {tag}", file=sys.stderr)
+            print(f"channel 'stable' -> moving to release {tag}", file=sys.stderr)
         else:
-            print("channel 'stable' requested but no v* release tag found; fast-forwarding instead.",
+            print("channel 'stable': already at or ahead of the latest release; fast-forwarding.",
                   file=sys.stderr)
 
     # The tier decision is single-sourced through lifecycle.resolve_build_tier (shared with setup + `bob

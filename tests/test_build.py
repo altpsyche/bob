@@ -367,6 +367,38 @@ class TestUpdateStack(unittest.TestCase):
         mocks["setup_voice"].assert_not_called()
 
 
+class TestUpdateChannel(unittest.TestCase):
+    """Channel is explicit-or-inferred-from-checkout; stable never downgrades a checkout already at/ahead."""
+
+    def test_explicit_channel_wins(self):
+        self.assertEqual(build_mod.resolve_update_channel("stable"), "stable")
+        self.assertEqual(build_mod.resolve_update_channel("latest"), "latest")
+
+    def test_infers_stable_on_a_release_tag(self):
+        with mock.patch.object(build_mod, "_head_is_release_tag", return_value=True):
+            self.assertEqual(build_mod.resolve_update_channel(None), "stable")
+
+    def test_infers_latest_on_a_branch(self):
+        with mock.patch.object(build_mod, "_head_is_release_tag", return_value=False):
+            self.assertEqual(build_mod.resolve_update_channel(None), "latest")
+
+    def test_stable_target_stays_when_head_already_ahead(self):
+        with mock.patch.object(build_mod, "_latest_release_tag", return_value="v1.1.0"), \
+             mock.patch.object(build_mod, "subprocess") as sp:
+            sp.run.return_value = mock.Mock(returncode=0)   # tag is an ancestor of HEAD -> no downgrade
+            self.assertEqual(build_mod._stable_target_tag(), "")
+
+    def test_stable_target_moves_forward_to_newer_tag(self):
+        with mock.patch.object(build_mod, "_latest_release_tag", return_value="v2.0.0"), \
+             mock.patch.object(build_mod, "subprocess") as sp:
+            sp.run.return_value = mock.Mock(returncode=1)   # tag not an ancestor -> move to it
+            self.assertEqual(build_mod._stable_target_tag(), "v2.0.0")
+
+    def test_stable_target_empty_when_no_tags(self):
+        with mock.patch.object(build_mod, "_latest_release_tag", return_value=""):
+            self.assertEqual(build_mod._stable_target_tag(), "")
+
+
 class TestCliArgParsing(unittest.TestCase):
     def test_tag_flag_parsed(self):
         seen = {}

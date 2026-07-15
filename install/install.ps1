@@ -33,14 +33,40 @@ if (Test-Path (Join-Path $BobHome '.git')) {
 
 Set-Location $BobHome
 
-# Forward the prereq-relevant flags (--cpu, --from-source) to the prereq step; pass all args to setup.
+# Parse the release channel (consumed here). Default 'stable'; --dev / '--channel latest' tracks main.
+$channel = 'stable'
+$setupArgs = @()
+for ($i = 0; $i -lt $args.Count; $i++) {
+  $a = $args[$i]
+  if ($a -eq '--dev') { $channel = 'latest' }
+  elseif ($a -eq '--channel') { $i++; if ($i -lt $args.Count) { $channel = $args[$i] } }
+  elseif ($a -like '--channel=*') { $channel = $a.Substring(10) }
+  else { $setupArgs += $a }
+}
+
+# Stable channel: check out the latest release tag (carries the prebuilt engines) for driver-only plug-and-play.
+if ($channel -eq 'stable') {
+  git -C $BobHome fetch --tags --quiet 2>$null
+  $tag = (git -C $BobHome tag --list 'v*' --sort=-v:refname | Select-Object -First 1)
+  if ($tag) {
+    Log "Stable channel: checking out release $tag  (use --dev to track the latest main)."
+    git -C $BobHome checkout --quiet $tag
+    git -C $BobHome submodule update --init --recursive
+  } else {
+    Log 'Stable channel requested but no release tag exists yet; staying on the default branch.'
+  }
+} else {
+  Log 'Dev channel: tracking the latest main (source build).'
+}
+
+# Forward the prereq-relevant flags (--cpu, --from-source) to the prereq step.
 $prereqFlags = @()
-if ($args -contains '--cpu') { $prereqFlags += '--cpu' }
-if ($args -contains '--from-source') { $prereqFlags += '--from-source' }
+if ($setupArgs -contains '--cpu') { $prereqFlags += '--cpu' }
+if ($setupArgs -contains '--from-source') { $prereqFlags += '--from-source' }
 Log 'Installing prerequisites ...'
 & .\install_prereqs.bat @prereqFlags
 Log 'Running setup ...'
-& .\setup.bat @args
+& .\setup.bat @setupArgs
 Log 'Verifying against versions.lock ...'
 # scripts\ on PYTHONPATH so `python -m bob.kernel` resolves (the .bat stubs set this internally only).
 $env:PYTHONPATH = "$BobHome\scripts;$env:PYTHONPATH"

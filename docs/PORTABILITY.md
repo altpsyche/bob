@@ -8,9 +8,10 @@ three pieces:
   stays OS-agnostic.
 - **`scripts/bob_config.py`**: the Python config resolver. Builds the runtime config from
   neutral JSON at startup; no generated cache is required off Windows.
-- **`scripts/bob/kernel.py`**: the cold-start provisioner. Installs prerequisites, builds the
-  engine, creates venvs, generates configs, downloads models, and wires clients. The two shell stubs
-  (`setup.sh` / `setup.bat`) just ensure `python3` is present and hand off to `python -m bob.kernel`.
+- **`scripts/bob/kernel.py`**: the cold-start provisioner. Installs prerequisites, provisions the
+  engine (via `scripts/bob/lifecycle.py`: a prebuilt driver-only binary, or a source build), creates
+  venvs, generates configs, downloads models, and wires clients. The two shell stubs (`setup.sh` /
+  `setup.bat`) just ensure `python3` is present and hand off to `python -m bob.kernel`.
 
 ## Config resolution (all JSON)
 
@@ -71,8 +72,9 @@ short version:
 | **AMD / ROCm** | not yet | n/a |
 
 Package installation goes through `osenv` (`PACKAGE_MAP` / `resolve_package_*` / `install_package`),
-which selects the right manager for the host. On atomic Fedora the toolchain is layered via
-`rpm-ostree` and the installer recommends a Fedora **distrobox** as the preferred path.
+which selects the right manager for the host. The driver-only prebuilt engine runs across distros,
+including atomic Fedora, with no CUDA toolkit; a `--from-source` GPU build on an atomic host uses a
+Fedora **distrobox**.
 
 ## Cold-start provisioner
 
@@ -88,18 +90,20 @@ python -m bob.kernel build-swap          #          build the llama-swap proxy (
 ```
 
 Flags (kebab-case, identical on both OSes): `--skip-models`, `--skip-build`, `--skip-voice`,
-`--launch`, `--with-webui`, `--cpu`, `--profile <name>`. `setup` needs no root; only Tier 0
-prerequisites use one batched `sudo` (Linux). This page is the "how the pieces fit" reference;
+`--launch`, `--with-webui`, `--cpu`, `--from-source`, `--profile <name>`. `setup` needs no root; only
+Tier 0 prerequisites use one batched `sudo` (Linux). This page is the "how the pieces fit" reference;
 **[SETUP.md](SETUP.md) is the "how to install" guide, and [MANUAL-INSTALL.md](MANUAL-INSTALL.md) is
 the step-by-step for advanced users.**
 
 ## Reproducibility & releases
 
 [`versions.lock`](../versions.lock) (neutral JSON, read on every OS) pins submodule commits, per-venv
-requirements, minimum toolchain versions, and the model manifest (repo → revision → sha256). It is
-generated from those sources (`bob lock`), staleness-gated in CI, and installs run *from the lock*,
-each model download's checksum is verified, fail-loud on mismatch. `bob doctor` reports drift,
-`bob version` reports the release, and `bob update` moves between releases and rolls the build output
-back on a failed upgrade.
+requirements, minimum toolchain versions, the prebuilt-engine manifest (per os/arch/tier: URL → sha256
+→ the commit it was built from), and the model manifest (repo → revision → sha256). It is generated
+from those sources (`bob lock`), staleness-gated in CI, and installs run *from the lock*: each prebuilt
+engine and model download is checksum-verified, fail-loud on mismatch. A prebuilt is used only when it
+was built from the pinned submodule commit, so it is never a different version than a source build.
+`bob doctor` reports drift, `bob version` reports the release, and `bob update` moves between releases
+(a fast prebuilt swap where available) and rolls the build output back on a failed upgrade.
 
 macOS/Metal and AMD/ROCm remain non-goals for now; `scripts/osenv.py` is where they slot in.

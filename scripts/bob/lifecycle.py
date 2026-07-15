@@ -91,19 +91,51 @@ def apply_block_policy(decision: dict, on_block: str = "stop") -> dict:
             "reason": decision["reason"] + " -> CPU fallback"}
 
 
+_COMPONENT_SUBMODULE = {"llama-server": "external/llama.cpp", "whisper-server": "external/whisper.cpp"}
+
+
+def _pinned_submodule_commit(component: str):
+    """The commit `component`'s submodule is pinned to in THIS checkout (the superproject gitlink), or None.
+    The commit-match guard compares this to a prebuilt row's builtFromCommit so a prebuilt is only ever used
+    when it is provably the same source a `--from-source` build would compile here."""
+    import subprocess
+    path = _COMPONENT_SUBMODULE.get(component)
+    if not path:
+        return None
+    try:
+        r = subprocess.run(["git", "-C", str(osenv.REPO), "rev-parse", f"HEAD:{path}"],
+                           capture_output=True, text=True, timeout=10)
+        return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def _select_engine_row(component: str, os_name: str, cpu_arch: str, tier: str):
     """The versions.lock `engines` row for this (component, os, arch, tier), or None. The lock's engines
     block is generated from config/engines.json (the CI publish job's output); an absent/empty block means
-    no prebuilt is available, so ensure_engine builds from source."""
+    no prebuilt is available, so ensure_engine builds from source.
+
+    Commit-match guard: a matching row is used ONLY when its builtFromCommit equals the commit this checkout
+    pins the submodule to (when both are known). That makes a prebuilt provably the same llama.cpp version a
+    source build would produce here, so the two paths can never silently diverge (e.g. on `latest`/main, whose
+    commit no published release built, the guard skips the prebuilt and source builds instead). If either
+    commit can't be determined (git unavailable, or an unversioned row) the guard does not block."""
     from bob import versions
     try:
         engines = versions.load_lock().get("engines") or {}
     except (RuntimeError, ValueError, OSError):
         return None
+    pinned = _pinned_submodule_commit(component)
     for row in engines.values():
-        if (row.get("component") == component and row.get("os") == os_name
+        if not (row.get("component") == component and row.get("os") == os_name
                 and row.get("cpuArch") == cpu_arch and row.get("tier") == tier):
-            return row
+            continue
+        built = row.get("builtFromCommit")
+        if built and pinned and built != pinned:
+            print(f"prebuilt {component} skipped: built from {built[:8]} but this checkout pins {pinned[:8]} "
+                  "(building from source to stay in sync).", file=sys.stderr)
+            continue
+        return row
     return None
 
 

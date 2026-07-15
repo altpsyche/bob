@@ -49,7 +49,7 @@ A default install has no Docker and starts none of these. The Docker-backed serv
 
 ## Hardware
 
-Linux or Windows 11 with an NVIDIA RTX 3000 series card or newer, or the CPU tier with no GPU. VRAM profiles:
+Linux or Windows 11 with an NVIDIA RTX 3000-series card or newer (through Blackwell), or the CPU tier on a box with no GPU. The GPU engine is **driver-only**: it needs the NVIDIA driver, not the CUDA toolkit. VRAM profiles:
 
 | Profile | Target cards | Model download |
 |---|---|---|
@@ -59,24 +59,24 @@ Linux or Windows 11 with an NVIDIA RTX 3000 series card or newer, or the CPU tie
 | `24gb` | RTX 3090, 4090, 4080 (near-lossless quants) | ~42 GB |
 | `32gb` | RTX 5090, A6000, 3090 Ti | ~54 GB |
 
-Setup detects your GPU and picks the best-fit profile. RTX 5000 (Blackwell) needs CUDA 12.8+; the installer handles version selection. On an RTX 5080 with the default profile: pp512 ~4600 t/s, tg128 ~89 t/s.
+Setup detects your GPU and picks the best-fit profile. One engine covers every supported NVIDIA generation. On an RTX 5080 with the default profile: pp512 ~4600 t/s, tg128 ~89 t/s.
 
 ## Supported matrix
 
 What CI proves, versus what ships but is not gated. **gated**: proven every PR on hosted runners. **supported**: shipped and used, exercised by the release-tag GPU tier. **not yet**: unsupported.
 
-| OS | CPU tier (no GPU, tiny model) | NVIDIA GPU (CUDA) |
+| OS | CPU tier (no GPU, tiny model) | NVIDIA GPU |
 |---|---|---|
-| **Windows 11** | gated (`acceptance-cpu`, every PR) | supported; native CUDA build proven in the release-tag `acceptance-gpu` tier |
-| **Linux** (glibc; apt/dnf/pacman/zypper) | gated (`acceptance-cpu`, every PR) | supported; native CUDA proven in the release-tag `acceptance-gpu` tier |
+| **Windows 11** | gated (`acceptance-cpu`, every PR) | supported; driver-only prebuilt engine, source build available, proven in the release-tag `acceptance-gpu` tier |
+| **Linux** (glibc; apt/dnf/pacman/zypper/rpm-ostree) | gated (`acceptance-cpu`, every PR) | supported; driver-only prebuilt engine, source build available, proven in the release-tag `acceptance-gpu` tier |
 | **macOS** | not yet | not yet |
 | **AMD / ROCm** | not yet | not yet |
 
-The per-PR gate runs only the CPU/portable tier (`bob profile cpu`), so a fragile CUDA build cannot block a merge; native-from-source is verified at release tags. See [`versions.lock`](versions.lock) for the pinned, checksum-verified build each release ships.
+The per-PR gate runs the CPU/portable tier (`bob profile cpu`), so a fragile GPU build cannot block a merge; the GPU path is verified at release tags. See [`versions.lock`](versions.lock) for the pinned, checksum-verified engines, submodules, and models each release ships.
 
 ## Quick start
 
-One command clones Bob with submodules, installs the toolchain (CUDA, Python 3.12, Go, Node.js, cmake), builds from source, downloads models, wires clients, and verifies against `versions.lock`. It is idempotent and needs only Git up front (it installs Git too). Add `--cpu` on a GPU-less box. macOS arrives in 2.0.
+One command clones Bob, installs a **prebuilt inference engine that needs only your NVIDIA driver** (no CUDA toolkit, nothing to compile), sets up the supporting tools (Python 3.12, Go, Node.js), downloads models, wires clients, and verifies everything against `versions.lock`. It is idempotent and needs only Git up front (it installs Git too). Add `--cpu` on a GPU-less box, or `--from-source` to build the engine from source instead of downloading it. macOS arrives in 2.0.
 
 Linux:
 ```bash
@@ -90,7 +90,7 @@ irm https://raw.githubusercontent.com/altpsyche/bob/main/install/install.ps1 | i
 
 > The `https://get.bob.sh` short URLs are planned; use the `raw.githubusercontent.com` URLs today.
 
-On Linux you are asked for `sudo` once (system packages); atomic Fedora (Bazzite/Silverblue) layers via `rpm-ostree`. Nothing needs Docker: web search is built in, and add-on services are opt-in.
+On Linux you are asked for `sudo` once (system packages). The driver-only engine runs across distros, including atomic Fedora (Bazzite/Silverblue), with no CUDA toolkit and no distrobox. Nothing needs Docker: web search is built in, and add-on services are opt-in.
 
 <details>
 <summary>Manual install</summary>
@@ -98,11 +98,11 @@ On Linux you are asked for `sudo` once (system packages); atomic Fedora (Bazzite
 ```bash
 git clone --recurse-submodules https://github.com/altpsyche/bob.git bob
 cd bob
-./install_prereqs.sh    # add --cpu for a GPU-less box
-./setup.sh              # GPU-less: ./setup.sh --cpu
+./install_prereqs.sh    # --cpu for a GPU-less box; --from-source to also install the CUDA toolkit
+./setup.sh              # GPU-less: --cpu   |   source engine: --from-source
 ```
 
-Windows: run `install_prereqs.bat` then `setup.bat` (add `--cpu` for no GPU). Both entry scripts hand off to the Python kernel (`python -m bob.kernel`) and are safe to re-run.
+Windows: run `install_prereqs.bat` then `setup.bat` (add `--cpu` for no GPU, `--from-source` to build the engine). Both entry scripts hand off to the Python kernel (`python -m bob.kernel`) and are safe to re-run.
 </details>
 
 Open a new terminal so `bob` resolves (Linux: `~/.local/bin`; Windows: the `bob.cmd` scoop shim, or add the repo to PATH). Then talk to Bob; inference auto-starts:
@@ -115,7 +115,7 @@ bob agent "summarise README.md" # agentic task
 
 `bob up` optionally pre-warms the endpoint (`:8080`) and LiteLLM proxy (`:8081`); `--with-webui` at setup adds Open WebUI (`:3000`). Any OpenAI client works by pointing its base URL at `http://localhost:8081/v1`.
 
-`setup` flags: `--profile 12gb`, `--skip-models`, `--skip-voice`, `--cpu`, `--launch`. Run `bob agent install` once to register the background scheduler (Linux cron / Windows Scheduled Task).
+`setup` flags: `--profile 12gb`, `--skip-models`, `--skip-voice`, `--cpu`, `--from-source`, `--launch`. Installs default to the **stable** channel (the latest release, with prebuilt engines); pass `--dev` to track the latest `main` and build from source. Run `bob agent install` once to register the background scheduler (Linux cron / Windows Scheduled Task).
 
 ## Docs
 

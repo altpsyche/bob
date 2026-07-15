@@ -46,8 +46,9 @@ the cross OS CI acceptance gate runs on every PR.
 - Inference auto starts on demand, so there is nothing to launch first.
 
 ### Local inference, cloud on demand
-- llama.cpp built from source (CUDA), hot swapped by llama-swap, behind an OpenAI compatible LiteLLM
-  proxy. Any tool pointed at OpenAI works by changing one base URL.
+- A driver-only llama.cpp engine (a prebuilt binary that needs only the NVIDIA driver, or built from
+  source), hot swapped by llama-swap, behind an OpenAI compatible LiteLLM proxy. Any tool pointed at
+  OpenAI works by changing one base URL.
 - VRAM profiles from 8 GB to 32 GB, auto selected from the detected GPU, plus a CPU tier for GPU-less
   machines.
 - Named roles (chat, coder, ponder, vision, embed, fim, agent) with optional cloud "pro" peers

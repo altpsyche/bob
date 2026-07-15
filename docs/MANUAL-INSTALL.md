@@ -1,14 +1,17 @@
 # Manual Installation Guide
 
 This guide reproduces, one command at a time, every step that `install_prereqs.sh` /
-`install_prereqs.bat` and `setup.sh` / `setup.bat` perform. Use it when you want full control, are
-troubleshooting a failed automated install, or want to understand what the scripts do.
+`install_prereqs.bat` and `setup.sh` / `setup.bat` perform, building the inference **engine from source**.
+Use it when you want full control, are troubleshooting, want a source build (`--from-source`), or want to
+understand what the scripts do.
 
-**To get running quickly, use the one-command installer instead.** On Linux:
+**To get running quickly, use the one-command installer instead.** It downloads a prebuilt, driver-only
+engine (no CUDA toolkit, nothing to compile) and needs none of the CUDA-build steps below. On Linux:
 `curl -fsSL https://raw.githubusercontent.com/altpsyche/bob/main/install/install.sh | sh`; on Windows
 PowerShell: `irm https://raw.githubusercontent.com/altpsyche/bob/main/install/install.ps1 | iex`. It
 clones the repo, runs both entry scripts, and verifies the result. See the
-[README](../README.md#quick-start) and [SETUP](SETUP.md) for details.
+[README](../README.md#quick-start) and [SETUP](SETUP.md) for details. The CUDA-toolkit and
+build-from-source steps here apply to the `--from-source` path.
 
 You can also run the two entry scripts directly. Each is a thin shell stub that hands off to the
 Python cold-start kernel:
@@ -48,9 +51,10 @@ step manually.
 
 ## 1. Install the toolchain (prerequisites)
 
-The manual equivalent of `python -m bob.kernel prereqs`. It installs the build toolchain
-(compiler, `make`, `cmake`, `ninja`, `go`, `node`/`npm`, Python 3.12) plus, for a GPU build, the CUDA
-toolkit. Only **Git** must exist before you start.
+The manual equivalent of `python -m bob.kernel prereqs --from-source`. It installs the build toolchain
+(compiler, `make`, `cmake`, `ninja`, `go`, `node`/`npm`, Python 3.12) plus, for a source GPU build, the
+CUDA toolkit. (The default prebuilt path installs the same supporting tools but no CUDA toolkit, since the
+prebuilt engine is driver-only.) Only **Git** must exist before you start.
 
 The kernel resolves the concrete package names per distro from a single table
 (`PACKAGE_MAP` in `scripts/osenv.py`); the commands below are that table, expanded.

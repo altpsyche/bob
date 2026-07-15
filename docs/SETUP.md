@@ -10,16 +10,20 @@ change, so "clean machine to these steps to working Bob" stays continuously prov
 ## Hardware
 
 The verified configuration is an NVIDIA RTX 5080 (16 GB VRAM, Blackwell sm_120), Ryzen 9 7950X3D, 64 GB
-RAM. RTX 4000-series (Ada) and RTX 3000-series (Ampere) use the same scripts; setup detects the GPU and
-adapts the build. Profiles for 16/12/8 GB VRAM (up to 32 GB) are included. A **CPU / no-GPU tier**
-(`bob profile cpu` + `bob build --cpu`, one tiny model) exists for CI and GPU-less dev boxes,
+RAM. RTX 4000-series (Ada) and RTX 3000-series (Ampere) use the same scripts and the same engine; setup
+detects the GPU and selects the best-fit profile. The GPU engine is **driver-only**, it needs the NVIDIA
+driver, not the CUDA toolkit. Profiles for 16/12/8 GB VRAM (up to 32 GB) are included. A **CPU / no-GPU
+tier** (`bob profile cpu` + `bob build --cpu`, one tiny model) exists for CI and GPU-less dev boxes,
 correctness and wiring only, not performance. See the [Supported matrix](../README.md#supported-matrix)
 for what each OS × GPU combination is tested to do. macOS and AMD/ROCm are not yet supported.
 
 ## Install
 
-One command per OS. Only **git** is needed up front (the installer installs it too if missing). Add
-`--cpu` on a GPU-less box.
+One command per OS. Only **git** is needed up front (the installer installs it too if missing). It
+downloads a **prebuilt, driver-only inference engine** (no CUDA toolkit, nothing to compile) and verifies
+it against [`versions.lock`](../versions.lock). Add `--cpu` on a GPU-less box, or `--from-source` to build
+the engine from source instead. Fresh installs track the **stable** channel (the latest release); pass
+`--dev` to track the latest `main`.
 
 <table>
 <tr><th>Linux (glibc; apt/dnf/pacman/zypper; atomic Fedora via rpm-ostree)</th><th>Windows 11 (NVIDIA)</th></tr>
@@ -29,8 +33,9 @@ One command per OS. Only **git** is needed up front (the installer installs it t
 curl -fsSL https://raw.githubusercontent.com/altpsyche/bob/main/install/install.sh | sh
 ```
 
-Asks for `sudo` once for system packages. On atomic Fedora (Bazzite/Silverblue) it layers via
-`rpm-ostree` and recommends a Fedora distrobox, see [MANUAL-INSTALL.md](MANUAL-INSTALL.md).
+Asks for `sudo` once for system packages. The driver-only engine runs across distros, including atomic
+Fedora (Bazzite/Silverblue), with no CUDA toolkit and no distrobox. (A `--from-source` GPU build on an
+atomic host does use a Fedora distrobox, see [MANUAL-INSTALL.md](MANUAL-INSTALL.md).)
 
 </td><td>
 
@@ -60,21 +65,21 @@ and both hand off to the Python cold-start kernel (`python -m bob.kernel`).
 <tr><th>Linux</th><th>Windows 11</th></tr>
 <tr><td>
 
-Provide first: **git**. (`install_prereqs.sh` ensures `python3` and installs the toolchain via your
+Provide first: **git**. (`install_prereqs.sh` ensures `python3` and installs the supporting tools via your
 package manager.)
 
 ```bash
 git clone --recurse-submodules https://github.com/altpsyche/bob.git ~/bob
 cd ~/bob
-./install_prereqs.sh       # compiler, cmake, ninja, go, node, python3, CUDA (add --cpu to skip CUDA)
-./setup.sh                 # build, venvs, models, wire clients
+./install_prereqs.sh       # python3, go, node, cmake (add --from-source to also install the CUDA toolkit)
+./setup.sh                 # engine, venvs, models, wire clients
 bob                        # inference auto-starts; or `bob chat "hi"`
 ```
 
 </td><td>
 
-Provide first: **Git**, **Python 3.12** (`winget install Python.Python.3.12`), and **VS2022** with the
-*Desktop development with C++* workload (for the CUDA build).
+Provide first: **Git** and **Python 3.12** (`winget install Python.Python.3.12`). (**VS2022** with the
+*Desktop development with C++* workload is needed only for a `--from-source` build.)
 
 ```bat
 git clone --recurse-submodules https://github.com/altpsyche/bob.git C:\bob
@@ -91,11 +96,12 @@ Both entry scripts print their Bob release (`VERSION`) at startup, install *from
 [`versions.lock`](../versions.lock)* (pinned + checksum-verified), and are **idempotent**: if something
 fails partway, fix it and re-run; completed steps are skipped. Common flags (same on both):
 
-- `--skip-models`: build + configure but skip the model downloads
-- `--skip-build`: skip the llama.cpp/llama-swap compile (use an existing `bin/`)
-- `--skip-voice`: skip the voice + vision step (whisper build + model downloads)
+- `--skip-models`: set up + configure but skip the model downloads
+- `--skip-build`: skip provisioning the engine (use an existing `bin/`)
+- `--skip-voice`: skip the voice + vision step (whisper + model downloads)
 - `--profile 12gb` / `--profile cpu`: pick a model profile before downloading anything
-- `--cpu`: force the CPU build tier (skip CUDA)
+- `--cpu`: the CPU tier (no GPU engine)
+- `--from-source`: build the engine from source (installs the CUDA toolkit) instead of using the prebuilt
 - `--with-webui`: also build the Open WebUI venv (opt-in; multi-GB torch/transformers)
 - `--launch`: start the stack when setup finishes
 
@@ -111,7 +117,7 @@ the `cpu` tier automatically. Verify with `bob doctor` (see [Verifying the insta
 
 0. **Diagnose**: a machine summary (GPU, VRAM, RAM, CUDA, NUMA topology, mlock privilege, active profile, model files) before anything is installed. Run `bob diagnose` at any time to see the same report.
 1. `git submodule update --init --recursive` fetches the llama.cpp and llama-swap source trees.
-2. **Build llama.cpp** (`build.build_llama`), compiles the CUDA engine, or the CPU tier with `--cpu` / when no CUDA toolkit is found, and writes the binaries to `bin/`. Skips if the binary already exists (`bob build --force` to rebuild). Before replacing a binary it backs it up as `bin/<name>.bak`; `bob update` snapshots `bin/` before a rebuild and rolls back automatically if the new build fails to verify.
+2. **Provision the engine** (`lifecycle.ensure_engine`), the single decision point shared by setup, `bob build`, and `bob update`: it downloads the prebuilt, driver-only engine and SHA256-verifies it against `versions.lock`, or builds from source on the CPU tier / with `--from-source` / when no matching prebuilt exists, writing the binaries to `bin/`. If a downloaded engine cannot run on the host it falls back to a source build automatically, so a machine is never left without a working engine. Skips if the binary already exists (`bob build --force` to re-provision). `bob update` snapshots `bin/` before a change and rolls back automatically if the new engine fails to verify.
 3. **Build llama-swap**: the model-swap proxy (Go).
 4. **Python venvs**: `tools/venv-aider` and `tools/venv-litellm` (plus `tools/venv-webui` with `--with-webui`) are created via `osenv.new_bob_venv` and their deps installed. Kept separate on purpose, their pins conflict. (`venv-eval` is provisioned lazily by `bob eval`.)
 5. **Generate configs** (`generate.gen_all`), writes `config/llama-swap.yaml` + `config/litellm.yaml` from `config/models.json`. Never edit them by hand; both are regenerated on every `bob up`/`serve`.
@@ -199,6 +205,6 @@ bob plugins list     # should show: summarise, draft, search, play (built-in plu
 
 **Memory lock** is handled automatically during setup (step 10). If you enable `mlockBig: true` in `config/user.json` after setup, run `bob mlock` to grant `SeLockMemoryPrivilege` and restart your terminal.
 
-On an RTX 5080 with the 14B Q4 coder model, expect **pp512 ≈ 4600 t/s, tg128 ≈ 89 t/s**, confirming the engine is on the fast Blackwell hardware path. Ada and Ampere cards show lower numbers; what matters is that prefill is not disproportionately slow relative to generation (see [TUNING.md](TUNING.md#verifying-the-fast-path)).
+On an RTX 5080 with the default coder model, expect **pp512 ≈ 4600 t/s, tg128 ≈ 89 t/s**, confirming the engine is on the fast Blackwell hardware path. Ada and Ampere cards show lower numbers; what matters is that prefill is not disproportionately slow relative to generation (see [TUNING.md](TUNING.md#verifying-the-fast-path)).
 
-If prefill throughput is around 1000 t/s rather than 4000+, the build is using a slower fallback, most likely compiled against CUDA 13.x or from a stale build cache. Run `bob build --force`, which wipes the build directory and recompiles from scratch. Make sure CUDA 12.8 is the active toolkit when you do.
+If prefill throughput is around 1000 t/s rather than 4000+, the engine is running on the CPU / slow path. `bob diagnose` reports the engine tier and flags loudly when a GPU is present but the engine is CPU-only; `bob build --force` re-provisions the engine (prebuilt where available, else a fresh source build).

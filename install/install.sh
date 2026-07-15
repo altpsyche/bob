@@ -8,6 +8,8 @@
 # of recloning. macOS support arrives in Bob 2.0; Linux and Windows ship in 1.1.
 #
 # Overrides (env): BOB_HOME (install dir), BOB_REPO_URL (git source). Pass --cpu for the CPU-only tier.
+# Channel: installs default to the 'stable' release tag (tested, carries the prebuilt driver-only engines);
+# pass --dev (or --channel latest) to track the latest main and build from source.
 set -eu
 
 # The git source. get.bob.sh is intended to front the GitHub raw path for this file (see README); until
@@ -50,9 +52,41 @@ fi
 
 cd "$BOB_HOME"
 
-# Forward the prereq-relevant flags (--cpu, --from-source) to the prereq step; pass all args to setup.
-PREREQ_FLAGS=""
+# Parse the release channel (consumed here, not passed on). Default 'stable'; --dev / '--channel latest'
+# tracks main. Remaining args flow to setup; --cpu/--from-source also flow to the prereq step.
+CHANNEL="stable"
+SETUP_ARGS=""
+skip_next=""
 for a in "$@"; do
+  if [ -n "$skip_next" ]; then CHANNEL="$a"; skip_next=""; continue; fi
+  case "$a" in
+    --dev) CHANNEL="latest" ;;
+    --channel) skip_next=1 ;;
+    --channel=*) CHANNEL="${a#--channel=}" ;;
+    *) SETUP_ARGS="$SETUP_ARGS $a" ;;
+  esac
+done
+
+# Stable channel: check out the latest release tag (which carries the prebuilt engines) so a fresh install is
+# driver-only plug-and-play. `bob update` then infers the channel from this checkout (a tag -> stable).
+if [ "$CHANNEL" = "stable" ]; then
+  git -C "$BOB_HOME" fetch --tags --quiet 2>/dev/null || true
+  TAG=$(git -C "$BOB_HOME" tag --list 'v*' --sort=-v:refname | head -n1)
+  if [ -n "$TAG" ]; then
+    log "Stable channel: checking out release $TAG  (use --dev to track the latest main)."
+    git -C "$BOB_HOME" checkout --quiet "$TAG"
+    git -C "$BOB_HOME" submodule update --init --recursive
+  else
+    log "Stable channel requested but no release tag exists yet; staying on the default branch."
+  fi
+else
+  log "Dev channel: tracking the latest main (source build)."
+fi
+
+# Forward the prereq-relevant flags (--cpu, --from-source) to the prereq step.
+PREREQ_FLAGS=""
+# shellcheck disable=SC2086  # intentional word-split of the accumulated flag string (POSIX sh, no arrays)
+for a in $SETUP_ARGS; do
   case "$a" in
     --cpu) PREREQ_FLAGS="$PREREQ_FLAGS --cpu" ;;
     --from-source) PREREQ_FLAGS="$PREREQ_FLAGS --from-source" ;;
@@ -63,7 +97,8 @@ log "Installing prerequisites ..."
 # shellcheck disable=SC2086
 ./install_prereqs.sh $PREREQ_FLAGS
 log "Running setup ..."
-./setup.sh "$@"
+# shellcheck disable=SC2086
+./setup.sh $SETUP_ARGS
 log "Verifying against versions.lock ..."
 # scripts/ on PYTHONPATH so `python -m bob.kernel` resolves (the stubs set this internally; it does not
 # persist back to this shell).

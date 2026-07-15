@@ -211,15 +211,15 @@ The key health check is whether the engine uses Blackwell's optimized matrix mul
 bob bench
 ```
 
-Expected numbers on an RTX 5080 with the 14B Q4 coder model: **pp512 ≈ 4400 t/s, tg128 ≈ 85 t/s**.
+Expected numbers on an RTX 5080 with the default coder model: **pp512 ≈ 4400 t/s, tg128 ≈ 85 t/s**.
 
-If prefill is around 1000 t/s, you're on the cuBLAS fallback. This happens when the build used CUDA 13.x or when a stale build cache lingers from a previous compile. Force a clean rebuild:
+If prefill is around 1000 t/s, the engine is on the CPU / slow path. `bob diagnose` reports the engine tier and flags a GPU that is idle. Re-provision the engine:
 
 ```
 bob build --force
 ```
 
-The `--force` flag rebuilds even when a binary already exists; `bob build` wipes the `build/` directory before compiling either way. `bob build` auto-detects your GPU architecture and picks the newest compatible CUDA toolkit (Blackwell requires 12.8+). Add `--cpu` for a no-GPU build.
+The `--force` flag re-provisions even when a binary already exists. `bob build` uses the prebuilt, driver-only engine by default (no CUDA toolkit needed). `--from-source` builds the engine instead, auto-detecting your GPU architecture and the newest compatible CUDA toolkit (Blackwell requires 12.8+) and wiping the `build/` directory first. Add `--cpu` for a no-GPU build.
 
 ## Quality benchmarking (lm-eval)
 
