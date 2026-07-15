@@ -457,6 +457,16 @@ def _latest_release_tag() -> str:
         return ""
 
 
+def _on_branch() -> bool:
+    """True if HEAD is on a branch (a dev on main / the latest channel), False on a detached checkout (a
+    stable user sitting on a release tag, where `git pull` has no upstream to fast-forward)."""
+    try:
+        return subprocess.run(["git", "-C", str(REPO), "symbolic-ref", "-q", "HEAD"],
+                              capture_output=True, timeout=10).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def _head_is_release_tag() -> bool:
     """True when HEAD is exactly a v* release tag (a 'stable' checkout). Lets the channel be INFERRED from the
     git state: a fresh install that checked out a tag tracks stable; a dev on a branch tracks latest. No
@@ -540,8 +550,14 @@ def update_stack(tag: str = None, from_source: bool = False, channel: str = None
         print(f"Checking out release '{tag}'...", file=sys.stderr)
         _run(["git", "-C", str(REPO), "checkout", tag])
     else:
-        print("Fast-forwarding the current branch...", file=sys.stderr)
-        _run(["git", "-C", str(REPO), "pull", "--ff-only"])
+        # Stable users sit on a DETACHED HEAD at a release tag, where `git pull` has no upstream. Only
+        # fast-forward when actually on a branch (devs on main / the latest channel); otherwise there is
+        # nothing newer to move to, so it's a clean no-op rather than a pull error.
+        if _on_branch():
+            print("Fast-forwarding the current branch...", file=sys.stderr)
+            _run(["git", "-C", str(REPO), "pull", "--ff-only"])
+        else:
+            print("On a detached release checkout with nothing newer — already up to date.", file=sys.stderr)
     print("Syncing submodules to the pinned commits...", file=sys.stderr)
     _run(["git", "-C", str(REPO), "submodule", "update", "--init", "--recursive"])
 

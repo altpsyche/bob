@@ -257,7 +257,7 @@ class TestUpdateStack(unittest.TestCase):
     # update over git + build + lock + doctor with a bin/ rollback; every piece is mocked so no
     # git/network/compiler runs. CLI-only.
     def _run(self, before, after, verify=True, tag=None, changed="llama.cpp", cfg=None,
-             gpu=None, cuda_ok=True):
+             gpu=None, cuda_ok=True, on_branch=True):
         """Run update_stack with everything mocked; return (rc, mocks-by-name, git-calls). `changed`
         picks which submodule moves (before -> after); every other submodule stays put, so the test
         controls exactly which component the update should rebuild."""
@@ -290,6 +290,7 @@ class TestUpdateStack(unittest.TestCase):
             "restore": mock.patch("osenv.restore_build_output", return_value=True),
             "remove_bak": mock.patch("osenv.remove_build_output_backup"),
             "bin_exe": mock.patch("osenv.bin_exe", return_value=exe),
+            "on_branch": mock.patch.object(build_mod, "_on_branch", return_value=on_branch),
             "gpu_info": mock.patch("osenv.gpu_info", return_value=gpu),
             # Tier-0 CUDA ensure that a GPU rebuild gates on (mutable install path is exercised in
             # install_prereqs tests): return a root when CUDA is available, else raise the guidance.
@@ -343,6 +344,14 @@ class TestUpdateStack(unittest.TestCase):
         self.assertEqual(rc, 1)                      # handled failure
         mocks["restore"].assert_called_once()        # rolled bin/ back
         mocks["remove_bak"].assert_not_called()
+
+    def test_detached_head_no_newer_skips_pull(self):
+        # Stable user on a detached release tag with nothing newer: must NOT `git pull` (no upstream), just
+        # no-op. Regression for the detached-HEAD update error.
+        rc, _, git = self._run("abc", "abc", on_branch=False)
+        self.assertEqual(rc, 0)
+        self.assertFalse(any("pull" in c for c in git))   # no pull attempted on a detached HEAD
+        self.assertTrue(any("fetch" in c for c in git))   # fetch still happens
 
     def test_tag_triggers_checkout(self):
         rc, _, git = self._run("x", "x", tag="v0.2.0")
