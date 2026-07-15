@@ -97,6 +97,18 @@ class TestLinuxCmake3(unittest.TestCase):
              mock.patch("osenv.subprocess.run", return_value=mock.Mock(stdout="cmake version 3.31.7\n")):
             self.assertEqual(osenv.linux_cmake3("/repo"), "/usr/bin/cmake")
 
+    def test_too_old_cmake_triggers_pinned_build(self):
+        # Ubuntu 20.04 ships cmake 3.16, but llama.cpp needs >= 3.18: reject it and use the pinned build.
+        repo = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, repo, True)
+        machine = __import__("platform").machine() or "x86_64"
+        exe = repo / "tools" / f"cmake-3.31.7-linux-{machine}" / "bin" / "cmake"
+        exe.parent.mkdir(parents=True)
+        exe.write_text("x")   # pre-place so no real download happens
+        with mock.patch("osenv.shutil.which", return_value="/usr/bin/cmake"), \
+             mock.patch("osenv.subprocess.run", return_value=mock.Mock(stdout="cmake version 3.16.3\n")):
+            self.assertEqual(osenv.linux_cmake3(str(repo)), str(exe))   # 3.16 rejected -> pinned
+
 
 class _BuildTreeMixin:
     def setUp(self):

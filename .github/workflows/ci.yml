@@ -240,7 +240,9 @@ jobs:
   # here is what makes a tagged release GPU-eligible.
   acceptance-gpu:
     name: acceptance-gpu (native CUDA, release tags)
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Opt-in: only runs when a self-hosted GPU runner is registered and repo variable GPU_RUNNER=true is set.
+    # Without the guard this job sits queued forever on a tag (no runner picks it up) and stalls the run.
+    if: startsWith(github.ref, 'refs/tags/v') && vars.GPU_RUNNER == 'true'
     runs-on: [self-hosted, gpu]
     env:
       PYTHONPATH: scripts
@@ -311,7 +313,8 @@ jobs:
           docker run --rm -e TIER="${{ matrix.tier }}" -v "$PWD":/bob -w /bob "$img" bash -c '
             set -e
             export DEBIAN_FRONTEND=noninteractive
-            apt-get update -y && apt-get install -y git cmake ninja-build g++ python3 patchelf tar
+            apt-get update -y && apt-get install -y git ninja-build g++ python3 patchelf tar
+            git config --global --add safe.directory "*"   # the mounted repo is owned by the host uid
             name="llama-server-linux-x86_64-$TIER"
             staging="dist/$name"; mkdir -p "$staging"
             if [ "$TIER" = "cuda" ]; then
@@ -391,7 +394,7 @@ jobs:
           python-version: '3.12'
       - name: Install CUDA toolkit (cuda tier only)
         if: matrix.tier == 'cuda'
-        uses: Jimver/cuda-toolkit@v0.2.19
+        uses: Jimver/cuda-toolkit@v0.2.35   # 12.8.0 is available from this release onward
         with:
           cuda: '12.8.0'
           method: network

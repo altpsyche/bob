@@ -36,10 +36,20 @@ def main() -> int:
     stack.configure(config)
 
     out: list = []
-    try:
-        provision._fetch_ct2_model(_CI_MODEL, force=False, out=out)
-    except Exception as e:  # noqa: BLE001
-        print(f"[voice-smoke] FAIL: CT2 model fetch failed: {e}", file=sys.stderr)
+    # Retry the model download: the CT2 fetch reaches out to Hugging Face, which occasionally resets the
+    # connection. A transient network hiccup must not red this gating job.
+    last_err = None
+    for attempt in range(1, 4):
+        try:
+            provision._fetch_ct2_model(_CI_MODEL, force=False, out=out)
+            last_err = None
+            break
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            print(f"[voice-smoke] CT2 fetch attempt {attempt}/3 failed: {e}", file=sys.stderr)
+            time.sleep(5 * attempt)
+    if last_err is not None:
+        print(f"[voice-smoke] FAIL: CT2 model fetch failed after retries: {last_err}", file=sys.stderr)
         return 1
     for line in out:
         print(f"[voice-smoke] {line}", file=sys.stderr)

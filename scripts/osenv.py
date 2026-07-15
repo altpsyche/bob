@@ -1287,9 +1287,10 @@ def resolve_build_cmake_flags(cpu: bool = False, arch: int = 0, os: str = None) 
 
 
 def linux_cmake3(repo, pinned_version: str = "3.31.7") -> str:
-    """A cmake < 4.0 path (llama.cpp/whisper.cpp reject 4.x's policy changes). System cmake if it is 3.x,
-    else download + cache the pinned Kitware build into tools/ (rolling distros ship only 4.x). urllib, not
-    requests, so it works pre-venv in the kernel. Raises on download failure."""
+    """A cmake in [3.18, 4.0) (llama.cpp needs >= 3.18, and rejects 4.x's policy changes). System cmake when
+    it is in range, else download + cache the pinned Kitware build into tools/ (old LTS distros ship 3.16,
+    rolling distros ship 4.x, neither works). urllib, not requests, so it works pre-venv in the kernel.
+    Raises on download failure."""
     import re
     import tempfile
     import urllib.request
@@ -1299,10 +1300,11 @@ def linux_cmake3(repo, pinned_version: str = "3.31.7") -> str:
         try:
             out = subprocess.run(["cmake", "--version"], capture_output=True, text=True, timeout=10)
             m = re.search(r"(\d+)\.(\d+)\.(\d+)", out.stdout)
-            if m and (int(m.group(1)), int(m.group(2))) < (4, 0):
+            if m and (3, 18) <= (int(m.group(1)), int(m.group(2))) < (4, 0):
                 return sys_cmake
             if m:
-                print(f"  system cmake is {m.group(0)} (4.x) — llama.cpp/whisper.cpp need 3.x.", file=sys.stderr)
+                print(f"  system cmake is {m.group(0)} — llama.cpp needs >= 3.18 and < 4.0; provisioning a "
+                      "pinned build.", file=sys.stderr)
         except (OSError, subprocess.SubprocessError):
             pass
     machine = platform.machine() or "x86_64"
