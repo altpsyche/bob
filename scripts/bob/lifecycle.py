@@ -107,6 +107,23 @@ def _select_engine_row(component: str, os_name: str, cpu_arch: str, tier: str):
     return None
 
 
+def _binary_runs(exe) -> bool:
+    """True if the staged binary actually executes here (runs `--version` without an OS/loader error). This is
+    the safety net that makes prebuilt-for-all-distros honest: a binary built against a newer glibc than the
+    host, or for the wrong ABI, fails to launch, and we fall back to a source build instead of leaving the user
+    with an engine that won't start. A non-zero exit still counts as 'runs' (it loaded); only a launch failure
+    (OSError) or timeout counts as broken."""
+    import subprocess
+    exe = Path(exe)
+    if not exe.exists():
+        return False
+    try:
+        subprocess.run([str(exe), "--version"], capture_output=True, timeout=30)
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def _install_prebuilt(row: dict, bin_dir) -> str:
     """Download the prebuilt engine archive in `row`, SHA-verify it against the lock (tamper-evident), extract,
     and stage every file (the binary + its bundled CUDA runtime libs) into bin/ so the result is driver-only.
@@ -192,6 +209,12 @@ def ensure_engine(cpu: bool = False, from_source: bool = False, force: bool = Fa
                         "detail": "llama-server prebuilt already present (use --force to reinstall)."}
             try:
                 detail = _install_prebuilt(row, bin_dir)
+                # Portability safety net: a prebuilt built against a newer glibc than this host won't launch.
+                # Verify it actually runs; if not, drop it and fall through to a source build so no user is
+                # ever left with a non-starting engine (this is what makes "works on all distros" honest).
+                if not _binary_runs(osenv.bin_exe("llama-server")):
+                    osenv.bin_exe("llama-server").unlink(missing_ok=True)
+                    raise RuntimeError("prebuilt engine does not run on this system (e.g. glibc too old)")
                 osenv.write_build_tier_marker(tier=tier, arch=0, cuda=row.get("cudaMajor"),
                                               source="prebuilt", bin_dir=bin_dir)
                 return {"tier": tier, "source": "prebuilt", "blocked": False,

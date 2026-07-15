@@ -273,17 +273,20 @@ jobs:
         run: python scripts/smoke.py --up
 
   # Build + publish the prebuilt, DRIVER-ONLY engine binaries for a tagged release (the outlier fix: users
-  # download these instead of compiling). CUDA builds in a CUDA *devel* container (building needs the toolkit,
-  # NOT a GPU); the CPU tier builds on the runner. Each archive bundles the CUDA runtime libs so a target box
-  # needs only the NVIDIA driver. Assets upload to the GitHub release; their URLs + SHA256s then populate
-  # config/engines.json (read into versions.lock by `bob lock`), which lifecycle.ensure_engine downloads +
-  # SHA-verifies + stages. Windows CUDA is NOT built here: its engines.json row pins the official llama.cpp
-  # Windows CUDA release asset (see docs/FALLBACKS.md).
+  # download these instead of compiling). Both tiers build in an OLD-glibc container (Ubuntu 20.04, glibc
+  # 2.31) so the binary runs on essentially every current distro (manylinux principle: build old, run
+  # newer); a host with a still-older glibc is caught by lifecycle._binary_runs and safely falls back to a
+  # source build. The CUDA archive bundles the CUDA runtime libs and the binary's rpath is set to $ORIGIN
+  # (patchelf), so a target box needs only the NVIDIA driver. Assets upload to the GitHub release; the
+  # finalize-engines job then folds their URLs + SHA256s into config/engines.json (read into versions.lock
+  # by `bob lock`), which lifecycle.ensure_engine downloads + SHA-verifies + stages.
   #
-  # One piece still needs the real release setup: committing config/engines.json back with the uploaded asset
-  # URLs + SHA256s (a follow-up job/PR that opens a bump PR), so `bob lock` records them and ensure_engine can
-  # find a matching row. The fat multi-arch CUDA build is handled by `bob build --dist` (no local GPU needed).
-  publish-engines:
+  # Windows CUDA is NOT built here: its engines.json row pins the official llama.cpp Windows CUDA release
+  # asset (a maintainer adds it, since matching a llama.cpp build tag to Bob's pinned submodule commit is a
+  # judgement call). arm64 Linux and AMD/Intel (Vulkan/ROCm) GPUs have no row today, so they fall back to a
+  # source build (AMD/Intel land the CPU tier until a Vulkan backend is added). NVIDIA Turing..Blackwell are
+  # all covered by the one fat multi-arch CUDA binary.
+  publish-engines-linux:
     name: publish-engines (linux ${{ matrix.tier }}, release tags)
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -298,43 +301,183 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Build the ${{ matrix.tier }} engine (CUDA in a devel container — no GPU needed to compile)
+      - name: Build + package the ${{ matrix.tier }} engine in an old-glibc container (portable, no GPU needed)
         shell: bash
         run: |
           set -e
-          if [ "${{ matrix.tier }}" = "cuda" ]; then
-            docker run --rm -v "$PWD":/bob -w /bob nvidia/cuda:12.8.0-devel-ubuntu22.04 bash -c '
-              apt-get update -y && apt-get install -y git cmake ninja-build g++ python3
-              # Fat multi-arch CUDA binary (Turing..Blackwell), no GPU needed to compile.
+          img="ubuntu:20.04"
+          [ "${{ matrix.tier }}" = "cuda" ] && img="nvidia/cuda:12.8.0-devel-ubuntu20.04"
+          docker run --rm -e TIER="${{ matrix.tier }}" -v "$PWD":/bob -w /bob "$img" bash -c '
+            set -e
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -y && apt-get install -y git cmake ninja-build g++ python3 patchelf tar
+            name="llama-server-linux-x86_64-$TIER"
+            staging="dist/$name"; mkdir -p "$staging"
+            if [ "$TIER" = "cuda" ]; then
               PYTHONPATH=scripts python3 -m bob build --dist --cuda-archs "75;80;89;120"
-            '
-          else
-            sudo apt-get update -y && sudo apt-get install -y cmake ninja-build g++
-            PYTHONPATH=scripts python3 -m bob build --dist --cpu
-          fi
+              cp bin/llama-server "$staging"/
+              for lib in libcudart libcublas libcublasLt; do
+                f=$(find /usr/local/cuda -name "${lib}.so.*" 2>/dev/null | head -1 || true)
+                [ -n "$f" ] && cp -L "$f" "$staging"/ || echo "WARN: $lib not found to bundle"
+              done
+              patchelf --set-rpath "\$ORIGIN" "$staging/llama-server"   # find bundled libs next to the binary
+            else
+              PYTHONPATH=scripts python3 -m bob build --dist --cpu
+              cp bin/llama-server "$staging"/
+            fi
+            tar -C dist -czf "dist/$name.tar.gz" "$name"
+          '
 
-      - name: Package (bundle the CUDA runtime libs) + checksum
+      - name: Checksum + emit the engines.json row
         id: pkg
         shell: bash
         run: |
           set -e
-          name="llama-server-linux-x86_64-${{ matrix.tier }}"
-          staging="dist/$name"; mkdir -p "$staging"
-          cp bin/llama-server "$staging"/
-          if [ "${{ matrix.tier }}" = "cuda" ]; then
-            for lib in libcudart libcublas libcublasLt; do
-              f=$(find / -name "${lib}.so.*" 2>/dev/null | head -1 || true)
-              [ -n "$f" ] && cp "$f" "$staging"/ || echo "WARN: $lib not found to bundle"
-            done
-          fi
-          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          tier="${{ matrix.tier }}"; name="llama-server-linux-x86_64-$tier"
           sha=$(sha256sum "dist/$name.tar.gz" | cut -d' ' -f1)
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/$name.tar.gz"
+          commit=$(git rev-parse "HEAD:external/llama.cpp")
+          archs="75;80;89;120"; cmaj="12"
+          [ "$tier" = "cpu" ] && archs="" && cmaj="null"
+          mkdir -p rows
+          cat > "rows/$name.json" <<JSON
+          {"$name": {"component": "llama-server", "os": "linux", "cpuArch": "x86_64", "tier": "$tier",
+            "url": "$url", "sha256": "$sha", "builtFromCommit": "$commit", "cudaArchs": "$archs", "cudaMajor": $cmaj}}
+          JSON
           echo "asset=dist/$name.tar.gz" >> "$GITHUB_OUTPUT"
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "PUBLISH $name  sha256=$sha   (put this in config/engines.json — TODO(2))"
 
       - name: Upload the asset to the release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "${GITHUB_REF_NAME}" "${{ steps.pkg.outputs.asset }}" --clobber
+
+      - name: Stash the engines.json row for finalize
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-row-linux-${{ matrix.tier }}
+          path: rows/*.json
+
+  # Windows engines, built by Bob for consistency (so the asset matches the exact pinned llama.cpp commit,
+  # avoiding a brittle official-asset-to-commit mapping). Bundled CUDA DLLs sit next to the .exe (Windows
+  # resolves those from the exe's own dir), so the target needs only the NVIDIA driver. First-run CI: expect
+  # to shake out the CUDA-toolkit install + VS build here, like the GPU acceptance tier.
+  publish-engines-windows:
+    name: publish-engines (windows ${{ matrix.tier }}, release tags)
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      PYTHONPATH: scripts
+    strategy:
+      fail-fast: false
+      matrix:
+        tier: [cuda, cpu]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install CUDA toolkit (cuda tier only)
+        if: matrix.tier == 'cuda'
+        uses: Jimver/cuda-toolkit@v0.2.19
+        with:
+          cuda: '12.8.0'
+          method: network
+      - name: Build + package the ${{ matrix.tier }} engine
+        shell: bash
+        run: |
+          set -e
+          name="llama-server-windows-x86_64-${{ matrix.tier }}"
+          staging="dist/$name"; mkdir -p "$staging"
+          if [ "${{ matrix.tier }}" = "cuda" ]; then
+            python -m bob build --dist --cuda-archs "75;80;89;120"
+          else
+            python -m bob build --dist --cpu
+          fi
+          # build_llama already staged the CUDA runtime DLLs next to llama-server.exe in bin/ on Windows.
+          cp bin/llama-server.exe "$staging"/
+          cp bin/*.dll "$staging"/ 2>/dev/null || true
+          powershell -Command "Compress-Archive -Path '$staging/*' -DestinationPath 'dist/$name.zip' -Force"
+      - name: Checksum + emit the engines.json row
+        id: pkg
+        shell: bash
+        run: |
+          set -e
+          tier="${{ matrix.tier }}"; name="llama-server-windows-x86_64-$tier"
+          sha=$(sha256sum "dist/$name.zip" | cut -d' ' -f1)
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/$name.zip"
+          commit=$(git rev-parse "HEAD:external/llama.cpp")
+          archs="75;80;89;120"; cmaj="12"
+          [ "$tier" = "cpu" ] && archs="" && cmaj="null"
+          mkdir -p rows
+          cat > "rows/$name.json" <<JSON
+          {"$name": {"component": "llama-server", "os": "windows", "cpuArch": "x86_64", "tier": "$tier",
+            "url": "$url", "sha256": "$sha", "builtFromCommit": "$commit", "cudaArchs": "$archs", "cudaMajor": $cmaj}}
+          JSON
+          echo "asset=dist/$name.zip" >> "$GITHUB_OUTPUT"
+      - name: Upload the asset to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" "${{ steps.pkg.outputs.asset }}" --clobber
+      - name: Stash the engines.json row for finalize
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-row-windows-${{ matrix.tier }}
+          path: rows/*.json
+
+  # Fold the published rows into config/engines.json and open a bump PR, so activating plug-and-play for a
+  # release is a single review-and-merge rather than a manual edit. `bob lock` then records the rows in
+  # versions.lock; lifecycle.ensure_engine downloads + SHA-verifies them on the next install/update.
+  finalize-engines:
+    name: finalize-engines (bump config/engines.json)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [publish-engines-linux, publish-engines-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      PYTHONPATH: scripts
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: engine-row-*
+          path: rows
+          merge-multiple: true
+      - name: Merge rows into config/engines.json + regenerate versions.lock
+        shell: bash
+        run: |
+          python - <<'PY'
+          import glob, json
+          from bob import versions
+          rows = {}
+          for f in glob.glob("rows/*.json"):
+              rows.update(json.load(open(f)))
+          versions.upsert_engine_rows(rows)
+          versions.write_lock()   # fold the engines block into versions.lock deterministically
+          print("engines.json rows:", list(rows))
+          PY
+      - name: Open the bump PR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch="engines-bump-${GITHUB_REF_NAME}"
+          git config user.name "bob-ci"; git config user.email "ci@bob.local"
+          git checkout -b "$branch"
+          git add config/engines.json versions.lock
+          git commit -m "chore: publish prebuilt engines for ${GITHUB_REF_NAME}"
+          git push -u origin "$branch"
+          gh pr create --base main --head "$branch" --title "Publish prebuilt engines for ${GITHUB_REF_NAME}" \
+            --body "Auto-generated: prebuilt engine rows + versions.lock for ${GITHUB_REF_NAME}. Merging activates driver-only plug-and-play for this release."

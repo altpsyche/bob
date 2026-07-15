@@ -248,6 +248,15 @@ class TestEnginesManifest(unittest.TestCase):
             obj = versions.build_lock_object(self.repo)
         self.assertIn("engines", obj)
 
+    def test_upsert_preserves_docs_overwrites_and_sorts(self):
+        from bob import versions
+        self.cfg.write_text(self._json.dumps({"_comment": "doc", "b-row": {"component": "old"}}), encoding="utf-8")
+        versions.upsert_engine_rows({"a-row": {"component": "y"}, "b-row": {"component": "new"}}, path=self.cfg)
+        raw = self._json.loads(self.cfg.read_text(encoding="utf-8"))
+        self.assertIn("_comment", raw)                                  # schema/doc key preserved
+        self.assertEqual([k for k in raw if not k.startswith("_")], ["a-row", "b-row"])  # sorted
+        self.assertEqual(raw["b-row"]["component"], "new")              # re-publish overwrites the row
+
 
 class TestInstallPrebuilt(unittest.TestCase):
     """The real download + SHA-verify + extract + stage path, driven by a local tar.gz over file://."""
@@ -293,6 +302,7 @@ class TestEnsureEnginePrebuiltFirst(unittest.TestCase):
         with mock.patch("osenv.gpu_info", return_value=None), mock.patch("osenv.gpu_arch", return_value=None), \
              mock.patch.object(lifecycle, "_select_engine_row", return_value=row), \
              mock.patch.object(lifecycle, "_install_prebuilt", return_value="Installed prebuilt") as inst, \
+             mock.patch.object(lifecycle, "_binary_runs", return_value=True), \
              mock.patch("osenv.write_build_tier_marker"), \
              mock.patch("osenv.bin_exe") as be, \
              mock.patch.object(build, "build_llama") as bl:
@@ -301,6 +311,21 @@ class TestEnsureEnginePrebuiltFirst(unittest.TestCase):
         self.assertEqual(res["source"], "prebuilt")
         inst.assert_called_once()
         bl.assert_not_called()                                    # no source compile when a prebuilt lands
+
+    def test_prebuilt_that_wont_run_falls_back_to_source(self):
+        # glibc-too-old / wrong-ABI: the prebuilt stages but won't launch -> drop it and build from source,
+        # so no user is ever left with a non-starting engine. This is what makes "all distros" honest.
+        build = __import__("build")
+        with mock.patch("osenv.gpu_info", return_value=None), mock.patch("osenv.gpu_arch", return_value=None), \
+             mock.patch.object(lifecycle, "_select_engine_row", return_value={"component": "llama-server"}), \
+             mock.patch.object(lifecycle, "_install_prebuilt", return_value="Installed"), \
+             mock.patch.object(lifecycle, "_binary_runs", return_value=False), \
+             mock.patch("osenv.write_build_tier_marker"), \
+             mock.patch("osenv.bin_exe", return_value=Path("/nonexistent/llama-server")), \
+             mock.patch.object(build, "build_llama", return_value="built") as bl:
+            res = lifecycle.ensure_engine(cpu=True)
+        self.assertEqual(res["source"], "source")
+        bl.assert_called_once()
 
     def test_prebuilt_used_on_gpu_without_toolkit_no_block(self):
         # The atomic Bazzite case: GPU present, no toolkit (a SOURCE build would block on on_block='stop'),
@@ -313,6 +338,7 @@ class TestEnsureEnginePrebuiltFirst(unittest.TestCase):
              mock.patch("bob.install_prereqs.ensure_cuda_toolkit") as ensure, \
              mock.patch.object(lifecycle, "_select_engine_row", return_value={"component": "llama-server"}), \
              mock.patch.object(lifecycle, "_install_prebuilt", return_value="Installed") as inst, \
+             mock.patch.object(lifecycle, "_binary_runs", return_value=True), \
              mock.patch("osenv.write_build_tier_marker"), \
              mock.patch("osenv.bin_exe", return_value=Path("/nonexistent/llama-server")), \
              mock.patch.object(build, "build_llama") as bl:

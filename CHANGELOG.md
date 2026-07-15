@@ -21,6 +21,13 @@ rebuilds only what changed, verifies, and rolls back on failure.
   `versions.lock` (committed source: `config/engines.json`, published by CI). Source build stays the
   reproducible fallback via `--from-source`, and the default install no longer pulls the multi-GB CUDA
   Toolkit. Atomic hosts (Bazzite/Silverblue) work driver-only on the default path, no distrobox needed.
+- **Broad, safe coverage.** One fat multi-arch CUDA binary covers every supported NVIDIA generation
+  (Turing through Blackwell); the Linux binaries are built in an old-glibc container so they run on
+  essentially every current distro, and a runtime self-check falls back to a source build if a binary can
+  not launch (e.g. an unusually old glibc), so no machine is ever left with a non-starting engine. Windows
+  engines are built by Bob too (bundled DLLs beside the .exe). arm64 Linux and AMD/Intel GPUs have no
+  prebuilt yet and fall back to a source build / the CPU tier. A CI `publish-engines` + `finalize-engines`
+  pair builds, uploads, and opens the `config/engines.json` bump PR, so activating a release is one merge.
 - **`bob diagnose` / `bob status` flag an idle GPU.** A new `bin/.build-tier.json` marker records the tier
   bin/ was built at; diagnose emits a loud, actionable line when an NVIDIA GPU is present but the engine is
   CPU-only, so the silent-degradation case is impossible to miss.
