@@ -333,12 +333,14 @@ jobs:
             gomp=$(find -L /usr/lib /lib -name "libgomp.so.1*" 2>/dev/null | head -1 || true)
             [ -n "$gomp" ] && cp -L "$gomp" "$staging/libgomp.so.1" || { echo "FAIL: libgomp not found"; exit 1; }
             if [ "$TIER" = "cuda" ]; then     # + the CUDA runtime libs so the package is driver-only
-              for lib in libcudart libcublas libcublasLt; do
-                # -L follows the /usr/local/cuda symlink (find would not descend it otherwise). The binary
-                # links the SONAME (libX.so.MAJOR), but find may return the versioned libX.so.MAJOR.MINOR.PATCH,
-                # so bundle the real file AND create the SONAME symlink. (ldd here cannot catch a wrong name:
-                # the container system CUDA masks it, so assert the SONAME file explicitly.)
-                f=$(find -L /usr/local/cuda -name "${lib}.so.*" 2>/dev/null | head -1 || true)
+              for lib in libcudart libcublas libcublasLt libnccl; do
+                # -L follows the /usr/local/cuda symlink (find would not descend it otherwise); also search
+                # /usr/lib since some CUDA libs (e.g. NCCL) install outside the toolkit dir. The binary links
+                # the SONAME (libX.so.MAJOR), but find may return the versioned libX.so.MAJOR.MINOR.PATCH, so
+                # bundle the real file AND create the SONAME symlink. (ldd here cannot catch a wrong name: the
+                # container system CUDA masks it, so assert the SONAME file explicitly; the clean-container
+                # gate below is the authoritative check.)
+                f=$(find -L /usr/local/cuda /usr/lib /lib -name "${lib}.so.*" 2>/dev/null | head -1 || true)
                 [ -n "$f" ] || { echo "FAIL: $lib not found in the CUDA toolkit"; exit 1; }
                 base=$(basename "$f"); cp -L "$f" "$staging/$base"
                 soname=$(printf "%s" "$base" | sed -E "s/(\.so\.[0-9]+)\..*/\1/")
