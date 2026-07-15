@@ -330,11 +330,17 @@ jobs:
             cp -P bin/*.so* "$staging"/
             if [ "$TIER" = "cuda" ]; then     # + the CUDA runtime libs so the package is driver-only
               for lib in libcudart libcublas libcublasLt; do
-                # -L follows the /usr/local/cuda symlink (find would not descend it otherwise).
+                # -L follows the /usr/local/cuda symlink (find would not descend it otherwise). The binary
+                # links the SONAME (libX.so.MAJOR), but find may return the versioned libX.so.MAJOR.MINOR.PATCH,
+                # so bundle the real file AND create the SONAME symlink. (ldd here cannot catch a wrong name:
+                # the container system CUDA masks it, so assert the SONAME file explicitly.)
                 f=$(find -L /usr/local/cuda -name "${lib}.so.*" 2>/dev/null | head -1 || true)
-                [ -n "$f" ] && cp -L "$f" "$staging"/ || echo "WARN: $lib not found to bundle"
+                [ -n "$f" ] || { echo "FAIL: $lib not found in the CUDA toolkit"; exit 1; }
+                base=$(basename "$f"); cp -L "$f" "$staging/$base"
+                soname=$(printf "%s" "$base" | sed -E "s/(\.so\.[0-9]+)\..*/\1/")
+                [ "$soname" != "$base" ] && [ ! -e "$staging/$soname" ] && ln -s "$base" "$staging/$soname"
+                [ -e "$staging/$soname" ] || { echo "FAIL: $lib SONAME $soname missing from package"; exit 1; }
               done
-              ls "$staging"/libcudart.so.* >/dev/null 2>&1 || { echo "FAIL: CUDA runtime libs not bundled"; exit 1; }
             fi
             # rpath $ORIGIN on the binary and every real lib so each resolves its siblings from its own dir.
             for f in "$staging"/llama-server "$staging"/*.so*; do
@@ -348,6 +354,24 @@ jobs:
             if [ -n "$missing" ]; then echo "FAIL: unresolved shared libraries:"; echo "$missing"; exit 1; fi
             echo "package link check ok (libcuda.so.1 comes from the NVIDIA driver at runtime)"
             tar -C dist -czf "dist/$name.tar.gz" "$name"
+          '
+
+      - name: Verify the package is self-contained in a CLEAN container (no CUDA to mask a gap), before upload
+        shell: bash
+        run: |
+          set -e
+          name="llama-server-linux-x86_64-${{ matrix.tier }}"
+          # Extract + ldd in a bare ubuntu:20.04 with NO CUDA and NO toolchain: the only way to resolve a lib
+          # is from the bundle itself (via the binary's $ORIGIN rpath). A missing bundled lib or SONAME shows
+          # as "not found" here (the build container's system CUDA would have hidden it). libcuda.so.1 is the
+          # NVIDIA driver, expected-absent and supplied at runtime, so it is excluded. This gate runs BEFORE
+          # the upload, so a broken package fails the job instead of shipping.
+          docker run --rm -e NAME="$name" -v "$PWD/dist":/d ubuntu:20.04 bash -c '
+            set -e
+            tar -C /tmp -xzf "/d/$NAME.tar.gz"
+            miss=$(ldd "/tmp/$NAME/llama-server" 2>/dev/null | grep -i "not found" | grep -v "libcuda.so.1" || true)
+            if [ -n "$miss" ]; then echo "FAIL: unresolved in a clean environment:"; echo "$miss"; exit 1; fi
+            echo "clean-container link check ok for $NAME"
           '
 
       - name: Checksum + emit the engines.json row
