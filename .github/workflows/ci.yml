@@ -304,17 +304,37 @@ jobs:
         with:
           submodules: recursive
 
+      - name: llama.cpp commit (cache key)
+        id: llama
+        run: echo "sha=$(git rev-parse HEAD:external/llama.cpp)" >> "$GITHUB_OUTPUT"
+
+      # Restore the compile cache warmed on main by warm-engine-cache.yml — a tag run can read default-branch
+      # caches, so the multi-arch CUDA build hits a warm ccache instead of recompiling from scratch. Restore
+      # only (main is the producer): a tag-scoped save would be evicted on the next re-cut and just waste the
+      # cache budget. Falls back through restore-keys to the newest prior cache for this tier.
+      - name: Restore ccache (warmed on main)
+        uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: ccache-linux-${{ matrix.tier }}-${{ steps.llama.outputs.sha }}
+          restore-keys: |
+            ccache-linux-${{ matrix.tier }}-
+
       - name: Build + package the ${{ matrix.tier }} engine in an old-glibc container (portable, no GPU needed)
         shell: bash
         run: |
           set -e
+          mkdir -p .ccache
           img="ubuntu:20.04"
           [ "${{ matrix.tier }}" = "cuda" ] && img="nvidia/cuda:12.8.0-devel-ubuntu20.04"
-          docker run --rm -e TIER="${{ matrix.tier }}" -v "$PWD":/bob -w /bob "$img" bash -c '
+          docker run --rm -e TIER="${{ matrix.tier }}" \
+            -e CCACHE_DIR=/ccache -e CCACHE_MAXSIZE=5G \
+            -v "$PWD":/bob -v "$PWD/.ccache":/ccache -w /bob "$img" bash -c '
             set -e
             export DEBIAN_FRONTEND=noninteractive
-            apt-get update -y && apt-get install -y git ninja-build g++ python3 patchelf tar
+            apt-get update -y && apt-get install -y git ninja-build g++ python3 patchelf tar curl xz-utils
             git config --global --add safe.directory "*"   # the mounted repo is owned by the host uid
+            source /bob/.github/scripts/ccache-in-container.sh
             name="llama-server-linux-x86_64-$TIER"
             staging="dist/$name"; mkdir -p "$staging"
             if [ "$TIER" = "cuda" ]; then
@@ -360,6 +380,8 @@ jobs:
             if [ -n "$missing" ]; then echo "FAIL: unresolved shared libraries:"; echo "$missing"; exit 1; fi
             echo "package link check ok (libcuda.so.1 comes from the NVIDIA driver at runtime)"
             tar -C dist -czf "dist/$name.tar.gz" "$name"
+            ccache -sv || true                # per-run cache stats (hit rate) for visibility
+            chmod -R a+rX /ccache || true     # so actions/cache (runner user) can read the root-created files
           '
 
       - name: Verify the package is self-contained in a CLEAN container (no CUDA to mask a gap), before upload

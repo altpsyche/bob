@@ -1,0 +1,78 @@
+# Warm the Linux engine compile cache on the DEFAULT BRANCH so release-tag publish builds are fast.
+#
+# Why a separate workflow on main: the publish-engines jobs only run on release tags, and a re-cut deletes
+# the tag (evicting any tag-scoped cache). GitHub only reliably shares caches created on the default branch,
+# so the ccache MUST be populated here on `main`; the tag publish job then restores it (a tag run can read
+# default-branch caches). This turns the ~45 min multi-arch CUDA build into a few-minute cache hit on re-cuts.
+#
+# It builds the engine exactly as the publish job does (same containers, same `bob build --dist` command) but
+# uploads NOTHING — it exists only to populate ccache. Triggered when the engine source could change, plus a
+# manual dispatch to warm on demand. Windows is not cached: its Visual Studio generator ignores the compiler
+# launcher that ggml's GGML_CCACHE relies on, so caching there would need a Ninja migration (out of scope).
+name: warm-engine-cache
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'external/llama.cpp'
+      - 'scripts/tools/build.py'
+      - '.github/scripts/ccache-in-container.sh'
+      - '.github/workflows/warm-engine-cache.yml'
+
+concurrency:
+  group: warm-engine-cache-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  warm:
+    name: warm ${{ matrix.tier }} ccache (linux)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        tier: [cuda, cpu]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: llama.cpp commit (cache key)
+        id: llama
+        run: echo "sha=$(git rev-parse HEAD:external/llama.cpp)" >> "$GITHUB_OUTPUT"
+
+      # A fresh key each run (so the cache always updates), restoring from the newest prior cache for this
+      # tier — same commit first, then any commit (ccache's content hashing keeps a stale restore correct).
+      - name: Restore/persist ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-linux-${{ matrix.tier }}-${{ steps.llama.outputs.sha }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-linux-${{ matrix.tier }}-${{ steps.llama.outputs.sha }}-
+            ccache-linux-${{ matrix.tier }}-
+
+      - name: Build the ${{ matrix.tier }} engine to populate ccache (no upload)
+        shell: bash
+        run: |
+          set -e
+          mkdir -p .ccache
+          img="ubuntu:20.04"
+          [ "${{ matrix.tier }}" = "cuda" ] && img="nvidia/cuda:12.8.0-devel-ubuntu20.04"
+          docker run --rm -e TIER="${{ matrix.tier }}" \
+            -e CCACHE_DIR=/ccache -e CCACHE_MAXSIZE=5G \
+            -v "$PWD":/bob -v "$PWD/.ccache":/ccache -w /bob "$img" bash -c '
+            set -e
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -y && apt-get install -y git ninja-build g++ python3 curl xz-utils
+            git config --global --add safe.directory "*"
+            source /bob/.github/scripts/ccache-in-container.sh
+            if [ "$TIER" = "cuda" ]; then
+              PYTHONPATH=scripts python3 -m bob build --dist --cuda-archs "75;80;89;120"
+            else
+              PYTHONPATH=scripts python3 -m bob build --dist --cpu
+            fi
+            ccache -sv || true
+            chmod -R a+rX /ccache || true   # so actions/cache (runner user) can read the root-created files
+          '
