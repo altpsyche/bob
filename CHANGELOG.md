@@ -16,6 +16,13 @@ rebuilds only what changed, verifies, and rolls back on failure.
   (that commit already passed on `main`) while keeping the fast `lint`/`core` sanity. Docs-only changes skip
   the heavy `acceptance-cpu`/`eval` tiers, `prereqs-distro` runs only when the install/package surface changes
   (plus weekly), and superseded PR runs are cancelled. [.github/workflows/ci.yml](.github/workflows/ci.yml).
+- **Release publishing is faster and can't hang** (internal, no user-facing surface). When a release pins the
+  same llama.cpp commit as the previous one, its engine binaries are byte-equivalent, so a new `engine-plan`
+  CI job skips the engine build + the multi-GB asset upload entirely and `publish-manifest` copies the prior
+  release's `engines.json` verbatim (its rows point at the prior assets and carry the matching
+  `builtFromCommit`, which the resolver's commit-match guard accepts). Every `gh release upload` is now wrapped
+  in a timeout + retry, so a stuck upload is killed and retried instead of stalling the job for hours.
+  [.github/workflows/ci.yml](.github/workflows/ci.yml).
 
 ## [1.2.2] (2026-07-16)
 

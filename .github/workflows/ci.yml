@@ -339,6 +339,41 @@ jobs:
   # a tag checkout — and records the result. The resolver itself is still guarded in CI by the hermetic
   # TestManifestContract (every PR) and manifest-contract-live (scheduled, real published manifest).
 
+  # Reuse plan: if this release pins the SAME llama.cpp commit as the previous release, its engine binaries are
+  # byte-equivalent, so rebuilding + re-uploading them (a ~45-min build + a ~1.4 GB upload that has hung the job
+  # for hours) is pure waste. This job decides that once: reuse=true -> the publish-engines-* jobs are skipped and
+  # publish-manifest just copies the prior release's engines.json (whose rows already point at the prior tag's
+  # assets and carry the matching builtFromCommit, which lifecycle's commit-match guard accepts).
+  engine-plan:
+    name: engine-plan (reuse unchanged engines?)
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    outputs:
+      reuse: ${{ steps.plan.outputs.reuse }}
+      prev: ${{ steps.plan.outputs.prev }}
+    steps:
+      - uses: actions/checkout@v4      # default (shallow, no submodules): the gitlink is enough
+      - name: Decide reuse vs rebuild
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          cur="${GITHUB_REF_NAME}"
+          pinned=$(git rev-parse "HEAD:external/llama.cpp")
+          # newest published (non-draft) release tag that isn't the one we're cutting
+          prev=$(gh release list --limit 30 --json tagName,isDraft \
+                   -q "[.[] | select(.isDraft==false) | .tagName] | map(select(. != \"$cur\")) | .[0]" 2>/dev/null || echo "")
+          reuse=false
+          if [ -n "$prev" ] && gh release download "$prev" -p engines.json -O prev.json 2>/dev/null; then
+            prevcommit=$(python3 -c "import json; d=json.load(open('prev.json')); r=[v for k,v in d.items() if not k.startswith('_') and v.get('component')=='llama-server']; print(r[0]['builtFromCommit'] if r else '')" 2>/dev/null || echo "")
+            [ -n "$prevcommit" ] && [ "$prevcommit" = "$pinned" ] && reuse=true
+          fi
+          echo "reuse=$reuse" >> "$GITHUB_OUTPUT"
+          echo "prev=$prev"   >> "$GITHUB_OUTPUT"
+          echo "pinned=$pinned  prev=${prev:-<none>}  reuse=$reuse"
+
   # Build + publish the prebuilt, DRIVER-ONLY engine binaries for a tagged release (the outlier fix: users
   # download these instead of compiling). Both tiers build in an OLD-glibc container (Ubuntu 20.04, glibc
   # 2.31) so the binary runs on essentially every current distro (manylinux principle: build old, run
@@ -354,7 +389,8 @@ jobs:
   # the one fat multi-arch CUDA binary.
   publish-engines-linux:
     name: publish-engines (linux ${{ matrix.tier }}, release tags)
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [engine-plan]
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && needs.engine-plan.outputs.reuse != 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write            # upload release assets
@@ -489,7 +525,17 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${GITHUB_REF_NAME}" "${{ steps.pkg.outputs.asset }}" --clobber
+        # timeout+retry: the ~1.4 GB CUDA upload has hung for hours against GitHub's blob backend. Kill a stuck
+        # attempt at 15 min and retry (--clobber makes it idempotent) instead of stalling to the 6-hour limit.
+        run: |
+          set -uo pipefail
+          asset="${{ steps.pkg.outputs.asset }}"
+          for i in 1 2 3; do
+            [ -n "$(command -v timeout)" ] && T="timeout 900" || T=""
+            if $T gh release upload "${GITHUB_REF_NAME}" "$asset" --clobber; then exit 0; fi
+            echo "::warning::upload attempt $i failed/timed out; retrying in $((i*15))s"; sleep $((i*15))
+          done
+          echo "::error::release upload failed after 3 attempts"; exit 1
 
       - name: Attest build provenance (tamper-evident, verify with `gh attestation verify`)
         uses: actions/attest-build-provenance@v1
@@ -508,7 +554,8 @@ jobs:
   # to shake out the CUDA-toolkit install + VS build here, like the GPU acceptance tier.
   publish-engines-windows:
     name: publish-engines (windows ${{ matrix.tier }}, release tags)
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [engine-plan]
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && needs.engine-plan.outputs.reuse != 'true' }}
     # windows-2022 = VS 2022 (MSVC 14.4x), which CUDA 12.8's nvcc supports. windows-latest moved to VS 2026
     # (MSVC 14.51), where nvcc's cudafe++ crashes — so the CUDA engine must build on the pinned 2022 image.
     runs-on: windows-2022
@@ -594,7 +641,15 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${GITHUB_REF_NAME}" "${{ steps.pkg.outputs.asset }}" --clobber
+        run: |
+          set -uo pipefail
+          asset="${{ steps.pkg.outputs.asset }}"
+          for i in 1 2 3; do
+            [ -n "$(command -v timeout)" ] && T="timeout 900" || T=""
+            if $T gh release upload "${GITHUB_REF_NAME}" "$asset" --clobber; then exit 0; fi
+            echo "::warning::upload attempt $i failed/timed out; retrying in $((i*15))s"; sleep $((i*15))
+          done
+          echo "::error::release upload failed after 3 attempts"; exit 1
       - name: Attest build provenance (tamper-evident, verify with `gh attestation verify`)
         uses: actions/attest-build-provenance@v1
         with:
@@ -612,18 +667,34 @@ jobs:
   # needed; there is no pull-request permission and nothing to merge to activate a release.
   publish-manifest:
     name: publish-manifest (engines.json release asset)
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [publish-engines-linux, publish-engines-windows]
+    needs: [engine-plan, publish-engines-linux, publish-engines-windows]
+    # Runs even when the build jobs SKIP (reuse path): skipped deps are not failures. Blocks only if a build
+    # actually failed or engine-plan errored.
+    if: ${{ !cancelled() && !failure() && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      # REUSE: copy the prior release's engines.json verbatim (its rows already point at the prior tag's assets,
+      # which persist, and carry the matching builtFromCommit). A ~1.8 KB write, no big upload.
+      - name: Reuse the prior release manifest
+        if: ${{ needs.engine-plan.outputs.reuse == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release download "${{ needs.engine-plan.outputs.prev }}" -p engines.json --repo "${GITHUB_REPOSITORY}"
+          echo "reused engines.json from ${{ needs.engine-plan.outputs.prev }}:"; cat engines.json
+      # BUILD: assemble from the freshly built engine-row-* artifacts.
       - uses: actions/download-artifact@v4
+        if: ${{ needs.engine-plan.outputs.reuse != 'true' }}
         with:
           pattern: engine-row-*
           path: rows
           merge-multiple: true
       - name: Assemble engines.json from the published rows
+        if: ${{ needs.engine-plan.outputs.reuse != 'true' }}
         shell: bash
         run: |
           python3 - <<'PY'
@@ -638,7 +709,14 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${GITHUB_REF_NAME}" engines.json --clobber --repo "${GITHUB_REPOSITORY}"
+        run: |
+          set -uo pipefail
+          for i in 1 2 3; do
+            [ -n "$(command -v timeout)" ] && T="timeout 900" || T=""
+            if $T gh release upload "${GITHUB_REF_NAME}" engines.json --clobber --repo "${GITHUB_REPOSITORY}"; then exit 0; fi
+            echo "::warning::manifest upload attempt $i failed/timed out; retrying in $((i*15))s"; sleep $((i*15))
+          done
+          echo "::error::manifest upload failed after 3 attempts"; exit 1
 
   # Fetch the ACTUAL published engines.json for the latest release and assert the resolver still selects every
   # row (the drift guard from the 'tier: cuda vs gpu' incident, backstopping the hermetic TestManifestContract).
