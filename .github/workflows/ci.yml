@@ -5,10 +5,11 @@
 #                    first (proves the dnf/pacman/zypper package-map cells resolve on real distros).
 #   eval           — agent-capability eval (records-based, no live model), both OSes. NON-GATING.
 #   acceptance-cpu — fresh-install + e2e smoke on the CPU tier, both OSes. Every PR (GATES).
-#   acceptance-gpu — prebuilt-download + from-source CUDA, real inference on a self-hosted GPU, asserts the
-#                    GPU tier + provenance. RELEASE TAGS ONLY (needs the published manifest). See docs/CI-GPU-RUNNER.md.
 #   manifest-contract-live — fetch the published engines.json and assert the resolver selects every row.
 #                    Schedule + manual (the drift guard behind the hermetic contract test). NON-GATING.
+#
+# GPU acceptance (real inference on a GPU) is run LOCALLY at release time, not in CI — a self-hosted runner on
+# a public repo is an unacceptable standing risk. See docs/GPU-ACCEPTANCE.md.
 #
 # The per-PR gate is the portable/CPU tier only. Native-from-source CUDA is exercised solely in the
 # non-gating release-tag tier, so a fragile native build can never red a per-PR gate. core-suite is the
@@ -240,53 +241,12 @@ jobs:
             PYTHONPATH=scripts python3 -m bob diagnose
           '
 
-  # Native-from-source CUDA + REAL inference. RELEASE TAGS ONLY (job-level `if`), on a self-hosted GPU
-  # runner. This tier is NEVER on the per-PR path, so a fragile native build cannot red a merge. Green
-  # here is what makes a tagged release GPU-eligible.
-  acceptance-gpu:
-    name: acceptance-gpu (${{ matrix.engine }}, release tags)
-    # Opt-in: only runs when a self-hosted GPU runner is registered and repo variable GPU_RUNNER=true is set.
-    # Without the guard this job sits queued forever on a tag (no runner picks it up) and stalls the run.
-    if: startsWith(github.ref, 'refs/tags/v') && vars.GPU_RUNNER == 'true'
-    # Ordering: the prebuilt leg DOWNLOADS the engines.json + asset that publish-manifest uploads on this same
-    # tag, so it must wait for it (else the download 404s, falls back to source, and reds for the wrong reason).
-    # publish-manifest transitively needs both publish-engines-* jobs. The from-source leg does not need it, but
-    # one job-level `needs` is simplest and only makes the source leg wait, which is harmless.
-    needs: [publish-manifest]
-    runs-on: [self-hosted, gpu]
-    strategy:
-      fail-fast: false
-      matrix:
-        # prebuilt = the driver-only asset users actually receive (gates the release); from-source = the
-        # reproducible fallback (kept exercised so it cannot rot). Each asserts the engine ran on the GPU.
-        engine: [prebuilt, from-source]
-    env:
-      PYTHONPATH: scripts
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Provision, build/download the engine, fetch, serve
-        shell: bash
-        run: |
-          python -m bob.kernel venv litellm
-          if [ "${{ matrix.engine }}" = "from-source" ]; then
-            python -m bob build --from-source        # native-from-source CUDA (auto-detected arch)
-          else
-            python -m bob build                       # prebuilt-first: resolve + DOWNLOAD + SHA-verify + stage
-          fi
-          python -m bob.kernel build-swap  # the llama-swap proxy (Go)
-          python -m bob profile auto       # size to the card's VRAM
-          python -m bob fetch              # active profile's models (verified vs versions.lock)
-          python -m bob up -NoOpen
-
-      - name: End-to-end smoke (real inference on the GPU + tier/provenance assertion)
-        # --require-gpu FAILs if the engine silently fell back to CPU; --expect-source FAILs if the prebuilt
-        # leg did not actually download the published binary (a broken resolver/engine reds the release here).
-        run: |
-          python scripts/smoke.py --up --require-gpu \
-            --expect-source ${{ matrix.engine == 'from-source' && 'source' || 'prebuilt' }}
+  # GPU acceptance (real inference on an NVIDIA GPU) is run LOCALLY at release time, not in CI: this is a
+  # public repo and a self-hosted GPU runner is an unacceptable standing attack surface (a fork PR runs the
+  # workflow from its own commit and could execute on the box). The maintainer runs the documented procedure
+  # in docs/GPU-ACCEPTANCE.md — `scripts/smoke.py --require-gpu --expect-source ...` after a prebuilt build on
+  # a tag checkout — and records the result. The resolver itself is still guarded in CI by the hermetic
+  # TestManifestContract (every PR) and manifest-contract-live (scheduled, real published manifest).
 
   # Build + publish the prebuilt, DRIVER-ONLY engine binaries for a tagged release (the outlier fix: users
   # download these instead of compiling). Both tiers build in an OLD-glibc container (Ubuntu 20.04, glibc
@@ -592,8 +552,9 @@ jobs:
   # Fetch the ACTUAL published engines.json for the latest release and assert the resolver still selects every
   # row (the drift guard from the 'tier: cuda vs gpu' incident, backstopping the hermetic TestManifestContract).
   # Runs off the tag path (schedule + manual) so an already-shipped release cannot silently rot; at tag time the
-  # freshly-published manifest is verified more thoroughly by acceptance-gpu's prebuilt leg (which runs the asset).
-  # It only READS a public asset over the network — skips cleanly offline / no tag, so it never falses.
+  # freshly-published prebuilt is verified more thoroughly by the local GPU acceptance runbook (docs/GPU-ACCEPTANCE.md),
+  # which downloads and RUNS the asset. It only READS a public asset over the network — skips cleanly offline /
+  # no tag, so it never falses.
   manifest-contract-live:
     name: manifest-contract-live (published engines.json)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

@@ -22,12 +22,13 @@ rebuilds only what changed, verifies, and rolls back on failure.
   every GPU box declined). A dedicated `manifest-contract-live` CI job (schedule + manual) fetches the actual
   published `engines.json` and re-checks it against the live resolver so a shipped release cannot silently rot.
   [tests/test_release_manifest.py](tests/test_release_manifest.py), [.github/workflows/ci.yml](.github/workflows/ci.yml).
-- **Real GPU inference in CI.** The `acceptance-gpu` job now runs a matrix over `prebuilt` and `from-source`
-  on a self-hosted GPU runner: the prebuilt leg downloads the published driver-only asset (what users receive)
-  and both legs run real inference and assert the engine ran on the GPU with the expected provenance, so a
-  broken resolver or engine reds the release instead of passing. Setup is documented in
-  [docs/CI-GPU-RUNNER.md](docs/CI-GPU-RUNNER.md). `scripts/smoke.py` gained `--require-gpu` and
-  `--expect-source`. Windows CUDA on a real Windows GPU stays a known residual.
+- **GPU acceptance: real inference on the published prebuilt.** `scripts/smoke.py` gained `--require-gpu` and
+  `--expect-source`, which assert the staged engine ran on the GPU (not a silent CPU fallback) with the expected
+  provenance (`prebuilt` vs `source`). Run at release time via the documented runbook
+  ([docs/GPU-ACCEPTANCE.md](docs/GPU-ACCEPTANCE.md)) on a tag checkout: download the published driver-only
+  asset, serve it, and verify it serves tokens on the GPU, so a broken resolver or engine is caught before the
+  release is trusted. GPU acceptance runs locally, not in CI, because a self-hosted GPU runner on a public repo
+  is an unacceptable standing risk. Windows CUDA on a real Windows GPU stays a known residual.
 
 ### Fixed
 - **No more false "stale lockfile" on a clean working tree.** `bob lock --check` (and `bob doctor`) regenerate
