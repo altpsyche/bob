@@ -78,13 +78,17 @@ class TestCmakeFlags(unittest.TestCase):
         f = osenv.resolve_build_cmake_flags(cpu=False, arch=120, os="linux")
         self.assertEqual(f, {"Cuda": True, "Generator": "Ninja", "StageDlls": False})
 
-    def test_gpu_windows_vs_stages_dlls(self):
-        # Windows default: the VS generator (a user's `bob build` needs no Developer Command Prompt). CI
-        # overrides to Ninja via BOB_CMAKE_GENERATOR (tested in TestBuildLlama) to enable ccache.
+    def test_gpu_windows_ninja_stages_dlls(self):
+        # Windows uses Ninja too (so ggml's ccache launcher applies); build_llama calls ensure_msvc_env to
+        # put cl.exe on PATH. CUDA DLLs are still staged next to the .exe.
         f = osenv.resolve_build_cmake_flags(cpu=False, arch=120, os="windows")
         self.assertTrue(f["Cuda"])
-        self.assertEqual(f["Generator"], "Visual Studio 17 2022")
+        self.assertEqual(f["Generator"], "Ninja")
         self.assertTrue(f["StageDlls"])
+
+    def test_ensure_msvc_env_is_noop_off_windows(self):
+        with mock.patch("osenv.os_name", return_value="linux"):
+            self.assertTrue(osenv.ensure_msvc_env())   # never blocks a non-Windows build
 
     def test_cpu_disables_cuda_both_os(self):
         for o in ("linux", "windows"):
@@ -188,18 +192,6 @@ class TestBuildLlama(_BuildTreeMixin, unittest.TestCase):
         self.assertIn("-DGGML_CUDA=OFF", configure)
         self.assertFalse(any("CUDA_ARCHITECTURES" in a for a in configure))
         self.assertEqual(osenv.build_tier_marker(bin_dir=self.bin)["tier"], "cpu")   # marker records CPU tier
-
-    def test_generator_env_override(self):
-        # CI sets BOB_CMAKE_GENERATOR=Ninja on Windows so the compile is ccache'd; verify the override is
-        # honored (and that a non-VS generator switches staging to build/bin, not build/bin/Release).
-        cap = []
-        with mock.patch("osenv.os_name", return_value="linux"), \
-             mock.patch.dict("os.environ", {"BOB_CMAKE_GENERATOR": "Ninja"}), \
-             mock.patch.object(build_mod, "_resolve_cmake", return_value="cmake"), \
-             mock.patch.object(build_mod, "_run", side_effect=self._fake_run(cap)):
-            build_mod.build_llama(cpu=True, force=True)
-        configure = next(c for c in cap if "-G" in c)
-        self.assertEqual(configure[configure.index("-G") + 1], "Ninja")
 
     def test_cuda_missing_root_raises(self):
         with mock.patch("osenv.os_name", return_value="linux"), \

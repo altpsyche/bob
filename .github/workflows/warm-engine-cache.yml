@@ -83,7 +83,6 @@ jobs:
     runs-on: windows-latest
     env:
       PYTHONPATH: scripts
-      BOB_CMAKE_GENERATOR: Ninja   # ccache-able build (VS generator ignores the ccache launcher)
     strategy:
       fail-fast: false
       matrix:
@@ -95,12 +94,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Set up MSVC environment (Ninja build)
-        uses: ilammy/msvc-dev-cmd@v1
-      - name: Set up Ninja + ccache
+      # cl.exe + Ninja come from osenv.ensure_msvc_env() at build time (no msvc-dev-cmd — this validates the
+      # auto-activation that users rely on). Only ccache is external.
+      - name: Set up ccache
         shell: bash
         run: |
-          choco install ninja ccache -y
+          choco install ccache -y
           echo "CCACHE_DIR=$GITHUB_WORKSPACE/.ccache" >> "$GITHUB_ENV"
           echo "CCACHE_MAXSIZE=3G" >> "$GITHUB_ENV"
 

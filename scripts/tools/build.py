@@ -94,13 +94,11 @@ def build_llama(cpu: bool = False, arch: int = 0, force: bool = False, cuda_root
     exe = osenv.exe_name("llama-server")
     win = osenv.os_name() == "windows"
     flags = osenv.resolve_build_cmake_flags(cpu=cpu, arch=arch)
-    # CI overrides the generator to Ninja on Windows (BOB_CMAKE_GENERATOR=Ninja) so the compile is ccache'd
-    # (the VS generator ignores the launcher ggml's ccache uses). Default stays VS so a user's `bob build`
-    # needs no Developer Command Prompt. Ninja on Windows requires MSVC on PATH (CI: msvc-dev-cmd).
-    _gen_override = os.environ.get("BOB_CMAKE_GENERATOR")
-    if _gen_override:
-        flags = {**flags, "Generator": _gen_override}
-    is_vs = "Visual Studio" in flags["Generator"]
+    # The Ninja generator needs the MSVC toolchain (cl.exe) + Ninja on PATH; osenv.ensure_msvc_env folds the
+    # VS environment in (like a Developer Command Prompt) so a plain `bob build` works from any shell.
+    if win and not osenv.ensure_msvc_env():  # pragma: no cover — Windows only
+        raise RuntimeError("MSVC toolchain not found. Install Visual Studio 2022 with the 'Desktop "
+                           "development with C++' workload (./install_prereqs.bat), then re-run.")
 
     if not force and (BIN / exe).exists():
         return f"{exe} already built — skipping (use --force to rebuild)."
@@ -162,23 +160,15 @@ def build_llama(cpu: bool = False, arch: int = 0, force: bool = False, cuda_root
     cmake = _resolve_cmake(flags["Generator"])
     lines.append(f"cmake       : {cmake}")
 
-    # The VS generator (Windows default) is multi-config and uses the CUDA toolset (-T cuda=); Ninja
-    # (Linux, and Windows under the CI ccache override) is single-config and takes an explicit nvcc + build
-    # type. nvcc's host compiler is cl.exe under Ninja-on-Windows (from the MSVC env); cuda_host_cxx is set
-    # only on Linux, so it is passed only there.
-    if flags["Cuda"] and is_vs:  # pragma: no cover — Windows VS generator
-        cfg = [cmake, "-B", "build", "-G", flags["Generator"], "-T", f"cuda={cuda_root}",
-               "-DGGML_CUDA=ON", f"-DCMAKE_CUDA_ARCHITECTURES={arch_cmake}", "-DGGML_CUDA_FORCE_CUBLAS=OFF",
-               f"-DCUDAToolkit_ROOT={cuda_root}"]
-    elif flags["Cuda"]:
+    # One recipe for both OSes: the single-config Ninja generator. nvcc's host compiler is cl.exe on Windows
+    # (from ensure_msvc_env) and cuda_host_cxx on Linux (set only in the `if not win` block above).
+    if flags["Cuda"]:
         nvcc = Path(cuda_root) / "bin" / osenv.exe_name("nvcc")
         cfg = [cmake, "-B", "build", "-G", flags["Generator"], "-DGGML_CUDA=ON",
                f"-DCMAKE_CUDA_COMPILER={nvcc}", f"-DCMAKE_CUDA_ARCHITECTURES={arch_cmake}",
                "-DGGML_CUDA_FORCE_CUBLAS=OFF", f"-DCUDAToolkit_ROOT={cuda_root}", "-DCMAKE_BUILD_TYPE=Release"]
         if cuda_host_cxx:
             cfg.append(f"-DCMAKE_CUDA_HOST_COMPILER={cuda_host_cxx}")
-    elif is_vs:  # pragma: no cover — Windows VS generator
-        cfg = [cmake, "-B", "build", "-G", flags["Generator"], "-DGGML_CUDA=OFF"]
     else:
         cfg = [cmake, "-B", "build", "-G", flags["Generator"], "-DGGML_CUDA=OFF", "-DCMAKE_BUILD_TYPE=Release"]
 
@@ -186,8 +176,8 @@ def build_llama(cpu: bool = False, arch: int = 0, force: bool = False, cuda_root
     _run(cfg, cwd=SRC_LLAMA)
     _run([cmake, "--build", "build", "--config", "Release", "-j"], cwd=SRC_LLAMA)
 
-    # Stage -> atomic swap into bin/. VS is multi-config (build/bin/Release); Ninja is single (build/bin).
-    out_dir = build_dir / ("bin/Release" if is_vs else "bin")
+    # Stage -> atomic swap into bin/. Ninja is single-config on both OSes, so binaries land in build/bin.
+    out_dir = build_dir / "bin"
     tmp = BIN / "_build_tmp"
     if tmp.exists():
         shutil.rmtree(tmp)
@@ -239,8 +229,11 @@ def build_whisper(force: bool = False, cpu_only: bool = False) -> str:
     if not (SRC_WHISPER / "CMakeLists.txt").exists():
         raise RuntimeError(f"whisper.cpp submodule not found at {SRC_WHISPER}. Run: git submodule update --init --recursive")
 
-    gen = "Visual Studio 17 2022" if win else "Ninja"
-    gen_args = ["-G", gen] if win else ["-G", gen, "-DCMAKE_BUILD_TYPE=Release"]
+    if win and not osenv.ensure_msvc_env():  # pragma: no cover — Windows only; Ninja needs cl.exe on PATH
+        raise RuntimeError("MSVC toolchain not found. Install Visual Studio 2022 with the 'Desktop "
+                           "development with C++' workload (./install_prereqs.bat), then re-run.")
+    gen = "Ninja"
+    gen_args = ["-G", gen, "-DCMAKE_BUILD_TYPE=Release"]
     cmake = _resolve_cmake(gen)
 
     cuda_args = []
@@ -251,13 +244,13 @@ def build_whisper(force: bool = False, cpu_only: bool = False) -> str:
         if root:
             cuda_args = ["-DWHISPER_CUDA=ON", f"-DCMAKE_CUDA_ARCHITECTURES={arch}", f"-DCUDAToolkit_ROOT={root}"]
             nvcc = Path(root) / "bin" / osenv.exe_name("nvcc")
+            cuda_args.append(f"-DCMAKE_CUDA_COMPILER={nvcc}")   # Ninja needs it explicitly (both OSes)
             if not win:
-                cuda_args.append(f"-DCMAKE_CUDA_COMPILER={nvcc}")
                 host_cxx = osenv.cuda_host_compiler()
                 if host_cxx:
                     cuda_args.append(f"-DCMAKE_CUDA_HOST_COMPILER={host_cxx}")
                 osenv.assert_cuda_host_compiler_ok(nvcc, host_cxx)
-            else:  # pragma: no cover
+            else:  # pragma: no cover — nvcc uses cl.exe (from ensure_msvc_env) as its host compiler
                 import os
                 os.environ["CUDA_PATH"] = root
             print(f"Building whisper.cpp (CUDA sm_{arch})...", file=sys.stderr)
@@ -273,7 +266,7 @@ def build_whisper(force: bool = False, cpu_only: bool = False) -> str:
          cwd=SRC_WHISPER)
     _run([cmake, "--build", "build", "--config", "Release", "-j"], cwd=SRC_WHISPER)
 
-    release_bin = build_dir / ("bin/Release" if win else "bin")
+    release_bin = build_dir / "bin"   # Ninja is single-config on both OSes
     if not release_bin.exists():
         found = next(SRC_WHISPER.glob(f"build/**/{server.name}"), None)
         if not found:
