@@ -170,6 +170,8 @@ def build_llama(cpu: bool = False, arch: int = 0, force: bool = False, cuda_root
                "-DGGML_CUDA_FORCE_CUBLAS=OFF", f"-DCUDAToolkit_ROOT={cuda_root}", "-DCMAKE_BUILD_TYPE=Release"]
         if cuda_host_cxx:
             cfg.append(f"-DCMAKE_CUDA_HOST_COMPILER={cuda_host_cxx}")
+        if win:  # pragma: no cover — hosted Windows MSVC (VS 18) is newer than CUDA 12.8's supported range,
+            cfg.append("-DCMAKE_CUDA_FLAGS=-allow-unsupported-compiler")  # so nvcc refuses it without this
     else:
         cfg = [cmake, "-B", "build", "-G", flags["Generator"], "-DGGML_CUDA=OFF", "-DCMAKE_BUILD_TYPE=Release"]
 
@@ -254,6 +256,7 @@ def build_whisper(force: bool = False, cpu_only: bool = False) -> str:
             else:  # pragma: no cover — nvcc uses cl.exe (from ensure_msvc_env) as its host compiler
                 import os
                 os.environ["CUDA_PATH"] = root
+                cuda_args.append("-DCMAKE_CUDA_FLAGS=-allow-unsupported-compiler")  # VS 18 newer than CUDA 12.8
             print(f"Building whisper.cpp (CUDA sm_{arch})...", file=sys.stderr)
         else:
             print("CUDA toolkit not found — falling back to CPU-only whisper build.", file=sys.stderr)
