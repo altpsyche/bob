@@ -250,10 +250,33 @@ class TestEngineManifestResolution(unittest.TestCase):
         cm = mock.MagicMock()
         cm.__enter__.return_value.read.return_value = payload
         with mock.patch.object(lifecycle, "_current_release_tag", return_value=None), \
-             mock.patch.object(lifecycle, "_latest_release_tag", return_value="v1.2.0"), \
+             mock.patch.object(lifecycle, "_release_tags", return_value=["v1.2.0"]), \
              mock.patch.object(lifecycle, "_repo_slug", return_value="owner/repo"), \
              mock.patch("urllib.request.urlopen", return_value=cm):
             self.assertEqual(list(lifecycle._load_engine_manifest()), ["llama-server-linux-x86_64-cuda"])
+
+    def test_walks_back_to_newest_ready_release(self):
+        # The newest tag (v1.2.5) is still mid-publish -> its engines.json 404s; the resolver walks back to the
+        # newest READY release (v1.2.4) instead of returning {} (which would force a source build).
+        payload = self._json.dumps({
+            "llama-server-linux-x86_64-cuda": {"component": "llama-server"}}).encode()
+        cm = mock.MagicMock()
+        cm.__enter__.return_value.read.return_value = payload
+        with mock.patch.object(lifecycle, "_current_release_tag", return_value="v1.2.5"), \
+             mock.patch.object(lifecycle, "_release_tags", return_value=["v1.2.5", "v1.2.4"]), \
+             mock.patch.object(lifecycle, "_repo_slug", return_value="owner/repo"), \
+             mock.patch("urllib.request.urlopen", side_effect=[OSError("404"), cm]) as uo:
+            self.assertEqual(list(lifecycle._load_engine_manifest()), ["llama-server-linux-x86_64-cuda"])
+            self.assertEqual(uo.call_count, 2)  # tried v1.2.5 (404) then v1.2.4 (ready)
+
+    def test_latest_ready_release_tag_skips_unpublished(self):
+        payload = self._json.dumps({"llama-server-linux-x86_64-cuda": {"component": "llama-server"}}).encode()
+        cm = mock.MagicMock()
+        cm.__enter__.return_value.read.return_value = payload
+        with mock.patch.object(lifecycle, "_repo_slug", return_value="owner/repo"), \
+             mock.patch.object(lifecycle, "_release_tags", return_value=["v1.2.5", "v1.2.4"]), \
+             mock.patch("urllib.request.urlopen", side_effect=[OSError("404"), cm]):
+            self.assertEqual(lifecycle.latest_ready_release_tag(), "v1.2.4")
 
     def test_release_manifest_fetched_on_tag(self):
         payload = self._json.dumps({"_comment": "x",

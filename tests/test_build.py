@@ -484,20 +484,37 @@ class TestUpdateChannel(unittest.TestCase):
             self.assertEqual(build_mod.resolve_update_channel(None), "latest")
 
     def test_stable_target_stays_when_head_already_ahead(self):
-        with mock.patch.object(build_mod, "_latest_release_tag", return_value="v1.1.0"), \
+        with mock.patch("bob.lifecycle.latest_ready_release_tag", return_value="v1.1.0"), \
              mock.patch.object(build_mod, "subprocess") as sp:
             sp.run.return_value = mock.Mock(returncode=0)   # tag is an ancestor of HEAD -> no downgrade
             self.assertEqual(build_mod._stable_target_tag(), "")
 
     def test_stable_target_moves_forward_to_newer_tag(self):
-        with mock.patch.object(build_mod, "_latest_release_tag", return_value="v2.0.0"), \
+        with mock.patch("bob.lifecycle.latest_ready_release_tag", return_value="v2.0.0"), \
              mock.patch.object(build_mod, "subprocess") as sp:
             sp.run.return_value = mock.Mock(returncode=1)   # tag not an ancestor -> move to it
             self.assertEqual(build_mod._stable_target_tag(), "v2.0.0")
 
     def test_stable_target_empty_when_no_tags(self):
-        with mock.patch.object(build_mod, "_latest_release_tag", return_value=""):
+        with mock.patch("bob.lifecycle.latest_ready_release_tag", return_value=None), \
+             mock.patch.object(build_mod, "_latest_release_tag", return_value=""):
             self.assertEqual(build_mod._stable_target_tag(), "")
+
+    def test_stable_target_prefers_ready_over_newest(self):
+        # Newest tag (v1.2.5) is mid-publish; the readiness probe returns the newest READY release (v1.2.4).
+        # A stable user moves to v1.2.4, not the half-published v1.2.5.
+        with mock.patch("bob.lifecycle.latest_ready_release_tag", return_value="v1.2.4"), \
+             mock.patch.object(build_mod, "subprocess") as sp:
+            sp.run.return_value = mock.Mock(returncode=1)   # not an ancestor -> move to it
+            self.assertEqual(build_mod._stable_target_tag(), "v1.2.4")
+
+    def test_stable_target_falls_back_to_newest_when_probe_unavailable(self):
+        # Readiness probe returns None (offline / no origin) -> fall back to the newest tag (old behavior).
+        with mock.patch("bob.lifecycle.latest_ready_release_tag", return_value=None), \
+             mock.patch.object(build_mod, "_latest_release_tag", return_value="v2.0.0"), \
+             mock.patch.object(build_mod, "subprocess") as sp:
+            sp.run.return_value = mock.Mock(returncode=1)
+            self.assertEqual(build_mod._stable_target_tag(), "v2.0.0")
 
 
 class TestCliArgParsing(unittest.TestCase):

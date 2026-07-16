@@ -47,7 +47,21 @@ for ($i = 0; $i -lt $args.Count; $i++) {
 # Stable channel: check out the latest release tag (carries the prebuilt engines) for driver-only plug-and-play.
 if ($channel -eq 'stable') {
   git -C $BobHome fetch --tags --quiet 2>$null
-  $tag = (git -C $BobHome tag --list 'v*' --sort=-v:refname | Select-Object -First 1)
+  # Pick the newest release whose engines.json is actually published, so an install DURING a release's publish
+  # window (tag exists but assets not up yet) lands on the newest READY release, not a source build. Fall back
+  # to the newest tag if none look ready (offline / no origin).
+  $slug = ((git -C $BobHome remote get-url origin 2>$null) -replace '.*github\.com[:/]','' -replace '\.git$','' -replace '/$','')
+  $tag = $null
+  foreach ($t in (git -C $BobHome tag --list 'v*' --sort=-v:refname | Select-Object -First 5)) {
+    if ($slug) {
+      try {
+        Invoke-WebRequest -Method Head -UseBasicParsing -TimeoutSec 15 `
+          -Uri "https://github.com/$slug/releases/download/$t/engines.json" | Out-Null
+        $tag = $t; break
+      } catch { }
+    }
+  }
+  if (-not $tag) { $tag = (git -C $BobHome tag --list 'v*' --sort=-v:refname | Select-Object -First 1) }
   if ($tag) {
     Log "Stable channel: checking out release $tag  (use --dev to track the latest main)."
     git -C $BobHome checkout --quiet $tag

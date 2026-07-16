@@ -71,7 +71,22 @@ done
 # driver-only plug-and-play. `bob update` then infers the channel from this checkout (a tag -> stable).
 if [ "$CHANNEL" = "stable" ]; then
   git -C "$BOB_HOME" fetch --tags --quiet 2>/dev/null || true
-  TAG=$(git -C "$BOB_HOME" tag --list 'v*' --sort=-v:refname | head -n1)
+  # Pick the newest release whose engines.json is actually published, so an install DURING a release's publish
+  # window (its tag exists but the assets are not uploaded yet) lands on the newest READY release rather than
+  # 404 -> a slow source build. Fall back to the newest tag if none look ready (offline / no origin).
+  # owner/repo from the origin URL. Done in three plain substitutions (sed -E has no lazy +? quantifier, so a
+  # single pattern would not reliably strip a trailing .git): drop through github host, then .git, then slash.
+  SLUG=$(git -C "$BOB_HOME" remote get-url origin 2>/dev/null | sed -E 's#.*github\.com[:/]##; s#\.git$##; s#/$##')
+  TAG=""
+  while IFS= read -r t; do
+    [ -z "$t" ] && continue
+    if [ -n "$SLUG" ] && curl -fsI "https://github.com/$SLUG/releases/download/$t/engines.json" >/dev/null 2>&1; then
+      TAG="$t"; break
+    fi
+  done <<EOF
+$(git -C "$BOB_HOME" tag --list 'v*' --sort=-v:refname | head -n5)
+EOF
+  [ -z "$TAG" ] && TAG=$(git -C "$BOB_HOME" tag --list 'v*' --sort=-v:refname | head -n1)
   if [ -n "$TAG" ]; then
     log "Stable channel: checking out release $TAG  (use --dev to track the latest main)."
     git -C "$BOB_HOME" checkout --quiet "$TAG"

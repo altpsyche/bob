@@ -543,9 +543,15 @@ def resolve_update_channel(explicit: str = None) -> str:
 
 
 def _stable_target_tag() -> str:
-    """The tag `--channel stable` should move to, or '' to stay put. The newest v* tag, UNLESS HEAD already
-    contains it (an ancestor) — never downgrade a checkout that is already at or ahead of the latest release."""
-    tag = _latest_release_tag()
+    """The tag `--channel stable` should move to, or '' to stay put. The newest v* release whose engines.json
+    is actually published (so a stable user is never moved onto a still-publishing tag and forced into a source
+    build), UNLESS HEAD already contains it (an ancestor) — never downgrade a checkout already at/ahead. Falls
+    back to the newest tag if the readiness probe is unavailable (offline / no origin)."""
+    try:
+        from bob import lifecycle
+        tag = lifecycle.latest_ready_release_tag() or _latest_release_tag()
+    except Exception:  # noqa: BLE001 — readiness probe is best-effort; never block an update on it
+        tag = _latest_release_tag()
     if not tag:
         return ""
     try:

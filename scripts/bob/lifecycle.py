@@ -122,6 +122,17 @@ def _current_release_tag():
         return None
 
 
+def _release_tags() -> list:
+    """All v* release tags known to this checkout, newest first (empty on error)."""
+    import subprocess
+    try:
+        r = subprocess.run(["git", "-C", str(osenv.REPO), "tag", "--list", "v*", "--sort=-v:refname"],
+                           capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [t.strip() for t in r.stdout.splitlines() if t.strip().startswith("v")]
+
+
 def _latest_release_tag():
     """The newest v* release tag known to this checkout, or None. Lets a checkout that is NOT sitting exactly
     on a release tag (main, or a commit or two past the last tag) still resolve a prebuilt engine: the
@@ -130,16 +141,38 @@ def _latest_release_tag():
     — a checkout that bumped llama.cpp past every released engine simply finds no match and builds from
     source. Without this, a driver-only atomic host on `main` (where a source build is impossible) had no
     engine at all even when the pinned commit exactly matched a published prebuilt."""
-    import subprocess
+    tags = _release_tags()
+    return tags[0] if tags else None
+
+
+# How far back to walk when the newest release is still mid-publish (its tag exists but engines.json is not
+# uploaded yet). Bounds the number of network probes; in practice the first or second tag is ready.
+_MAX_TAG_WALK = 5
+
+
+def _fetch_manifest_for_tag(slug: str, tag: str):
+    """Fetch + parse the engines.json asset published for `tag`, or None if it is not there / unreachable /
+    empty. This is the readiness probe: a release that has not finished publishing has no engines.json yet."""
+    import json
+    import urllib.request
+    url = f"https://github.com/{slug}/releases/download/{tag}/engines.json"
     try:
-        r = subprocess.run(["git", "-C", str(osenv.REPO), "tag", "--list", "v*", "--sort=-v:refname"],
-                           capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.SubprocessError):
+        with urllib.request.urlopen(url, timeout=20) as r:  # noqa: S310 — release asset over https
+            return _manifest_rows(json.loads(r.read().decode("utf-8"))) or None
+    except Exception:  # noqa: BLE001 — 404 (mid-publish) / offline / bad JSON
         return None
-    for line in r.stdout.splitlines():
-        t = line.strip()
-        if t.startswith("v"):
-            return t
+
+
+def latest_ready_release_tag():
+    """The newest v* release whose engines.json asset is actually published, or None. `bob update` uses this so
+    a stable user is never moved onto a tag that is still mid-publish (assets not uploaded) and forced into a
+    source build; it lands on the newest READY release instead."""
+    slug = _repo_slug()
+    if not slug:
+        return None
+    for tag in _release_tags()[:_MAX_TAG_WALK]:
+        if _fetch_manifest_for_tag(slug, tag) is not None:
+            return tag
     return None
 
 
@@ -164,10 +197,13 @@ def _manifest_rows(raw: dict) -> dict:
 def _load_engine_manifest() -> dict:
     """The engine manifest to resolve a prebuilt from. Resolution order:
       1. a local `config/engines.json` override (real rows only) — for dev/test/air-gapped pinning;
-      2. else the `engines.json` published as a release asset — for the tag this checkout is exactly on, or,
-         when it isn't on a tag, the newest known release tag (the commit-match guard in _select_engine_row
-         keeps that safe — see _latest_release_tag);
-      3. else {} (no tags / offline / fetch failure) -> ensure_engine builds from source.
+      2. else the newest READY release's `engines.json` (published as a release asset): try the tag this
+         checkout is exactly on, then the newest release tags, and return the first whose engines.json is
+         actually uploaded. This makes an install/update DURING a release's publish window (its tag exists but
+         the assets are not up yet) fall back to the newest complete release instead of 404 -> source build.
+         The commit-match guard in _select_engine_row keeps a borrowed manifest safe: its prebuilt is used only
+         when its builtFromCommit equals the llama.cpp commit THIS checkout pins, else source build.
+      3. else {} (no tags / offline / all fetches fail) -> ensure_engine builds from source.
     The manifest travels WITH the release rather than being committed back to the repo, so adding platforms,
     components, or channels never churns the repo. Rows are keyed '<component>-<os>-<arch>-<tier>'."""
     import json
@@ -179,17 +215,21 @@ def _load_engine_manifest() -> dict:
                 return rows
         except (OSError, ValueError):
             pass
-    tag = _current_release_tag() or _latest_release_tag()
     slug = _repo_slug()
-    if not tag or not slug:
+    if not slug:
         return {}
-    import urllib.request
-    url = f"https://github.com/{slug}/releases/download/{tag}/engines.json"
-    try:
-        with urllib.request.urlopen(url, timeout=20) as r:  # noqa: S310 — release asset over https
-            return _manifest_rows(json.loads(r.read().decode("utf-8")))
-    except Exception:  # noqa: BLE001 — no manifest / offline / bad JSON -> source build
-        return {}
+    candidates = []
+    cur = _current_release_tag()
+    if cur:
+        candidates.append(cur)
+    for t in _release_tags():
+        if t not in candidates:
+            candidates.append(t)
+    for tag in candidates[:_MAX_TAG_WALK]:
+        rows = _fetch_manifest_for_tag(slug, tag)
+        if rows:
+            return rows
+    return {}
 
 
 # The manifest (and the CI publish matrix / release-asset names) call the accelerated tier "cuda"; the

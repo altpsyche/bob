@@ -24,6 +24,15 @@ rebuilds only what changed, verifies, and rolls back on failure.
   in a timeout + retry, so a stuck upload is killed and retried instead of stalling the job for hours.
   [.github/workflows/ci.yml](.github/workflows/ci.yml).
 
+### Fixed
+- **Installing or updating during a release's publish window no longer forces a source build.** A release tag
+  becomes visible before its engine assets finish uploading (~45 min for an engine-changing release). Install,
+  `bob update`, and the engine resolver now select the newest release whose `engines.json` is actually published,
+  falling back to the previous complete release during that window; the commit-match guard keeps a borrowed
+  manifest safe (a prebuilt is used only when its `builtFromCommit` matches the checkout's pinned llama.cpp).
+  [scripts/bob/lifecycle.py](scripts/bob/lifecycle.py), [scripts/tools/build.py](scripts/tools/build.py),
+  [install/install.sh](install/install.sh), [install/install.ps1](install/install.ps1).
+
 ## [1.2.2] (2026-07-16)
 
 ### Added
