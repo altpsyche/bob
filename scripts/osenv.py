@@ -1322,11 +1322,21 @@ def ensure_msvc_env() -> bool:
             return False
         root = Path(install)
         # vcvars64.bat sets the x64 native compiler env (cl, INCLUDE, LIB, VC bins); VsDevCmd.bat is the
-        # fuller fallback. Run it in cmd and dump the resulting environment (no >nul; banner lines have no '=').
+        # fuller fallback. Activate it + dump the environment via a TEMP .bat: passing the quoted, space-bearing
+        # path inline to `cmd /c` gets mangled (subprocess backslash-escapes the inner quotes and cmd rejects
+        # it), whereas a .bat parses `call "path with spaces"` normally.
+        import tempfile
         bat = root / "VC" / "Auxiliary" / "Build" / "vcvars64.bat"
-        cmd = f'call "{bat}"' if bat.exists() else f'call "{root / "Common7" / "Tools" / "VsDevCmd.bat"}" -arch=amd64'
-        print(f"[msvc] activating: {cmd}", file=sys.stderr)
-        dump = subprocess.run(["cmd", "/c", f"{cmd} && set"], capture_output=True, text=True, errors="ignore")
+        arch = ""
+        if not bat.exists():
+            bat = root / "Common7" / "Tools" / "VsDevCmd.bat"
+            arch = " -arch=amd64"
+        print(f"[msvc] activating: {bat}{arch}", file=sys.stderr)
+        tmpdir = tempfile.mkdtemp(prefix="bob-msvc-")
+        tmpbat = Path(tmpdir) / "activate.bat"
+        tmpbat.write_text(f'@echo off\r\n@call "{bat}"{arch}\r\n@set\r\n', encoding="ascii")
+        dump = subprocess.run(["cmd", "/c", str(tmpbat)], capture_output=True, text=True, errors="ignore")
+        shutil.rmtree(tmpdir, ignore_errors=True)
         if dump.returncode != 0:
             print(f"[msvc] activation rc={dump.returncode}: {(dump.stderr or dump.stdout)[:300]}", file=sys.stderr)
         for line in (dump.stdout or "").splitlines():
