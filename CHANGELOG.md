@@ -8,7 +8,16 @@ rebuilds only what changed, verifies, and rolls back on failure.
 
 ## [Unreleased]
 
+## [1.2.1] (2026-07-16)
+
 ### Changed
+- **Windows source builds use the Ninja generator with the MSVC environment auto-activated.** `bob build`
+  on Windows now activates the Visual Studio toolchain itself (via `vswhere` + `vcvars64`), so a source build
+  works from any shell with no "Developer Command Prompt" needed. Both OSes share one Ninja build recipe.
+  No change for the common case (users download the prebuilt engine, which is byte-identical to 1.2.0).
+- **Faster release builds (internal).** The engine compile is cached (ccache), warmed on the default branch
+  and restored on release tags, so a release re-cut is a fast incremental build instead of a from-scratch
+  recompile. Windows CUDA engines build on a pinned `windows-2022` image (a toolchain CUDA 12.8 supports).
 - **One install/update lifecycle seam; a GPU box can no longer silently run CPU.** The four entry points that
   used to decide the build tier independently (`bob setup`, `bob build`, `bob update`, and the internal build)
   now route through one seam ([scripts/bob/lifecycle.py](scripts/bob/lifecycle.py): `resolve_build_tier` +
