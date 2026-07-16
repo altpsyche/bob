@@ -9,8 +9,10 @@ and to report reproducibility.
 Mirrors bob_core.load_defaults(): fail loud with a clear message if the lock is missing rather than
 resolving to None.
 """
+import datetime
 import hashlib
 import json
+import re
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -19,6 +21,8 @@ REPO = Path(__file__).resolve().parent.parent.parent  # scripts/bob/versions.py 
 LOCK_FILE = REPO / "versions.lock"
 VERSION_FILE = REPO / "VERSION"
 MANIFEST_FILE = REPO / "models" / "manifest.json"
+CHANGELOG_FILE = REPO / "CHANGELOG.md"
+_SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 
 # The submodules ND pins (all four in .gitmodules).
 LOCK_SUBMODULES = ["external/llama.cpp", "external/llama-swap", "external/whisper.cpp", "external/fabric"]
@@ -128,11 +132,17 @@ def submodule_commits(repo: Optional[Path] = None) -> dict:
     return out
 
 
-def lock_model_manifest(models_config: Optional[dict] = None, repo: Optional[Path] = None) -> dict:
+def lock_model_manifest(models_config: Optional[dict] = None, repo: Optional[Path] = None,
+                        use_manifest: bool = True) -> dict:
     """Union of every gguf across all profiles, keyed by local filename, in (profile-sorted, role-sorted)
     order with the first occurrence winning. repo/path/revision/sizeGB come from config/models.json; sha256
     from models/manifest.json when fetched, else the sha already in versions.lock (TOFU-then-lock — the lock
-    is a committed source; the manifest is a gitignored per-fetch capture, absent in CI), else null."""
+    is a committed source; the manifest is a gitignored per-fetch capture, absent in CI), else null.
+
+    use_manifest=False ignores the gitignored per-machine manifest and takes shas only from the committed lock,
+    making the result deterministic across machines (a clean checkout, a dev box that has fetched models, and
+    CI all compute the same thing). The sync gate uses this so a real on-disk sha for a lock-null model can no
+    longer report a false STALE; sha integrity is still enforced at fetch time by verify_model."""
     import sys as _sys
     scripts = str(REPO / "scripts")
     if scripts not in _sys.path:
@@ -143,7 +153,7 @@ def lock_model_manifest(models_config: Optional[dict] = None, repo: Optional[Pat
     repo = repo or REPO
     manifest = {}
     mf = (repo / "models" / "manifest.json")
-    if mf.exists():
+    if use_manifest and mf.exists():
         try:
             manifest = json.loads(mf.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -180,11 +190,12 @@ def lock_model_manifest(models_config: Optional[dict] = None, repo: Optional[Pat
     return models
 
 
-def build_lock_object(repo: Optional[Path] = None, models_config: Optional[dict] = None) -> dict:
+def build_lock_object(repo: Optional[Path] = None, models_config: Optional[dict] = None,
+                      use_manifest: bool = True) -> dict:
     """The full lock object, keys in a deterministic order (matches New-VersionsLockObject). The lock is the
     SOURCE trust root (submodules + models); prebuilt engine binaries are distributed via a per-release
     manifest asset (see scripts/bob/lifecycle.py), not committed here, so the lock never churns as platforms
-    or engines are added."""
+    or engines are added. use_manifest=False makes the model shas machine-independent (see lock_model_manifest)."""
     return {
         "lockVersion": 1,
         "release": bob_version(),
@@ -192,42 +203,133 @@ def build_lock_object(repo: Optional[Path] = None, models_config: Optional[dict]
         "toolchain": dict(LOCK_TOOLCHAIN),
         "requirements": dict(LOCK_REQUIREMENTS),
         "tools": dict(LOCK_TOOLS),
-        "models": lock_model_manifest(models_config, repo),
+        "models": lock_model_manifest(models_config, repo, use_manifest=use_manifest),
     }
 
 
-def lock_text(repo: Optional[Path] = None, models_config: Optional[dict] = None) -> str:
+def lock_text(repo: Optional[Path] = None, models_config: Optional[dict] = None,
+              use_manifest: bool = True) -> str:
     """Canonical serialization used by BOTH the writer and the sync gate (no trailing newline), so a clean
     regenerate byte-matches the on-disk file. json.dumps(indent=2) — 2-space indent, 'key': value, null,
     float formatting."""
-    return json.dumps(build_lock_object(repo, models_config), indent=2)
+    return json.dumps(build_lock_object(repo, models_config, use_manifest=use_manifest), indent=2)
 
 
-def write_lock(path: Optional[Path] = None, repo: Optional[Path] = None) -> Path:
-    """(Re)generate versions.lock from the single sources. Atomic write + trailing newline."""
+def write_lock(path: Optional[Path] = None, repo: Optional[Path] = None,
+               use_manifest: bool = True) -> Path:
+    """(Re)generate versions.lock from the single sources. Atomic write + trailing newline. use_manifest=False
+    keeps the committed lock's model shas instead of adopting this machine's fetched shas (used by bob release
+    so cutting a version never bakes a dev box's shas into the committed lock)."""
     path = path or LOCK_FILE
     tmp = path.with_suffix(f".{__import__('os').getpid()}.tmp")
-    tmp.write_text(lock_text(repo) + "\n", encoding="utf-8")
+    tmp.write_text(lock_text(repo, use_manifest=use_manifest) + "\n", encoding="utf-8")
     tmp.replace(path)
     return path
 
 
 def check_sync(path: Optional[Path] = None) -> int:
     """Is the on-disk versions.lock in sync with the sources it is generated from? 0 in sync, 1 stale/missing.
-    Compares canonical text (the only writer uses the same canonical text)."""
+    Compares canonical text (the only writer uses the same canonical text). Regenerates with use_manifest=False
+    so the check is deterministic across machines: a real on-disk sha for a lock-null model no longer trips a
+    false STALE (that per-machine manifest capture is not a source of truth; verify_model enforces sha integrity
+    at fetch time)."""
     import sys as _sys
 
     path = path or LOCK_FILE
     if not path.exists():
         print(f"versions.lock missing at {path} — run: bob lock", file=_sys.stderr)
         return 1
-    want = lock_text().strip()
+    want = lock_text(use_manifest=False).strip()
     have = path.read_text(encoding="utf-8").strip()
     if want != have:
         print("versions.lock is STALE (out of sync with submodules/models.json) — run: bob lock",
               file=_sys.stderr)
         return 1
     return 0
+
+
+# --- release cutting (bob release) ----------------------------------------------------------------
+# One command moves VERSION, the versions.lock `release` field, and CHANGELOG.md together so they cannot
+# drift. Bumping VERSION alone leaves the lock's release stale -> check_sync STALE -> the gates fail; that
+# drift forced a 1.2.1 re-cut. This never runs a manifest-baking `bob lock`: it regenerates the lock with
+# use_manifest=False, so cutting a release on a dev box does not bake that machine's model shas.
+
+
+def parse_semver(version: str) -> str:
+    """Validate an X.Y.Z version string (patch line — no pre-release/build suffix) and return it stripped."""
+    v = (version or "").strip().lstrip("v")
+    if not _SEMVER_RE.match(v):
+        raise ValueError(f"not a semantic version 'X.Y.Z': {version!r}")
+    return v
+
+
+def set_release(version: str, dry_run: bool = False) -> None:
+    """Write the VERSION file and regenerate versions.lock (manifest-free) so its `release` field moves in
+    lockstep. Manifest-free keeps the committed lock's model shas (no machine-sha bake) and produces exactly
+    what check_sync recomputes, so `bob lock --check` passes immediately after."""
+    v = parse_semver(version)
+    if dry_run:
+        return
+    VERSION_FILE.write_text(v + "\n", encoding="utf-8")
+    write_lock(use_manifest=False)
+
+
+def cut_changelog(version: str, date: Optional[str] = None, path: Optional[Path] = None,
+                  dry_run: bool = False) -> dict:
+    """Move the `## [Unreleased]` body into a new `## [version] (date)` section, leaving a fresh empty
+    Unreleased. Returns {"was_empty": bool, "text": str}. was_empty flags an Unreleased section with no
+    content (the caller warns; a real release should have notes). Line-based so it never mangles the body."""
+    v = parse_semver(version)
+    date = date or datetime.date.today().isoformat()
+    path = path or CHANGELOG_FILE
+    original = path.read_text(encoding="utf-8")
+    lines = original.splitlines()
+
+    i = next((n for n, ln in enumerate(lines) if ln.strip() == "## [Unreleased]"), None)
+    if i is None:
+        raise RuntimeError(f"no '## [Unreleased]' heading in {path} — cannot cut a release section")
+    j = next((n for n in range(i + 1, len(lines)) if lines[n].startswith("## [")), len(lines))
+    body = lines[i + 1:j]
+    was_empty = "".join(body).strip() == ""
+
+    new_lines = lines[:i + 1] + [""] + [f"## [{v}] ({date})"] + body + lines[j:]
+    text = "\n".join(new_lines) + ("\n" if original.endswith("\n") else "")
+    if not dry_run:
+        path.write_text(text, encoding="utf-8")
+    return {"was_empty": was_empty, "text": text}
+
+
+def create_release_tag(version: str, repo: Optional[Path] = None) -> str:
+    """Create the annotated git tag v<version> at HEAD (does NOT push). Raises if the tag already exists so a
+    shipped-good tag is never silently moved."""
+    v = parse_semver(version)
+    repo = repo or REPO
+    tag = f"v{v}"
+    existing = subprocess.run(["git", "-C", str(repo), "tag", "--list", tag],
+                              capture_output=True, text=True)
+    if existing.returncode == 0 and existing.stdout.strip():
+        raise RuntimeError(f"tag {tag} already exists — refusing to move it (re-cut only a broken release)")
+    r = subprocess.run(["git", "-C", str(repo), "tag", "-a", tag, "-m", f"Bob {v}"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"git tag {tag} failed: {r.stderr.strip()}")
+    return tag
+
+
+def cut_release(version: str, tag: bool = False, date: Optional[str] = None,
+                dry_run: bool = False) -> dict:
+    """Cut a release in one step: bump VERSION + versions.lock `release`, move the changelog's Unreleased
+    section into a dated one, and (opt-in) create the git tag. No commit, no push — the working tree is left
+    for review. Returns a summary dict."""
+    v = parse_semver(version)
+    date = date or datetime.date.today().isoformat()
+    set_release(v, dry_run=dry_run)
+    cl = cut_changelog(v, date=date, dry_run=dry_run)
+    created_tag = None
+    if tag and not dry_run:
+        created_tag = create_release_tag(v)
+    return {"version": v, "date": date, "changelog_was_empty": cl["was_empty"],
+            "tag": created_tag, "dry_run": dry_run}
 
 
 if __name__ == "__main__":

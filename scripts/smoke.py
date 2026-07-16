@@ -13,6 +13,11 @@ NOT gate on a real tool round-trip (tool-protocol correctness lives in the unit 
 
   python scripts/smoke.py            # test whatever is running; SKIP (exit 0) if nothing is up
   python scripts/smoke.py --up       # bring the stack + agent server up first, tear the server down after
+  python scripts/smoke.py --up --require-gpu --expect-source prebuilt
+                                     # additionally assert the staged engine is the GPU tier and, optionally,
+                                     # that it came from a downloaded prebuilt (vs a source build). The GPU
+                                     # acceptance job uses this so a broken resolver/engine that silently
+                                     # fell back to CPU (or to source) fails the release instead of passing.
 """
 import json
 import subprocess
@@ -111,9 +116,39 @@ def _is_backend_hiccup(err) -> bool:
     return True        # 5xx / 422 / timeout / no-response
 
 
+def _check_engine_tier(require_gpu: bool, expect_source):
+    """Assert the staged engine's build-tier marker (bin/.build-tier.json). require_gpu FAILs if the tier is
+    not gpu (a resolver/engine that silently fell back to CPU leaves the GPU idle); expect_source FAILs if the
+    provenance ('prebuilt' | 'source') does not match (the prebuilt path is what users receive)."""
+    marker = REPO / "bin" / ".build-tier.json"
+    if not marker.exists():
+        bad("engine tier marker bin/.build-tier.json missing (no engine staged)")
+        return
+    try:
+        m = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        bad(f"engine tier marker unreadable: {e}")
+        return
+    tier, source = m.get("tier"), m.get("source")
+    if require_gpu and tier != "gpu":
+        bad(f"engine tier is {tier!r}, not gpu — the GPU is idle (marker: {m})")
+    else:
+        ok(f"engine tier marker: tier={tier} source={source}")
+    if expect_source and source != expect_source:
+        bad(f"engine provenance is {source!r}, expected {expect_source!r} (marker: {m})")
+    elif expect_source:
+        ok(f"engine provenance is {expect_source} as expected")
+
+
+def _arg_value(argv: list, flag: str):
+    return argv[argv.index(flag) + 1] if flag in argv and argv.index(flag) + 1 < len(argv) else None
+
+
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     up = "--up" in argv or "-Up" in argv
+    require_gpu = "--require-gpu" in argv
+    expect_source = _arg_value(argv, "--expect-source")
     timeout = 300
 
     cfg = load_config()
@@ -141,6 +176,10 @@ def main(argv=None) -> int:
         print(f"\n{_pass} passed, {_fail} failed (skipped)")
         return 0
     ok(f"inference endpoint reachable ({inf_base})")
+
+    # --- 1b. engine tier marker (opt-in, for the GPU acceptance tier) -----
+    if require_gpu or expect_source:
+        _check_engine_tier(require_gpu, expect_source)
 
     # --- 2. bob agent "say hi" returns a coherent answer ------------------
     # A cold CPU-tier model load + generation can exceed the timeout — that's infra latency on a

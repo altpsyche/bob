@@ -180,6 +180,16 @@ class TestLockModelManifest(unittest.TestCase):
         self.assertEqual(m["tiny.gguf"]["sha256"], "bbb")    # falls back to the locked sha
         self.assertIsNone(m["chat.gguf"]["sha256"])          # neither -> null
 
+    def test_use_manifest_false_ignores_machine_manifest(self):
+        # The Qwen3-Coder false-STALE case: manifest has a real sha for a model the committed lock pins null.
+        (self.repo / "models" / "manifest.json").write_text(json.dumps({"coder.gguf": {"sha256": "AAA"}}))
+        (self.repo / "versions.lock").write_text(json.dumps({"models": {"coder.gguf": {"sha256": None}}}))
+        with mock.patch("bob_models.load_models_config", return_value=_MODELS_CFG):
+            on = versions.lock_model_manifest(repo=self.repo, use_manifest=True)
+            off = versions.lock_model_manifest(repo=self.repo, use_manifest=False)
+        self.assertEqual(on["coder.gguf"]["sha256"], "aaa")   # default: manifest adopted
+        self.assertIsNone(off["coder.gguf"]["sha256"])        # off: committed lock's null wins -> deterministic
+
 
 class TestBuildAndText(unittest.TestCase):
     def test_object_key_order(self):
@@ -230,6 +240,89 @@ class TestCheckSyncAndWrite(unittest.TestCase):
             self.assertTrue(self.lock.read_text().endswith("\n"))
             self.assertEqual(versions.check_sync(self.lock), 0)  # writer + gate share canonical text
             self.assertEqual(len(list(self.tmp.glob("*.tmp"))), 0)  # atomic — no leftover temp
+
+    def test_check_sync_ignores_the_machine_manifest(self):
+        # A per-machine sha (use_manifest=True) must not trip a false STALE: check_sync regenerates with
+        # use_manifest=False, so a lock written that way stays green even though the manifest-on text differs.
+        def fake(models_config=None, repo=None, use_manifest=True):
+            return {"m.gguf": {"sha256": ("f" * 64 if use_manifest else None)}}
+        with mock.patch("bob.versions.lock_model_manifest", side_effect=fake), \
+             mock.patch("bob.versions.submodule_commits", return_value={}), \
+             mock.patch("bob.versions.bob_version", return_value="1.2.2"):
+            self.lock.write_text(versions.lock_text(use_manifest=False) + "\n")
+            self.assertEqual(versions.check_sync(self.lock), 0)               # gate green despite the manifest sha
+            self.assertNotEqual(versions.lock_text(use_manifest=True),
+                                versions.lock_text(use_manifest=False))       # sanity: the variants truly differ
+
+
+class TestReleaseCut(unittest.TestCase):
+    """bob release moves VERSION, the lock `release` field, and CHANGELOG together so they cannot drift."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, self.tmp, True)
+
+    def test_parse_semver(self):
+        self.assertEqual(versions.parse_semver("1.2.2"), "1.2.2")
+        self.assertEqual(versions.parse_semver("v1.2.2"), "1.2.2")  # leading v tolerated
+        for bad in ("1.2", "1.2.x", "", "1.2.2-rc1", "a.b.c"):
+            with self.assertRaises(ValueError, msg=bad):
+                versions.parse_semver(bad)
+
+    def _changelog(self, body):
+        cl = self.tmp / "CHANGELOG.md"
+        cl.write_text(f"# Changelog\n\n## [Unreleased]\n{body}\n## [1.2.1] (2026-07-16)\n### Changed\n- old\n")
+        return cl
+
+    def test_cut_changelog_moves_body_and_leaves_empty_unreleased(self):
+        cl = self._changelog("\n### Added\n- New thing\n\n")
+        res = versions.cut_changelog("1.2.2", date="2026-07-16", path=cl)
+        self.assertFalse(res["was_empty"])
+        text = cl.read_text()
+        # fresh empty Unreleased, then the dated section carrying the moved body, then the prior version
+        self.assertIn("## [Unreleased]\n\n## [1.2.2] (2026-07-16)", text)
+        self.assertIn("## [1.2.2] (2026-07-16)\n\n### Added\n- New thing", text)
+        self.assertIn("## [1.2.1] (2026-07-16)", text)
+        self.assertEqual(text.count("## [Unreleased]"), 1)
+
+    def test_cut_changelog_flags_empty_unreleased(self):
+        cl = self._changelog("\n")  # nothing under Unreleased
+        self.assertTrue(versions.cut_changelog("1.2.2", date="2026-07-16", path=cl)["was_empty"])
+
+    def test_cut_changelog_missing_heading_raises(self):
+        cl = self.tmp / "CHANGELOG.md"
+        cl.write_text("# Changelog\n\n## [1.2.1] (2026-07-16)\n")
+        with self.assertRaises(RuntimeError):
+            versions.cut_changelog("1.2.2", path=cl)
+
+    def test_set_release_writes_version_and_regenerates_lock_manifest_free(self):
+        vf = self.tmp / "VERSION"
+        vf.write_text("1.2.1\n")
+        with mock.patch("bob.versions.VERSION_FILE", vf), \
+             mock.patch("bob.versions.write_lock") as wl:
+            versions.set_release("1.2.2")
+        self.assertEqual(vf.read_text().strip(), "1.2.2")
+        wl.assert_called_once_with(use_manifest=False)   # never bakes this machine's model shas
+
+    def test_create_release_tag_refuses_existing(self):
+        with mock.patch("bob.versions.subprocess.run",
+                        return_value=mock.Mock(returncode=0, stdout="v1.2.2\n")):
+            with self.assertRaises(RuntimeError):
+                versions.create_release_tag("1.2.2")
+
+    def test_cut_release_dry_run_writes_nothing(self):
+        vf = self.tmp / "VERSION"; vf.write_text("1.2.1\n")
+        cl = self._changelog("\n### Added\n- x\n")
+        before = cl.read_text()
+        with mock.patch("bob.versions.VERSION_FILE", vf), \
+             mock.patch("bob.versions.CHANGELOG_FILE", cl), \
+             mock.patch("bob.versions.write_lock") as wl:
+            summary = versions.cut_release("1.2.2", dry_run=True)
+        self.assertEqual(vf.read_text().strip(), "1.2.1")   # untouched
+        self.assertEqual(cl.read_text(), before)            # untouched
+        wl.assert_not_called()
+        self.assertTrue(summary["dry_run"])
+        self.assertEqual(summary["version"], "1.2.2")
 
 
 if __name__ == "__main__":

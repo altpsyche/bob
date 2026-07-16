@@ -181,6 +181,8 @@ COMMANDS = [
      "args": "[--tag <ref>]", "handler": "update"},
     {"name": "lock", "group": "Setup", "summary": "(Re)generate versions.lock from pinned sources",
      "args": "[--check]", "handler": "lock"},
+    {"name": "release", "group": "Setup", "summary": "Cut a release: bump VERSION, versions.lock, and CHANGELOG together",
+     "args": "<x.y.z> [--tag] [--dry-run]", "handler": "release"},
     {"name": "mlock", "group": "Setup", "summary": "Check/grant SeLockMemoryPrivilege (for --mlock)",
      "args": "[--grant]", "handler": "mlock"},
 

@@ -8,6 +8,33 @@ rebuilds only what changed, verifies, and rolls back on failure.
 
 ## [Unreleased]
 
+### Added
+- **`bob release <x.y.z>` cuts a release without drift.** One command moves `VERSION`, the `versions.lock`
+  `release` field, and `CHANGELOG.md` ([Unreleased] into a dated section) together so they cannot fall out of
+  sync, with an opt-in `--tag` and a `--dry-run` preview. It regenerates the lock manifest-free, so cutting a
+  release on a dev box never bakes that machine's model shas. This prevents the class of drift that forced a
+  1.2.1 re-cut (bumping `VERSION` alone left the lock stale and failed the gates).
+  [scripts/bob/versions.py](scripts/bob/versions.py), [scripts/bob/cli.py](scripts/bob/cli.py),
+  [scripts/bob/registry.py](scripts/bob/registry.py).
+- **Engine-manifest resolution contract test.** A hermetic test mirrors the exact row shape the release
+  publishes and asserts the resolver selects every row, that the internal `gpu` tier matches the published
+  `cuda` tier, and that a wrong tier value or renamed key yields no match (the drift that shipped an engine
+  every GPU box declined). A dedicated `manifest-contract-live` CI job (schedule + manual) fetches the actual
+  published `engines.json` and re-checks it against the live resolver so a shipped release cannot silently rot.
+  [tests/test_release_manifest.py](tests/test_release_manifest.py), [.github/workflows/ci.yml](.github/workflows/ci.yml).
+- **Real GPU inference in CI.** The `acceptance-gpu` job now runs a matrix over `prebuilt` and `from-source`
+  on a self-hosted GPU runner: the prebuilt leg downloads the published driver-only asset (what users receive)
+  and both legs run real inference and assert the engine ran on the GPU with the expected provenance, so a
+  broken resolver or engine reds the release instead of passing. Setup is documented in
+  [docs/CI-GPU-RUNNER.md](docs/CI-GPU-RUNNER.md). `scripts/smoke.py` gained `--require-gpu` and
+  `--expect-source`. Windows CUDA on a real Windows GPU stays a known residual.
+
+### Fixed
+- **No more false "stale lockfile" on a clean working tree.** `bob lock --check` (and `bob doctor`) regenerate
+  the lock ignoring the gitignored per-machine `models/manifest.json`, so a real on-disk sha for a model the
+  committed lock pins as null no longer reports STALE. The check is now deterministic across a clean checkout,
+  a dev box, and CI; sha integrity is still enforced at fetch time. [scripts/bob/versions.py](scripts/bob/versions.py).
+
 ## [1.2.1] (2026-07-16)
 
 ### Changed

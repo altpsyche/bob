@@ -893,6 +893,39 @@ def _handle_lock(rest: list) -> int:
     return 0
 
 
+def _handle_release(rest: list) -> int:
+    """bob release <x.y.z> [--tag] [--dry-run] — cut a release without drift: bump VERSION, regenerate
+    versions.lock's release field (manifest-free, no machine-sha bake), and move CHANGELOG's [Unreleased]
+    into a dated section. Opt-in --tag creates v<x.y.z> at HEAD. Never commits or pushes."""
+    from bob import versions
+    args = [a for a in rest if not a.startswith("-")]
+    if len(args) != 1:
+        print("usage: bob release <x.y.z> [--tag] [--dry-run]", file=sys.stderr)
+        return 1
+    want_tag = "--tag" in rest
+    dry_run = "--dry-run" in rest
+    try:
+        summary = versions.cut_release(args[0], tag=want_tag, dry_run=dry_run)
+    except (ValueError, RuntimeError) as e:
+        print(f"release failed: {e}", file=sys.stderr)
+        return 1
+    v = summary["version"]
+    if dry_run:
+        print(f"[dry run] would cut {v} ({summary['date']}): VERSION + versions.lock release + "
+              f"CHANGELOG [Unreleased] -> [{v}]")
+        return 0
+    print(f"cut {v}: VERSION, versions.lock release, and CHANGELOG updated ({summary['date']}).")
+    if summary["changelog_was_empty"]:
+        print("  warning: CHANGELOG [Unreleased] was empty — the new section has no notes.", file=sys.stderr)
+    if summary["tag"]:
+        print(f"  created tag {summary['tag']} at HEAD (not pushed).")
+    rc = versions.check_sync()
+    print("  versions.lock in sync" if rc == 0 else "  versions.lock STALE — investigate", file=sys.stderr)
+    print("Next: review the diff, commit, then "
+          + (f"git push && git push origin v{v}" if summary["tag"] else f"tag with: bob release {v} --tag (after commit)"))
+    return rc
+
+
 def _handle_mlock(rest: list) -> int:
     """bob mlock [--grant] — report the mlock privilege status; --grant attempts to grant it (Windows:
     secedit + UAC self-elevation; Linux: prints the ulimit/limits.conf guidance)."""
@@ -1463,6 +1496,7 @@ _HANDLERS = {
     "setup-voice": _handle_setup_voice,  # voice provisioning (provision.py)
     "fetch": _handle_fetch,           # model downloads (scripts/tools/provision.py)
     "lock": _handle_lock,             # versions.lock writer + gate (scripts/bob/versions.py)
+    "release": _handle_release,       # cut a release without drift (scripts/bob/versions.py)
     "mlock": _handle_mlock,           # mlock privilege status/grant (osenv)
     "gen": _handle_gen,               # config generators (scripts/tools/generate.py)
     "setup": _handle_setup,           # health / diagnostics (scripts/tools/health.py)

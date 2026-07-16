@@ -130,6 +130,25 @@ Refreshed what's already here so it keeps pace, and closed the rough edges from 
   behind the same HTTP contract (whisper.cpp kept as a fallback), and hardened the voice loop against a
   missing mic, an engine crash mid turn, an empty transcript, and an unreachable backend.
 
+### 1.2.x hardening (in progress)
+The patch line: no new surface, just making a release trustworthy on real hardware and closing the rough
+edges that only surface on a live install. This is grounded in real use. An early 1.2 build shipped a
+prebuilt engine that every GPU box quietly passed over for a slow source build, and CI stayed green because
+it never exercised the actual download and run path.
+
+- **A release proves itself on real hardware.** A GPU runner so the acceptance tier runs real inference, not
+  just a load check, on release tags, plus a contract test that fetches the published engine manifest and
+  asserts the resolver selects and commit matches a binary. A broken engine or resolver should not pass
+  green again. The Windows CUDA binary gets verified on an actual Windows GPU, where it is untested today.
+- **Release hygiene.** One command to cut a release that moves the version, the lockfile, and the changelog
+  together so they cannot drift, and a clean local health check with no false "stale lockfile" on an
+  unmodified working tree.
+- **Fresh install confidence.** A clean box to first chat and first voice turn, on each supported OS,
+  closing the onboarding and voice rough edges that a CPU only CI gate does not catch.
+- **Leaner, clearer engines.** Slim the CUDA download (its math library is most of the size), and make the
+  arm64 and AMD or Intel paths, which have no prebuilt yet and fall back to source or the CPU tier, say so
+  clearly.
+
 ### 1.3 a deeper coding agent
 Take the coding loop from good to measured best in class for a local harness.
 
