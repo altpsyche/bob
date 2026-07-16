@@ -31,7 +31,64 @@ on:
         required: false
         default: ''
 
+# Cancel a superseded run only on PRs (a new push kills the stale one). NEVER on main/tags/schedule, so a
+# release publish in flight is never interrupted.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  # Smart-CI change detection: which tiers a given change actually needs. Uses the GitHub API (via gh) rather
+  # than a git diff or a marketplace action, so it is self-contained and robust to shallow clones / base-ref
+  # quirks. FAIL-SAFE: any ambiguity (first push, missing base, API error, schedule/dispatch) => run everything.
+  #   code    = anything outside docs/markdown/images changed  -> run the heavy acceptance-cpu + eval tiers
+  #   prereqs = the install/package surface changed             -> run the prereqs-distro container matrix
+  changes:
+    name: changes (what to run)
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+      prereqs: ${{ steps.classify.outputs.prereqs }}
+    steps:
+      - name: Classify changed paths
+        id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=""
+          case "${{ github.event_name }}" in
+            pull_request)
+              files=$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" \
+                        --paginate -q '.[].filename' 2>/dev/null || echo "__ALL__") ;;
+            push)
+              before="${{ github.event.before }}"
+              if [ -z "$before" ] || [ "$before" = "0000000000000000000000000000000000000000" ]; then
+                files="__ALL__"
+              else
+                files=$(gh api "repos/${{ github.repository }}/compare/${before}...${{ github.sha }}" \
+                          -q '.files[].filename' 2>/dev/null || echo "__ALL__") ;;
+              fi ;;
+            *) files="__ALL__" ;;   # schedule / workflow_dispatch -> run everything relevant
+          esac
+          echo "changed files:"; printf '  %s\n' $files
+          code=false; prereqs=false
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            if [ "$f" = "__ALL__" ]; then code=true; prereqs=true; break; fi
+            case "$f" in
+              docs/*|*.md|*.png|*.jpg|*.jpeg|*.gif|*.svg) : ;;   # docs-only -> irrelevant to the heavy tiers
+              *) code=true ;;
+            esac
+            case "$f" in
+              install_prereqs*|scripts/osenv.py|setup*|install/*|.github/workflows/ci.yml) prereqs=true ;;
+            esac
+          done <<< "$files"
+          echo "code=$code"       >> "$GITHUB_OUTPUT"
+          echo "prereqs=$prereqs" >> "$GITHUB_OUTPUT"
+          echo "-> code=$code prereqs=$prereqs"
+
   # Static analysis of the shell bootstrap. shellcheck catches bashisms/quoting/unset-var bugs in the
   # .sh entry points + the `bob` shim.
   lint:
@@ -82,6 +139,9 @@ jobs:
   # report-only until baselines stabilize.
   eval:
     name: eval (${{ matrix.os }})
+    # Same skip as acceptance-cpu: off on tags and docs-only changes (the eval imports the agent runtime).
+    needs: [changes]
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') && needs.changes.outputs.code == 'true' }}
     runs-on: ${{ matrix.os }}
     continue-on-error: true           # non-gating on PRs — reports the score, never reds a PR
     strategy:
@@ -118,6 +178,10 @@ jobs:
   # real; expect first-run debugging here, not in production.
   acceptance-cpu:
     name: acceptance-cpu (${{ matrix.os }})
+    # Skip on tags (the commit already passed on main) and on docs-only changes (nothing that affects the
+    # build/runtime changed). lint + core-suite still run on tags as the cheap sanity.
+    needs: [changes]
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') && needs.changes.outputs.code == 'true' }}
     runs-on: ${{ matrix.os }}
     env:
       PYTHONPATH: scripts   # so `python -m bob` / `python -m bob.kernel` resolve from the checkout
@@ -134,17 +198,39 @@ jobs:
         with:
           python-version: '3.12'
 
-      # Realism note — building llama.cpp (even CPU) is minutes-scale. Cache the built binaries,
-      # the downloaded model, and the llama.cpp build tree, keyed by the versions.lock hash so a PR that
-      # doesn't move the pins reuses the cache instead of rebuilding/redownloading from scratch.
-      - name: Cache build + model by versions.lock
+      # Building llama.cpp (even CPU) is minutes-scale. Two SEPARATE caches keyed on their actual inputs, so a
+      # release/version-only lock change (only the `release` field moves) reuses BOTH fully warm:
+      #   build cache  <- submodule commits + toolchain floor (what the compile depends on)
+      #   model cache  <- the model manifest (what `bob fetch` downloads)
+      - name: Compute cache keys (from versions.lock)
+        id: keys
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import hashlib, json
+          d = json.load(open("versions.lock"))
+          def h(x): return hashlib.sha256(json.dumps(x, sort_keys=True).encode()).hexdigest()[:16]
+          print("build=" + h([d.get("submodules"), d.get("toolchain")]))
+          print("model=" + h(d.get("models")))
+          PY
+      # Build cache: EXACT key only (no restore-keys). A partial restore could bring back a prior submodule
+      # commit's bin/llama-server; if `bob build` skips on binary-present, CI would test a stale engine. A real
+      # submodule bump therefore does a clean rebuild; release/model-only changes hit the exact key (warm).
+      - name: Cache the engine build
         uses: actions/cache@v4
         with:
           path: |
             bin
-            models
             external/llama.cpp/build
-          key: ${{ runner.os }}-bob-cpu-${{ hashFiles('versions.lock') }}
+          key: ${{ runner.os }}-bob-build-${{ steps.keys.outputs.build }}
+      # Model cache: restore-keys is safe here because `bob fetch` reconciles + sha-verifies against the lock,
+      # so a partial restore is always corrected.
+      - name: Cache the fetched models
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: ${{ runner.os }}-bob-model-${{ steps.keys.outputs.model }}
+          restore-keys: ${{ runner.os }}-bob-model-
 
       # Documented one-command prerequisites, CPU variant. Per-OS entry script.
       - name: Install prerequisites (Linux, CPU)
@@ -224,6 +310,10 @@ jobs:
   # to gating (remove continue-on-error) once the names are proven green across all three images.
   prereqs-distro:
     name: prereqs (${{ matrix.image }})
+    # Only when the install/package surface changed, plus the weekly schedule (catches distro package-map
+    # drift). Skipped on tags and on unrelated PRs. Already non-gating (continue-on-error), so zero risk.
+    needs: [changes]
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') && (needs.changes.outputs.prereqs == 'true' || github.event_name == 'schedule') }}
     runs-on: ubuntu-latest
     continue-on-error: true
     strategy:

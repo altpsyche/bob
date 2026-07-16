@@ -8,6 +8,15 @@ rebuilds only what changed, verifies, and rolls back on failure.
 
 ## [Unreleased]
 
+### Changed
+- **Smarter CI: do only the work a change requires, and never twice** (internal, no user-facing surface). The
+  `acceptance-cpu` cache is split into a build cache keyed on the submodule commits + toolchain and a model
+  cache keyed on the model manifest, so a release or version-only lockfile change reuses both fully warm
+  instead of forcing a from-scratch recompile. A release tag skips the redundant heavy build+eval+distro tiers
+  (that commit already passed on `main`) while keeping the fast `lint`/`core` sanity. Docs-only changes skip
+  the heavy `acceptance-cpu`/`eval` tiers, `prereqs-distro` runs only when the install/package surface changes
+  (plus weekly), and superseded PR runs are cancelled. [.github/workflows/ci.yml](.github/workflows/ci.yml).
+
 ## [1.2.2] (2026-07-16)
 
 ### Added
