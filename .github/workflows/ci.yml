@@ -444,7 +444,9 @@ jobs:
   publish-engines-windows:
     name: publish-engines (windows ${{ matrix.tier }}, release tags)
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: windows-latest
+    # windows-2022 = VS 2022 (MSVC 14.4x), which CUDA 12.8's nvcc supports. windows-latest moved to VS 2026
+    # (MSVC 14.51), where nvcc's cudafe++ crashes — so the CUDA engine must build on the pinned 2022 image.
+    runs-on: windows-2022
     permissions:
       contents: write
       id-token: write            # build provenance attestation (sigstore)

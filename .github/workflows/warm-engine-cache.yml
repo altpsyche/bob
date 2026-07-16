@@ -80,7 +80,8 @@ jobs:
 
   warm-windows:
     name: warm ${{ matrix.tier }} ccache (windows)
-    runs-on: windows-latest
+    # Match publish-engines-windows: VS 2022 (MSVC 14.4x) so CUDA 12.8's nvcc works (VS 2026 crashes cudafe++).
+    runs-on: windows-2022
     env:
       PYTHONPATH: scripts
     strategy:
