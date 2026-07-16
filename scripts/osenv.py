@@ -1306,32 +1306,38 @@ def ensure_msvc_env() -> bool:
     import subprocess
     if shutil.which("cl"):
         return True
-    vswhere = Path(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe")
-    if not vswhere.exists():
+    try:
+        vswhere = Path(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe")
+        if not vswhere.exists():
+            return False
+        # No -requires filter: the hosted CI image registers the C++ tools as components, not always the
+        # NativeDesktop workload, so filtering by workload can wrongly find nothing. Take the latest VS and
+        # verify the C++ env script exists instead. -prerelease so Preview installs are found too.
+        install = subprocess.run([str(vswhere), "-latest", "-prerelease", "-products", "*",
+                                  "-property", "installationPath"],
+                                 capture_output=True, text=True).stdout.strip().splitlines()
+        install = install[0].strip() if install else ""
+        if not install:
+            return False
+        root = Path(install)
+        # vcvars64.bat sets the x64 native compiler env (cl, INCLUDE, LIB, VC bins); VsDevCmd.bat is the
+        # fuller fallback. Either works for capturing the environment.
+        bat = root / "VC" / "Auxiliary" / "Build" / "vcvars64.bat"
+        cmd = f'call "{bat}"' if bat.exists() else f'call "{root / "Common7" / "Tools" / "VsDevCmd.bat"}" -arch=amd64'
+        dump = subprocess.run(["cmd", "/c", f"{cmd} >nul && set"], capture_output=True, text=True)
+        if dump.returncode == 0:
+            for line in dump.stdout.splitlines():
+                if "=" in line and not line.startswith("="):
+                    key, _, val = line.partition("=")
+                    _os.environ[key] = val
+        # vcvars64 does not add Ninja; add VS's bundled Ninja explicitly so `cmake -G Ninja` resolves it.
+        if not shutil.which("ninja"):
+            nd = root / "Common7" / "IDE" / "CommonExtensions" / "Microsoft" / "CMake" / "Ninja"
+            if (nd / "ninja.exe").exists():
+                _os.environ["PATH"] = str(nd) + _os.pathsep + _os.environ.get("PATH", "")
+        return bool(shutil.which("cl"))
+    except (OSError, subprocess.SubprocessError):
         return False
-    install = subprocess.run([str(vswhere), "-latest", "-products", "*", "-requires",
-                              "Microsoft.VisualStudio.Workload.NativeDesktop", "-property", "installationPath"],
-                             capture_output=True, text=True).stdout.strip()
-    if not install:
-        return False
-    vsdevcmd = Path(install) / "Common7" / "Tools" / "VsDevCmd.bat"
-    if not vsdevcmd.exists():
-        return False
-    # Run VsDevCmd in a subshell and dump the environment it produced; fold every VAR=VALUE into os.environ
-    # so the build subprocesses (cmake configure + ninja) inherit cl.exe, INCLUDE/LIB, and Ninja.
-    dump = subprocess.run(["cmd", "/c", f'"{vsdevcmd}" -arch=x64 -host_arch=x64 -no_logo && set'],
-                          capture_output=True, text=True)
-    if dump.returncode != 0:
-        return False
-    for line in dump.stdout.splitlines():
-        if "=" in line and not line.startswith("="):
-            key, _, val = line.partition("=")
-            _os.environ[key] = val
-    if not shutil.which("ninja"):   # VsDevCmd usually adds VS's Ninja; add it explicitly if not
-        nd = Path(install) / "Common7" / "IDE" / "CommonExtensions" / "Microsoft" / "CMake" / "Ninja"
-        if (nd / "ninja.exe").exists():
-            _os.environ["PATH"] = str(nd) + _os.pathsep + _os.environ.get("PATH", "")
-    return bool(shutil.which("cl"))
 
 
 def linux_cmake3(repo, pinned_version: str = "3.31.7") -> str:

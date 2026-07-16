@@ -94,16 +94,17 @@ def build_llama(cpu: bool = False, arch: int = 0, force: bool = False, cuda_root
     exe = osenv.exe_name("llama-server")
     win = osenv.os_name() == "windows"
     flags = osenv.resolve_build_cmake_flags(cpu=cpu, arch=arch)
-    # The Ninja generator needs the MSVC toolchain (cl.exe) + Ninja on PATH; osenv.ensure_msvc_env folds the
-    # VS environment in (like a Developer Command Prompt) so a plain `bob build` works from any shell.
-    if win and not osenv.ensure_msvc_env():  # pragma: no cover — Windows only
-        raise RuntimeError("MSVC toolchain not found. Install Visual Studio 2022 with the 'Desktop "
-                           "development with C++' workload (./install_prereqs.bat), then re-run.")
 
     if not force and (BIN / exe).exists():
         return f"{exe} already built — skipping (use --force to rebuild)."
     if not (SRC_LLAMA / "CMakeLists.txt").exists():
         raise RuntimeError(f"llama.cpp submodule not found at {SRC_LLAMA}. Run: git submodule update --init --recursive")
+    # The Ninja generator needs the MSVC toolchain (cl.exe) + Ninja on PATH; osenv.ensure_msvc_env folds the
+    # VS environment in (like a Developer Command Prompt) so a plain `bob build` works from any shell. Only
+    # matters once we're actually going to build (after the already-built short-circuit above).
+    if win and not osenv.ensure_msvc_env():  # pragma: no cover — Windows only
+        raise RuntimeError("MSVC toolchain not found. Install Visual Studio 2022 with the 'Desktop "
+                           "development with C++' workload (./install_prereqs.bat), then re-run.")
 
     cuda_host_cxx = None
     cuda_major = "12"
