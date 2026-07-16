@@ -242,8 +242,13 @@ nvcc --version
 
 ## 4. Build llama.cpp
 
-This produces `bin/llama-server`. Linux uses the **Ninja** generator; Windows uses the **Visual Studio
-17 2022** generator. These are the exact flags `scripts/tools/build.py` (`build_llama`) passes.
+This produces `bin/llama-server`. Both OSes use the **Ninja** generator (single-config; it also lets the
+build be ccache'd). These are the exact flags `scripts/tools/build.py` (`build_llama`) passes.
+
+> **Windows:** Ninja needs the MSVC toolchain (`cl.exe`) + Ninja on `PATH`. `bob build` activates it for you
+> (`osenv.ensure_msvc_env` runs `VsDevCmd.bat`), so a normal build works from any shell. Only when you run the
+> `cmake` commands **by hand** (below) do you need to start from a **"Developer Command Prompt for VS 2022"**
+> (or run `VsDevCmd.bat` first) — that is what puts `cl.exe`, `cmake`, and `ninja` on `PATH`.
 
 ### Linux, CUDA build
 
@@ -287,25 +292,29 @@ bin/llama-server --version              # sanity check
 
 ### Windows, CUDA build
 
+Run these from a **"Developer Command Prompt for VS 2022"** (so `cl.exe`, `cmake`, and `ninja` are on `PATH`).
+
 ```bat
 cd external\llama.cpp
 if exist build rmdir /s /q build
-cmake -B build -G "Visual Studio 17 2022" -T "cuda=%CUDA_PATH%" ^
+cmake -B build -G Ninja ^
     -DGGML_CUDA=ON ^
+    -DCMAKE_CUDA_COMPILER="%CUDA_PATH%\bin\nvcc.exe" ^
     -DCMAKE_CUDA_ARCHITECTURES=120 ^
     -DGGML_CUDA_FORCE_CUBLAS=OFF ^
-    -DCUDAToolkit_ROOT="%CUDA_PATH%"
+    -DCUDAToolkit_ROOT="%CUDA_PATH%" ^
+    -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release -j
 cd ..\..
 ```
 
-For a **CPU** build on Windows, use `-G "Visual Studio 17 2022" -DGGML_CUDA=OFF` instead.
+For a **CPU** build on Windows, use `-G Ninja -DGGML_CUDA=OFF -DCMAKE_BUILD_TYPE=Release` instead.
 
-Stage the server binary and the CUDA runtime DLLs into `bin\` (the VS build is multi-config, so output
-lands in `build\bin\Release`):
+Stage the server binary and the CUDA runtime DLLs into `bin\` (Ninja is single-config, so output lands in
+`build\bin`):
 ```bat
 if not exist bin mkdir bin
-copy external\llama.cpp\build\bin\Release\llama-server.exe bin\
+copy external\llama.cpp\build\bin\llama-server.exe bin\
 copy "%CUDA_PATH%\bin\cublas64_12.dll"   bin\
 copy "%CUDA_PATH%\bin\cublasLt64_12.dll" bin\
 copy "%CUDA_PATH%\bin\cudart64_12.dll"   bin\

@@ -78,11 +78,17 @@ class TestCmakeFlags(unittest.TestCase):
         f = osenv.resolve_build_cmake_flags(cpu=False, arch=120, os="linux")
         self.assertEqual(f, {"Cuda": True, "Generator": "Ninja", "StageDlls": False})
 
-    def test_gpu_windows_vs_stages_dlls(self):
+    def test_gpu_windows_ninja_stages_dlls(self):
+        # Windows uses Ninja too (so ggml's ccache launcher applies); build_llama calls ensure_msvc_env to
+        # put cl.exe on PATH. CUDA DLLs are still staged next to the .exe.
         f = osenv.resolve_build_cmake_flags(cpu=False, arch=120, os="windows")
         self.assertTrue(f["Cuda"])
-        self.assertEqual(f["Generator"], "Visual Studio 17 2022")
+        self.assertEqual(f["Generator"], "Ninja")
         self.assertTrue(f["StageDlls"])
+
+    def test_ensure_msvc_env_is_noop_off_windows(self):
+        with mock.patch("osenv.os_name", return_value="linux"):
+            self.assertTrue(osenv.ensure_msvc_env())   # never blocks a non-Windows build
 
     def test_cpu_disables_cuda_both_os(self):
         for o in ("linux", "windows"):

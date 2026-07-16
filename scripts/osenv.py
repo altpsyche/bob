@@ -1277,13 +1277,67 @@ def assert_cuda_host_compiler_ok(nvcc, host_cxx=None) -> None:
 
 def resolve_build_cmake_flags(cpu: bool = False, arch: int = 0, os: str = None) -> dict:
     """PURE. {'Cuda', 'Generator', 'StageDlls'} for a build. CPU => CUDA off + no staging (both OSes);
-    GPU => CUDA on, Windows uses the VS generator + stages CUDA DLLs, Linux uses Ninja (rpath/ldconfig,
-    no staging). Port of Resolve-BuildCmakeFlags."""
+    GPU => CUDA on; Windows additionally stages the CUDA runtime DLLs next to the .exe.
+
+    Both OSes use the Ninja generator: it is single-config and honors the compiler launcher that ggml's
+    GGML_CCACHE sets (the Visual Studio generator ignores it), so the Windows build is ccache'd like Linux.
+    Ninja on Windows needs the MSVC toolchain on PATH — build_llama calls ensure_msvc_env() to provide it,
+    so a plain `bob build` still works from any shell (no manual Developer Command Prompt)."""
     os = os or os_name()
-    gen = "Visual Studio 17 2022" if os == "windows" else "Ninja"
+    gen = "Ninja"
     if cpu:
         return {"Cuda": False, "Generator": gen, "StageDlls": False}
     return {"Cuda": True, "Generator": gen, "StageDlls": os == "windows"}
+
+
+def ensure_msvc_env() -> bool:
+    """Windows: fold the MSVC toolchain (cl.exe) + VS-bundled Ninja into os.environ, exactly as a "Developer
+    Command Prompt" would — so a Ninja `bob build` works from ANY shell without the user opening one. The
+    Visual Studio CMake generator located MSVC by itself; Ninja does not, so this is what keeps the switch to
+    Ninja transparent for users.
+
+    Idempotent: a no-op when cl.exe is already resolvable (already in a dev environment). Locates VS via
+    vswhere, runs VsDevCmd.bat, and folds the resulting environment delta into this process. Returns True if
+    MSVC is usable afterwards; on non-Windows it is a no-op returning True. Best-effort — on any failure it
+    returns False and the build surfaces its own missing-compiler error."""
+    if os_name() != "windows":
+        return True
+    import shutil  # pragma: no cover — Windows-only seam (exercised in Windows CI)
+    import subprocess
+    if shutil.which("cl"):
+        return True
+    try:
+        vswhere = Path(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe")
+        if not vswhere.exists():
+            return False
+        # No -requires filter: the hosted CI image registers the C++ tools as components, not always the
+        # NativeDesktop workload, so filtering by workload can wrongly find nothing. Take the latest VS and
+        # verify the C++ env script exists instead. -prerelease so Preview installs are found too.
+        install = subprocess.run([str(vswhere), "-latest", "-prerelease", "-products", "*",
+                                  "-property", "installationPath"],
+                                 capture_output=True, text=True).stdout.strip().splitlines()
+        install = install[0].strip() if install else ""
+        if not install:
+            return False
+        root = Path(install)
+        # vcvars64.bat sets the x64 native compiler env (cl, INCLUDE, LIB, VC bins); VsDevCmd.bat is the
+        # fuller fallback. Either works for capturing the environment.
+        bat = root / "VC" / "Auxiliary" / "Build" / "vcvars64.bat"
+        cmd = f'call "{bat}"' if bat.exists() else f'call "{root / "Common7" / "Tools" / "VsDevCmd.bat"}" -arch=amd64'
+        dump = subprocess.run(["cmd", "/c", f"{cmd} >nul && set"], capture_output=True, text=True)
+        if dump.returncode == 0:
+            for line in dump.stdout.splitlines():
+                if "=" in line and not line.startswith("="):
+                    key, _, val = line.partition("=")
+                    _os.environ[key] = val
+        # vcvars64 does not add Ninja; add VS's bundled Ninja explicitly so `cmake -G Ninja` resolves it.
+        if not shutil.which("ninja"):
+            nd = root / "Common7" / "IDE" / "CommonExtensions" / "Microsoft" / "CMake" / "Ninja"
+            if (nd / "ninja.exe").exists():
+                _os.environ["PATH"] = str(nd) + _os.pathsep + _os.environ.get("PATH", "")
+        return bool(shutil.which("cl"))
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def linux_cmake3(repo, pinned_version: str = "3.31.7") -> str:
