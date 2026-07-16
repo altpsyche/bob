@@ -8,6 +8,8 @@ rebuilds only what changed, verifies, and rolls back on failure.
 
 ## [Unreleased]
 
+## [1.2.2] (2026-07-16)
+
 ### Added
 - **`bob release <x.y.z>` cuts a release without drift.** One command moves `VERSION`, the `versions.lock`
   `release` field, and `CHANGELOG.md` ([Unreleased] into a dated section) together so they cannot fall out of
