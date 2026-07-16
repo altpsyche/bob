@@ -1278,7 +1278,11 @@ def assert_cuda_host_compiler_ok(nvcc, host_cxx=None) -> None:
 def resolve_build_cmake_flags(cpu: bool = False, arch: int = 0, os: str = None) -> dict:
     """PURE. {'Cuda', 'Generator', 'StageDlls'} for a build. CPU => CUDA off + no staging (both OSes);
     GPU => CUDA on, Windows uses the VS generator + stages CUDA DLLs, Linux uses Ninja (rpath/ldconfig,
-    no staging). Port of Resolve-BuildCmakeFlags."""
+    no staging). Port of Resolve-BuildCmakeFlags.
+
+    The Windows default is the Visual Studio generator so a plain `bob build` works without a Developer
+    Command Prompt (it auto-locates MSVC). CI overrides this to Ninja via BOB_CMAKE_GENERATOR (see
+    build_llama) so the compile can be ccache'd — the VS generator ignores the launcher ggml's ccache uses."""
     os = os or os_name()
     gen = "Visual Studio 17 2022" if os == "windows" else "Ninja"
     if cpu:

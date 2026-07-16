@@ -451,6 +451,7 @@ jobs:
       attestations: write
     env:
       PYTHONPATH: scripts
+      BOB_CMAKE_GENERATOR: Ninja   # ccache-able build (VS generator ignores the ccache launcher)
     strategy:
       fail-fast: false
       matrix:
@@ -462,6 +463,27 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Set up MSVC environment (Ninja build)
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Set up Ninja + ccache
+        shell: bash
+        run: |
+          choco install ninja ccache -y
+          echo "CCACHE_DIR=$GITHUB_WORKSPACE/.ccache" >> "$GITHUB_ENV"
+          echo "CCACHE_MAXSIZE=3G" >> "$GITHUB_ENV"
+      - name: llama.cpp commit (cache key)
+        id: llama
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD:external/llama.cpp)" >> "$GITHUB_OUTPUT"
+      # Restore the ccache warmed on main by warm-engine-cache.yml (tag runs read default-branch caches).
+      # Restore only — main is the producer, so a tag-scoped save would just waste the budget.
+      - name: Restore ccache (warmed on main)
+        uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: ccache-windows-${{ matrix.tier }}-${{ steps.llama.outputs.sha }}
+          restore-keys: |
+            ccache-windows-${{ matrix.tier }}-
       - name: Install CUDA toolkit (cuda tier only)
         if: matrix.tier == 'cuda'
         uses: Jimver/cuda-toolkit@v0.2.35   # 12.8.0 is available from this release onward
@@ -472,6 +494,7 @@ jobs:
         shell: bash
         run: |
           set -e
+          ccache -z || true
           name="llama-server-windows-x86_64-${{ matrix.tier }}"
           staging="dist/$name"; mkdir -p "$staging"
           if [ "${{ matrix.tier }}" = "cuda" ]; then
@@ -479,6 +502,7 @@ jobs:
           else
             python -m bob build --dist --cpu
           fi
+          ccache -sv || true
           # build_llama already staged the CUDA runtime DLLs next to llama-server.exe in bin/ on Windows.
           cp bin/llama-server.exe "$staging"/
           cp bin/*.dll "$staging"/ 2>/dev/null || true

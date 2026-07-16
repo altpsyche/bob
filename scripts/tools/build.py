@@ -94,6 +94,13 @@ def build_llama(cpu: bool = False, arch: int = 0, force: bool = False, cuda_root
     exe = osenv.exe_name("llama-server")
     win = osenv.os_name() == "windows"
     flags = osenv.resolve_build_cmake_flags(cpu=cpu, arch=arch)
+    # CI overrides the generator to Ninja on Windows (BOB_CMAKE_GENERATOR=Ninja) so the compile is ccache'd
+    # (the VS generator ignores the launcher ggml's ccache uses). Default stays VS so a user's `bob build`
+    # needs no Developer Command Prompt. Ninja on Windows requires MSVC on PATH (CI: msvc-dev-cmd).
+    _gen_override = os.environ.get("BOB_CMAKE_GENERATOR")
+    if _gen_override:
+        flags = {**flags, "Generator": _gen_override}
+    is_vs = "Visual Studio" in flags["Generator"]
 
     if not force and (BIN / exe).exists():
         return f"{exe} already built — skipping (use --force to rebuild)."
@@ -155,8 +162,12 @@ def build_llama(cpu: bool = False, arch: int = 0, force: bool = False, cuda_root
     cmake = _resolve_cmake(flags["Generator"])
     lines.append(f"cmake       : {cmake}")
 
-    if flags["Cuda"] and win:  # pragma: no cover
-        cfg = [cmake, "-B", "build", "-G", "Visual Studio 17 2022", "-T", f"cuda={cuda_root}",
+    # The VS generator (Windows default) is multi-config and uses the CUDA toolset (-T cuda=); Ninja
+    # (Linux, and Windows under the CI ccache override) is single-config and takes an explicit nvcc + build
+    # type. nvcc's host compiler is cl.exe under Ninja-on-Windows (from the MSVC env); cuda_host_cxx is set
+    # only on Linux, so it is passed only there.
+    if flags["Cuda"] and is_vs:  # pragma: no cover — Windows VS generator
+        cfg = [cmake, "-B", "build", "-G", flags["Generator"], "-T", f"cuda={cuda_root}",
                "-DGGML_CUDA=ON", f"-DCMAKE_CUDA_ARCHITECTURES={arch_cmake}", "-DGGML_CUDA_FORCE_CUBLAS=OFF",
                f"-DCUDAToolkit_ROOT={cuda_root}"]
     elif flags["Cuda"]:
@@ -166,8 +177,8 @@ def build_llama(cpu: bool = False, arch: int = 0, force: bool = False, cuda_root
                "-DGGML_CUDA_FORCE_CUBLAS=OFF", f"-DCUDAToolkit_ROOT={cuda_root}", "-DCMAKE_BUILD_TYPE=Release"]
         if cuda_host_cxx:
             cfg.append(f"-DCMAKE_CUDA_HOST_COMPILER={cuda_host_cxx}")
-    elif win:  # pragma: no cover
-        cfg = [cmake, "-B", "build", "-G", "Visual Studio 17 2022", "-DGGML_CUDA=OFF"]
+    elif is_vs:  # pragma: no cover — Windows VS generator
+        cfg = [cmake, "-B", "build", "-G", flags["Generator"], "-DGGML_CUDA=OFF"]
     else:
         cfg = [cmake, "-B", "build", "-G", flags["Generator"], "-DGGML_CUDA=OFF", "-DCMAKE_BUILD_TYPE=Release"]
 
@@ -176,7 +187,7 @@ def build_llama(cpu: bool = False, arch: int = 0, force: bool = False, cuda_root
     _run([cmake, "--build", "build", "--config", "Release", "-j"], cwd=SRC_LLAMA)
 
     # Stage -> atomic swap into bin/. VS is multi-config (build/bin/Release); Ninja is single (build/bin).
-    out_dir = build_dir / ("bin/Release" if win else "bin")
+    out_dir = build_dir / ("bin/Release" if is_vs else "bin")
     tmp = BIN / "_build_tmp"
     if tmp.exists():
         shutil.rmtree(tmp)
