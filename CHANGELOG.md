@@ -8,6 +8,8 @@ rebuilds only what changed, verifies, and rolls back on failure.
 
 ## [Unreleased]
 
+## [1.2.3] (2026-07-16)
+
 ### Changed
 - **Smarter CI: do only the work a change requires, and never twice** (internal, no user-facing surface). The
   `acceptance-cpu` cache is split into a build cache keyed on the submodule commits + toolchain and a model
