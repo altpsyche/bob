@@ -55,23 +55,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
+        # NOTE: NOT `set -e`. This job must never exit non-zero: a failed `changes` job would make every
+        # dependent (acceptance-cpu/eval/prereqs-distro) skip, silently disabling the gate. On any error we
+        # fall back to "__ALL__" (run everything) and still exit 0.
         run: |
-          set -euo pipefail
-          files=""
-          case "${{ github.event_name }}" in
-            pull_request)
-              files=$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" \
-                        --paginate -q '.[].filename' 2>/dev/null || echo "__ALL__") ;;
-            push)
-              before="${{ github.event.before }}"
-              if [ -z "$before" ] || [ "$before" = "0000000000000000000000000000000000000000" ]; then
-                files="__ALL__"
-              else
-                files=$(gh api "repos/${{ github.repository }}/compare/${before}...${{ github.sha }}" \
-                          -q '.files[].filename' 2>/dev/null || echo "__ALL__") ;;
-              fi ;;
-            *) files="__ALL__" ;;   # schedule / workflow_dispatch -> run everything relevant
-          esac
+          set -uo pipefail
+          ev="${{ github.event_name }}"
+          files="__ALL__"
+          if [ "$ev" = "pull_request" ]; then
+            files=$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" \
+                      --paginate -q '.[].filename' 2>/dev/null) || files="__ALL__"
+          elif [ "$ev" = "push" ]; then
+            before="${{ github.event.before }}"
+            if [ -n "$before" ] && [ "$before" != "0000000000000000000000000000000000000000" ]; then
+              files=$(gh api "repos/${{ github.repository }}/compare/${before}...${{ github.sha }}" \
+                        -q '.files[].filename' 2>/dev/null) || files="__ALL__"
+            fi
+          fi
+          [ -z "$files" ] && files="__ALL__"   # empty result (API hiccup / weird diff) -> fail-safe
           echo "changed files:"; printf '  %s\n' $files
           code=false; prereqs=false
           while IFS= read -r f; do
