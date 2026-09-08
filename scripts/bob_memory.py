@@ -1,4 +1,4 @@
-"""Bob memory: store/recall via SQLite + BGE-M3 embeddings.
+"""Bob memory: store/recall via SQLite + the `embed` role's embeddings.
 
 Usage:
   bob_memory.py [--db PATH] store "text" [--source user|session]
@@ -8,13 +8,15 @@ Usage:
   bob_memory.py [--db PATH] init-profile --name "Siva" --work "game dev"
 
 Runs inside venv-litellm (has requests). Requires: sqlite-utils.
-Embed endpoint resolved from config (litellmPort); BGE-M3, model=embed.
+Embed endpoint resolved from config (litellmPort), model=embed; the backing GGUF comes from the
+active profile's `embed` role and is stamped per row (see _V4_COLUMNS).
 """
 
 # Lazy annotations so `-> sqlite_utils.Database` doesn't evaluate (and need the import) at def time.
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
 import math
@@ -61,8 +63,8 @@ def _warn_once(msg: str) -> None:
 # --- Schema (v2 typed/owner-scoped; v3 provenance) ---------------
 # `get_db` migrates a legacy DB in place (additive ALTERs + one-time backfill), gated by PRAGMA
 # user_version so the common path is a cheap version read. Migrations run as an incremental ladder
-# (v1→v2→v3), each step idempotent and column-presence-guarded.
-SCHEMA_VERSION = 3
+# (v1→v2→v3→v4), each step idempotent and column-presence-guarded.
+SCHEMA_VERSION = 4
 
 # Columns added to the v1 `memories` table (id/content/embedding/source/created_at/last_used/
 # use_count already exist). NOT NULL columns carry a literal default so ALTER ADD COLUMN is legal
@@ -86,6 +88,19 @@ _V2_COLUMNS = [
 _V3_COLUMNS = [
     ("source_session", "TEXT"),                        # session that produced this row (audit / forget --session)
 ]
+
+# v4: which embedding model produced this row's vector. Vectors from two different models are not
+# comparable, and same-dimension models (bge-m3 and Qwen3-Embedding-0.6B are both 1024) make the
+# mismatch SILENT: cosine() zips them happily and returns a meaningless score. Stamping the model
+# lets the recall and dedup paths treat a stale vector as "no vector yet" instead.
+# NULL means "no evidence", NOT stale: only _migrate_to_v4 knows a pre-v4 row is stale (it says so by
+# stamping the old name), and every write since v4 stamps the current one. Reading NULL as stale would
+# silently drop vectors we have no reason to distrust.
+_V4_COLUMNS = [
+    ("embed_model", "TEXT"),                           # gguf filename of the embed role that made the vector
+]
+# The embed model in use before v4; every pre-v4 row's vector came from it.
+_PRE_V4_EMBED_MODEL = "bge-m3-q8_0.gguf"
 
 # §2.3 third-person normalization — deterministic, leading-pronoun-anchored, conservative. Specific
 # forms first so `I'm`/`I've`/`I am` win over the bare `I `. NOTE: this is the cheap fast path — it
@@ -208,7 +223,8 @@ def _ensure_schema(db: sqlite_utils.Database) -> None:
             superseded_by INTEGER,
             updated_at TEXT,
             expires_at TEXT,
-            source_session TEXT
+            source_session TEXT,
+            embed_model TEXT
         )
     """)
     # Identity lives as type='profile' rows in `memories` (cmd_init_profile + consolidation); there is
@@ -220,6 +236,8 @@ def _ensure_schema(db: sqlite_utils.Database) -> None:
         _migrate_to_v2(db)
     if version < 3:
         _migrate_to_v3(db)
+    if version < 4:
+        _migrate_to_v4(db)
     db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     db.conn.commit()   # persist the ALTERs/backfill/version across this and future connections
 
@@ -254,6 +272,59 @@ def _migrate_to_v3(db: sqlite_utils.Database) -> None:
     done by the caller (_ensure_schema)."""
     _add_missing_columns(db, _V3_COLUMNS)
     db.execute("CREATE INDEX IF NOT EXISTS idx_mem_session ON memories(owner_id, source_session)")
+
+
+def _migrate_to_v4(db: sqlite_utils.Database) -> None:
+    """v3 -> v4: add embed_model and stamp existing rows with the model that produced their vectors.
+    Backfilling (rather than leaving NULL) is what makes the staleness check decidable: after an embed
+    model swap those rows compare as stale and drop out of semantic recall until `bob memory migrate
+    --reembed` rebuilds them. Version stamping is done by the caller (_ensure_schema)."""
+    _add_missing_columns(db, _V4_COLUMNS)
+    db.execute("UPDATE memories SET embed_model=? WHERE embed_model IS NULL AND embedding != ''",
+               [_PRE_V4_EMBED_MODEL])
+
+
+def stale_vector_count(db_path) -> int:
+    """How many rows hold a vector from a DIFFERENT embed model than the active one.
+
+    Read-only and side-effect free ON PURPOSE: `bob doctor` calls this, and a health check must not
+    open the DB through get_db and silently run the migration ladder. Uses stdlib sqlite3 so it works
+    without the optional deps, and returns 0 for a missing file, a pre-v4 schema (no embed_model
+    column yet, so nothing has been marked stale), or anything unreadable.
+    """
+    import sqlite3
+    path = Path(db_path)
+    if not path.exists():
+        return 0
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return 0
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(memories)")}
+        if "embed_model" not in cols:
+            return 0
+        return conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE embedding != '' "
+            "AND embed_model IS NOT NULL AND embed_model IS NOT ?",
+            [current_embed_model()],
+        ).fetchone()[0]
+    except sqlite3.Error:
+        return 0
+    finally:
+        conn.close()
+
+
+@functools.lru_cache(maxsize=1)
+def current_embed_model() -> str:
+    """Identity of the embed role's GGUF in the active profile: the stamp that says whether a stored
+    vector is still comparable to a fresh one. Falls back to the pre-v4 model if the registry can't be
+    read, which keeps an unreadable registry from silently invalidating every row."""
+    try:
+        import bob_models
+        return bob_models.profile_roles()["embed"]["gguf"]
+    except Exception:
+        return _PRE_V4_EMBED_MODEL
 
 
 def embed(text: str) -> list[float]:
@@ -349,8 +420,9 @@ def store(content: str, db_path: Path, source: str = "user", mem_type: str = "fa
         vec = None   # embed server down + caller opted in: persist without a vector, skip near-dedup
     if vec is not None:
         for eid, emb_json in db.execute(
-            "SELECT id, embedding FROM memories WHERE owner_id=? AND type=? AND superseded_by IS NULL",
-            [owner, mem_type],
+            "SELECT id, embedding FROM memories WHERE owner_id=? AND type=? AND superseded_by IS NULL "
+            "AND (embed_model IS NULL OR embed_model = ?)",
+            [owner, mem_type, current_embed_model()],
         ).fetchall():
             try:
                 if cosine(vec, json.loads(emb_json)) >= dedup_threshold:
@@ -364,6 +436,7 @@ def store(content: str, db_path: Path, source: str = "user", mem_type: str = "fa
         "content": normalized,
         "content_hash": chash,
         "embedding": json.dumps(vec) if vec is not None else "",
+        "embed_model": current_embed_model() if vec is not None else None,
         "type": mem_type,
         "subject": "user",
         "owner_id": owner,
@@ -551,10 +624,16 @@ def recall(query: str, db_path: Path, k: int = 5, threshold: float = 0.35,
     hl = {**_DEFAULT_HALF_LIVES, **(half_lives or {})}
     db = get_db(db_path)
     now = datetime.now(timezone.utc)
-    sql = ("SELECT id, content, embedding, type, created_at, use_count, salience, last_used "
+    # A vector made by a different embed model is not comparable to a fresh query vector, and with two
+    # same-dimension models the mismatch is silent, so blank it to the "no vector yet" sentinel here.
+    # The row still reaches keyword/FTS recall; only its bogus cosine is suppressed, until
+    # `bob memory migrate --reembed`.
+    sql = ("SELECT id, content, "
+           "CASE WHEN embed_model IS NULL OR embed_model = ? THEN embedding ELSE '' END, "
+           "type, created_at, use_count, salience, last_used "
            "FROM memories "
            "WHERE owner_id=? AND superseded_by IS NULL AND (expires_at IS NULL OR expires_at > ?)")
-    params = [owner, now.isoformat()]
+    params = [current_embed_model(), owner, now.isoformat()]
     if scope is not None:
         sql += " AND (scope IS NULL OR scope = ?)"   # global rows + this project's rows
         params.append(scope)
@@ -1308,15 +1387,22 @@ def cmd_init_profile(name: str, work: str, db_path: Path) -> None:
     print(f"Profile saved as {stored} durable memory(ies) (type=profile).")
 
 
-def cmd_migrate(db_path: Path, normalize: bool = False) -> None:
+def cmd_migrate(db_path: Path, normalize: bool = False, reembed: bool = False) -> None:
     """Schema migration always runs (via get_db). With --normalize, additionally rewrite each
-    row's content to third person (§2.3) and re-embed — backs the DB up first (needs the embed
-    server up), per the backup-before-rewrite posture (CONTRIBUTING §5)."""
+    row's content to third person (§2.3) and re-embed. With --reembed, rebuild the vectors of rows
+    stamped with a different embed model (what an embed-model swap leaves behind). Both back the DB
+    up first (and need the embed server up), per the backup-before-rewrite posture (CONTRIBUTING §5)."""
     db = get_db(db_path)  # triggers the v1 -> v2 schema migration
     version = db.execute("PRAGMA user_version").fetchone()[0]
     print(f"Schema at v{version}.")
-    if not normalize:
-        print("Pass --normalize to rewrite content to third person (re-embeds; backs up first).")
+    current = current_embed_model()
+    stale = stale_vector_count(db_path)
+    if stale:
+        print(f"{stale} row(s) hold vectors from a different embed model (current: {current}); "
+              "they are excluded from semantic recall until re-embedded.")
+    if not (normalize or reembed):
+        print("Pass --normalize to rewrite content to third person, or --reembed to rebuild stale "
+              "vectors (both re-embed and back up first).")
         return
 
     db_path = Path(db_path)
@@ -1326,22 +1412,33 @@ def cmd_migrate(db_path: Path, normalize: bool = False) -> None:
         shutil.copy2(db_path, backup)
         print(f"Backup: {backup}")
 
-    rows = db.execute("SELECT id, content FROM memories").fetchall()
     now = datetime.now(timezone.utc).isoformat()
-    changed = 0
-    for rid, content in rows:
-        normalized = _normalize_third_person(content)
-        if normalized == content:
-            continue
-        vec = embed(normalized)  # re-embed the rewritten text (fails loudly if the server is down)
-        db.execute(
-            "UPDATE memories SET content=?, embedding=?, content_hash=?, subject='user', updated_at=? "
-            "WHERE id=?",
-            [normalized, json.dumps(vec), _content_hash(normalized), now, rid],
-        )
-        changed += 1
-    db.conn.commit()
-    print(f"Normalized {changed} of {len(rows)} row(s); re-embedded.")
+    if normalize:
+        rows = db.execute("SELECT id, content FROM memories").fetchall()
+        changed = 0
+        for rid, content in rows:
+            normalized = _normalize_third_person(content)
+            if normalized == content:
+                continue
+            vec = embed(normalized)  # re-embed the rewritten text (fails loudly if the server is down)
+            db.execute(
+                "UPDATE memories SET content=?, embedding=?, embed_model=?, content_hash=?, "
+                "subject='user', updated_at=? WHERE id=?",
+                [normalized, json.dumps(vec), current, _content_hash(normalized), now, rid],
+            )
+            changed += 1
+        db.conn.commit()
+        print(f"Normalized {changed} of {len(rows)} row(s); re-embedded.")
+
+    if reembed:
+        rows = db.execute("SELECT id, content FROM memories WHERE embedding != '' "
+                          "AND embed_model IS NOT NULL AND embed_model IS NOT ?", [current]).fetchall()
+        for rid, content in rows:
+            vec = embed(content)   # fails loudly if the embed server is down, better than half a rebuild
+            db.execute("UPDATE memories SET embedding=?, embed_model=?, updated_at=? WHERE id=?",
+                       [json.dumps(vec), current, now, rid])
+        db.conn.commit()
+        print(f"Re-embedded {len(rows)} row(s) onto {current}.")
 
 
 def main() -> None:
@@ -1406,6 +1503,8 @@ def main() -> None:
     p_migrate = sub.add_parser("migrate")
     p_migrate.add_argument("--normalize", action="store_true",
                            help="Rewrite content to third person + re-embed (backs up the DB first)")
+    p_migrate.add_argument("--reembed", action="store_true",
+                           help="Rebuild vectors left stale by an embed-model swap (backs up first)")
 
     args = parser.parse_args()
     db_path = Path(args.db)
@@ -1438,7 +1537,7 @@ def main() -> None:
         elif args.cmd == "summarize-session":
             cmd_summarize_session(args.messages_file, args.model, db_path)
         elif args.cmd == "migrate":
-            cmd_migrate(db_path, normalize=args.normalize)
+            cmd_migrate(db_path, normalize=args.normalize, reembed=args.reembed)
     except RuntimeError as e:
         print(f"bob memory: {e}", file=sys.stderr)
         sys.exit(1)

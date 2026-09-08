@@ -62,7 +62,7 @@ class TestLockShape(unittest.TestCase):
         # The CPU-tier GGUF served in CI must be present + revision-pinned (sha may be
         # null pre-first-fetch — TOFU-then-lock).
         lk = versions.load_lock()
-        cpu = lk["models"].get("qwen2.5-0.5b-instruct-q8_0.gguf")
+        cpu = lk["models"].get("qwen3.5-0.8b-q8_0.gguf")
         self.assertIsNotNone(cpu, "CPU-tier GGUF missing from versions.lock")
         self.assertTrue(cpu["repo"] and cpu["path"] and cpu["revision"])
 

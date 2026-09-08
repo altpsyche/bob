@@ -41,7 +41,7 @@ bob
 This opens the interactive shell, Bob's home base. Type a message to chat; slash-commands drive everything else. **Inference auto-starts the first time you talk**, so there is nothing to launch first. A splash shows the active model, session, and tool/skill counts, then a prompt:
 
 ```
-Bob  ·  chat / Qwen3-14B  ·  session new  ·  12 tools · 6 skills
+Bob  ·  chat / Qwen3.5-9B  ·  session new  ·  12 tools · 6 skills
 
 type a message to chat  ·  /agent <goal>  ·  /voice  ·  /help  ·  /exit
 >
@@ -139,7 +139,7 @@ bob chat --pro "explain CAP theorem with a concrete example"
 ### Route to the right model
 
 ```bash
-bob chat            # default: chat (general conversation, Qwen3-14B)
+bob chat            # default: chat (general conversation, Qwen3.5-9B)
 bob think           # ponder: Qwen3-30B, deep reasoning, thinking mode on
 bob code            # coder: Qwen3-Coder-30B-A3B, code-focused
 bob chat --pro      # chat-pro: DeepSeek via API (needs DEEPSEEK_API_KEY)
@@ -635,7 +635,7 @@ The voice loop uses a dedicated system prompt that tells the model to reply in p
 
 **Prerequisites:** The vision GGUF is downloaded by `bob fetch` (it's part of the 16gb profile). The mmproj is downloaded by `bob setup-voice`. Vision is enabled by default; toggle it with `{"vision": {"enabled": true}}` in `config/user.json`.
 
-Vision uses Qwen2-VL-7B to describe images and answer visual questions. The model loads on demand from the swap group and unloads after 30 s idle.
+Vision uses Qwen3-VL-8B to describe images and answer visual questions. The model loads on demand from the swap group and unloads after 30 s idle.
 
 ### Try it: describe an image file
 

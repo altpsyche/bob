@@ -37,7 +37,7 @@ class TestModelsPythonSide(unittest.TestCase):
         roles = bob_models.profile_roles("16gb")
         self.assertIn("ponder", roles)
         self.assertNotIn("_targetVRAM", roles)
-        self.assertEqual(roles["ponder"]["gguf"], "qwen3-30b-a3b-q4.gguf")
+        self.assertEqual(roles["ponder"]["gguf"], "qwen3.6-35b-a3b-q4_k_m.gguf")
 
     def test_set_active_profile_writes_override(self):
         with tempfile.TemporaryDirectory() as d:

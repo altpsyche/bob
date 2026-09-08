@@ -191,6 +191,29 @@ def health_check(config: dict, doctor: bool = False) -> str:
     else:
         check("Agent tools load without error", False, "venv-litellm missing")
 
+    # Vectors written by a PREVIOUS embed model are excluded from semantic recall until rebuilt
+    # (memory schema v4). The schema migration is automatic, but re-embedding needs the embed server
+    # up, so it stays an explicit step, and an update that swaps the embed model would otherwise
+    # leave recall quietly degraded to keyword-only. Surface it here so `bob update`'s closing doctor
+    # says so, and keeps saying so until it's done.
+    try:
+        import bob_memory
+        from bob_core import _get_db_path
+
+        stale = []
+        for label, path in (("memory", Path(_get_db_path(config))),
+                            ("code index", REPO / "data" / "code.db")):
+            n = bob_memory.stale_vector_count(path)
+            if n:
+                stale.append(f"{n} in {label}")
+        if stale:
+            check("Memory vectors match the active embed model", False,
+                  f"{', '.join(stale)} from an older embed model; run: bob memory migrate --reembed")
+        else:
+            check("Memory vectors match the active embed model", True)
+    except Exception as e:  # noqa: BLE001 — advisory: never fail the pre-flight over this
+        check("Memory vectors match the active embed model", False, f"check failed: {e}")
+
     check("config/litellm.yaml exists", (REPO / "config" / "litellm.yaml").exists(), "bob gen")
 
     if doctor:

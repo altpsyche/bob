@@ -1,6 +1,5 @@
 {
   "_comment": "The single neutral source of truth for shared constants. Read by Python (json.load in scripts/bob_core.py); it exists before the venv so bootstrap can use it. Never re-inline a port number or role literal elsewhere. 'ports' + 'roleTable' are the shared constants; 'runtime' is the neutral runtime-config default layer the Python resolver (scripts/bob_config.py) merges. Per-machine overrides live in config/user.json (deep-merged). This is the sole authoring source, read the same way on every OS.",
-
   "ports": {
     "port": 8080,
     "litellmPort": 8081,
@@ -12,20 +11,55 @@
     "n8nPort": 5678,
     "searxngPort": 8888
   },
-
   "roleTable": {
-    "chat":   { "base": "defaultRole", "pro": "proRole",      "fallback": "chat",    "proFallback": "chat-pro" },
-    "voice":  { "base": "defaultRole", "pro": "proRole",      "fallback": "chat",    "proFallback": "chat-pro" },
-    "code":   { "base": "codeRole",    "pro": "proCodeRole",   "fallback": "coder",   "proFallback": "coder-pro" },
-    "ponder": { "base": "ponderRole",  "pro": "proPonderRole", "fallback": "ponder",  "proFallback": "ponder-pro" },
-    "agent":  { "base": "agentRole",   "pro": "agentRole",     "fallback": "agent",   "proFallback": "agent" },
-    "vision": { "section": "vision",   "base": "visionRole",  "pro": "visionProRole", "fallback": "vision", "proFallback": "vision-pro" }
+    "chat": {
+      "base": "defaultRole",
+      "pro": "proRole",
+      "fallback": "chat",
+      "proFallback": "chat-pro"
+    },
+    "voice": {
+      "base": "defaultRole",
+      "pro": "proRole",
+      "fallback": "chat",
+      "proFallback": "chat-pro"
+    },
+    "code": {
+      "base": "codeRole",
+      "pro": "proCodeRole",
+      "fallback": "coder",
+      "proFallback": "coder-pro"
+    },
+    "ponder": {
+      "base": "ponderRole",
+      "pro": "proPonderRole",
+      "fallback": "ponder",
+      "proFallback": "ponder-pro"
+    },
+    "writer": {
+      "base": "writerRole",
+      "pro": "proWriterRole",
+      "fallback": "writer",
+      "proFallback": "writer-pro"
+    },
+    "agent": {
+      "base": "agentRole",
+      "pro": "agentRole",
+      "fallback": "agent",
+      "proFallback": "agent"
+    },
+    "vision": {
+      "section": "vision",
+      "base": "visionRole",
+      "pro": "visionProRole",
+      "fallback": "vision",
+      "proFallback": "vision-pro"
+    }
   },
-
   "runtime": {
     "litellmKey": "sk-local",
     "persona": {
-      "systemPrompt": "You are Bob, a helpful AI assistant. Be direct and honest, and if you don't know something, say so. When the user tells you durable facts about themselves — their name, role, or lasting preferences — save them with the memory_store tool (type 'profile' for identity, 'preference' for how they like you to work) so you remember them in future sessions. Don't re-store what you already know."
+      "systemPrompt": "You are Bob, a helpful AI assistant. Be direct and honest, and if you don't know something, say so. When the user tells you durable facts about themselves \u2014 their name, role, or lasting preferences \u2014 save them with the memory_store tool (type 'profile' for identity, 'preference' for how they like you to work) so you remember them in future sessions. Don't re-store what you already know."
     },
     "memory": {
       "enabled": true,
@@ -50,16 +84,30 @@
         "wType": 0.2,
         "wUsage": 0.1,
         "wSalience": 0.3,
-        "halfLifeDays": {"profile": 36500, "preference": 36500, "project": 90, "fact": 365, "episodic": 30}
+        "halfLifeDays": {
+          "profile": 36500,
+          "preference": 36500,
+          "project": 90,
+          "fact": 365,
+          "episodic": 30
+        }
       },
-      "typeWeights": {"profile": 1.0, "preference": 0.9, "project": 0.8, "fact": 0.7, "episodic": 0.5},
+      "typeWeights": {
+        "profile": 1.0,
+        "preference": 0.9,
+        "project": 0.8,
+        "fact": 0.7,
+        "episodic": 0.5
+      },
       "maxSummaryTokens": 512,
       "autoSummarize": true,
       "autoConsolidate": true,
       "consolidateTimeout": 30,
       "reconcileTopK": 20,
       "maxRows": 2000,
-      "forgetAfterDays": {"episodic": 180},
+      "forgetAfterDays": {
+        "episodic": 180
+      },
       "scopeByProject": true,
       "projectFiles": true,
       "bobMdMaxTokens": 4000
@@ -158,7 +206,12 @@
       "otlpEndpoint": "",
       "permissions": {},
       "sandbox": "off",
-      "sandboxLimits": {"cpuSeconds": 30, "memoryMB": 2048, "allowRoots": [], "network": false}
+      "sandboxLimits": {
+        "cpuSeconds": 30,
+        "memoryMB": 2048,
+        "allowRoots": [],
+        "network": false
+      }
     }
   }
 }

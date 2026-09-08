@@ -808,12 +808,13 @@ class TestSchemaV2(unittest.TestCase):
     _V2_COLS = ("content_hash", "type", "subject", "owner_id", "scope", "tags",
                 "salience", "pinned", "superseded_by", "updated_at", "expires_at")
     _V3_COLS = ("source_session",)
+    _V4_COLS = ("embed_model",)
 
     def test_fresh_db_is_current_version_with_all_columns(self):
         db = bob_memory.get_db(self.db)
         self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], bob_memory.SCHEMA_VERSION)
         cols = {r[1] for r in db.execute("PRAGMA table_info(memories)").fetchall()}
-        for c in (*self._V2_COLS, *self._V3_COLS):
+        for c in (*self._V2_COLS, *self._V3_COLS, *self._V4_COLS):
             self.assertIn(c, cols)
 
     def _seed_v1(self):
@@ -944,3 +945,134 @@ class TestContextualChunk(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(bob_memory._DEPS_ERROR is None,
+                     f"memory deps (sqlite-utils/requests) not installed: {bob_memory._DEPS_ERROR}")
+class TestEmbedModelStamp(unittest.TestCase):
+    """Schema v4: vectors carry the embed model that made them, so an embed-model swap can't silently
+    score stale vectors against fresh queries (bge-m3 and Qwen3-Embedding-0.6B are both 1024-wide, so
+    the mismatch would not raise)."""
+
+    def setUp(self):
+        self._orig_embed = bob_memory.embed
+        self._orig_model = bob_memory.current_embed_model
+        bob_memory.embed = _fake_embed
+        bob_memory.current_embed_model = lambda: "model-a.gguf"
+        self.dir = Path(tempfile.mkdtemp(prefix="bob-memv4-"))
+        self.db = self.dir / "m.db"
+
+    def tearDown(self):
+        bob_memory.embed = self._orig_embed
+        bob_memory.current_embed_model = self._orig_model
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _swap_model(self, name="model-b.gguf"):
+        bob_memory.current_embed_model = lambda: name
+
+    def test_store_stamps_the_current_embed_model(self):
+        bob_memory.store("a fact worth keeping", self.db)
+        db = bob_memory.get_db(self.db)
+        self.assertEqual(db.execute("SELECT embed_model FROM memories").fetchone()[0], "model-a.gguf")
+
+    def test_vectorless_row_is_not_stamped(self):
+        def boom(_text):
+            raise RuntimeError("embed server down")
+        bob_memory.embed = boom
+        bob_memory.store("stored without a vector", self.db, embed_optional=True)
+        db = bob_memory.get_db(self.db)
+        emb, model = db.execute("SELECT embedding, embed_model FROM memories").fetchone()
+        self.assertEqual(emb, "")
+        self.assertIsNone(model)
+
+    def test_stale_vector_drops_out_of_semantic_recall(self):
+        bob_memory.store("the user likes powershell", self.db)
+        self.assertTrue(bob_memory.recall("the user likes powershell", self.db, k=3, threshold=0.3))
+        self._swap_model()
+        self.assertEqual(bob_memory.recall("the user likes powershell", self.db, k=3, threshold=0.3), [])
+
+    def test_null_stamp_is_trusted_not_treated_as_stale(self):
+        """NULL means 'no evidence', not stale: a row written before v4 that the migration never
+        stamped must keep working, or an upgrade silently empties semantic recall."""
+        bob_memory.store("the user likes powershell", self.db)
+        db = bob_memory.get_db(self.db)
+        db.execute("UPDATE memories SET embed_model = NULL")
+        db.conn.commit()
+        self.assertTrue(bob_memory.recall("the user likes powershell", self.db, k=3, threshold=0.3))
+
+    def test_stale_vector_is_skipped_by_near_dedup(self):
+        """Near-dedup compares vectors, so a stale one must not swallow a fresh write. (Exact dedup is
+        content-hash based and model-independent, so this uses two DIFFERENT texts that embed alike.)"""
+        bob_memory.embed = lambda _text: [1.0, 2.0, 3.0]   # every text embeds identically
+        first, _ = bob_memory.store("one wording of the fact", self.db)
+        second, is_new = bob_memory.store("another wording of it", self.db)
+        self.assertFalse(is_new, "same vector, same model: near-dedup should collapse these")
+        self.assertEqual(first, second)
+
+        self._swap_model()
+        third, is_new = bob_memory.store("a third wording entirely", self.db)
+        self.assertTrue(is_new, "vectors from the old model are not comparable, so dedup must not fire")
+        self.assertNotEqual(first, third)
+
+    def test_stale_vector_count_is_read_only_and_tolerant(self):
+        """bob doctor calls this, so it must not migrate the DB as a side effect, and must stay quiet
+        on a missing file or a pre-v4 schema (nothing has been marked stale yet)."""
+        self.assertEqual(bob_memory.stale_vector_count(self.dir / "nope.db"), 0)
+
+        bob_memory.store("a fact", self.db)
+        self.assertEqual(bob_memory.stale_vector_count(self.db), 0)
+        self._swap_model()
+        self.assertEqual(bob_memory.stale_vector_count(self.db), 1)
+
+        # A pre-v4 DB has no embed_model column: report 0 rather than raising, and leave it at v3.
+        import sqlite3
+        old = self.dir / "v3.db"
+        conn = sqlite3.connect(str(old))
+        conn.execute("CREATE TABLE memories (id INTEGER PRIMARY KEY, content TEXT NOT NULL, "
+                     "embedding TEXT NOT NULL)")
+        conn.execute("INSERT INTO memories (content, embedding) VALUES ('x', '[1.0]')")
+        conn.execute("PRAGMA user_version = 3")
+        conn.commit()
+        conn.close()
+        self.assertEqual(bob_memory.stale_vector_count(old), 0)
+        conn = sqlite3.connect(str(old))
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 3)  # untouched
+        conn.close()
+
+    def test_migrate_reembed_rebuilds_stale_vectors(self):
+        bob_memory.store("the user likes powershell", self.db)
+        old_vec = bob_memory.get_db(self.db).execute("SELECT embedding FROM memories").fetchone()[0]
+        self._swap_model()
+        bob_memory.embed = lambda text: [9.0, 9.0, 9.0]
+        bob_memory.cmd_migrate(self.db, reembed=True)
+        db = bob_memory.get_db(self.db)
+        vec, model = db.execute("SELECT embedding, embed_model FROM memories").fetchone()
+        self.assertEqual(model, "model-b.gguf")
+        self.assertNotEqual(vec, old_vec)
+        self.assertEqual(json.loads(vec), [9.0, 9.0, 9.0])
+
+    def test_v3_db_migrates_and_backfills_the_previous_model(self):
+        import sqlite3
+        conn = sqlite3.connect(str(self.db))
+        conn.execute(
+            "CREATE TABLE memories (id INTEGER PRIMARY KEY, content TEXT NOT NULL, embedding TEXT NOT NULL,"
+            " source TEXT, created_at TEXT, last_used TEXT, use_count INTEGER DEFAULT 0, content_hash TEXT,"
+            " type TEXT NOT NULL DEFAULT 'fact', subject TEXT NOT NULL DEFAULT 'user',"
+            " owner_id TEXT NOT NULL DEFAULT 'local', scope TEXT, tags TEXT,"
+            " salience REAL NOT NULL DEFAULT 1.0, pinned INTEGER NOT NULL DEFAULT 0,"
+            " superseded_by INTEGER, updated_at TEXT, expires_at TEXT, source_session TEXT)"
+        )
+        conn.execute("INSERT INTO memories (content, embedding, created_at) VALUES (?,?,?)",
+                     ["legacy with a vector", json.dumps([1.0, 2.0, 3.0]),
+                      datetime.now(timezone.utc).isoformat()])
+        conn.execute("INSERT INTO memories (content, embedding, created_at) VALUES (?,?,?)",
+                     ["legacy without one", "", datetime.now(timezone.utc).isoformat()])
+        conn.execute("PRAGMA user_version = 3")
+        conn.commit()
+        conn.close()
+
+        db = bob_memory.get_db(self.db)
+        self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], bob_memory.SCHEMA_VERSION)
+        stamped = dict(db.execute("SELECT content, embed_model FROM memories").fetchall())
+        self.assertEqual(stamped["legacy with a vector"], bob_memory._PRE_V4_EMBED_MODEL)
+        self.assertIsNone(stamped["legacy without one"])   # nothing to distrust, nothing to stamp

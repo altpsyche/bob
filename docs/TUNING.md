@@ -423,7 +423,7 @@ The `maxTokens` field caps per-model output in `litellm.yaml`. Without it, a rea
 
 Default (MODULE J): `--cache-type-k q8_0 --cache-type-v q8_0`, ~50% KV VRAM savings versus unquantized f16, with near-zero performance overhead on all GPU generations.
 
-**VRAM impact at ctx=16384, Qwen3-14B (the `chat` role: 40 layers, 8 KV heads, d_head=128):**
+**VRAM impact at ctx=16384, Qwen3.5-9B (the `chat` role: 40 layers, 8 KV heads, d_head=128):**
 
 | K type | V type | KV VRAM estimate | Notes |
 |--------|--------|-----------------|-------|
@@ -509,7 +509,7 @@ Enable in `config/user.json`:
 
 ## MoE expert offloading (`nCpuMoe`)
 
-The ponder model (Qwen3-30B-A3B: 30B total, 3B active per token) exceeds 16 GB VRAM at Q4_K_M. Bob keeps
+The ponder model (Qwen3.6-35B-A3B: 36B total, 3B active per token) exceeds 16 GB VRAM at Q4_K_M. Bob keeps
 it on the card with **`--n-cpu-moe N`**, which keeps the Mixture-of-Experts weights of the first N layers
 in system RAM while everything else stays on the GPU at `-ngl 99`. Because only ~3B experts activate per
 token, an A3B model streams those from RAM with little speed loss. On a 16 GB card, `nCpuMoe: 24` (24 of

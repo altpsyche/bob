@@ -26,9 +26,11 @@ GROUP_ORDER = ["Talk", "Act", "Make", "Know", "Run", "Services", "Models", "Diag
 COMMANDS = [
     # --- Talk: converse + senses --------------------------------------------------------------
     {"name": "chat", "group": "Talk", "summary": "Chat with Bob — one-shot or REPL, routed role (on the agent loop)",
-     "args": "[--pro|--think|--code] [--raw] [--max N] [--sys <text>] [prompt]", "handler": "chat"},
+     "args": "[--pro|--think|--code|--write] [--raw] [--max N] [--sys <text>] [prompt]", "handler": "chat"},
     {"name": "code", "group": "Talk", "summary": "Code-focused chat (coder / coder-pro)",
      "args": "[--pro] [--raw] [--max N] [prompt]", "handler": "code"},
+    {"name": "write", "group": "Talk", "summary": "Long-form writing (writer / writer-pro)",
+     "args": "[--pro] [--raw] [--max N] [prompt]", "handler": "write"},
     {"name": "think", "group": "Talk", "summary": "Chat with reasoning on (the model thinks first)",
      "args": "[--pro] [--raw] [--max N] [prompt]", "handler": "think"},
     {"name": "voice", "group": "Talk", "summary": "Spoken conversation: mic -> loop -> speech (on the agent loop)",
@@ -39,7 +41,7 @@ COMMANDS = [
      "args": "<file>", "handler": "transcribe"},
     {"name": "speak", "group": "Talk", "summary": "Synthesize text to speech (reads stdin if no arg)",
      "args": "[text]", "handler": "speak"},
-    {"name": "describe", "group": "Talk", "summary": "Describe an image (local Qwen2-VL or --pro)",
+    {"name": "describe", "group": "Talk", "summary": "Describe an image (local Qwen3-VL or --pro)",
      "args": "<image> [--pro] [prompt]", "handler": "describe"},
     {"name": "screenshot", "group": "Talk", "summary": "Capture the screen and describe it",
      "args": "[--pro] [prompt]", "handler": "screenshot"},

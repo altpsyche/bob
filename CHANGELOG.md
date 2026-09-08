@@ -8,7 +8,61 @@ rebuilds only what changed, verifies, and rolls back on failure.
 
 ## [Unreleased]
 
+### Added
+- **A `writer` role for long-form prose**, served by DeepSeek-R1-Distill-Qwen-32B. Reachable as
+  `bob write [--pro]`, `bob chat --write`, and `/model writer` in the shell; `writer-pro` routes to
+  DeepSeek V4 Pro (or GLM-5.3 when the zhipu peer is on). It joins the `ondemand` swap group, so it
+  loads on demand and unloads like the other big models. The 8gb profile serves the role from
+  Qwen3.5-9B instead: a 32B does not fit an 8 GB card at any usable quant. It is a reasoning model, so
+  its thinking pass is routed to `reasoning_content`; a very small `--max` can be spent entirely on
+  that pass and return an empty answer.
+- **`ngl: "auto"` in a profile entry** drops `-ngl` from that model's command so llama.cpp fits the
+  GPU offload to whatever VRAM is actually free (`common_fit_params`). Any explicit `-ngl` aborts that
+  fit, so the shared `srv` macro cannot ride along and the model gets its own expansion. This is what
+  lets a DENSE model larger than the card run at all: `--n-cpu-moe` only helps a MoE, and a hand-tuned
+  layer count is wrong on every card but the one it was measured on. Used by `writer`.
+  [scripts/tools/generate.py](scripts/tools/generate.py)
+  [config/models.json](config/models.json), [config/defaults.json](config/defaults.json),
+  [scripts/bob/registry.py](scripts/bob/registry.py)
+- **`bob memory migrate --reembed`** rebuilds vectors left stale by an embed-model swap, and plain
+  `bob memory migrate` now reports how many stale rows it can see.
+  [scripts/bob_memory.py](scripts/bob_memory.py)
+
+### Changed
+- **Local models refreshed a generation.** `chat` and `agent` move to Qwen3.5-9B (retiring
+  Hermes-3-Llama-3.1-8B, whose Llama-3.1 base dated to Aug 2024; Qwen3.x emits the same
+  `<tool_call>` format the agent loop already parses, so the tool path is unchanged); `ponder` moves
+  to Qwen3.6-35B-A3B (same 3B active params as the Qwen3-30B-A3B it replaces); `vision` moves to the
+  first-party Qwen3-VL-8B GGUF; `embed` and `rerank` move to Qwen3-Embedding-0.6B and
+  Qwen3-Reranker-0.6B. `coder` stays on Qwen3-Coder-30B-A3B and `fim` on Qwen2.5-Coder, since neither has a
+  newer first-party replacement. Cloud peers move to `glm-5.3` and `kimi-k3`.
+  [config/models.json](config/models.json)
+- **Vendored submodules refreshed to their latest stable tags.** llama.cpp b9993 -> b10853, llama-swap
+  v239 -> v255, whisper.cpp 0ae02cdb (v1.9.1+75) -> v1.9.3, fabric v1.4.458 -> v1.4.478. whisper.cpp is
+  back on a release tag rather than parked ahead of one. Per-project details in
+  [docs/VENDOR-CHANGELOG.md](docs/VENDOR-CHANGELOG.md); pins in [versions.lock](versions.lock).
+- **One `bob update` is the whole move.** An endpoint that kept serving through an update was left running
+  the pre-update binaries and the generated config from before the pull (`config/llama-swap.yaml` is
+  rebuilt from `config/models.json` on a stack start), so a registry change like the one above needed a
+  second `bob restart` nobody knew to run. `bob update` now restarts a running endpoint at the end, before
+  the closing doctor; a stack that was already down stays down, and `--no-restart` opts out. The restart
+  covers only an endpoint the stack started in the background (it wrote a pidfile). A foreground `bob serve`
+  writes none, so it is reported and left serving rather than killed out from under its terminal, which is
+  also what an orphan from a crashed start now gets instead of a silent name-kill.
+  [scripts/tools/build.py](scripts/tools/build.py), [scripts/tools/stack.py](scripts/tools/stack.py)
+
 ### Fixed
+- **Memory vectors are now stamped with the embed model that produced them** (schema v4, backfilled).
+  Two embedding models of the same width are not comparable but do not fail either: bge-m3 and
+  Qwen3-Embedding-0.6B are both 1024-dim, so `cosine()` would zip a stale vector against a fresh query
+  and return a meaningless score, silently degrading recall after an embed-model change. A row whose
+  stamp does not match the active embed model is now treated as "no vector yet": it still reaches
+  keyword/FTS recall and is skipped by near-dedup, until `bob memory migrate --reembed` rebuilds it.
+  The semantic code index reuses this store, so it inherits the same protection. `bob doctor` (and so
+  the closing doctor of every `bob update`) reports any rows still on an older embed model and names
+  the command that fixes them, so an update that swaps the embed model cannot quietly leave recall
+  degraded to keyword-only.
+  [scripts/bob_memory.py](scripts/bob_memory.py), [scripts/tools/health.py](scripts/tools/health.py)
 - **`bob agent` no longer overflows the model's context on a long prompt.** A goal carrying a pasted
   reference document was sent whole: the history window kept the newest message whatever its size, and
   the tool schemas that ride on the request (OpenAI tool mode, and the grammar-constraint payload in
@@ -20,17 +74,6 @@ rebuilds only what changed, verifies, and rolls back on failure.
   silently. The `agent` role's context also goes 8192 -> 32768 on the 16gb profile (Hermes-3-Llama-3.1-8B
   handles far more; the KV cache at q8_0 costs about 2 GB).
   [scripts/bob_loop.py](scripts/bob_loop.py), [config/models.json](config/models.json)
-
-### Changed
-- **One `bob update` is the whole move.** An endpoint that kept serving through an update was left running
-  the pre-update binaries and the generated config from before the pull (`config/llama-swap.yaml` is
-  rebuilt from `config/models.json` on a stack start), so a registry change like the one above needed a
-  second `bob restart` nobody knew to run. `bob update` now restarts a running endpoint at the end, before
-  the closing doctor; a stack that was already down stays down, and `--no-restart` opts out. The restart
-  covers only an endpoint the stack started in the background (it wrote a pidfile). A foreground `bob serve`
-  writes none, so it is reported and left serving rather than killed out from under its terminal, which is
-  also what an orphan from a crashed start now gets instead of a silent name-kill.
-  [scripts/tools/build.py](scripts/tools/build.py), [scripts/tools/stack.py](scripts/tools/stack.py)
 
 ## [1.2.3] (2026-07-16)
 

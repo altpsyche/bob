@@ -19,7 +19,7 @@ SCRIPTS = REPO / "scripts"
 MUTATING_TOOLS = {"gen"}
 
 # Canonical role order: ponder,coder,chat,fim,embed first, then the rest sorted.
-_ROLE_ORDER = ["ponder", "coder", "chat", "fim", "embed"]
+_ROLE_ORDER = ["ponder", "coder", "chat", "writer", "fim", "embed"]
 
 
 def configure(config: dict) -> None:
@@ -135,6 +135,13 @@ def gen_llama_swap(profile: str = None) -> str:
         # Flash-attn is incompatible with mmproj; expand srv without it for that model.
         if m.get("mmproj") and fa != "":
             srv_ref = " ".join(p for p in [srv_bin, "--port ${PORT}", f"-ngl {ngl}", batch, ub, numa, par, thr] if p)
+        elif str(m.get("ngl", "")).lower() == "auto" and not is_cpu:
+            # ngl="auto": omit -ngl entirely so llama.cpp sizes the offload to whatever VRAM is actually
+            # free (common_fit_params). ANY explicit -ngl aborts that fit ("n_gpu_layers already set by
+            # user ... abort"), so the srv macro's -ngl cannot ride along and the model gets its own
+            # expansion. This is how a DENSE model larger than the card runs: --n-cpu-moe only helps a
+            # MoE, and a hand-tuned layer count is wrong on every card but the one it was measured on.
+            srv_ref = " ".join(p for p in [srv_bin, "--port ${PORT}", fa, reason, batch, ub, numa, par, thr] if p)
         else:
             srv_ref = "${srv}"
         parts = [srv_ref, f"-m ${{env.LLAMA_LOCAL_ROOT}}/models/{m['gguf']}"]
@@ -312,9 +319,9 @@ def gen_litellm(profile: str = None) -> str:
 # --- gen-continue ---------------------------------------------------------------------------------
 
 _ROLE_ASSIGN = {"coder": ["chat", "edit", "apply"], "chat": ["chat"], "ponder": ["chat", "edit"],
-                "vision": ["chat"], "fim": ["autocomplete"], "embed": ["embed"]}
+                "writer": ["chat"], "vision": ["chat"], "fim": ["autocomplete"], "embed": ["embed"]}
 _PRO_ASSIGN = {"chat": ["chat", "edit"], "coder": ["chat", "edit", "apply"], "ponder": ["chat"],
-               "vision": ["chat"]}
+               "writer": ["chat"], "vision": ["chat"]}
 _NAME_FOR = {"fim": "autocomplete", "embed": "embeddings"}
 
 

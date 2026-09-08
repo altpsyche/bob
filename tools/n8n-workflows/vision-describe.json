@@ -60,7 +60,7 @@
         "width": 720,
         "height": 160,
         "color": 3,
-        "content": "## Vision: Describe Image\n\nPOST a base64-encoded image + optional prompt. Routed to Qwen2-VL-7B via LiteLLM.\n\n```powershell\n$img = [Convert]::ToBase64String([IO.File]::ReadAllBytes('screenshot.png'))\nInvoke-RestMethod http://localhost:5678/webhook/vision-describe `\n  -Method POST -ContentType 'application/json' `\n  -Body (ConvertTo-Json @{image=$img; prompt='Describe this image.'})\n```\n\nReturns: `{ \"description\": \"...\" }`"
+        "content": "## Vision: Describe Image\n\nPOST a base64-encoded image + optional prompt. Routed to Qwen3-VL-8B via LiteLLM.\n\n```powershell\n$img = [Convert]::ToBase64String([IO.File]::ReadAllBytes('screenshot.png'))\nInvoke-RestMethod http://localhost:5678/webhook/vision-describe `\n  -Method POST -ContentType 'application/json' `\n  -Body (ConvertTo-Json @{image=$img; prompt='Describe this image.'})\n```\n\nReturns: `{ \"description\": \"...\" }`"
       }
     }
   ],

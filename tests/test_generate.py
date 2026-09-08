@@ -62,7 +62,7 @@ class TestLlamaSwap(unittest.TestCase):
         self.assertIn(f'srv: "${{env.LLAMA_LOCAL_ROOT}}/bin/{server} --port ${{PORT}} -ngl 99 --flash-attn on '
                       f'--reasoning-format deepseek"', out)
         self.assertIn('kv: "--cache-type-k q8_0 --cache-type-v q8_0"', out)
-        self.assertIn("members: [ponder, coder, chat, vision, agent]", out)
+        self.assertIn("members: [ponder, coder, chat, writer, vision, agent]", out)
 
     def test_setparams_and_ttl(self):
         out = self._gen("16gb")
@@ -93,26 +93,49 @@ class TestLlamaSwap(unittest.TestCase):
 
     def test_moe_offload_emitted_for_overflow_model(self):
         out = self._gen("16gb")
-        ponder = next(ln for ln in out.splitlines() if "qwen3-30b-a3b" in ln)
-        self.assertIn("--n-cpu-moe 24", ponder)   # 30B MoE spills experts to RAM so it fits 16GB
-        chat = next(ln for ln in out.splitlines() if "qwen3-14b" in ln)
+        ponder = next(ln for ln in out.splitlines() if "qwen3.6-35b-a3b" in ln)
+        self.assertIn("--n-cpu-moe 32", ponder)   # 35B MoE spills experts to RAM so it fits 16GB
+        chat = next(ln for ln in out.splitlines() if "qwen3.5-9b" in ln)
         self.assertNotIn("--n-cpu-moe", chat)     # dense model that fits: no offload
 
     def test_moe_offload_per_profile(self):
-        # The 30B-A3B ponder overflows the 16gb and 24gb cards (b9993 no longer auto-spills at -ngl 99),
-        # so each carries its own tuned offload; the 32gb Q6_K fits with headroom and gets none.
+        # The 35B-A3B ponder overflows the 16gb and 24gb cards (llama.cpp no longer auto-spills at
+        # -ngl 99), so each carries its own tuned offload; the 32gb Q5_K_M fits with headroom and gets none.
         out24 = self._gen("24gb")
-        self.assertIn("--n-cpu-moe 12", next(ln for ln in out24.splitlines() if "qwen3-30b-a3b" in ln))
+        self.assertIn("--n-cpu-moe 12", next(ln for ln in out24.splitlines() if "qwen3.6-35b-a3b" in ln))
         out32 = self._gen("32gb")
-        self.assertNotIn("--n-cpu-moe", next(ln for ln in out32.splitlines() if "qwen3-30b-a3b" in ln))
+        self.assertNotIn("--n-cpu-moe", next(ln for ln in out32.splitlines() if "qwen3.6-35b-a3b" in ln))
+
+    def test_auto_ngl_omits_the_flag_so_llama_cpp_fits_it(self):
+        # A DENSE model bigger than the card can't use --n-cpu-moe, and any explicit -ngl aborts
+        # llama.cpp's fit-to-free-VRAM. ngl="auto" must therefore emit NO -ngl at all, while keeping
+        # flash-attn and the reasoning format the macro would have supplied.
+        out = self._gen("16gb")
+        writer = next(ln for ln in out.splitlines() if "deepseek-r1-distill" in ln)
+        self.assertNotIn("-ngl", writer)
+        self.assertNotIn("${srv}", writer)          # expanded inline, not via the macro
+        self.assertIn("--flash-attn on", writer)
+        self.assertIn("--reasoning-format deepseek", writer)
+        # every other model still rides the macro (which carries -ngl 99)
+        self.assertIn("-ngl 99", out.split("models:")[0])
+        chat = next(ln for ln in out.splitlines() if "qwen3.5-9b-q4_k_m" in ln)
+        self.assertIn("${srv}", chat)
+
+    def test_auto_ngl_ignored_on_the_cpu_tier(self):
+        # The CPU tier pins -ngl 0; "auto" there would hand llama.cpp a GPU it doesn't have.
+        out = self._gen("cpu")
+        self.assertIn("-ngl 0", out)
+        for ln in out.splitlines():
+            if ".gguf" in ln:
+                self.assertIn("${srv}", ln)
 
     def test_vision_expands_srv_without_flashattn(self):
         # mmproj is incompatible with flash-attn -> that model's cmd uses an inline srv sans --flash-attn
         out = self._gen("16gb")
-        vision_line = next(ln for ln in out.splitlines() if "qwen2-vl" in ln)
+        vision_line = next(ln for ln in out.splitlines() if "qwen3-vl" in ln)
         self.assertIn("-ngl 99 -m", vision_line)
         self.assertNotIn("--flash-attn", vision_line)
-        self.assertIn("--mmproj ${env.LLAMA_LOCAL_ROOT}/models/mmproj-Qwen2-VL-7B-Instruct-f16.gguf", vision_line)
+        self.assertIn("--mmproj ${env.LLAMA_LOCAL_ROOT}/models/mmproj-Qwen3VL-8B-Instruct-F16.gguf", vision_line)
 
     def test_cpu_profile_no_gpu_no_kv(self):
         out = self._gen("cpu")
@@ -152,10 +175,10 @@ class TestLitellm(unittest.TestCase):
         mcfg["peers"]["kimi"]["enabled"] = True
         with m.patch.object(bob_models, "load_models_config", return_value=mcfg):
             out = self._gen()
-        self.assertIn("      model: openai/glm-5.2", out)
+        self.assertIn("      model: openai/glm-5.3", out)
         self.assertIn("      api_base: https://api.z.ai/api/paas/v4", out)
         self.assertIn("      api_key: os.environ/ZHIPU_API_KEY", out)
-        self.assertIn("      model: openai/kimi-k2.7-code", out)
+        self.assertIn("      model: openai/kimi-k3", out)
         self.assertIn("      api_base: https://api.moonshot.ai/v1", out)
         self.assertIn("      api_key: os.environ/MOONSHOT_API_KEY", out)
 

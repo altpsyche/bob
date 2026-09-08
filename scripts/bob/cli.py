@@ -282,7 +282,7 @@ _CHAT_KNOWN_ROLES = {"chat", "coder", "ponder", "fim", "embed",
 
 def _chat(task: str, rest: list) -> int:
     """Unified `bob chat|code|think` (one loop, no tools). One-shot when a prompt is given, else
-    the interactive shell in chat mode. Supports --pro/--think/--code role routing
+    the interactive shell in chat mode. Supports --pro/--think/--code/--write role routing
     (via get_role), --max N, --raw, --sys <text>, and legacy `bob chat <role> <prompt>`."""
     from bob_core import get_role, load_config
 
@@ -297,6 +297,8 @@ def _chat(task: str, rest: list) -> int:
         task = "chat"
     if "--code" in rest:
         task = "code"
+    if "--write" in rest:
+        task = "writer"
 
     max_tokens = None
     sys_prompt = None
@@ -304,7 +306,7 @@ def _chat(task: str, rest: list) -> int:
     i = 0
     while i < len(rest):
         tok = rest[i]
-        if tok in ("--pro", "--think", "--code", "--raw"):
+        if tok in ("--pro", "--think", "--code", "--write", "--raw"):
             i += 1
         elif tok == "--max" and i + 1 < len(rest):
             try:
@@ -349,6 +351,10 @@ def _handle_chat(rest: list) -> int:
 
 def _handle_code(rest: list) -> int:
     return _chat("code", rest)
+
+
+def _handle_write(rest: list) -> int:
+    return _chat("writer", rest)
 
 
 def _handle_think(rest: list) -> int:
@@ -1448,6 +1454,7 @@ _HANDLERS = {
     "shell": _handle_shell,
     "chat": _handle_chat,     # unified text conversation onto the loop
     "code": _handle_code,
+    "write": _handle_write,
     "think": _handle_think,
     "describe": _handle_describe,     # vision doors on the loop
     "screenshot": _handle_screenshot,

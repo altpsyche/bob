@@ -16,7 +16,7 @@ bob diagnose    # system + model health check
 | Chat and RAG UI | Open WebUI (Python 3.12, port 3000) | AnythingLLM desktop installer | LM Studio |
 | IDE autocomplete | Continue.dev | twinny | LM Studio + Continue |
 | Plan and edit separately | aider architect mode | Cline Plan/Act | Cline single-model |
-| Embeddings | bge-m3 | nomic-embed-text | Open WebUI's built-in nomic |
+| Embeddings | Qwen3-Embedding-0.6B | nomic-embed-text | Open WebUI's built-in nomic |
 
 ## Engine: prebuilt by default, source on request
 

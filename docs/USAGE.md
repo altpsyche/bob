@@ -159,13 +159,21 @@ bob up --no-open
 
 | Name | Role | Backing model |
 |---|---|---|
-| `ponder` | heavy reasoning and architecture | Qwen3-30B-A3B Q4 |
+| `ponder` | heavy reasoning and architecture | Qwen3.6-35B-A3B Q4_K_M |
 | `coder` | coding chat and agentic edits | Qwen3-Coder-30B-A3B Q4_K_M (MoE) |
-| `chat` | general conversation | Qwen3-14B Q4_K_M |
+| `chat` | general conversation | Qwen3.5-9B Q4_K_M |
+| `writer` | long-form prose and drafting | DeepSeek-R1-Distill-Qwen-32B Q5_K_M |
+
+`writer` is a *reasoning* model: it thinks before it answers, and that reasoning is routed to
+`reasoning_content` rather than the reply. Give it room. A very small `--max` (say `--max 70`) can
+be consumed entirely by the thinking pass and return an empty answer; the default (uncapped) path
+is fine. It is also the one dense model larger than most cards, so its profile entry sets
+`ngl: "auto"` and lets llama.cpp size the GPU offload to whatever VRAM is free instead of a
+hand-tuned layer count.
 | `fim` | autocomplete (pinned) | Qwen-Coder-3B Q8_0 |
-| `embed` | RAG embeddings (pinned) | bge-m3 Q8 |
-| `vision` | image description and visual Q&A | Qwen2-VL-7B Q4_K_M + mmproj |
-| `agent` | local tool use and autonomous tasks | Hermes-3-Llama-3.1-8B Q5_K_M |
+| `embed` | RAG embeddings (pinned) | Qwen3-Embedding-0.6B Q8 |
+| `vision` | image description and visual Q&A | Qwen3-VL-8B Q4_K_M + mmproj |
+| `agent` | local tool use and autonomous tasks | Qwen3.5-9B Q5_K_M |
 
 Every model's GGUF file, HuggingFace source, context size, and launch flags are defined once in [config/models.json](../config/models.json). The downloader and the runtime config both read from it. Clients reference the role names above (`coder`, `ponder`, etc.), so swapping the backing model for a role never requires touching any client configuration.
 
@@ -230,7 +238,7 @@ The LiteLLM proxy port defaults to `8081` (`ports.litellmPort` in `config/defaul
 
 ### Embeddings API
 
-The `embed` model (bge-m3) exposes an embeddings endpoint:
+The `embed` model (Qwen3-Embedding-0.6B) exposes an embeddings endpoint:
 
 Linux:
 ```bash
@@ -347,7 +355,7 @@ Voice adds two-way audio to the terminal using faster-whisper (STT) and piper (T
 ```
 bob setup-voice
 ```
-Downloads the faster-whisper STT model, the piper voice, and the Qwen2-VL mmproj file, and installs the STT Python deps. `bob up` auto-starts the STT server on port 8082. On an NVIDIA GPU, setup also installs the CUDA-12 runtime libs (cuBLAS/cuDNN) so STT runs on the GPU; otherwise, or if those libs are missing at runtime, the server falls back to CPU int8 automatically (fast enough for single-utterance voice). (Only when `voice.sttEngine = 'whisper.cpp'` does setup build `whisper-server` and fetch the ggml model instead.)
+Downloads the faster-whisper STT model, the piper voice, and the Qwen3-VL mmproj file, and installs the STT Python deps. `bob up` auto-starts the STT server on port 8082. On an NVIDIA GPU, setup also installs the CUDA-12 runtime libs (cuBLAS/cuDNN) so STT runs on the GPU; otherwise, or if those libs are missing at runtime, the server falls back to CPU int8 automatically (fast enough for single-utterance voice). (Only when `voice.sttEngine = 'whisper.cpp'` does setup build `whisper-server` and fetch the ggml model instead.)
 
 **Commands:**
 ```
@@ -405,7 +413,7 @@ The voice loop sanitises text before sending it to piper: it strips markdown sym
 
 ## Vision
 
-Vision uses Qwen2-VL-7B (a ~5 GB GGUF + a ~1.5 GB mmproj) to describe images and answer visual questions. The model loads on demand and unloads after 30 s idle to free VRAM. Vision is **enabled by default** (`runtime.vision.enabled = true`).
+Vision uses Qwen3-VL-8B (a ~5 GB GGUF + a ~1.2 GB mmproj) to describe images and answer visual questions. The model loads on demand and unloads after 30 s idle to free VRAM. Vision is **enabled by default** (`runtime.vision.enabled = true`).
 
 **Setup:** `bob setup-voice` downloads the mmproj; the GGUF itself downloads via `bob fetch` (it's part of the 16gb profile).
 
@@ -419,7 +427,7 @@ bob screenshot "What application is open and what does it show?"
 bob screenshot --pro "Explain the code on screen"                       # cloud vision
 ```
 
-`--pro` routes to DeepSeek V4 (deepseek-v4-flash), which supports vision input, using the existing `DEEPSEEK_API_KEY`. Useful when local Qwen2-VL output is insufficient or the image needs stronger OCR/reasoning.
+`--pro` routes to DeepSeek V4 (deepseek-v4-flash), which supports vision input, using the existing `DEEPSEEK_API_KEY`. Useful when local Qwen3-VL output is insufficient or the image needs stronger OCR/reasoning.
 
 `bob describe` resizes the image to max 1024 px on the longest edge before encoding. `bob screenshot` captures the primary display, saves a temp PNG, describes it, then deletes the PNG.
 
@@ -641,14 +649,15 @@ Install the **Continue** extension from the VS Code Marketplace, then start the 
 | Continue role | Model | Purpose |
 |---|---|---|
 | Chat, edit, apply | `coder` (Qwen3-Coder-30B-A3B) | default coding chat and inline edits |
-| Chat, edit | `ponder` (Qwen3-30B-A3B) | architecture discussion and heavy reasoning |
-| Chat | `chat` (Qwen3-14B) | general conversation; thinking off by default |
+| Chat, edit | `ponder` (Qwen3.6-35B-A3B) | architecture discussion and heavy reasoning |
+| Chat | `chat` (Qwen3.5-9B) | general conversation; thinking off by default |
+| Chat | `writer` (DeepSeek-R1-Distill-Qwen-32B) | long-form prose and drafting |
 | Chat, edit | `chat-pro` (DeepSeek V4, API) | general conversation via API |
 | Chat, edit, apply | `coder-pro` (DeepSeek V4, API) | coding via API |
 | Chat | `ponder-pro` (DeepSeek R1, API) | heavy reasoning via API |
-| Chat | `vision` (Qwen2-VL-7B, local) | image description and visual Q&A |
+| Chat | `vision` (Qwen3-VL-8B, local) | image description and visual Q&A |
 | Autocomplete | `fim` (Qwen-Coder-3B, pinned) | as-you-type ghost text completions |
-| Embed | `embed` (bge-m3, pinned) | `@codebase` and `@docs` RAG indexing |
+| Embed | `embed` (Qwen3-Embedding-0.6B, pinned) | `@codebase` and `@docs` RAG indexing |
 
 System prompts are set per-model and synced to clients by `bob gen`. `Ctrl+L` opens a new chat with any selected code attached; `Ctrl+I` opens an inline edit and shows a diff to accept or reject. Autocomplete fires as ghost text; `Tab` accepts. Use the model dropdown to switch roles.
 

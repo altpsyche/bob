@@ -77,7 +77,7 @@ a reranker model that reads each (query, candidate) pair jointly, and that score
 replaces the semantic term before the recency/type/salience blend. This sharpens relevance and, under
 a `recallThreshold`, filters out the embedding-similarity noise floor that hybrid alone would inject.
 
-The reranker (`bge-reranker-v2-m3`, ~0.6 GB) **ships with every GPU profile** but is **loaded only
+The reranker (`Qwen3-Reranker-0.6B`, ~0.6 GB) **ships with every GPU profile** but is **loaded only
 on demand**: it is not pinned and not in the swap group, so it costs no VRAM until a recall actually
 reranks, and it unloads after an idle window (`ttl`). Turn it on with one flag:
 
@@ -336,3 +336,23 @@ full-transcript persistence and the `conversation_search` tool (see [Conversatio
 See also: [USAGE.md](USAGE.md) (full command reference), [TUNING.md](TUNING.md) (all config),
 [AGENT-SERVER.md](AGENT-SERVER.md) (owner-scoped sessions over HTTP), [SECURITY.md](SECURITY.md)
 (tool safety).
+
+## Changing the embedding model
+
+Each row records the embed model that produced its vector (`embed_model`, schema v4). Vectors from two
+different models are not comparable, and two models of the same width do not fail loudly. bge-m3 and
+Qwen3-Embedding-0.6B are both 1024-dimensional, so a stale vector would otherwise be scored against a
+fresh query and return a meaningless number.
+
+A row whose stamp does not match the active `embed` model is treated as "no vector yet": it still
+matches by keyword/FTS and is skipped by near-dedup, but it stays out of semantic recall. `bob doctor`
+reports the count and names the fix, and because `bob update` ends with a doctor run, an update that
+changes the embed model tells you on the spot. Rebuild the stale vectors with the embed server up:
+
+```bash
+bob memory migrate            # reports how many rows are stale
+bob memory migrate --reembed  # rebuilds them (backs the DB up first)
+```
+
+The semantic code index goes through the same store, so re-run `bob code index` after an embed-model
+change (or point migrate at it: `bob memory migrate --reembed --db data/code.db`).
