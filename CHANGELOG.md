@@ -8,6 +8,30 @@ rebuilds only what changed, verifies, and rolls back on failure.
 
 ## [Unreleased]
 
+### Fixed
+- **`bob agent` no longer overflows the model's context on a long prompt.** A goal carrying a pasted
+  reference document was sent whole: the history window kept the newest message whatever its size, and
+  the tool schemas that ride on the request (OpenAI tool mode, and the grammar-constraint payload in
+  hermes mode) were never charged against `agent.maxContextTokens`, so a run could assemble a prompt
+  well past the backend's window and fail the step with a 400. The budget now reserves the request-borne
+  schemas plus the generation (`agent.outputReserveTokens`, default 1024, or `--max` when set), an
+  oversized lone message is clamped in the middle with head and tail kept rather than sent whole, and a
+  system prompt that has eaten the whole budget says so in `logs/bob-agent.log` instead of overflowing
+  silently. The `agent` role's context also goes 8192 -> 32768 on the 16gb profile (Hermes-3-Llama-3.1-8B
+  handles far more; the KV cache at q8_0 costs about 2 GB).
+  [scripts/bob_loop.py](scripts/bob_loop.py), [config/models.json](config/models.json)
+
+### Changed
+- **One `bob update` is the whole move.** An endpoint that kept serving through an update was left running
+  the pre-update binaries and the generated config from before the pull (`config/llama-swap.yaml` is
+  rebuilt from `config/models.json` on a stack start), so a registry change like the one above needed a
+  second `bob restart` nobody knew to run. `bob update` now restarts a running endpoint at the end, before
+  the closing doctor; a stack that was already down stays down, and `--no-restart` opts out. The restart
+  covers only an endpoint the stack started in the background (it wrote a pidfile). A foreground `bob serve`
+  writes none, so it is reported and left serving rather than killed out from under its terminal, which is
+  also what an orphan from a crashed start now gets instead of a silent name-kill.
+  [scripts/tools/build.py](scripts/tools/build.py), [scripts/tools/stack.py](scripts/tools/stack.py)
+
 ## [1.2.3] (2026-07-16)
 
 ### Changed

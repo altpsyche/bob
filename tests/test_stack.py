@@ -38,6 +38,26 @@ class TestStackToolSurface(unittest.TestCase):
         self.assertIn("stack_stop", stack.MUTATING_TOOLS)
 
 
+class TestEndpointOwnership(unittest.TestCase):
+    """endpoint_tracked_pid: does this stack own the running endpoint? (`bob update` restarts only
+    what it owns; a foreground `bob serve` writes no pidfile.)"""
+
+    def test_live_pidfile_is_owned(self):
+        with mock.patch.object(stack, "_read_pid", return_value=100), \
+             mock.patch.object(osenv, "pid_alive", return_value=True):
+            self.assertEqual(stack.endpoint_tracked_pid(), 100)
+
+    def test_no_pidfile_is_unowned(self):
+        # A foreground `bob serve` — running, but nothing tracks it.
+        with mock.patch.object(stack, "_read_pid", return_value=None):
+            self.assertIsNone(stack.endpoint_tracked_pid())
+
+    def test_stale_pidfile_is_unowned(self):
+        with mock.patch.object(stack, "_read_pid", return_value=100), \
+             mock.patch.object(osenv, "pid_alive", return_value=False):
+            self.assertIsNone(stack.endpoint_tracked_pid())
+
+
 class TestPs(unittest.TestCase):
     def test_table_shows_running_dead_and_absent(self):
         pids = {"llama-swap": 100, "litellm": 200}  # others absent

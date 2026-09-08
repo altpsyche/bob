@@ -87,6 +87,7 @@
       "maxParallelTools": 1,
       "maxHistoryMsgs": 40,
       "maxContextTokens": 6000,
+      "outputReserveTokens": 1024,
       "maxToolResultTokens": 1000,
       "compaction": "truncate",
       "compactKeepLastTurns": 6,

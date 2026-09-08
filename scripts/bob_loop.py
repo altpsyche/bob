@@ -52,6 +52,59 @@ def _message_tokens(m: dict) -> int:
     return total
 
 
+# Floor the history budget never drops below, even when the system prompt alone eats it: sending zero
+# conversational turns leaves the model nothing to answer. Scaled down for small budgets so a tight
+# explicit maxContextTokens is still honoured.
+_MIN_TAIL_TOKENS = 512
+_CLAMP_MARKER = "\n\n[...middle truncated to fit the context budget...]\n\n"
+
+
+def _tools_payload_tokens(tools) -> int:
+    """Estimated cost of the `tools=` request payload. In OpenAI tool mode (and on a grammar-
+    constrained hermes call) the schemas ride on the REQUEST, not inside a message, so the history
+    budget has to reserve room for them or the assembled prompt overflows the backend's context
+    window. Hermes mode bakes its addendum into the system message, where _message_tokens counts it."""
+    if not tools:
+        return 0
+    return _estimate_tokens(json.dumps(tools)) + 4
+
+
+def _clamp_message(m: dict, budget: int) -> dict:
+    """A copy of `m` whose text content fits `budget` tokens, with the middle dropped and a marker
+    left in its place. Used when the newest message alone exceeds the whole history budget (a pasted
+    reference document, say): sending it whole is what overflows the backend, and dropping it leaves
+    the model nothing to work from. Head and tail both survive, since the instruction usually opens
+    the message and the recent ask usually closes it. Non-string content (image blocks) is returned
+    unchanged, because cutting it would corrupt the block structure."""
+    content = m.get("content")
+    if not isinstance(content, str) or budget <= 0:
+        return m
+    overhead = _message_tokens({**m, "content": ""}) + _estimate_tokens(_CLAMP_MARKER)
+    room = budget - overhead
+    if room <= 0:
+        return m
+    chars = room * 4
+    if len(content) <= chars:
+        return m
+    head = chars // 2
+    return {**m, "content": content[:head] + _CLAMP_MARKER + content[-(chars - head):]}
+
+
+def _tail_budget(max_tokens: int, head_tokens: int, reserve: int = 0) -> int:
+    """The token budget left for the sliding tail after the always-kept head (system messages, plus
+    any pinned goal) and `reserve` (a compaction note). Never returns less than the floor, and says
+    so in the log when the head has eaten the budget, because that is a misconfiguration the artist
+    of the config needs to see rather than an overflow at the backend."""
+    budget = max_tokens - head_tokens - reserve
+    floor = min(_MIN_TAIL_TOKENS, max(1, max_tokens // 4))
+    if budget < floor:
+        logging.getLogger("bob.agent").warning(
+            "context budget exhausted before history: maxContextTokens=%d head=%d reserve=%d; "
+            "flooring the tail at %d tokens", max_tokens, head_tokens, reserve, floor)
+        budget = floor
+    return budget
+
+
 def _image_content_block(src: str) -> dict:
     """Normalize one image source into an OpenAI `image_url` content block. Accepts a
     `data:` / `http(s)://` URL (passed through unchanged) or a local file path (read + base64 → a
@@ -817,13 +870,15 @@ def _truncate_stable_prefix(messages: list, max_msgs: int, max_tokens: int, *,
 
     # 2. Token-budget window on the tail; reserve room for a (possibly new) summary block.
     if max_tokens:
-        budget = max_tokens - sum(_message_tokens(m) for m in head)
-        if summarize and prior_summary is None:
-            budget = max(0, budget - summary_max_tokens)
+        budget = _tail_budget(max_tokens, sum(_message_tokens(m) for m in head),
+                              summary_max_tokens if (summarize and prior_summary is None) else 0)
         kept, running = [], 0
         for m in reversed(tail):
             t = _message_tokens(m)
-            if kept and running + t > budget:
+            if running + t > budget:
+                if kept:
+                    break
+                kept.append(_clamp_message(m, budget))   # newest alone overflows -> clamp, don't send whole
                 break
             running += t
             kept.append(m)
@@ -948,14 +1003,16 @@ def truncate_history(messages: list, max_msgs: int, max_tokens: int = 0, *,
     # 2. Token-budget window — keep as many recent messages as fit under the budget. In summarize
     # mode, reserve room for the compaction note so summary + kept stays within max_tokens.
     if max_tokens:
-        budget = max_tokens - sum(_message_tokens(m) for m in system)
-        if summarize:
-            budget = max(0, budget - summary_max_tokens)
+        budget = _tail_budget(max_tokens, sum(_message_tokens(m) for m in system),
+                              summary_max_tokens if summarize else 0)
         kept: list = []
         running = 0
         for m in reversed(rest):
             t = _message_tokens(m)
-            if kept and running + t > budget:
+            if running + t > budget:
+                if kept:
+                    break
+                kept.append(_clamp_message(m, budget))   # newest alone overflows -> clamp, don't send whole
                 break
             running += t
             kept.append(m)
@@ -1354,6 +1411,9 @@ def run_agent_events(
     # Token-aware context: cap history to a token budget (0 = count-only) and shrink
     # the injected tool schemas once the tool count crosses compactSchemasAfter.
     max_context_tokens = int(agent_cfg.get("maxContextTokens", 6000))
+    # llama.cpp charges prompt + n_predict against the same ctx, so the generation the step is about
+    # to ask for comes out of the history budget too. --max wins when the caller set it.
+    output_reserve = int(agent_cfg.get("outputReserveTokens", 1024))
     compact_after = int(agent_cfg.get("compactSchemasAfter", 12))
     # Max concurrent side-effect-free tools per step. Default 1 = sequential.
     max_parallel_tools = int(agent_cfg.get("maxParallelTools", 1))
@@ -1602,6 +1662,16 @@ def run_agent_events(
     if constrained_tool_calls and tool_schemas:
         constrain_tools_payload = openai_tools or _openai_tools_payload(tool_schemas, compact_after)
     constrain_active = constrain_tools_payload is not None
+    # Schemas that ride on the REQUEST rather than inside a message: openai mode's `tools=`, or the
+    # grammar-constraint payload on a hermes call. They share the backend's context window with the
+    # history, so they come out of the budget before the window trims. Constant across steps.
+    request_tools_tokens = _tools_payload_tokens(openai_tools or constrain_tools_payload)
+    send_budget = (max(0, max_context_tokens - request_tools_tokens - (max_tokens or output_reserve))
+                   if max_context_tokens else 0)
+    if max_context_tokens:
+        log.info(f"[{rid}] context budget {send_budget} "
+                 f"(maxContextTokens={max_context_tokens} schemas={request_tools_tokens} "
+                 f"output={max_tokens or output_reserve})")
 
     cancel = cancel or CancelToken()
     # Resolve the allow|ask|deny policy once per run from config (empty config -> everything
@@ -1709,7 +1779,7 @@ def run_agent_events(
             # freed budget lets more conversational turns survive. Only fires past the token trigger.
             if clear_tool_results and sum(_message_tokens(m) for m in messages) > clear_after_tokens:
                 messages = _clear_old_tool_results(messages, registry, compact_keep_last, hermes_mode)
-            messages = truncate_history(messages, max_hist, max_context_tokens,
+            messages = truncate_history(messages, max_hist, send_budget,
                                         compaction=compaction_mode, keep_last=compact_keep_last,
                                         summary_max_tokens=compact_summary_max,
                                         stable_prefix=stable_prefix, pin_goal=goal_msg)

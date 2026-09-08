@@ -2,6 +2,7 @@
 cmake/nvcc/go stay subprocess and are mocked here (a fake _run writes the staged binary), so the arg
 construction, the atomic bin/ swap, and the guards are all exercised without a real compiler. Windows
 branches are `# pragma: no cover`. build is CLI-only (long) — not an agent tool, not on --run."""
+import io
 import sys
 import tempfile
 import unittest
@@ -517,18 +518,69 @@ class TestUpdateChannel(unittest.TestCase):
             self.assertEqual(build_mod._stable_target_tag(), "v2.0.0")
 
 
+class TestRestartAfterUpdate(unittest.TestCase):
+    """The endpoint restart that makes one `bob update` the whole move (build.py)."""
+
+    def _stack(self, up, tracked_pid=4242):
+        fake = mock.Mock()
+        fake.service_snapshot.return_value = [{"core": True, "up": up},
+                                              {"core": False, "up": False}]
+        fake.stack_restart.return_value = "Restarting endpoint..."
+        fake.endpoint_tracked_pid.return_value = tracked_pid
+        return fake
+
+    def test_restarts_a_running_endpoint(self):
+        fake = self._stack(up=True)
+        with mock.patch.dict(sys.modules, {"stack": fake}):
+            build_mod._restart_running_endpoint()
+        fake.stack_restart.assert_called_once()
+
+    def test_leaves_a_stopped_stack_down(self):
+        fake = self._stack(up=False)
+        with mock.patch.dict(sys.modules, {"stack": fake}):
+            build_mod._restart_running_endpoint()
+        fake.stack_restart.assert_not_called()
+
+    def test_untracked_endpoint_is_reported_not_killed(self):
+        # A foreground `bob serve` (or an orphan) writes no pidfile. The update must not kill a process
+        # it does not own; it says so and leaves the endpoint serving.
+        fake = self._stack(up=True, tracked_pid=None)
+        with mock.patch.dict(sys.modules, {"stack": fake}), \
+             mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            build_mod._restart_running_endpoint()
+        fake.stack_restart.assert_not_called()
+        self.assertIn("untracked", err.getvalue())
+
+    def test_restart_failure_is_advisory(self):
+        fake = self._stack(up=True)
+        fake.stack_restart.side_effect = RuntimeError("port busy")
+        with mock.patch.dict(sys.modules, {"stack": fake}):
+            build_mod._restart_running_endpoint()   # must not raise — the update is already verified
+
+
 class TestCliArgParsing(unittest.TestCase):
-    def test_tag_flag_parsed(self):
+    def _update(self, argv):
         seen = {}
         fake = mock.Mock()
         fake.update_stack = mock.Mock(
-            side_effect=lambda tag=None, from_source=False, channel=None: seen.update(
-                tag=tag, from_source=from_source, channel=channel) or 0)
+            side_effect=lambda tag=None, from_source=False, channel=None, restart=True: seen.update(
+                tag=tag, from_source=from_source, channel=channel, restart=restart) or 0)
         with mock.patch.object(cli, "_build_mod", return_value=fake):
-            cli._handle_update(["--tag", "v1.2.3", "--from-source", "--channel", "stable"])
+            cli._handle_update(argv)
+        return seen
+
+    def test_tag_flag_parsed(self):
+        seen = self._update(["--tag", "v1.2.3", "--from-source", "--channel", "stable"])
         self.assertEqual(seen["tag"], "v1.2.3")
         self.assertTrue(seen["from_source"])
         self.assertEqual(seen["channel"], "stable")
+
+    def test_restart_defaults_on(self):
+        # `bob update` alone finishes the move: a running endpoint is restarted onto the new build.
+        self.assertTrue(self._update([])["restart"])
+
+    def test_no_restart_flag_opts_out(self):
+        self.assertFalse(self._update(["--no-restart"])["restart"])
 
 
 if __name__ == "__main__":

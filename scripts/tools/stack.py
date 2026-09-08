@@ -124,6 +124,19 @@ def _read_pid(svc: str):
         return None
 
 
+def endpoint_tracked_pid():
+    """The live pid of a llama-swap THIS stack started in the background, or None.
+
+    A foreground `bob serve` runs llama-swap as a bare child of its terminal and writes no pidfile
+    (serve_foreground), so an endpoint answering on the port with nothing tracked here is one the stack
+    does not own: either that foreground serve or an orphan from a crashed start. `bob update` uses this
+    to decide between restarting the endpoint and reporting it, rather than name-killing a process out
+    from under somebody's terminal (stack_stop's name-kill reaches it either way)."""
+    osenv = _osenv()
+    pid = _read_pid("llama-swap")
+    return pid if pid is not None and osenv.pid_alive(pid) else None
+
+
 def _poll(check, timeout: float, interval: float = 0.3) -> bool:
     """Poll `check()` until truthy or `timeout` seconds elapse. time.monotonic is fine here (not a
     workflow script)."""

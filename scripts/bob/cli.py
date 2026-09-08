@@ -830,8 +830,10 @@ def _handle_fabric_setup(rest: list) -> int:
 
 
 def _handle_update(rest: list) -> int:
-    """bob update [--tag <ref>] [--channel stable|latest] [--from-source] — release-aware update. A prebuilt
-    engine makes the rebuild a fast driver-only binary swap; --from-source forces a source build."""
+    """bob update [--tag <ref>] [--channel stable|latest] [--from-source] [--no-restart] — release-aware
+    update. A prebuilt engine makes the rebuild a fast driver-only binary swap; --from-source forces a source
+    build. A running endpoint is restarted at the end onto the new build and the regenerated config, so one
+    update is the whole move; --no-restart leaves it serving the pre-update binaries."""
     rest = list(rest)
 
     def _val(flag):
@@ -841,7 +843,8 @@ def _handle_update(rest: list) -> int:
     channel = _val("--channel")
     from_source = "--from-source" in rest
     try:
-        return _build_mod().update_stack(tag=tag, from_source=from_source, channel=channel)
+        return _build_mod().update_stack(tag=tag, from_source=from_source, channel=channel,
+                                         restart="--no-restart" not in rest)
     except RuntimeError as e:
         print(f"update failed: {e}", file=sys.stderr)
         return 1
