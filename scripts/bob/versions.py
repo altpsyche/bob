@@ -278,12 +278,20 @@ def cut_changelog(version: str, date: Optional[str] = None, path: Optional[Path]
                   dry_run: bool = False) -> dict:
     """Move the `## [Unreleased]` body into a new `## [version] (date)` section, leaving a fresh empty
     Unreleased. Returns {"was_empty": bool, "text": str}. was_empty flags an Unreleased section with no
-    content (the caller warns; a real release should have notes). Line-based so it never mangles the body."""
+    content (the caller warns; a real release should have notes). Line-based so it never mangles the body.
+
+    IDEMPOTENT: a changelog that already carries a `## [version]` section is returned untouched. The
+    documented flow is cut -> review -> commit -> `bob release <v> --tag`, and that second call re-enters
+    here; without this guard it cut a SECOND, empty `## [version]` heading above the real one.
+    """
     v = parse_semver(version)
     date = date or datetime.date.today().isoformat()
     path = path or CHANGELOG_FILE
     original = path.read_text(encoding="utf-8")
     lines = original.splitlines()
+
+    if any(ln.startswith(f"## [{v}]") for ln in lines):
+        return {"was_empty": False, "text": original, "already_cut": True}
 
     i = next((n for n, ln in enumerate(lines) if ln.strip() == "## [Unreleased]"), None)
     if i is None:
@@ -296,7 +304,7 @@ def cut_changelog(version: str, date: Optional[str] = None, path: Optional[Path]
     text = "\n".join(new_lines) + ("\n" if original.endswith("\n") else "")
     if not dry_run:
         path.write_text(text, encoding="utf-8")
-    return {"was_empty": was_empty, "text": text}
+    return {"was_empty": was_empty, "text": text, "already_cut": False}
 
 
 def create_release_tag(version: str, repo: Optional[Path] = None) -> str:
@@ -329,6 +337,7 @@ def cut_release(version: str, tag: bool = False, date: Optional[str] = None,
     if tag and not dry_run:
         created_tag = create_release_tag(v)
     return {"version": v, "date": date, "changelog_was_empty": cl["was_empty"],
+            "changelog_already_cut": cl.get("already_cut", False),
             "tag": created_tag, "dry_run": dry_run}
 
 

@@ -285,6 +285,20 @@ class TestReleaseCut(unittest.TestCase):
         self.assertIn("## [1.2.1] (2026-07-16)", text)
         self.assertEqual(text.count("## [Unreleased]"), 1)
 
+    def test_cut_changelog_is_idempotent(self):
+        """The documented flow is cut -> commit -> `bob release <v> --tag`, and that second call re-enters
+        cut_changelog. It must not stack a second, empty section above the real one."""
+        cl = self._changelog("\n### Added\n- New thing\n\n")
+        first = versions.cut_changelog("1.2.2", date="2026-07-16", path=cl)
+        self.assertFalse(first["already_cut"])
+        after_first = cl.read_text()
+
+        second = versions.cut_changelog("1.2.2", date="2026-07-16", path=cl)
+        self.assertTrue(second["already_cut"])
+        self.assertEqual(cl.read_text(), after_first)          # byte-identical, nothing moved
+        self.assertEqual(cl.read_text().count("## [1.2.2]"), 1)
+        self.assertIn("### Added\n- New thing", cl.read_text())  # body still in the dated section
+
     def test_cut_changelog_flags_empty_unreleased(self):
         cl = self._changelog("\n")  # nothing under Unreleased
         self.assertTrue(versions.cut_changelog("1.2.2", date="2026-07-16", path=cl)["was_empty"])

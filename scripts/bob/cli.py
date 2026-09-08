@@ -923,7 +923,10 @@ def _handle_release(rest: list) -> int:
         print(f"[dry run] would cut {v} ({summary['date']}): VERSION + versions.lock release + "
               f"CHANGELOG [Unreleased] -> [{v}]")
         return 0
-    print(f"cut {v}: VERSION, versions.lock release, and CHANGELOG updated ({summary['date']}).")
+    if summary.get("changelog_already_cut"):
+        print(f"{v} was already cut; CHANGELOG left as-is.")
+    else:
+        print(f"cut {v}: VERSION, versions.lock release, and CHANGELOG updated ({summary['date']}).")
     if summary["changelog_was_empty"]:
         print("  warning: CHANGELOG [Unreleased] was empty — the new section has no notes.", file=sys.stderr)
     if summary["tag"]:

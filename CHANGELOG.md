@@ -8,6 +8,8 @@ rebuilds only what changed, verifies, and rolls back on failure.
 
 ## [Unreleased]
 
+## [1.3.0] (2026-09-08)
+
 ### Added
 - **A `writer` role for long-form prose**, served by DeepSeek-R1-Distill-Qwen-32B. Reachable as
   `bob write [--pro]`, `bob chat --write`, and `/model writer` in the shell; `writer-pro` routes to
@@ -52,6 +54,11 @@ rebuilds only what changed, verifies, and rolls back on failure.
   [scripts/tools/build.py](scripts/tools/build.py), [scripts/tools/stack.py](scripts/tools/stack.py)
 
 ### Fixed
+- **`bob release <v> --tag` no longer stacks a duplicate changelog section.** The documented flow is
+  cut, review, commit, then tag, and that second call re-entered the changelog cut and wrote a second
+  empty `## [v]` heading above the real one. `cut_changelog` is now idempotent: a changelog that already
+  carries the version's section is returned untouched, and the CLI says it was already cut.
+  [scripts/bob/versions.py](scripts/bob/versions.py)
 - **`bob build` no longer keeps a stale engine after a submodule bump.** It skipped whenever a
   `bin/llama-server` merely existed, so a bumped llama.cpp pin left the OLD binary in place while
   reporting success. Worse, the run said so out of both sides of its mouth: the prebuilt path correctly
