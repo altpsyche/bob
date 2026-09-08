@@ -96,7 +96,18 @@ def build_llama(cpu: bool = False, arch: int = 0, force: bool = False, cuda_root
     flags = osenv.resolve_build_cmake_flags(cpu=cpu, arch=arch)
 
     if not force and (BIN / exe).exists():
-        return f"{exe} already built — skipping (use --force to rebuild)."
+        # "Exists" is not "current": after a submodule bump the binary on disk is from the OLD revision, and
+        # skipping on presence alone leaves a stale engine while reporting success. Compare what we built
+        # from against what the checkout pins (the same test the prebuilt path applies to a published
+        # asset). An unknown commit (a marker from before this field, or a hand-placed binary) is treated
+        # as current, so this can never turn an existing working install into a surprise rebuild.
+        built = (osenv.build_tier_marker(BIN) or {}).get("commit")
+        pinned = _git_head(SRC_LLAMA)
+        if built and pinned and built != pinned:
+            print(f"{exe} was built from {built[:8]} but this checkout pins {pinned[:8]}; rebuilding.",
+                  file=sys.stderr)
+        else:
+            return f"{exe} already built — skipping (use --force to rebuild)."
     if not (SRC_LLAMA / "CMakeLists.txt").exists():
         raise RuntimeError(f"llama.cpp submodule not found at {SRC_LLAMA}. Run: git submodule update --init --recursive")
     # The Ninja generator needs the MSVC toolchain (cl.exe) + Ninja on PATH; osenv.ensure_msvc_env folds the
@@ -209,7 +220,8 @@ def build_llama(cpu: bool = False, arch: int = 0, force: bool = False, cuda_root
     # Marker path derives from BIN (this module's, which tests patch), so the write stays inside that tree.
     osenv.write_build_tier_marker(tier=("gpu" if flags["Cuda"] else "cpu"),
                                   arch=(arch if flags["Cuda"] else 0),
-                                  cuda=(cuda_major if flags["Cuda"] else None), source="source", bin_dir=BIN)
+                                  cuda=(cuda_major if flags["Cuda"] else None), source="source", bin_dir=BIN,
+                                  commit=_git_head(SRC_LLAMA))
     return f"Built. llama-server at: {BIN / exe}"
 
 

@@ -52,6 +52,15 @@ rebuilds only what changed, verifies, and rolls back on failure.
   [scripts/tools/build.py](scripts/tools/build.py), [scripts/tools/stack.py](scripts/tools/stack.py)
 
 ### Fixed
+- **`bob build` no longer keeps a stale engine after a submodule bump.** It skipped whenever a
+  `bin/llama-server` merely existed, so a bumped llama.cpp pin left the OLD binary in place while
+  reporting success. Worse, the run said so out of both sides of its mouth: the prebuilt path correctly
+  refused a mismatched asset and announced it was "building from source to stay in sync", then the
+  source path skipped anyway. The build-tier marker now records the commit the engine was built from,
+  and the skip compares it against the pinned revision. An unknown commit (a marker written before this
+  field, or a hand-placed binary) counts as current, so an existing install never gets a surprise
+  rebuild. `bob update` was never affected: it passes `force=True` to every moved component.
+  [scripts/tools/build.py](scripts/tools/build.py), [scripts/osenv.py](scripts/osenv.py)
 - **Memory vectors are now stamped with the embed model that produced them** (schema v4, backfilled).
   Two embedding models of the same width are not comparable but do not fail either: bge-m3 and
   Qwen3-Embedding-0.6B are both 1024-dim, so `cosine()` would zip a stale vector against a fresh query

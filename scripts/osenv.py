@@ -1051,11 +1051,16 @@ def build_tier_marker_path(bin_dir=None) -> Path:
 
 
 def write_build_tier_marker(tier: str, arch: int = 0, cuda: str = None, source: str = "source",
-                            bin_dir=None) -> None:
+                            bin_dir=None, commit: str = None) -> None:
     """Record the tier the engine in bin/ was built at. Called by the build executor (build_llama), so every
-    path that produces an engine records the fact. Best-effort: a write failure must never fail a good build."""
+    path that produces an engine records the fact. Best-effort: a write failure must never fail a good build.
+
+    `commit` is the submodule revision the engine was built FROM. Without it a rebuild-if-needed check has
+    nothing to compare against and can only ask "does the binary exist", which silently keeps a stale engine
+    after a submodule bump."""
     import datetime
     marker = {"tier": tier, "arch": int(arch or 0), "cuda": cuda, "source": source,
+              "commit": commit,
               "builtAt": datetime.datetime.now().isoformat(timespec="seconds")}
     try:
         p = build_tier_marker_path(bin_dir)
