@@ -177,8 +177,10 @@ def _wire(target: Path, link: Path) -> None:
 
 
 def setup_clients() -> None:
-    """Point VS Code Continue + aider at the repo's config files (symlink, copy fallback). Generates the
-    Continue config first so the symlink target exists."""
+    """Point VS Code Continue + aider at the repo's config files (symlink, copy fallback), and install
+    the DeepSeek Harness drop-ins. Generates the configs first so the symlink targets exist. dsh owns
+    its own settings document, so that one is merged rather than symlinked, and skips when dsh is
+    not installed."""
     _tools_on_path()
     import generate
     generate.configure(_load_config())
@@ -186,6 +188,9 @@ def setup_clients() -> None:
     home = Path.home()
     _wire(REPO / "config" / "continue" / "config.yaml", home / ".continue" / "config.yaml")
     _wire(REPO / "config" / "aider" / ".aider.conf.yml", home / ".aider.conf.yml")
+
+    generate.gen_dsh()
+    print(generate.install_dsh(), file=sys.stderr)
 
     aider = osenv.venv_exe("venv-aider", "aider")
     if aider.exists():
@@ -570,7 +575,7 @@ def setup(skip_models: bool = False, skip_build: bool = False, skip_voice: bool 
     bootstrap(skip_models=skip_models, skip_build=skip_build, profile=profile, with_webui=with_webui, cpu=cpu,
               from_source=from_source)
 
-    _step(7, total, "Wire clients (Continue + aider)")
+    _step(7, total, "Wire clients (Continue + aider + dsh)")
     try:
         setup_clients()
     except Exception as e:  # noqa: BLE001

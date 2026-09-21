@@ -8,6 +8,22 @@ rebuilds only what changed, verifies, and rolls back on failure.
 
 ## [Unreleased]
 
+### Added
+- **DeepSeek Harness (dsh) is a wired client.** `bob gen` now generates `config/dsh/settings.yaml`, a
+  pi-ai provider route pointing every chat-capable role and enabled pro peer at Bob's LiteLLM proxy, and
+  `config/dsh/cordis.patch.yml`, which mounts Bob's tool registry in dsh as an MCP server over stdio
+  (`bob agent mcp`, gated on `agent.mcpEnabled`). Both are installed into the harness home (`$DSH_HOME`,
+  default `~/.dsh`) by `bob gen` and by setup's client-wiring step, and skipped cleanly when dsh is not
+  installed. Unlike the Continue and aider configs, `settings.yaml` is merged rather than symlinked,
+  because dsh's own Settings UI writes that document: only the `bob` provider route is touched, and the
+  MCP entry is appended to `cordis.patch.yml` textually so a hand-written patch file keeps its comments
+  and `!!js` expressions. The route ships `supportsDeveloperRole: false` and `maxTokensField: max_tokens`,
+  without which pi-ai, which infers a request shape from the endpoint URL and reads an unrecognized
+  address as OpenAI itself, would send every reasoning model's system prompt as `role: developer` and cap
+  output with `max_completion_tokens`, neither of which llama.cpp accepts.
+  [scripts/tools/generate.py](scripts/tools/generate.py), [scripts/bob/kernel.py](scripts/bob/kernel.py),
+  [docs/USAGE.md](docs/USAGE.md)
+
 ## [1.3.0] (2026-09-08)
 
 ### Added

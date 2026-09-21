@@ -636,7 +636,7 @@ if choice.finish_reason == "tool_calls":
 
 ## Clients
 
-Client configs (Continue, aider) are linked into your home directory during setup, so both tools work with no in-app configuration. Without symlink privileges, setup copies the files instead; re-run setup after editing the repo configs to sync the copies.
+Client configs (Continue, aider) are linked into your home directory during setup, so both tools work with no in-app configuration. Without symlink privileges, setup copies the files instead; re-run setup after editing the repo configs to sync the copies. The DeepSeek Harness owns its own settings document, so Bob merges into that one rather than linking over it.
 
 ### VS Code: Continue.dev (autocomplete and chat)
 
@@ -719,6 +719,43 @@ Useful in-session commands:
 | `/drop` | remove files from context when it gets large |
 
 aider auto-commits each accepted edit to git; work on a branch so `/undo` can roll back cleanly. Both models use a 16k context window. The `openai/` prefix in the config (`openai/ponder`, `openai/coder`) is required to route through a local endpoint and is already set.
+
+### Browser and terminal: DeepSeek Harness (dsh)
+
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) is a model-agnostic coding agent with
+a browser UI and a headless mode. Bob serves it two ways at once: as the model backend, and as a tool
+provider over MCP. Nothing about dsh runs inside Bob, and Bob needs nothing from it; the pairing is the
+one Bob is built for, a private local brain behind somebody else's front end.
+
+dsh is Node, so install it its own way (`npx @deepseek-ai/dsh web`), then run `bob gen`. Setup wires it
+too, when it is already installed. Two drop-ins land in the harness home (`$DSH_HOME`, default `~/.dsh`):
+
+| File | What Bob writes | How |
+|---|---|---|
+| `settings.yaml` | a `bob` provider route: every chat-capable role plus the enabled pro peers | merged, so your other providers and sections survive |
+| `cordis.patch.yml` | Bob's tool registry as an MCP server (`bob agent mcp`) | appended once, only when `agent.mcpEnabled` is on |
+
+Both are generated into `config/dsh/` first, from the same registry every other client config comes from,
+so a model refresh reaches dsh with one `bob gen` and dsh re-reads the route on its next request.
+
+**The key.** dsh resolves credentials by environment-variable name, never from a file a tool wrote, so
+export the LiteLLM key under the name the route references:
+
+```
+export BOB_LITELLM_KEY=sk-local   # or your litellmKey, if you changed it
+```
+
+**Why the route sets compatibility switches.** pi-ai, the dsh adapter this route uses, infers a request
+shape from the endpoint URL and treats an address it does not recognize as OpenAI itself. Two of those
+inferences are wrong for llama.cpp: a reasoning model's system prompt would travel as `role: developer`,
+and the output cap as `max_completion_tokens`. The generated route sets `supportsDeveloperRole: false`
+and `maxTokensField: max_tokens`, which is why models work rather than every request failing.
+
+**Bob's tools inside dsh.** With `agent.mcpEnabled` set to `true` in `config/user.json`, dsh spawns
+`bob agent mcp` over stdio and gets the whole registry: memory, web, git, file, shell, fabric, code
+search, and any plugin. The entry runs the server in the harness's own working directory, so those tools
+act on the project dsh has open, not on Bob's repo. Bob's MCP server is stdio only, so the harness has to
+be on the same machine.
 
 ## Shell AI Patterns: fabric
 

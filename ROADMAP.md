@@ -22,12 +22,14 @@ dependency locks, the minimum toolchain, and the model manifest (repo, revision,
 reports the running release. `bob update` moves between releases lockfile to lockfile, rebuilds only what
 changed, verifies, and rolls back on failure.
 
-> **1.2 is the current line.** Bob started as a Windows first, two language (PowerShell plus Python)
+> **1.3 is the current line.** Bob started as a Windows first, two language (PowerShell plus Python)
 > experiment. That whole plan is now complete: one command, one engine, cross platform, reproducible, and
 > test backed. 1.0 marked the point where Bob became a coherent product rather than a build out; 1.1 makes
 > it easy to install and get started, with one command per OS and a Docker-free default; 1.2 sharpens the
-> daily driver with a current local coder, refreshed cloud peers, and a faster, tougher voice path.
-> Everything up to and including 1.2 is shipped; everything above it is the plan.
+> daily driver with a current local coder, refreshed cloud peers, and a faster, tougher voice path, and its
+> patch line makes a release prove itself with driver-only prebuilt engines, one install lifecycle seam, and
+> a release cut that cannot drift; 1.3 moves the whole local registry a generation and adds a `writer` role
+> for long-form prose. Everything up to and including 1.3 is shipped; everything above it is the plan.
 
 ---
 
@@ -51,8 +53,9 @@ the cross OS CI acceptance gate runs on every PR.
   OpenAI works by changing one base URL.
 - VRAM profiles from 8 GB to 32 GB, auto selected from the detected GPU, plus a CPU tier for GPU-less
   machines.
-- Named roles (chat, coder, ponder, vision, embed, fim, agent) with optional cloud "pro" peers
-  (DeepSeek, GLM, Kimi) routed transparently when you ask for them.
+- Named roles (chat, coder, writer, ponder, vision, embed, fim, agent) with optional cloud "pro" peers
+  (DeepSeek, GLM, Kimi) routed transparently when you ask for them, and a per model `ngl: "auto"` fit so a
+  dense model larger than the card still runs.
 
 ### An agent that acts, safely
 - A full tool using agent loop: memory, web, git, file, shell, and fabric tools plus drop-in plugins.
@@ -84,14 +87,17 @@ the cross OS CI acceptance gate runs on every PR.
   and Piper TTS out.
 
 ### Remembers you
-- Typed memory (profile, preference, project, fact, episodic) in SQLite with BGE-M3 embeddings.
+- Typed memory (profile, preference, project, fact, episodic) in SQLite with Qwen3-Embedding vectors, each
+  row stamped with the model that produced it so an embed swap degrades to keyword recall rather than to a
+  meaningless score.
 - Blended recall (semantic, recency, importance), pin and unpin, per project scoping, human editable
   `BOB.md` and `AGENTS.md`, conflict aware consolidation, and provenance.
 - Context engineering: reranking, self editing memory blocks, and conversation paging.
 
 ### Fits your existing tools
-- Open WebUI, Continue.dev, Cline, aider, fabric (254 patterns), n8n, SearXNG, Langfuse, and Qdrant, all
-  wired to the local endpoint by setup.
+- Open WebUI, Continue.dev, Cline, aider, DeepSeek Harness, fabric (254 patterns), n8n, SearXNG,
+  Langfuse, and Qdrant, all wired to the local endpoint by setup. The harness gets Bob's tools as well
+  as its models, over MCP.
 
 ### Runs where you run
 - Linux (apt, dnf, pacman, zypper, including atomic Fedora via rpm-ostree) and Windows 11, on NVIDIA CUDA
@@ -130,44 +136,109 @@ Refreshed what's already here so it keeps pace, and closed the rough edges from 
   behind the same HTTP contract (whisper.cpp kept as a fallback), and hardened the voice loop against a
   missing mic, an engine crash mid turn, an empty transcript, and an unreachable backend.
 
-### 1.2.x hardening (in progress)
+### 1.2.x hardening (shipped)
 The patch line: no new surface, just making a release trustworthy on real hardware and closing the rough
-edges that only surface on a live install. This is grounded in real use. An early 1.2 build shipped a
+edges that only surface on a live install. This was grounded in real use. An early 1.2 build shipped a
 prebuilt engine that every GPU box quietly passed over for a slow source build, and CI stayed green because
 it never exercised the actual download and run path.
 
-- **A release proves itself on real hardware.** A GPU runner so the acceptance tier runs real inference, not
-  just a load check, on release tags, plus a contract test that fetches the published engine manifest and
-  asserts the resolver selects and commit matches a binary. A broken engine or resolver should not pass
-  green again. The Windows CUDA binary gets verified on an actual Windows GPU, where it is untested today.
-- **Release hygiene.** One command to cut a release that moves the version, the lockfile, and the changelog
-  together so they cannot drift, and a clean local health check with no false "stale lockfile" on an
-  unmodified working tree.
-- **Fresh install confidence.** A clean box to first chat and first voice turn, on each supported OS,
-  closing the onboarding and voice rough edges that a CPU only CI gate does not catch.
-- **Leaner, clearer engines.** Slim the CUDA download (its math library is most of the size), and make the
-  arm64 and AMD or Intel paths, which have no prebuilt yet and fall back to source or the CPU tier, say so
-  clearly.
+Delivered: prebuilt driver-only engines, published per release as a SHA verified `engines.json` asset with
+build provenance, a commit-match guard, and a runtime self-check so no machine is left with a non-starting
+engine; one install and update lifecycle seam (`resolve_build_tier` plus `ensure_engine`) so a GPU box can
+no longer silently run CPU, with `bob diagnose` and `bob status` calling out an idle GPU; release channels
+(`stable` and `latest`); `bob release <x.y.z>`, which moves the version, the lockfile, and the changelog
+together so they cannot drift, plus a `bob lock --check` that no longer cries stale on a clean tree; a
+hermetic engine-manifest contract test on every PR and a scheduled `manifest-contract-live` job against the
+real published manifest; GPU acceptance through `scripts/smoke.py --require-gpu --expect-source` on a tag
+checkout ([docs/GPU-ACCEPTANCE.md](docs/GPU-ACCEPTANCE.md)); and a CI that reuses warm caches, skips the
+tiers a change cannot affect, and reuses the previous release's engine assets when the pinned llama.cpp
+commit is unchanged.
 
-### 1.3 a deeper coding agent
+GPU acceptance runs locally at release time rather than in CI on purpose. This repo is public, and a self
+hosted GPU runner is a standing attack surface, because a pull request from a fork runs the workflow file
+from the fork's own commit.
+
+Carried forward, still open:
+
+- **Windows CUDA on real Windows GPU hardware.** Bob builds and publishes that binary, but nothing has ever
+  run it on an actual Windows GPU.
+- **A leaner engine download.** The CUDA math library is most of the asset size.
+- **An honest word for the unbuilt targets.** arm64 Linux and AMD or Intel GPUs have no prebuilt and fall
+  back to a source build or the CPU tier. Install should say that plainly instead of leaving the user to
+  infer it from a long compile.
+
+### 1.3 a current registry, and long-form prose (shipped)
+This line refreshed the models rather than the harness, so the coding agent work originally scoped here
+moved intact to 1.4.
+
+- **The local registry moved a generation.** `chat` and `agent` to Qwen3.5-9B, `ponder` to Qwen3.6-35B-A3B,
+  `vision` to the first-party Qwen3-VL-8B, `embed` and `rerank` to Qwen3-Embedding-0.6B and
+  Qwen3-Reranker-0.6B. `coder` stays on Qwen3-Coder-30B-A3B and `fim` on Qwen2.5-Coder, neither having a
+  newer first-party replacement. Cloud peers moved to GLM-5.3 and Kimi K3, and the vendored llama.cpp,
+  llama-swap, whisper.cpp, and fabric moved to their latest stable tags.
+- **A `writer` role for long-form prose**, served by DeepSeek-R1-Distill-Qwen-32B, reachable as `bob write`,
+  `bob chat --write`, and `/model writer`, with `writer-pro` for the cloud peer.
+- **`ngl: "auto"`** hands the offload decision to llama.cpp instead of a hand-tuned layer count that is
+  wrong on every card but the one it was measured on. This is what lets a dense model larger than the card
+  run at all.
+- **A model swap can no longer quietly degrade recall.** Memory vectors carry the embed model that produced
+  them, `bob doctor` reports any left stale, and `bob memory migrate --reembed` rebuilds them.
+- **One `bob update` is the whole move.** It restarts a running endpoint, so a registry change takes effect
+  without a second command nobody knew to run.
+
+### 1.3.x the harness you already use (in progress)
+DeepSeek Harness (dsh) landed in August 2026 as a model-agnostic coding agent, MIT, with a browser UI, a
+headless mode, and an everything-is-a-plugin architecture. It is the strongest argument yet for what Bob
+already is: a private local brain that other front ends can borrow. So Bob wires it the way it wires
+Continue and aider, and takes nothing on in return, because dsh is Node and Bob's core stays one engine,
+pure Python, Docker-free.
+
+- **Shipped: dsh is a wired client.** `bob gen` writes a pi-ai provider route for every chat-capable role
+  and enabled pro peer, and mounts Bob's whole tool registry in dsh as an MCP server over stdio. A model
+  refresh reaches the harness with one command, the same way it reaches every other client.
+- **Bob's MCP server over Streamable HTTP.** It is stdio only today, so the harness has to run on the
+  same machine as Bob. dsh already speaks both transports, and a remote harness reaching a home Bob is
+  the same want as 2.0's "reach your Bob from anywhere".
+- The 1.2.x residuals above still stand: Windows CUDA on real hardware, a leaner engine download, and an
+  honest word at install time for arm64 and AMD or Intel.
+
+### 1.4 a deeper coding agent
 Take the coding loop from good to measured best in class for a local harness.
 
-- **Structural code retrieval.** Add an `ast-grep` escalation tier and tree-sitter symbol extraction on
-  top of today's ripgrep and repo map. The 2026 evidence is clear: structure aware, agent driven search
-  beats vector RAG for code. This is the stack Claude Code, Cursor, and Devin converged on.
-- **Self scoring in CI.** Run a SWE-bench Verified subset and Terminal-Bench 2.1 against Bob's own harness
-  on release tags, and track the score across versions, so "did this release get better at coding?" has a
-  number.
+- **Structural code retrieval.** Add an `ast-grep` escalation tier on top of today's ripgrep and repo map,
+  and promote the tree-sitter symbol extraction in [scripts/bob_repomap.py](scripts/bob_repomap.py), today
+  an optional backend behind a lazy `grep_ast` import with a regex fallback, into a first-class part of the
+  install. The 2026 evidence is clear: structure aware, agent driven search beats vector RAG for code. This
+  is the stack Claude Code, Cursor, and Devin converged on.
+- **Self scoring in CI, against a reference scaffold.** Run a SWE-bench Verified subset and
+  Terminal-Bench 2.1 against Bob's own harness on release tags, and track the score across versions, so
+  "did this release get better at coding?" has a number. Nothing measures this today, which is why the
+  coding claims above are qualitative. Run the same model through dsh's minimal mode (a persistent shell
+  and `str_replace_editor`, nothing else) as the control: dsh's score is what the model can do, Bob's is
+  what Bob's loop does with it, and the gap is the number that actually says whether the harness earns
+  its keep. Without a control, a bad score cannot be blamed on the model or the loop.
+- **Deterministic eval replays.** dsh pairs a versioned session format with a replay adapter, which is
+  what makes a benchmark re-scoreable rather than re-run. Bob's runs already checkpoint; the missing
+  piece is replaying one against a changed harness.
 - **Workflow orchestration.** A plan as code layer that fans work out across many sub agents in one
-  session, where the plan lives in executable control flow rather than the model's context window.
+  session, where the plan lives in executable control flow rather than the model's context window. dsh's
+  code mode is this idea already built and in use: the model writes one program that chains many tool
+  calls, instead of spending a turn on each. Treat it as the reference design.
 - **Lifecycle hooks.** Expose scriptable events around the agent loop (pre and post tool, session start
-  and end) so users can customize behavior without forking the harness.
+  and end) so users can customize behavior without forking the harness. dsh ships this as a plugin with a
+  worked event taxonomy; borrow the taxonomy rather than inventing one.
+- **Scaffolding as a choice, not a constant.** dsh offers minimal, standard, and code modes as a
+  first-class setting. Bob's agent has one shape, and a small local model on the 8 GB profile is exactly
+  the case a two-tool minimal mode rescues, more reliably than any amount of prompt tuning.
+- **Model-free context pruning.** Bob's compaction summarizes, which costs a model call per compaction.
+  Pruning stale tool results needs no model at all, and dsh separates the two for that reason.
 
-### 1.4 more model on the same GPU
-Push the inference tier so bigger, better models run on the hardware people already own.
+### 1.5 more model on the same GPU
+Push the inference tier so bigger, better models run on the hardware people already own. 1.2 adopted
+llama.cpp's `--n-cpu-moe` and 1.3 added `ngl: "auto"`; this line is about what those two put within reach.
 
-- **MoE expert offload.** Adopt llama.cpp's `-n-cpu-moe` (which now exists; an earlier internal note that
-  it didn't is stale) to keep MoE experts in system RAM and run an 80B-A3B class coder on a 16 GB card.
+- **An 80B-A3B class coder on a 16 GB card**, by tuning the expert offload split per VRAM profile rather
+  than settling for the first split that fits.
 - **Better speculative decoding.** MTP and self speculative decoding for MoE models, where the wins are
   now real rather than a mixed bag.
 - **CPU tier backend option.** Offer the `ik_llama.cpp` fork for the no-GPU tier, which is meaningfully
@@ -203,6 +274,10 @@ The big leaps that change what Bob *is*, which is why they carry a major version
   [MindStudio](https://www.mindstudio.ai/blog/is-rag-dead-what-ai-agents-use-instead),
   [dev.to](https://dev.to/nimay_04/rag-is-not-always-the-answer-anymore-how-ai-agents-search-code-in-2026-43m3),
   [ceaksan](https://ceaksan.com/en/code-search-for-ai-agents-which-tool-when)
+- Agent harnesses as replaceable scaffolding (plugin architectures, minimal versus full toolsets,
+  code mode): [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness),
+  [The New Stack](https://thenewstack.io/deepseek-harness-open-source-plugins/),
+  [A Comparison of AI Agent Harnesses in 2026](https://winder.ai/ai-agent-harness-comparison/)
 - Harness engineering, sub agents, dynamic workflows, Terminal-Bench:
   [AddyOsmani](https://addyosmani.com/blog/agent-harness-engineering/),
   [State of CLI Coding Agents, Mid-2026](https://blog.arcbjorn.com/state-of-cli-coding-agents-2026),

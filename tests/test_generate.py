@@ -201,6 +201,103 @@ class TestContinue(unittest.TestCase):
         self.assertIn('SEARXNG_URL: "http://localhost:', out)
 
 
+class TestDsh(unittest.TestCase):
+    """The DeepSeek Harness drop-ins: a pi-ai provider route for Bob's LiteLLM proxy, and Bob's MCP
+    server as a dsh plugin instance. install_dsh is exercised against a temp $DSH_HOME."""
+
+    def _gen(self, profile=None):
+        gen.gen_dsh(profile)
+        return (gen.REPO / "config" / "dsh" / "settings.yaml").read_text(encoding="utf-8")
+
+    def _install(self, home, mcp=True):
+        import unittest.mock as m
+        cfg = dict(CFG)
+        cfg["agent"] = dict(cfg.get("agent", {}), mcpEnabled=mcp)
+        with m.patch.dict("os.environ", {"DSH_HOME": str(home)}), m.patch.object(gen, "_cfg", cfg):
+            gen.gen_dsh()
+            return gen.install_dsh()
+
+    def test_route_points_at_the_litellm_proxy(self):
+        out = self._gen("16gb")
+        self.assertIn("    bob:\n", out)
+        self.assertIn("      api: openai-completions", out)
+        self.assertIn(f"      baseURL: http://localhost:{bob_core._port(CFG, 'litellmPort')}/v1", out)
+        self.assertIn("      apiKeyEnv: BOB_LITELLM_KEY", out)
+
+    def test_compat_switches_for_a_llama_cpp_gateway(self):
+        # pi-ai addresses an unrecognized endpoint as OpenAI itself: the developer role and
+        # max_completion_tokens would both be refused by llama-server.
+        out = self._gen("16gb")
+        self.assertIn("        supportsDeveloperRole: false", out)
+        self.assertIn("        maxTokensField: max_tokens", out)
+
+    def test_models_skip_non_chat_roles_and_mark_vision(self):
+        out = self._gen("16gb")
+        self.assertIn("        - id: coder\n          contextWindow: 16384", out)
+        self.assertIn("        - id: vision\n          contextWindow: 4096\n"
+                      "          input: [text, image]", out)
+        for skipped in ("agent", "fim", "embed", "rerank"):
+            self.assertNotIn(f"        - id: {skipped}\n", out)
+
+    def test_pro_peers_carry_max_tokens(self):
+        out = self._gen("16gb")
+        self.assertIn("        - id: coder-pro\n          maxTokens: 4096", out)
+
+    def test_every_profile_generates(self):
+        import bob_models
+        for profile in bob_models.load_models_config()["profiles"]:
+            if profile.startswith("_"):
+                continue
+            self.assertIn("    bob:", self._gen(profile), profile)
+
+    def test_mcp_patch_runs_bob_agent_mcp_in_the_harness_cwd(self):
+        gen.gen_dsh()
+        patch = (gen.REPO / "config" / "dsh" / "cordis.patch.yml").read_text(encoding="utf-8")
+        self.assertIn("      name: '@deepseek-ai/dsh-mcp-client'", patch)
+        self.assertIn("        args: [agent, mcp]", patch)
+        self.assertIn("        cwd: !!js process.cwd()", patch)   # the project dsh is open in
+
+    def test_install_skips_when_dsh_is_absent(self):
+        with tempfile.TemporaryDirectory() as d:
+            msg = self._install(Path(d) / "nope")
+            self.assertIn("no DeepSeek Harness home", msg)
+
+    def test_install_merges_and_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = Path(d)
+            (home / "settings.yaml").write_text(
+                "llm-deepseek:\n  reasoningEffort: max\n"
+                "llm-pi-ai:\n  providers:\n    anthropic:\n      apiKeyEnv: ANTHROPIC_API_KEY\n",
+                encoding="utf-8")
+            self.assertIn("merged the 'bob' route", self._install(home))
+            text = (home / "settings.yaml").read_text(encoding="utf-8")
+            self.assertIn("anthropic:", text)        # the user's other provider survives
+            self.assertIn("reasoningEffort: max", text)   # and their other sections
+            self.assertIn("bob:", text)
+            self.assertIn("already current", self._install(home))
+
+    def test_install_appends_the_mcp_entry_once_keeping_js_tags(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = Path(d)
+            (home / "cordis.patch.yml").write_text(
+                "- insert:\n    - id: user-thing\n      name: whatever\n"
+                "      config:\n        cwd: !!js process.cwd()\n", encoding="utf-8")
+            self.assertIn("appended the 'bob-tools' entry", self._install(home))
+            text = (home / "cordis.patch.yml").read_text(encoding="utf-8")
+            self.assertIn("id: user-thing", text)
+            self.assertEqual(text.count("id: bob-tools"), 1)
+            self.assertIn("already carries", self._install(home))
+            self.assertEqual(
+                (home / "cordis.patch.yml").read_text(encoding="utf-8").count("id: bob-tools"), 1)
+
+    def test_install_leaves_mcp_alone_when_disabled(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = Path(d)
+            msg = self._install(home, mcp=False)
+            self.assertIn("set agent.mcpEnabled", msg)
+            self.assertFalse((home / "cordis.patch.yml").exists())
+
+
 class TestWebui(unittest.TestCase):
     def test_skips_when_no_admin_user(self):
         with tempfile.TemporaryDirectory() as d:

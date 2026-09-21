@@ -39,6 +39,7 @@ Core inference (the `:8081` API and the `bob` CLI) works out of the box. Everyth
 | Continue.dev | client | VS Code autocomplete, chat, `@web`, `@codebase`, `@filesystem` |
 | Cline | client | VS Code agent: reads and writes files, runs commands |
 | aider | client | terminal coding agent: review the plan before any file is touched |
+| DeepSeek Harness | client | browser and headless coding agent; Bob serves it models and, over MCP, its tools |
 | fabric | client | 254 named LLM patterns, pipe any text through them |
 | Open WebUI `:3000` | opt-in at setup (`--with-webui`) | browser chat, RAG, image input, voice |
 | n8n `:5678` | opt-in, native (`bob services n8n start`) | visual workflow automation |

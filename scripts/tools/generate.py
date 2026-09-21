@@ -1,11 +1,14 @@
 """Bob config generators — regenerate the runtime configs from the neutral registry
 (config/models.json via bob_models). One core fn per config reached the standard three ways;
-`gen` runs all four.
+`gen` runs them all.
 
   gen_llama_swap  -> config/llama-swap.yaml   (macros + per-model cmd assembly + swap group)
   gen_litellm     -> config/litellm.yaml      (local models via llama-swap + pro models via peers)
   gen_continue    -> config/continue/config.yaml
+  gen_dsh         -> config/dsh/{settings.yaml,cordis.patch.yml} (DeepSeek Harness route + MCP entry)
   gen_webui       -> tools/webui-data/webui.db (model system prompts; skips if the db is absent)
+
+`gen` also installs the dsh drop-ins into $DSH_HOME, skipping when dsh is not installed.
 
 Deterministic + idempotent."""
 import sys
@@ -404,6 +407,169 @@ def gen_continue(profile: str = None) -> str:
     return f"Generated {dest}"
 
 
+# --- gen-dsh --------------------------------------------------------------------------------------
+
+# 'agent' is Bob's own loop model; fim/embed/rerank are not chat models, so dsh has no use for them.
+_DSH_SKIP_ROLES = {"agent", "fim", "embed", "rerank"}
+_DSH_MCP_ID = "bob-tools"
+
+
+def _dsh_home() -> Path:
+    """The DeepSeek Harness data root, resolved dsh's way: $DSH_HOME when set and non-blank, else
+    ~/.dsh (a blank value is treated as unset, never as the cwd)."""
+    import os
+
+    env = (os.environ.get("DSH_HOME") or "").strip()
+    return Path(env).expanduser() if env else Path.home() / ".dsh"
+
+
+def _dsh_models(mcfg: dict, profile: str = None):
+    """[(model_id, contextWindow|0, maxTokens|0, vision)] for the dsh route: the local chat-capable
+    roles, then each enabled peer's pro roles, first peer wins on a duplicate id."""
+    _, models = _ordered_models(mcfg, profile)
+    out, seen = [], set()
+    for m in models:
+        if m["role"] in _DSH_SKIP_ROLES or m.get("embedding") or m.get("reranking"):
+            continue
+        out.append((m["role"], int(m.get("ctx") or 0), 0, bool(m.get("supportsVision"))))
+        seen.add(m["role"])
+    for peer in enabled_peers(mcfg):
+        for role in sorted(peer.get("pro") or {}):
+            if role in _DSH_SKIP_ROLES:
+                continue
+            mid = f"{role}-pro"
+            if mid in seen:
+                continue
+            rv = peer["pro"][role]
+            max_tokens = int(rv.get("maxTokens") or 0) if isinstance(rv, dict) else 0
+            out.append((mid, 0, max_tokens, role == "vision"))
+            seen.add(mid)
+    return out
+
+
+def gen_dsh(profile: str = None) -> str:
+    """Generate the DeepSeek Harness (dsh) drop-ins: config/dsh/settings.yaml (a pi-ai provider route
+    pointing at Bob's LiteLLM proxy) and config/dsh/cordis.patch.yml (Bob's MCP server as a dsh plugin
+    instance, so dsh gets Bob's tools). `install_dsh` merges them into $DSH_HOME."""
+    import bob_models
+    import osenv
+    from bob_core import _port
+
+    mcfg = bob_models.load_models_config()
+    bobcfg = _bob_cfg()
+    litellm_port = _port(bobcfg, "litellmPort")
+    header = ["# GENERATED - DO NOT EDIT.  Source: config/models.json  (+ config/user.json)",
+              "# Regenerate: bob gen"]
+
+    out = header + [
+        "# DeepSeek Harness provider route. Merged into $DSH_HOME/settings.yaml (default ~/.dsh) by",
+        "# `bob gen`; dsh re-reads it on the next request, so nothing needs a restart.",
+        "llm-pi-ai:", "  providers:", "    bob:",
+        "      displayName: Bob (local)",
+        "      api: openai-completions",
+        f"      baseURL: http://localhost:{litellm_port}/v1",
+        "      apiKeyEnv: BOB_LITELLM_KEY",
+        "      compat:",
+        "        # llama.cpp chat templates know no 'developer' role, and llama-server caps output with",
+        "        # max_tokens. pi-ai addresses an unrecognized endpoint as OpenAI itself, so both are set.",
+        "        supportsDeveloperRole: false",
+        "        maxTokensField: max_tokens",
+        "      models:"]
+    for mid, ctx, max_tokens, vision in _dsh_models(mcfg, profile):
+        out.append(f"        - id: {mid}")
+        if ctx > 0:
+            out.append(f"          contextWindow: {ctx}")
+        if max_tokens > 0:
+            out.append(f"          maxTokens: {max_tokens}")
+        if vision:
+            out.append("          input: [text, image]")
+    settings = _write(REPO / "config" / "dsh" / "settings.yaml", "\n".join(out) + "\n")
+
+    shim = "bob.cmd" if osenv.os_name() == "windows" else str(REPO / "bob")
+    patch = header + [
+        "# Bob's tool registry as a dsh MCP server (stdio). Appended to $DSH_HOME/cordis.patch.yml by",
+        "# `bob gen` when agent.mcpEnabled is on. cwd is the harness's own, so Bob's file and git tools",
+        "# act on the project dsh is open in, not on Bob's repo.",
+        "- insert:", f"    - id: {_DSH_MCP_ID}", "      name: '@deepseek-ai/dsh-mcp-client'",
+        "      config:", "        serverName: bob", "        transport: stdio",
+        f"        command: {_yaml_str(shim)}", "        args: [agent, mcp]",
+        "        cwd: !!js process.cwd()"]
+    patch_file = _write(REPO / "config" / "dsh" / "cordis.patch.yml", "\n".join(patch) + "\n")
+    return f"Generated {settings}\nGenerated {patch_file}"
+
+
+def install_dsh() -> str:
+    """Merge the generated drop-ins into $DSH_HOME. Skips gracefully when dsh is not installed, the
+    same way gen_webui skips a missing webui.db, so `bob gen` is safe on a machine without it.
+
+    settings.yaml is merged key-wise (dsh's Settings UI owns the rest of that document, so only the
+    'bob' provider route is touched); cordis.patch.yml is appended to textually, because it may carry
+    `!!js` tags a safe YAML load would reject."""
+    home = _dsh_home()
+    if not home.is_dir():
+        return (f"install-dsh: no DeepSeek Harness home at {home} — skipping "
+                "(run `npx @deepseek-ai/dsh web` once, then `bob gen`)")
+
+    lines = [_install_dsh_settings(home),
+             "  key: dsh resolves the credential by env-var name — export BOB_LITELLM_KEY to match "
+             "the litellmKey seam (default sk-local)"]
+    if (_bob_cfg().get("agent", {}) or {}).get("mcpEnabled"):
+        lines.append(_install_dsh_mcp(home))
+    else:
+        lines.append("  mcp: skipped — set agent.mcpEnabled true in config/user.json, then `bob gen`, "
+                     "to give dsh Bob's tools")
+    return "Installed dsh drop-ins\n" + "\n".join(lines)
+
+
+def _install_dsh_settings(home: Path) -> str:
+    """Write the 'bob' provider route into $DSH_HOME/settings.yaml, preserving every other provider
+    and top-level section. Without PyYAML there is no safe merge, so an existing file is left alone."""
+    src = REPO / "config" / "dsh" / "settings.yaml"
+    dest = home / "settings.yaml"
+    try:
+        import yaml
+    except ModuleNotFoundError:
+        if dest.exists():
+            return f"  settings: PyYAML not available to merge — copy the route from {src} by hand"
+        dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+        return f"  settings: wrote {dest}"
+
+    route = yaml.safe_load(src.read_text(encoding="utf-8"))["llm-pi-ai"]["providers"]["bob"]
+    existing = {}
+    if dest.exists():
+        try:
+            existing = yaml.safe_load(dest.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError as ex:
+            return f"  settings: {dest} is not loadable YAML ({ex.__class__.__name__}) — left as-is"
+        if not isinstance(existing, dict):
+            return f"  settings: {dest} is not a mapping — left as-is"
+    providers = existing.setdefault("llm-pi-ai", {}).setdefault("providers", {})
+    unchanged = providers.get("bob") == route
+    providers["bob"] = route
+    if unchanged:
+        return f"  settings: {dest} already current"
+    dest.write_text(yaml.safe_dump(existing, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    return f"  settings: merged the 'bob' route into {dest}"
+
+
+def _install_dsh_mcp(home: Path) -> str:
+    """Append Bob's MCP entry to $DSH_HOME/cordis.patch.yml unless it is already there. Textual, so
+    a hand-written patch file keeps its comments and any `!!js` expressions."""
+    src = REPO / "config" / "dsh" / "cordis.patch.yml"
+    dest = home / "cordis.patch.yml"
+    block = src.read_text(encoding="utf-8")
+    if not dest.exists():
+        dest.write_text(block, encoding="utf-8")
+        return f"  mcp: wrote {dest}"
+    current = dest.read_text(encoding="utf-8")
+    if f"id: {_DSH_MCP_ID}" in current:
+        return f"  mcp: {dest} already carries the '{_DSH_MCP_ID}' entry"
+    entry = block[block.index("- insert:"):]
+    sep = "" if current.endswith("\n") else "\n"
+    dest.write_text(current + sep + "\n" + entry, encoding="utf-8")
+    return f"  mcp: appended the '{_DSH_MCP_ID}' entry to {dest}"
+
+
 # --- gen-webui ------------------------------------------------------------------------------------
 
 def gen_webui(profile: str = None) -> str:
@@ -480,7 +646,7 @@ def _webui_write(db_path: str, entries: list) -> str:
 def gen_all(profile: str = None) -> str:
     """Regenerate every runtime config from the registry. Port of the `gen` verb."""
     return "\n".join([gen_llama_swap(profile), gen_litellm(profile), gen_webui(profile),
-                      gen_continue(profile)])
+                      gen_continue(profile), gen_dsh(profile), install_dsh()])
 
 
 # --- agent tool adapter ---------------------------------------------------------------------------
@@ -497,8 +663,8 @@ TOOL_DEFS = [
     {"type": "function", "function": {
         "name": "gen",
         "description": ("Regenerate all runtime configs (llama-swap.yaml, litellm.yaml, Continue config, "
-                        "Open WebUI prompts) from config/models.json. Run after changing the model "
-                        "registry or profile. Mutating (writes config files)."),
+                        "DeepSeek Harness route, Open WebUI prompts) from config/models.json. Run after "
+                        "changing the model registry or profile. Mutating (writes config files)."),
         "parameters": {"type": "object", "properties": {}}}},
 ]
 
