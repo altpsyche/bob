@@ -60,66 +60,124 @@ class TestLlamaSwap(unittest.TestCase):
         out = self._gen("16gb")
         server = osenv.exe_name("llama-server")   # llama-server.exe on Windows
         self.assertIn(f'srv: "${{env.LLAMA_LOCAL_ROOT}}/bin/{server} --port ${{PORT}} -ngl 99 --flash-attn on '
-                      f'--reasoning-format deepseek"', out)
+                      f'--reasoning-format deepseek -np 1"', out)
         self.assertIn('kv: "--cache-type-k q8_0 --cache-type-v q8_0"', out)
-        self.assertIn("members: [ponder, coder, chat, writer, vision, agent]", out)
+        # Aliased roles are names, not loadable models — only the concrete ones can be group members.
+        self.assertIn("members: [chat, vision, fim]", out)
+        # embed/rerank would otherwise fall into llama-swap's implicit exclusive default
+        # group, where one memory lookup evicts the chat model.
+        self.assertIn("  resident:\n    swap: false\n    exclusive: false\n    persistent: true\n    members: [embed, rerank]", out)
 
     def test_setparams_and_ttl(self):
-        out = self._gen("16gb")
+        out = self._gen("8gb")
         # chat setParams sorted
         self.assertIn("setParams: { temperature: 0.7, top_p: 0.9 }", out)
         # fim/embed ttl 0
         self.assertRegex(out, r"fim:\n.*\n\s+ttl: 0")
 
-    def test_draft_speculative_decode_on_dense_coder(self):
-        # The 8gb dense coder keeps a pinned fim draft -> speculative-decode flags appended. The 12gb+
-        # MoE coders (Qwen3-Coder-30B-A3B) can't spec-decode, so they carry no draft (1.2 refresh).
-        out = self._gen("8gb")
-        self.assertIn("-md ${env.LLAMA_LOCAL_ROOT}/models/qwen-coder-1.5b-q8_0.gguf -ngld 99", out)
+    def test_alias_collapses_roles_onto_one_server(self):
+        # 16gb: one Qwen3.8-27B serves chat/coder/ponder/writer/agent. The aliased roles get no cmd of
+        # their own (a second cmd would be a second copy of the same 10 GB model in VRAM), and their
+        # per-role sampling rides setParamsByID, which llama-swap applies by requested model id.
+        out = self._gen("16gb")
+        self.assertIn("    aliases: [ponder, coder, writer, agent]", out)
+        self.assertEqual(out.count("qwen3.8-27b-gsq-rco-iq3_xxs.gguf"), 1)
+        for role in ("ponder", "coder", "writer", "agent"):
+            self.assertNotIn(f"  {role}:\n    cmd:", out)
+        self.assertIn("      setParamsByID:", out)
+        self.assertIn("        writer: { temperature: 0.6, top_p: 0.95 }", out)
+        self.assertIn("        agent: { temperature: 0.1 }", out)
+
+    def test_alias_target_is_downloaded_once(self):
+        import provision
+        _, models = provision.resolve_fetch_set("24gb")
+        ggufs = [m["gguf"] for m in models]
+        self.assertEqual(len(ggufs), len(set(ggufs)))
+        self.assertIn("qwen3.8-27b-gsq-rco-iq3_s-mtp.gguf", ggufs)
+
+    def test_mtp_draft_head_rides_the_model_file(self):
+        # The -mtp GGUF carries its own draft block: --spec-type draft-mtp, NOT -md (which would load a
+        # second full model and blow the card). 16gb cannot afford the ~900 MiB the draft costs, so it
+        # runs the base build; 24gb and up take the speed.
+        out = self._gen("24gb")
+        chat = next(ln for ln in out.splitlines() if "qwen3.8-27b" in ln)
+        self.assertIn("--spec-type draft-mtp --spec-draft-n-max 2", chat)
+        self.assertNotIn("-md ", chat)
+        self.assertNotIn("--spec-type", self._gen("16gb"))
+
+    def test_every_model_pins_its_context(self):
+        # llama-server with no -c reserves the model's FULL trained window: measured 4.8 GB for the 0.6B
+        # embedder and 5.7 GB for the 0.6B reranker, versus 1.65 GB each at -c 4096.
+        import bob_models
+        for profile in bob_models.load_models_config()["profiles"]:
+            for role, spec in bob_models.profile_roles(profile).items():
+                self.assertIsNotNone(spec.get("ctx"), f"{profile}/{role} has no ctx")
+
+    def test_single_slot_by_default(self):
+        # llama-server defaults to four slots, each with its own KV/recurrent-state cache.
+        self.assertIn("-np 1", self._gen("16gb").split("models:")[0])
+
+    def test_per_model_kv_quant_overrides_the_macro(self):
+        # A long-context model held entirely in VRAM can only afford q4_0; the profile macro stays q8_0
+        # for everything else.
+        out = self._gen("16gb")
+        chat = next(ln for ln in out.splitlines() if "qwen3.8-27b" in ln)
+        self.assertIn("--cache-type-k q4_0 --cache-type-v q4_0", chat)
+        self.assertNotIn("${kv}", chat)
+        out24 = self._gen("24gb")
+        self.assertIn("${kv}", next(ln for ln in out24.splitlines() if "qwen3.8-27b" in ln))
+
+    def test_parallel_slots_only_on_the_big_tier(self):
+        # --parallel 2 --no-kv-unified gives two agent sessions private KV slots instead of one shared pool.
+        chat32 = next(ln for ln in self._gen("32gb").splitlines() if "qwen3.8-27b" in ln)
+        self.assertIn("--parallel 2 --no-kv-unified", chat32)
+        self.assertNotIn("--no-kv-unified", self._gen("16gb"))
 
     def test_coder_moe_offload_per_profile(self):
-        # 1.2: the coder role is Qwen3-Coder-30B-A3B (MoE) on every GPU tier. Tight tiers spill experts
-        # to RAM (--n-cpu-moe); 24gb fits Q4 and 32gb fits Q6 natively (no offload); 8gb stays dense.
+        # The 12gb tier keeps Qwen3-Coder-30B-A3B (MoE) with its experts spilled to RAM; 8gb stays dense.
         def coder_line(profile):
             out = self._gen(profile)
             return next(ln for ln in out.splitlines()
                         if "qwen3-coder-30b-a3b" in ln or "qwen-coder-7b" in ln)
         self.assertIn("--n-cpu-moe 34", coder_line("12gb"))
-        self.assertIn("--n-cpu-moe 24", coder_line("16gb"))
-        self.assertNotIn("--n-cpu-moe", coder_line("24gb"))
-        self.assertNotIn("--n-cpu-moe", coder_line("32gb"))
         self.assertIn("qwen-coder-7b", coder_line("8gb"))       # small dense coder, no offload
         self.assertNotIn("--n-cpu-moe", coder_line("8gb"))
 
     def test_moe_offload_emitted_for_overflow_model(self):
-        out = self._gen("16gb")
+        out = self._gen("12gb")
         ponder = next(ln for ln in out.splitlines() if "qwen3.6-35b-a3b" in ln)
-        self.assertIn("--n-cpu-moe 32", ponder)   # 35B MoE spills experts to RAM so it fits 16GB
+        self.assertIn("--n-cpu-moe 34", ponder)   # 35B MoE spills experts to RAM so it fits 12GB
         chat = next(ln for ln in out.splitlines() if "qwen3.5-9b" in ln)
         self.assertNotIn("--n-cpu-moe", chat)     # dense model that fits: no offload
 
-    def test_moe_offload_per_profile(self):
-        # The 35B-A3B ponder overflows the 16gb and 24gb cards (llama.cpp no longer auto-spills at
-        # -ngl 99), so each carries its own tuned offload; the 32gb Q5_K_M fits with headroom and gets none.
-        out24 = self._gen("24gb")
-        self.assertIn("--n-cpu-moe 12", next(ln for ln in out24.splitlines() if "qwen3.6-35b-a3b" in ln))
-        out32 = self._gen("32gb")
-        self.assertNotIn("--n-cpu-moe", next(ln for ln in out32.splitlines() if "qwen3.6-35b-a3b" in ln))
+    def test_no_profile_still_spills_a_dense_model(self):
+        # The 1.4 refresh put every GPU tier on a model that fits the card outright: no ngl="auto"
+        # (dense-overflow) model is left in the registry.
+        import bob_models
+        for profile in bob_models.load_models_config()["profiles"]:
+            for role, spec in bob_models.profile_roles(profile).items():
+                self.assertNotEqual(str(spec.get("ngl", "")).lower(), "auto", f"{profile}/{role}")
 
     def test_auto_ngl_omits_the_flag_so_llama_cpp_fits_it(self):
         # A DENSE model bigger than the card can't use --n-cpu-moe, and any explicit -ngl aborts
         # llama.cpp's fit-to-free-VRAM. ngl="auto" must therefore emit NO -ngl at all, while keeping
-        # flash-attn and the reasoning format the macro would have supplied.
-        out = self._gen("16gb")
-        writer = next(ln for ln in out.splitlines() if "deepseek-r1-distill" in ln)
-        self.assertNotIn("-ngl", writer)
-        self.assertNotIn("${srv}", writer)          # expanded inline, not via the macro
-        self.assertIn("--flash-attn on", writer)
-        self.assertIn("--reasoning-format deepseek", writer)
+        # flash-attn and the reasoning format the macro would have supplied. No shipped profile needs
+        # it any more, so it is exercised against a patched registry.
+        import copy
+        import unittest.mock as m
+        import bob_models
+        mcfg = copy.deepcopy(bob_models.load_models_config())
+        mcfg["profiles"]["16gb"]["chat"]["ngl"] = "auto"
+        with m.patch.object(bob_models, "load_models_config", return_value=mcfg):
+            out = self._gen("16gb")
+        chat = next(ln for ln in out.splitlines() if "qwen3.8-27b" in ln)
+        self.assertNotIn("-ngl", chat)
+        self.assertNotIn("${srv}", chat)          # expanded inline, not via the macro
+        self.assertIn("--flash-attn on", chat)
+        self.assertIn("--reasoning-format deepseek", chat)
         # every other model still rides the macro (which carries -ngl 99)
         self.assertIn("-ngl 99", out.split("models:")[0])
-        chat = next(ln for ln in out.splitlines() if "qwen3.5-9b-q4_k_m" in ln)
-        self.assertIn("${srv}", chat)
+        self.assertIn("${srv}", next(ln for ln in out.splitlines() if "qwen3-vl-8b" in ln))
 
     def test_auto_ngl_ignored_on_the_cpu_tier(self):
         # The CPU tier pins -ngl 0; "auto" there would hand llama.cpp a GPU it doesn't have.
@@ -129,12 +187,12 @@ class TestLlamaSwap(unittest.TestCase):
             if ".gguf" in ln:
                 self.assertIn("${srv}", ln)
 
-    def test_vision_expands_srv_without_flashattn(self):
-        # mmproj is incompatible with flash-attn -> that model's cmd uses an inline srv sans --flash-attn
+    def test_vision_keeps_flash_attn_with_mmproj(self):
+        # mtmd auto-detects flash-attn support per backend and falls back on its own (clip.cpp), so a
+        # vision model rides the same srv macro as everything else — including --reasoning-format.
         out = self._gen("16gb")
         vision_line = next(ln for ln in out.splitlines() if "qwen3-vl" in ln)
-        self.assertIn("-ngl 99 -m", vision_line)
-        self.assertNotIn("--flash-attn", vision_line)
+        self.assertIn("${srv}", vision_line)
         self.assertIn("--mmproj ${env.LLAMA_LOCAL_ROOT}/models/mmproj-Qwen3VL-8B-Instruct-F16.gguf", vision_line)
 
     def test_cpu_profile_no_gpu_no_kv(self):
@@ -233,7 +291,7 @@ class TestDsh(unittest.TestCase):
 
     def test_models_skip_non_chat_roles_and_mark_vision(self):
         out = self._gen("16gb")
-        self.assertIn("        - id: coder\n          contextWindow: 16384", out)
+        self.assertIn("        - id: coder\n          contextWindow: 40960", out)
         self.assertIn("        - id: vision\n          contextWindow: 4096\n"
                       "          input: [text, image]", out)
         for skipped in ("agent", "fim", "embed", "rerank"):

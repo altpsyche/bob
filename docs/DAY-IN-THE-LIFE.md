@@ -41,7 +41,7 @@ bob
 This opens the interactive shell, Bob's home base. Type a message to chat; slash-commands drive everything else. **Inference auto-starts the first time you talk**, so there is nothing to launch first. A splash shows the active model, session, and tool/skill counts, then a prompt:
 
 ```
-Bob  ·  chat / Qwen3.5-9B  ·  session new  ·  12 tools · 6 skills
+Bob  ·  chat / Qwen3.8-27B  ·  session new  ·  12 tools · 6 skills
 
 type a message to chat  ·  /agent <goal>  ·  /voice  ·  /help  ·  /exit
 >
@@ -139,9 +139,9 @@ bob chat --pro "explain CAP theorem with a concrete example"
 ### Route to the right model
 
 ```bash
-bob chat            # default: chat (general conversation, Qwen3.5-9B)
+bob chat            # default: chat (general conversation, Qwen3.8-27B)
 bob think           # ponder: Qwen3-30B, deep reasoning, thinking mode on
-bob code            # coder: Qwen3-Coder-30B-A3B, code-focused
+bob code            # coder: the same 27B at a coding temperature
 bob chat --pro      # chat-pro: DeepSeek via API (needs DEEPSEEK_API_KEY)
 bob think --pro     # ponder-pro: strongest reasoning, via API
 bob code --pro      # coder-pro: via API

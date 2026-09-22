@@ -418,9 +418,11 @@ def _stt_health_ok(port: int) -> bool:
 
 def _start_faster_whisper_bg(config: dict) -> str:
     """Start the faster-whisper (CTranslate2) STT server under venv-litellm. Same sttPort + /inference
-    contract as whisper.cpp, so the client and lifecycle are engine-agnostic. The model loads once before
-    the port binds, and a GPU cold-load can take several seconds, so readiness is a /health poll (not a
-    bare port check) after waiting for any prior server to release the port."""
+    contract as whisper.cpp, so the client and lifecycle are engine-agnostic. The model is loaded on the
+    first transcription and freed again after voice.sttIdleSeconds, because a warm GPU model holds ~1 GB
+    of VRAM that a tight profile needs for the chat model; voice.preload trades that back for a warm
+    first utterance. Readiness is a /health poll (not a bare port check) after waiting for any prior
+    server to release the port."""
     osenv = _osenv()
     from bob_core import _port
 
@@ -443,7 +445,9 @@ def _start_faster_whisper_bg(config: dict) -> str:
     new_pid = osenv.start_detached(
         [str(py), str(server)], pidfile=_pidfile("whisper"), log_path=_logfile("whisper"),
         env={"STT_PORT": str(stt_port), "STT_MODEL": size, "STT_MODEL_DIR": str(model_dir),
-             "STT_COMPUTE_TYPE": voice.get("sttComputeType", "auto")})
+             "STT_COMPUTE_TYPE": voice.get("sttComputeType", "auto"),
+             "STT_IDLE_SECONDS": str(int(voice.get("sttIdleSeconds", 900))),
+             "STT_PRELOAD": "1" if voice.get("preload") else ""})
     ready = _poll(lambda: _stt_health_ok(stt_port), timeout=90, interval=0.5)
     tail = "ready" if ready else "may not be ready yet — check logs/whisper.log"
     return f"faster-whisper: http://localhost:{stt_port} (PID {new_pid}, model={size}), {tail}"
@@ -651,7 +655,9 @@ def stack_up(config: dict, open_browser: bool = True, with_services: bool = Fals
     if err:
         return err
     ok, lines = ensure_inference(config)
-    if config.get("voice", {}).get("enabled"):    # STT is a voice extra, not part of core inference
+    # STT is a voice extra, not part of core inference, and its model holds ~1 GB of VRAM — so it starts
+    # on the first /voice use (ensure_deps(stt=True)) unless voice.preload asks for a warm one up front.
+    if config.get("voice", {}).get("enabled") and config.get("voice", {}).get("preload"):
         lines.append(_start_stt_bg(config))
 
     # Open WebUI (opt-in; detached background process).
@@ -950,7 +956,7 @@ def serve_foreground(config: dict) -> int:
         print(_swap_missing_msg(exe), file=sys.stderr)
         return 1
     print(_start_litellm_bg(config), file=sys.stderr)
-    if config.get("voice", {}).get("enabled"):
+    if config.get("voice", {}).get("enabled") and config.get("voice", {}).get("preload"):
         print(_start_stt_bg(config), file=sys.stderr)
     if osenv.is_port_in_use(port):
         print(f"Port {port} already in use; the endpoint is probably already running (bob stop).",

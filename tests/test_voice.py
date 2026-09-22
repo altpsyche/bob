@@ -281,16 +281,40 @@ class TestFasterWhisperServer(unittest.TestCase):
         r = client.post("/inference", files={"file": ("a.wav", b"", "audio/wav")})
         self.assertEqual(r.json()["text"], "")
 
-    def test_inference_503_when_model_not_loaded(self):
+    def test_inference_loads_the_model_on_demand(self):
+        # The model is no longer warmed at startup (it holds ~1 GB of VRAM); the first transcription
+        # loads it.
         fws, client = self._client()
         fws._model = None
-        r = client.post("/inference", files={"file": ("a.wav", b"RIFF", "audio/wav")})
-        self.assertEqual(r.status_code, 503)
+        seg = mock.Mock(text=" lazy")
 
-    def test_health(self):
+        def fake_load():
+            fws._model = mock.Mock(transcribe=mock.Mock(return_value=([seg], object())))
+            fws._model_ref = "small (cpu/int8)"
+
+        with mock.patch.object(fws, "_load_model", side_effect=fake_load) as loaded:
+            r = client.post("/inference", files={"file": ("a.wav", b"RIFF", "audio/wav")})
+        self.assertEqual(loaded.call_count, 1)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["text"], "lazy")
+
+    def test_health_is_ok_before_the_model_loads(self):
+        # A client must not wait on the model: the port answering IS readiness now.
         fws, client = self._client()
-        fws._model = None
-        self.assertEqual(client.get("/health").json()["status"], "loading")
+        fws._model, fws._model_ref = None, ""
+        body = client.get("/health").json()
+        self.assertEqual(body["status"], "ok")
+        self.assertEqual(body["model"], "(unloaded)")
+
+    def test_idle_reaper_frees_the_model(self):
+        import faster_whisper_server as fws
+        fws._model, fws._model_ref = mock.Mock(), "small (cuda/float16)"
+        fws._last_used = 0.0   # monotonic 0 == long ago
+        with mock.patch.object(fws, "STT_IDLE_SECONDS", 1), \
+             mock.patch.object(fws.time, "sleep", side_effect=[None, StopIteration]):
+            with self.assertRaises(StopIteration):
+                fws._idle_reaper()
+        self.assertIsNone(fws._model)
 
 
 class _FakePath:

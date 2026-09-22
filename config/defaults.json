@@ -120,6 +120,8 @@
     },
     "voice": {
       "enabled": true,
+      "preload": false,
+      "sttIdleSeconds": 900,
       "sttEngine": "faster-whisper",
       "sttModel": "small",
       "sttComputeType": "auto",

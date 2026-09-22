@@ -426,9 +426,13 @@ The `maxTokens` field caps per-model output in `litellm.yaml`. Without it, a rea
 
 `--cache-type-k` and `--cache-type-v` control how the key and value tensors of the attention cache are stored. Keys drive attention score computation and are more sensitivity-critical; values are weighted and summed, so they tolerate more aggressive quantization.
 
-Default (MODULE J): `--cache-type-k q8_0 --cache-type-v q8_0`, ~50% KV VRAM savings versus unquantized f16, with near-zero performance overhead on all GPU generations.
+Profile default: `--cache-type-k q8_0 --cache-type-v q8_0`, ~50% KV VRAM savings versus unquantized f16, with near-zero performance overhead on all GPU generations.
 
-**VRAM impact at ctx=16384, Qwen3.5-9B (the `chat` role: 40 layers, 8 KV heads, d_head=128):**
+A single model can override the profile-wide setting with `kvQuantK` / `kvQuantV` in
+`config/models.json`. The `16gb` profile does exactly that: its 27B is held entirely in VRAM at a long
+context, which is only affordable at `q4_0`, while every other model on the tier keeps `q8_0`.
+
+**VRAM impact at ctx=16384, Qwen3.5-9B (40 layers, 8 KV heads, d_head=128):**
 
 | K type | V type | KV VRAM estimate | Notes |
 |--------|--------|-----------------|-------|
@@ -512,20 +516,40 @@ Enable in `config/user.json`:
 }
 ```
 
+## Where a profile's VRAM actually goes
+
+Three llama-server defaults cost more VRAM than any quantization choice, and all three are now pinned
+explicitly by the generator. Measured on a 16 GB RTX 5080:
+
+| Default | What it does | Cost |
+|---|---|---|
+| no `-c` | reserves the model's full trained context window | 0.6B embedder: **4.8 GB** (1.4 GB at `-c 2048`); 0.6B reranker: **5.7 GB** |
+| `--parallel 4` | four request slots, each with its own KV *and*, on a hybrid attention/SSM model, its own recurrent-state cache | **~450 MiB** on the 27B; more on a dense model |
+| `-ub 512` | compute buffer sized for a 512-token micro-batch | **~226 MiB** per 0.6B helper |
+
+So every model in `config/models.json` sets `ctx`, embedders and rerankers included; the `srv` macro
+always emits `-np 1`; and the two 0.6B helpers pass `-ub 128`. Together that is about 8 GB of VRAM on a
+16 GB card that used to be reserved and never used.
+
+The other trap is llama-swap's grouping. Any model Bob does not list as a swap member lands in
+llama-swap's implicit default group, which defaults to `exclusive: true` — so a single embedding call
+for a memory lookup would unload the chat model. Bob now emits a named `resident` group
+(`swap: false, exclusive: false, persistent: true`) for `embed` and `rerank` so they coexist instead.
+
 ## MoE expert offloading (`nCpuMoe`)
 
-The ponder model (Qwen3.6-35B-A3B: 36B total, 3B active per token) exceeds 16 GB VRAM at Q4_K_M. Bob keeps
+The 12gb ponder model (Qwen3.6-35B-A3B: 36B total, 3B active per token) exceeds that card at Q4_K_M. Bob keeps
 it on the card with **`--n-cpu-moe N`**, which keeps the Mixture-of-Experts weights of the first N layers
 in system RAM while everything else stays on the GPU at `-ngl 99`. Because only ~3B experts activate per
-token, an A3B model streams those from RAM with little speed loss. On a 16 GB card, `nCpuMoe: 24` (24 of
-the 48 layers' experts in RAM) loads the 30B at ~11.7 GB VRAM, leaving headroom for the 16384 KV cache.
+token, an A3B model streams those from RAM with little speed loss. The `16gb` tier no longer needs this:
+its 27B fits the card whole. `12gb` still uses it.
 
-Set it per profile in `config/models.json` (already done for `16gb`):
+Set it per profile in `config/models.json`:
 
 ```json
 {
   "profiles": {
-    "16gb": { "ponder": { "nCpuMoe": 24 } }
+    "12gb": { "ponder": { "nCpuMoe": 34 } }
   }
 }
 ```

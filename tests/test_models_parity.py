@@ -37,7 +37,25 @@ class TestModelsPythonSide(unittest.TestCase):
         roles = bob_models.profile_roles("16gb")
         self.assertIn("ponder", roles)
         self.assertNotIn("_targetVRAM", roles)
-        self.assertEqual(roles["ponder"]["gguf"], "qwen3.6-35b-a3b-q4_k_m.gguf")
+        self.assertEqual(roles["ponder"]["gguf"], "qwen3.8-27b-gsq-rco-iq3_xxs.gguf")
+
+    def test_alias_role_inherits_the_target_spec(self):
+        roles = bob_models.profile_roles("16gb")
+        self.assertEqual(roles["writer"]["_aliasOf"], "chat")
+        self.assertEqual(roles["writer"]["gguf"], roles["chat"]["gguf"])
+        self.assertEqual(roles["writer"]["ctx"], roles["chat"]["ctx"])
+        # the alias's own keys still win over the inherited ones
+        self.assertEqual(roles["writer"]["setParams"], {"temperature": 0.6, "top_p": 0.95})
+        self.assertNotIn("_aliasOf", roles["chat"])
+
+    def test_alias_to_unknown_or_chained_role_raises(self):
+        c = bob_models.load_models_config()
+        c["profiles"]["16gb"]["writer"] = {"aliasOf": "nope"}
+        with self.assertRaises(ValueError):
+            bob_models.profile_roles("16gb", c)
+        c["profiles"]["16gb"]["writer"] = {"aliasOf": "coder"}   # coder is itself an alias
+        with self.assertRaises(ValueError):
+            bob_models.profile_roles("16gb", c)
 
     def test_set_active_profile_writes_override(self):
         with tempfile.TemporaryDirectory() as d:

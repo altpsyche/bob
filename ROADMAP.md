@@ -216,6 +216,16 @@ pure Python, Docker-free.
 ### 1.4 a deeper coding agent
 Take the coding loop from good to measured best in class for a local harness.
 
+- **One model, five roles, and a 16 GB card that holds it whole (landed).** The registry's GPU tiers now
+  run Qwen3.8-27B in IST-DASLab's GSQ-RCO packing, with `coder`, `ponder`, `writer` and `agent` as aliases
+  of `chat`: one download, one loaded server, per-alias sampling. Non-uniform quantization is what changed
+  the arithmetic — GSQ quantizes each tensor at its own bit depth and RCO assigns those depths under a size
+  budget, so a 10 to 12 GB build scores at its full-precision level on AIME25 and LiveCodeBench rather than
+  merely close to it. The 16 GB tier stops paying the offload tax it has paid since 1.2: no MoE experts in
+  system RAM, no dense model fitted around the card, 18.6 GB of downloads instead of ~90 GB, and 2.5x the
+  context. Auditing the VRAM that made room for it turned up three llama-server defaults reserving about
+  8 GB nobody used, and a llama-swap grouping default that made every memory lookup evict the chat model.
+
 - **Structural code retrieval.** Add an `ast-grep` escalation tier on top of today's ripgrep and repo map,
   and promote the tree-sitter symbol extraction in [scripts/bob_repomap.py](scripts/bob_repomap.py), today
   an optional backend behind a lazy `grep_ast` import with a regex fallback, into a first-class part of the

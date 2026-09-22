@@ -98,12 +98,17 @@ def models_list(config: dict) -> str:
         spec = roles[role]
         label = spec.get("gguf", "").replace(".gguf", "").replace("-", " ").replace("_", " ")
         label = f"{label} ({spec.get('sizeGB', '?')} GB)"
+        # An alias shares the target's server, and llama-swap does not list aliases in /v1/models by
+        # default — so ask about the model that actually loads.
+        loaded_as = spec.get("_aliasOf") or role
         if not endpoint_up:
             state = "(endpoint down)"
-        elif role in loaded:
+        elif loaded_as in loaded:
             state = "loaded, pinned" if spec.get("pinned") else "loaded"
         else:
             state = "unloaded"
+        if spec.get("_aliasOf"):
+            state = f"{state} (alias of {spec['_aliasOf']})"
         lines.append(f"{role:<10} {label:<42} {str(spec.get('sizeGB', '?')) + ' GB':<9} {state}")
     lines.append("")
     if not endpoint_up:
@@ -124,8 +129,11 @@ def model_show(role: str, config: dict) -> str:
     spec = roles[role]
     gguf = spec.get("gguf", "")
     dest = _model_path(gguf)
-    lines = ["", f"Role:     {role}", f"File:     {gguf}", f"VRAM:     {spec.get('sizeGB', '?')} GB",
-             f"Repo:     {spec.get('repo', '?')}", f"Path:     {spec.get('path', '?')}"]
+    lines = ["", f"Role:     {role}"]
+    if spec.get("_aliasOf"):
+        lines.append(f"Alias of: {spec['_aliasOf']}  (same file, same loaded server)")
+    lines += [f"File:     {gguf}", f"VRAM:     {spec.get('sizeGB', '?')} GB",
+              f"Repo:     {spec.get('repo', '?')}", f"Path:     {spec.get('path', '?')}"]
     if dest.exists():
         lines.append(f"On disk:  {round(dest.stat().st_size / (1024 ** 3), 2)} GB")
     else:
@@ -152,11 +160,14 @@ def profiles_list(config: dict) -> str:
     lines = []
     for name in sorted(mcfg.get("profiles", {})):
         roles = bob_models.profile_roles(name, mcfg)
-        total = sum(float(s.get("sizeGB", 0) or 0) for s in roles.values())
-        have = sum(1 for s in roles.values() if _model_path(s.get("gguf", "")).exists())
+        # Size and on-disk count are per FILE, not per role: aliased roles share one GGUF, so counting
+        # them again would report a profile several times its real download.
+        files = {s["gguf"]: s for s in roles.values() if s.get("gguf")}
+        total = sum(float(s.get("sizeGB", 0) or 0) for s in files.values())
+        have = sum(1 for g in files if _model_path(g).exists())
         mark = "* " if name == active else "  "
         target = mcfg["profiles"][name].get("_targetVRAM", "")
-        lines.append(f"{mark}{name:<6} ~{total:5.1f} GB  {have}/{len(roles)} on disk   {target}")
+        lines.append(f"{mark}{name:<6} ~{total:5.1f} GB  {have}/{len(files)} on disk   {target}")
     vram = gpu_vram_gb()
     sug = suggested_profile(vram, mcfg)
     if sug:
@@ -230,7 +241,7 @@ def verify_urls(profile: str, config: dict) -> str:
             any_bad = True
             continue
         lines.append(f"\nProfile '{pname}'")
-        prof = mcfg["profiles"][pname]
+        prof = bob_models.profile_roles(pname, mcfg)   # resolves aliasOf to the target's repo/path
         for role in _VERIFY_ROLES:
             spec = prof.get(role)
             if not spec:

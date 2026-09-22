@@ -9,6 +9,60 @@ rebuilds only what changed, verifies, and rolls back on failure.
 ## [Unreleased]
 
 ### Added
+- **One 27B model now serves five roles, and it fits a 16 GB card whole.** `chat` on every GPU tier is
+  Qwen3.8-27B in IST-DASLab's GSQ-RCO packing, and `coder`, `ponder`, `writer` and `agent` are
+  `aliasOf: "chat"` — one download, one loaded llama-server, five names. The packing is why: GSQ
+  quantizes each tensor at its own bit depth and RCO assigns those depths under a size budget, so the
+  IQ3_S build matches the BF16 base exactly on AIME25 (100.00) and LiveCodeBench v6 (85.71) at 12 GB,
+  and the 10 GB IQ3_XXS still holds 100.00 / 84.57 — both ahead of the uniform Unsloth quants Bob shipped
+  before, at a smaller size. What that replaces on the 16gb tier: a 18.6 GB MoE coder with 24 layers of
+  experts in system RAM, a 22 GB MoE reasoner with 32, and a 23 GB *dense* writer that llama.cpp had to
+  fit around the card. All three are gone; the tier now downloads 18.6 GB total instead of ~90 GB, holds
+  its model entirely on the GPU, and runs 2.5x the context. Each alias keeps its own sampling through
+  llama-swap `setParamsByID`, so `writer` is still warmer than `agent`.
+  [config/models.json](config/models.json), [scripts/bob_models.py](scripts/bob_models.py),
+  [scripts/tools/generate.py](scripts/tools/generate.py), [docs/USAGE.md](docs/USAGE.md)
+- **`bob` no longer holds the speech model hostage.** `bob up` and `bob serve` used to start
+  faster-whisper eagerly whenever voice was enabled, and its GPU model sat on ~1 GB of VRAM whether or
+  not anyone ever spoke. The server now loads its model on the first transcription and frees it again
+  after `voice.sttIdleSeconds` (default 900); the port stays open throughout, so the `/voice` preflight,
+  the health probe and the pidfile lifecycle are unchanged. `voice.preload = true` restores the old warm
+  start. [scripts/faster_whisper_server.py](scripts/faster_whisper_server.py),
+  [scripts/tools/stack.py](scripts/tools/stack.py), [config/defaults.json](config/defaults.json)
+
+### Fixed
+- **A memory lookup was unloading the chat model.** llama-swap puts any model Bob does not list as a
+  swap member into an implicit default group whose `exclusive` defaults to true, so loading `embed` or
+  `rerank` evicted everything else — every semantic recall paid a full model reload. `bob gen` now emits
+  a named `resident` group (`swap: false, exclusive: false, persistent: true`) for them.
+  [scripts/tools/generate.py](scripts/tools/generate.py)
+- **Three llama-server defaults were reserving VRAM nothing used.** With no `-c`, llama-server reserves
+  the model's entire trained context window: measured at 4.8 GB for the 0.6B embedder and 5.7 GB for the
+  0.6B reranker, against 1.4 GB each at `-c 2048`. `--parallel` defaults to four slots, each with its own
+  KV and, on a hybrid attention/SSM model, its own recurrent-state cache (~450 MiB). `-ub 512` sizes a
+  compute buffer neither 0.6B helper needs (~226 MiB each). Every model in the registry now sets `ctx`,
+  the `srv` macro always emits `-np 1`, and the helpers pass `-ub 128`.
+  [config/models.json](config/models.json), [scripts/tools/generate.py](scripts/tools/generate.py),
+  [docs/TUNING.md](docs/TUNING.md)
+- **A vision model no longer loses flash-attention and reasoning extraction.** The generator dropped
+  `--flash-attn` (and, accidentally, `--reasoning-format deepseek`) from any model with an `mmproj`,
+  on the grounds that the two were incompatible. `mtmd` detects flash-attention support per backend and
+  falls back on its own, so the exclusion only cost VRAM and speed.
+  [scripts/tools/generate.py](scripts/tools/generate.py)
+- **`bob profiles` was multiplying a profile's size by its role count.** The total and the on-disk count
+  are now per file, so roles sharing one GGUF are counted once; `bob model` marks an alias and reads its
+  loaded state from the model that actually loads. [scripts/tools/models.py](scripts/tools/models.py)
+
+### Changed
+- **Per-model KV quantization.** `kvQuantK` / `kvQuantV` on a single model override the profile-wide
+  macro — the 16gb 27B is held entirely in VRAM at 40960 context, which is only affordable at `q4_0`,
+  while everything else on the tier keeps `q8_0`. [config/models.json](config/models.json)
+- **`fim` shares the swap group on the 16gb tier** (`swap: true`), because a resident autocomplete model
+  does not fit beside a 10 GB chat model on a 16 GB card. Inline completion and chat take turns there;
+  24gb and up keep `fim` resident. The tier's FIM model also drops to Q4_K_M.
+  [config/models.json](config/models.json)
+
+### Added
 - **Bob's MCP server speaks Streamable HTTP, so a harness can reach it from another machine.**
   `bob agent mcp --http` serves the same tool registry as the stdio transport on
   `agent.mcpHost:agent.mcpPort` (loopback `:8085` by default) at `/mcp`, and `agent.mcpTransport = "http"`

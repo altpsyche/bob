@@ -113,7 +113,10 @@ def gen_llama_swap(profile: str = None) -> str:
     reason = "--reasoning-format deepseek"
     batch = f"-b {d['batch']}" if d.get("batch") and d["batch"] != 512 else ""
     ub = f"-ub {d['ubatch']}" if d.get("ubatch") and d["ubatch"] != 512 else ""
-    par = f"-np {d['parallel']}" if d.get("parallel") and d["parallel"] > 1 else ""
+    # Always explicit: llama-server defaults to FOUR slots, and every slot gets its own KV (and, on a
+    # hybrid attention/SSM model, its own recurrent-state cache) — measured at ~450 MiB of pure waste
+    # for a single-user box. Bob serves one request at a time unless a model asks for more.
+    par = f"-np {int(d['parallel'])}" if d.get("parallel") else "-np 1"
     thr = f"-t {d['threads']}" if d.get("threads") and d["threads"] > 0 else ""
     numa = f"--numa {d['numa']}" if d.get("numa") else ""
     srv_parts = [p for p in [srv_bin, "--port ${PORT}", f"-ngl {ngl}", fa, reason, batch, ub, numa, par, thr] if p]
@@ -129,16 +132,18 @@ def gen_llama_swap(profile: str = None) -> str:
     by_role = {m["role"]: m for m in models}
     global_mlock_big = d.get("mlockBig") is True
     global_no_mmap = d.get("noMmap") is True
+    aliases: dict = {}
 
     for m in models:
         _assert_no_quote(m.get("gguf", ""), f"model '{m['role']}' gguf")
         if "gemma" in m.get("gguf", "") and m.get("kv") is True:
             print(f"[{m['role']}] Gemma model with kv=true — KV quant causes quality regression.",
                   file=sys.stderr)
-        # Flash-attn is incompatible with mmproj; expand srv without it for that model.
-        if m.get("mmproj") and fa != "":
-            srv_ref = " ".join(p for p in [srv_bin, "--port ${PORT}", f"-ngl {ngl}", batch, ub, numa, par, thr] if p)
-        elif str(m.get("ngl", "")).lower() == "auto" and not is_cpu:
+        if m.get("_aliasOf"):
+            # Not a model of its own: it rides the target's server under llama-swap `aliases:`.
+            aliases.setdefault(m["_aliasOf"], []).append(m["role"])
+            continue
+        if str(m.get("ngl", "")).lower() == "auto" and not is_cpu:
             # ngl="auto": omit -ngl entirely so llama.cpp sizes the offload to whatever VRAM is actually
             # free (common_fit_params). ANY explicit -ngl aborts that fit ("n_gpu_layers already set by
             # user ... abort"), so the srv macro's -ngl cannot ride along and the model gets its own
@@ -151,7 +156,16 @@ def gen_llama_swap(profile: str = None) -> str:
         if m.get("ctx") is not None:
             parts.append(f"-c {_fmt(m['ctx'])}")
         if m.get("kv"):
-            parts.append("${kv}")
+            # Per-model KV quant beats the profile-wide macro: a model held entirely in VRAM at a long
+            # context can only afford q4_0, while a small one keeps q8_0's accuracy for free.
+            mk = m.get("kvQuantK") or m.get("kvQuant")
+            mv = m.get("kvQuantV") or m.get("kvQuant")
+            if is_cpu:
+                pass
+            elif mk or mv:
+                parts.append(f"--cache-type-k {mk or kv_k} --cache-type-v {mv or kv_v}")
+            else:
+                parts.append("${kv}")
         if m.get("embedding"):
             parts.append("--embedding")
         if m.get("reranking"):
@@ -195,10 +209,19 @@ def gen_llama_swap(profile: str = None) -> str:
         if mem not in role_names:
             print(f"group member '{mem}' not in profile '{name}' — skipping in swap group", file=sys.stderr)
             continue
+        if by_role[mem].get("_aliasOf"):
+            continue   # an alias is not a loadable model — its target carries the membership
         if by_role[mem].get("pinned"):
             raise RuntimeError(f"model '{mem}' is pinned but also listed in group.members — pinned models "
                                "must stay out of the swap group")
         active_members.append(mem)
+    # A profile can push one more role into the swap group with "swap": true. That is how a tight tier
+    # says "this model cannot stay resident next to the big one" without changing the shared member list.
+    for m in models:
+        if m.get("swap") is True and not m.get("_aliasOf") and m["role"] not in active_members:
+            if m.get("pinned"):
+                raise RuntimeError(f"model '{m['role']}' sets both pinned and swap")
+            active_members.append(m["role"])
 
     nl = "\n"
     out = []
@@ -219,12 +242,28 @@ def gen_llama_swap(profile: str = None) -> str:
     out.append("")
     out.append("models:")
     for m in models:
+        if m.get("_aliasOf"):
+            continue
+        role_aliases = aliases.get(m["role"], [])
         out.append(f"  {m['role']}:")
         out.append(f'    cmd: "{m["_cmd"]}"')
-        if m.get("setParams"):
-            pairs = ", ".join(f"{k}: {_fmt(m['setParams'][k])}" for k in sorted(m["setParams"]))
+        if role_aliases:
+            out.append(f"    aliases: [{', '.join(role_aliases)}]")
+        # Per-alias sampling: one loaded server, but a request that came in under `writer` still gets
+        # the writer's temperature. setParamsByID is applied after setParams, so the target's own
+        # defaults stay the baseline.
+        by_id = {r: by_role[r]["setParams"] for r in role_aliases
+                 if by_role[r].get("setParams") and by_role[r]["setParams"] != m.get("setParams")}
+        if m.get("setParams") or by_id:
             out.append("    filters:")
-            out.append(f"      setParams: {{ {pairs} }}")
+            if m.get("setParams"):
+                pairs = ", ".join(f"{k}: {_fmt(m['setParams'][k])}" for k in sorted(m["setParams"]))
+                out.append(f"      setParams: {{ {pairs} }}")
+            if by_id:
+                out.append("      setParamsByID:")
+                for r in sorted(by_id):
+                    pairs = ", ".join(f"{k}: {_fmt(by_id[r][k])}" for k in sorted(by_id[r]))
+                    out.append(f"        {r}: {{ {pairs} }}")
         if m.get("ttl") is not None:
             out.append(f"    ttl: {_fmt(m['ttl'])}")
         out.append("")
@@ -232,6 +271,18 @@ def gen_llama_swap(profile: str = None) -> str:
     out.append(f"  {mcfg['group']['name']}:")
     out.append(f"    swap: {_fmt(mcfg['group']['swap'])}")
     out.append(f"    members: [{', '.join(active_members)}]")
+    # Everything Bob does not list as a swap member (fim/embed/rerank) would otherwise land in
+    # llama-swap's implicit default group, which defaults to exclusive:true — so a single embedding
+    # call for a memory lookup would evict the big chat model. Name the group instead and mark it
+    # non-exclusive + persistent: these are small, always-wanted models that coexist with the swapper.
+    resident = [m["role"] for m in models
+                if not m.get("_aliasOf") and m["role"] not in active_members]
+    if resident:
+        out.append("  resident:")
+        out.append("    swap: false")
+        out.append("    exclusive: false")
+        out.append("    persistent: true")
+        out.append(f"    members: [{', '.join(resident)}]")
 
     dest = _write(REPO / "config" / "llama-swap.yaml", nl.join(out))
     return f"generated {dest}  (profile: {name})"

@@ -42,7 +42,10 @@ def resolve_fetch_set(profile=None):
     roles = bob_models.profile_roles(name, config)
     seen = set()
     models = []
-    for role, spec in roles.items():
+    # Concrete roles first, so a file shared by a role and its aliases is reported under the role that
+    # actually owns it rather than whichever alias happened to be listed first.
+    ordered = sorted(roles.items(), key=lambda kv: bool(kv[1].get("_aliasOf")))
+    for role, spec in ordered:
         gguf = spec.get("gguf")
         if not gguf or gguf in seen:
             continue

@@ -54,8 +54,10 @@ class TestModelShow(unittest.TestCase):
     def test_known_role_fields(self):
         out = models_mod.model_show("coder", CFG)
         self.assertIn("Role:     coder", out)
-        self.assertIn("qwen3-coder-30b-a3b-q4_k_m.gguf", out)
-        self.assertIn("unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF", out)
+        # 16gb collapses coder onto the shared Qwen3.8-27B server
+        self.assertIn("Alias of: chat", out)
+        self.assertIn("qwen3.8-27b-gsq-rco-iq3_xxs.gguf", out)
+        self.assertIn("ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF", out)
 
     def test_unknown_role(self):
         out = models_mod.model_show("bogus", CFG)

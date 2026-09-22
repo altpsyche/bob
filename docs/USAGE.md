@@ -68,7 +68,7 @@ For scripting, piping, and quick questions without entering the shell:
 ```
 bob chat          # opens the routed REPL, multi-turn, empty line to exit
 bob think         # same, with reasoning turned ON (the chat model thinks before answering)
-bob code          # same but uses the coder (Qwen3-Coder-30B-A3B), code focus
+bob code          # same but uses the coder role, code focus
 ```
 
 `think` is a reasoning **mode**, not a model swap: `bob think` and `bob chat --think` keep the chat
@@ -159,25 +159,35 @@ bob up --no-open
 
 | Name | Role | Backing model |
 |---|---|---|
-| `ponder` | heavy reasoning and architecture | Qwen3.6-35B-A3B Q4_K_M |
-| `coder` | coding chat and agentic edits | Qwen3-Coder-30B-A3B Q4_K_M (MoE) |
-| `chat` | general conversation | Qwen3.5-9B Q4_K_M |
-| `writer` | long-form prose and drafting | DeepSeek-R1-Distill-Qwen-32B Q5_K_M |
+| `chat` | general conversation | Qwen3.8-27B GSQ-RCO IQ3_XXS |
+| `coder` | coding chat and agentic edits | *alias of* `chat` |
+| `ponder` | heavy reasoning and architecture | *alias of* `chat` |
+| `writer` | long-form prose and drafting | *alias of* `chat` |
+| `agent` | local tool use and autonomous tasks | *alias of* `chat` |
+| `vision` | image description and visual Q&A | Qwen3-VL-8B Q4_K_M + mmproj |
+| `fim` | autocomplete | Qwen-Coder-1.5B Q4_K_M |
+| `embed` | RAG embeddings (resident) | Qwen3-Embedding-0.6B Q8 |
+| `rerank` | recall reranking (resident) | Qwen3-Reranker-0.6B Q8 |
 
-`writer` is a *reasoning* model: it thinks before it answers, and that reasoning is routed to
+Five of those roles are **one loaded model under five names**. Qwen3.8-27B in the GSQ-RCO
+IQ3_XXS packing is 10 GB, fits a 16 GB card whole, and scores at its full-precision level on
+reasoning and code, so there is nothing left for a separate reasoner or writer to do. Each name
+keeps its own sampling (`writer` runs warmer, `agent` near-deterministic) through llama-swap's
+per-alias parameters, and the swap group no longer thrashes between four big GGUFs.
+
+`chat` is a *reasoning* model: it thinks before it answers, and that reasoning is routed to
 `reasoning_content` rather than the reply. Give it room. A very small `--max` (say `--max 70`) can
 be consumed entirely by the thinking pass and return an empty answer; the default (uncapped) path
-is fine. It is also the one dense model larger than most cards, so its profile entry sets
-`ngl: "auto"` and lets llama.cpp size the GPU offload to whatever VRAM is free instead of a
-hand-tuned layer count.
-| `fim` | autocomplete (pinned) | Qwen-Coder-3B Q8_0 |
-| `embed` | RAG embeddings (pinned) | Qwen3-Embedding-0.6B Q8 |
-| `vision` | image description and visual Q&A | Qwen3-VL-8B Q4_K_M + mmproj |
-| `agent` | local tool use and autonomous tasks | Qwen3.5-9B Q5_K_M |
+is fine.
+
+On the `16gb` profile `fim` shares the swap group with `chat`, because a resident autocomplete
+model does not fit beside a 10 GB one: inline completion and chat take turns. `24gb` and up keep
+`fim` resident, fold `vision` into the same 27B (it ships a vision projector), and run the
+`-mtp` build, whose built-in draft head is worth about +40% tokens/sec.
 
 Every model's GGUF file, HuggingFace source, context size, and launch flags are defined once in [config/models.json](../config/models.json). The downloader and the runtime config both read from it. Clients reference the role names above (`coder`, `ponder`, etc.), so swapping the backing model for a role never requires touching any client configuration.
 
-The `12gb` profile uses smaller variants (~21 GB on disk instead of ~38 GB). The `8gb` profile targets cards like the RTX 3070 and 4060 and is marked unvalidated. The `24gb` and `32gb` profiles ship near-lossless quants for bigger cards. Switch with `bob profile 12gb`, `bob profile auto` to detect from VRAM, or pass `--profile <name>` to setup before the first model download.
+The `12gb` profile keeps the MoE pair (Qwen3-Coder-30B-A3B + Qwen3.6-35B-A3B with expert offload): once Bob's own resident models are counted, the 27B only fits there at a packing that costs more code quality than the offload does. The `8gb` profile targets cards like the RTX 3070 and 4060 and is marked unvalidated. The `24gb` and `32gb` profiles ship near-lossless quants for bigger cards. Switch with `bob profile 12gb`, `bob profile auto` to detect from VRAM, or pass `--profile <name>` to setup before the first model download.
 
 A `cpu` profile (a single tiny ~0.5 GB model) targets **no-GPU** boxes such as CI runners and dev laptops. It proves the serve → agent path works without a GPU (correctness and wiring, not performance); `bob profile auto` selects it when no GPU is detected, and `bob build --cpu` produces a CUDA-off engine to run it.
 
@@ -355,7 +365,7 @@ Voice adds two-way audio to the terminal using faster-whisper (STT) and piper (T
 ```
 bob setup-voice
 ```
-Downloads the faster-whisper STT model, the piper voice, and the Qwen3-VL mmproj file, and installs the STT Python deps. `bob up` auto-starts the STT server on port 8082. On an NVIDIA GPU, setup also installs the CUDA-12 runtime libs (cuBLAS/cuDNN) so STT runs on the GPU; otherwise, or if those libs are missing at runtime, the server falls back to CPU int8 automatically (fast enough for single-utterance voice). (Only when `voice.sttEngine = 'whisper.cpp'` does setup build `whisper-server` and fetch the ggml model instead.)
+Downloads the faster-whisper STT model, the piper voice, and the Qwen3-VL mmproj file, and installs the STT Python deps. `bob up` starts the STT server on port 8082 on first voice use, not at boot, and its model is freed again after `voice.sttIdleSeconds` (default 900) so it does not hold ~1 GB of VRAM while nobody is talking. Set `voice.preload = true` for a warm first utterance instead. On an NVIDIA GPU, setup also installs the CUDA-12 runtime libs (cuBLAS/cuDNN) so STT runs on the GPU; otherwise, or if those libs are missing at runtime, the server falls back to CPU int8 automatically (fast enough for single-utterance voice). (Only when `voice.sttEngine = 'whisper.cpp'` does setup build `whisper-server` and fetch the ggml model instead.)
 
 **Commands:**
 ```
@@ -658,7 +668,7 @@ if choice.finish_reason == "tool_calls":
         # Execute the function, add the result to messages, continue the conversation...
 ```
 
-**Supported:** `coder` (Qwen3-Coder-30B-A3B, tuned for agentic tool use). **Not supported:** `ponder`, `chat`. Use `coder` for agentic tasks. In Cline, point at `coder` for best results; in aider, tool use is handled internally.
+**Supported:** `coder` (Qwen3.8-27B, strong at agentic tool use). On the 16gb profile `ponder`, `chat` and `writer` are the same loaded model, so any of them works; the names differ only in sampling. In aider, tool use is handled internally.
 
 ## Clients
 
@@ -674,10 +684,10 @@ Install the **Continue** extension from the VS Code Marketplace, then start the 
 
 | Continue role | Model | Purpose |
 |---|---|---|
-| Chat, edit, apply | `coder` (Qwen3-Coder-30B-A3B) | default coding chat and inline edits |
-| Chat, edit | `ponder` (Qwen3.6-35B-A3B) | architecture discussion and heavy reasoning |
-| Chat | `chat` (Qwen3.5-9B) | general conversation; thinking off by default |
-| Chat | `writer` (DeepSeek-R1-Distill-Qwen-32B) | long-form prose and drafting |
+| Chat, edit, apply | `coder` (Qwen3.8-27B) | default coding chat and inline edits |
+| Chat, edit | `ponder` (Qwen3.8-27B) | architecture discussion and heavy reasoning |
+| Chat | `chat` (Qwen3.8-27B) | general conversation |
+| Chat | `writer` (Qwen3.8-27B) | long-form prose and drafting |
 | Chat, edit | `chat-pro` (DeepSeek V4, API) | general conversation via API |
 | Chat, edit, apply | `coder-pro` (DeepSeek V4, API) | coding via API |
 | Chat | `ponder-pro` (DeepSeek R1, API) | heavy reasoning via API |
@@ -724,7 +734,7 @@ Set the context window to `16384` to match the server's limit. Leave image suppo
 
 ### Terminal: aider (plan and edit separately)
 
-Aider has a genuine planning-versus-editing split: `ponder` (Qwen3-30B) drafts the change, `coder` (Qwen3-Coder-30B-A3B) turns it into file edits. You review the plan before any edit lands. Setup links the aider config (`config/aider/.aider.conf.yml`) into your home directory. Then:
+Aider has a genuine planning-versus-editing split: `ponder` drafts the change, `coder` turns it into file edits (on the 16gb profile both names reach the same 27B, at different temperatures). You review the plan before any edit lands. Setup links the aider config (`config/aider/.aider.conf.yml`) into your home directory. Then:
 
 ```
 cd <your-project>

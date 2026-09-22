@@ -11,10 +11,16 @@ Config (set via env vars by scripts/tools/stack.py):
   STT_MODEL_DIR    — local CT2 model directory; used verbatim when it exists (offline / pinned)
   STT_COMPUTE_TYPE — "auto" (float16 on GPU, int8 on CPU), or a CT2 compute type
   STT_DEVICE       — "auto" | "cuda" | "cpu"
+  STT_IDLE_SECONDS — free the model after this long with no transcription (0 = never). The GPU model
+                     holds ~1 GB of VRAM, which on a 16 GB card is a whole quantization step of the
+                     chat model, so it does not squat while nobody is talking.
+  STT_PRELOAD      — "1" to load the model at startup instead of on the first request.
 """
 import os
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
@@ -26,12 +32,18 @@ STT_MODEL = os.environ.get("STT_MODEL", "small")
 STT_MODEL_DIR = os.environ.get("STT_MODEL_DIR", "")
 STT_COMPUTE_TYPE = os.environ.get("STT_COMPUTE_TYPE", "auto")
 STT_DEVICE = os.environ.get("STT_DEVICE", "auto")
+STT_IDLE_SECONDS = int(os.environ.get("STT_IDLE_SECONDS") or 900)
+STT_PRELOAD = os.environ.get("STT_PRELOAD", "") == "1"
 
 app = FastAPI(title="faster-whisper-stt-server")
 
-# Loaded once at startup (warm). Kept module-level so every request reuses the resident model.
+# Loaded on first use (or at startup with STT_PRELOAD) and kept module-level so every request reuses
+# the resident model. _lock serializes load/unload against in-flight transcriptions; _last_used drives
+# the idle reaper.
 _model = None
 _model_ref = ""
+_lock = threading.RLock()
+_last_used = 0.0
 
 
 def _preload_cuda_libs() -> None:
@@ -120,9 +132,36 @@ def _load_model():
     print(f"faster-whisper: loaded {_model_ref}", file=sys.stderr)
 
 
+def _ensure_model():
+    """The resident model, loading it if this is the first request or the idle reaper freed it."""
+    global _last_used
+    with _lock:
+        if _model is None:
+            _load_model()
+        _last_used = time.monotonic()
+        return _model
+
+
+def _idle_reaper():
+    """Drop the model (and its VRAM) after STT_IDLE_SECONDS without a transcription. The port stays
+    open and the next request reloads, so the lifecycle and every client contract are unchanged."""
+    global _model, _model_ref
+    while True:
+        time.sleep(min(60, max(5, STT_IDLE_SECONDS // 4)))
+        with _lock:
+            if _model is None or time.monotonic() - _last_used < STT_IDLE_SECONDS:
+                continue
+            _model, _model_ref = None, ""
+        import gc
+        gc.collect()
+        print(f"faster-whisper: idle for {STT_IDLE_SECONDS}s — model unloaded, VRAM released",
+              file=sys.stderr)
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok" if _model is not None else "loading", "model": _model_ref}
+    # "ok" the moment the port answers: the model is loaded on demand, so a client must not wait for it.
+    return {"status": "ok", "model": _model_ref or "(unloaded)"}
 
 
 @app.post("/inference")
@@ -130,8 +169,7 @@ async def inference(file: UploadFile = File(...),
                     temperature: str = Form("0.0"),
                     response_format: str = Form("json")):
     """whisper.cpp-compatible endpoint: accept a WAV upload, return {"text": transcript}."""
-    if _model is None:
-        raise HTTPException(503, "STT model not loaded yet")
+    model = _ensure_model()
     data = await file.read()
     if not data:
         return {"text": ""}
@@ -143,7 +181,7 @@ async def inference(file: UploadFile = File(...),
             temp = float(temperature)
         except (TypeError, ValueError):
             temp = 0.0
-        segments, _info = _model.transcribe(tmp, temperature=temp, vad_filter=True)
+        segments, _info = model.transcribe(tmp, temperature=temp, vad_filter=True)
         text = "".join(seg.text for seg in segments).strip()
         return {"text": text}
     except Exception as e:   # never leak a stack trace to the HTTP client; the loop wraps 5xx
@@ -154,5 +192,8 @@ async def inference(file: UploadFile = File(...),
 
 if __name__ == "__main__":
     import uvicorn
-    _load_model()   # warm the model before the port opens, so a port probe == ready
+    if STT_PRELOAD:
+        _load_model()   # warm before the port opens, so a port probe == ready
+    if STT_IDLE_SECONDS > 0:
+        threading.Thread(target=_idle_reaper, daemon=True).start()
     uvicorn.run(app, host="127.0.0.1", port=STT_PORT)

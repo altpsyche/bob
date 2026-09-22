@@ -61,10 +61,31 @@ def resolve_profile_name(name: Optional[str] = None, config: Optional[dict] = No
 
 
 def profile_roles(name: Optional[str] = None, config: Optional[dict] = None) -> dict:
-    """The role→spec map for a profile, skipping '_'-prefixed metadata (_targetVRAM/_notes/_cpuTier)."""
+    """The role→spec map for a profile, skipping '_'-prefixed metadata (_targetVRAM/_notes/_cpuTier).
+
+    A role given as {"aliasOf": "<role>"} is not a second model: it inherits the target's whole spec
+    (same GGUF, one download, one loaded llama-server) and keeps an "_aliasOf" marker so the llama-swap
+    generator emits it under the target's `aliases:` instead of a second `cmd`. Any other key on the
+    alias spec overrides the inherited value (e.g. per-role setParams). Alias chains are rejected."""
     config = config if config is not None else load_models_config()
-    profile = config["profiles"][resolve_profile_name(name, config)]
-    return {role: spec for role, spec in profile.items() if not role.startswith("_")}
+    profile_name = resolve_profile_name(name, config)
+    profile = config["profiles"][profile_name]
+    roles = {role: spec for role, spec in profile.items() if not role.startswith("_")}
+    raw = dict(roles)
+    for role, spec in raw.items():
+        target = spec.get("aliasOf")
+        if not target:
+            continue
+        if target not in raw:
+            raise ValueError(f"role '{role}' aliases unknown role '{target}' in profile '{profile_name}'")
+        if raw[target].get("aliasOf"):
+            raise ValueError(f"role '{role}' aliases '{target}', which is itself an alias — "
+                             "alias chains are not supported")
+        merged = dict(raw[target])
+        merged.update({k: v for k, v in spec.items() if k != "aliasOf"})
+        merged["_aliasOf"] = target
+        roles[role] = merged
+    return roles
 
 
 def set_active_profile(name: str, config: Optional[dict] = None) -> str:

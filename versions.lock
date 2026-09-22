@@ -45,7 +45,7 @@
       "repo": "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
       "path": "qwen2.5-coder-1.5b-instruct-q8_0.gguf",
       "revision": "main",
-      "sha256": null,
+      "sha256": "507de59046601282ba768a9789900e6ccf60ed93ddf346730b7c68eb0715bc47",
       "sizeGB": 1.9
     },
     "qwen3.6-35b-a3b-q3_k_xl.gguf": {
@@ -62,33 +62,19 @@
       "sha256": "22c9979ce4fbcdc5acdc310c6641c32797eff1aa980b8f7a2db8a8ea23429a48",
       "sizeGB": 0.64
     },
-    "deepseek-r1-distill-qwen-32b-q4_k_m.gguf": {
-      "repo": "unsloth/DeepSeek-R1-Distill-Qwen-32B-GGUF",
-      "path": "DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf",
+    "qwen3.8-27b-gsq-rco-iq3_xxs.gguf": {
+      "repo": "ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF",
+      "path": "Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf",
       "revision": "main",
-      "sha256": null,
-      "sizeGB": 19.85
+      "sha256": "fdfcb6a29b11188956dfbfd904223588a6c1b77eb250c3e8a36e1bd269df91f7",
+      "sizeGB": 10.09
     },
-    "qwen3.5-9b-q5_k_m.gguf": {
-      "repo": "unsloth/Qwen3.5-9B-GGUF",
-      "path": "Qwen3.5-9B-Q5_K_M.gguf",
+    "qwen-coder-1.5b-q4_k_m.gguf": {
+      "repo": "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
+      "path": "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
       "revision": "main",
-      "sha256": "dc2a39aef291f91a9116ad214058da0d86eb648743a124bd8c333787c4b9c91c",
-      "sizeGB": 6.58
-    },
-    "qwen-coder-3b-q8_0.gguf": {
-      "repo": "Qwen/Qwen2.5-Coder-3B-Instruct-GGUF",
-      "path": "qwen2.5-coder-3b-instruct-q8_0.gguf",
-      "revision": "main",
-      "sha256": "f648c25dfd5a0870c4ad76724a745124ab5667ff97b664534fcbe46089b75ab8",
-      "sizeGB": 3.4
-    },
-    "qwen3.6-35b-a3b-q4_k_m.gguf": {
-      "repo": "unsloth/Qwen3.6-35B-A3B-GGUF",
-      "path": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
-      "revision": "main",
-      "sha256": "ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61",
-      "sizeGB": 22.13
+      "sha256": "cc324af070c2ecbfd324a30884d2f951a7ff756aba85cb811a6ec436933bb046",
+      "sizeGB": 1.12
     },
     "qwen3-vl-8b-q4_k_m.gguf": {
       "repo": "Qwen/Qwen3-VL-8B-Instruct-GGUF",
@@ -98,55 +84,20 @@
       "sizeGB": 5.03,
       "mmproj": "mmproj-Qwen3VL-8B-Instruct-F16.gguf"
     },
-    "deepseek-r1-distill-qwen-32b-q5_k_m.gguf": {
-      "repo": "unsloth/DeepSeek-R1-Distill-Qwen-32B-GGUF",
-      "path": "DeepSeek-R1-Distill-Qwen-32B-Q5_K_M.gguf",
-      "revision": "main",
-      "sha256": "7bccf89aff91ed6ab4f870d9523b477d1a51c033fc7ec1c9e5a99fb8b95b39f5",
-      "sizeGB": 23.26
-    },
-    "qwen3.5-9b-q6_k.gguf": {
-      "repo": "unsloth/Qwen3.5-9B-GGUF",
-      "path": "Qwen3.5-9B-Q6_K.gguf",
+    "qwen3.8-27b-gsq-rco-iq3_s-mtp.gguf": {
+      "repo": "ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF",
+      "path": "Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf",
       "revision": "main",
       "sha256": null,
-      "sizeGB": 7.46
+      "sizeGB": 12.12,
+      "mmproj": "mmproj-Qwen3.8-27B-BF16.gguf"
     },
-    "qwen3-vl-8b-q8_0.gguf": {
-      "repo": "Qwen/Qwen3-VL-8B-Instruct-GGUF",
-      "path": "Qwen3VL-8B-Instruct-Q8_0.gguf",
+    "qwen-coder-3b-q8_0.gguf": {
+      "repo": "bartowski/Qwen2.5-Coder-3B-Instruct-GGUF",
+      "path": "Qwen2.5-Coder-3B-Instruct-Q8_0.gguf",
       "revision": "main",
-      "sha256": null,
-      "sizeGB": 8.71,
-      "mmproj": "mmproj-Qwen3VL-8B-Instruct-F16.gguf"
-    },
-    "qwen3.5-9b-q8_0.gguf": {
-      "repo": "unsloth/Qwen3.5-9B-GGUF",
-      "path": "Qwen3.5-9B-Q8_0.gguf",
-      "revision": "main",
-      "sha256": null,
-      "sizeGB": 9.53
-    },
-    "qwen3-coder-30b-a3b-q6_k.gguf": {
-      "repo": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
-      "path": "Qwen3-Coder-30B-A3B-Instruct-Q6_K.gguf",
-      "revision": "main",
-      "sha256": null,
-      "sizeGB": 25.1
-    },
-    "qwen3.6-35b-a3b-q5_k_m.gguf": {
-      "repo": "unsloth/Qwen3.6-35B-A3B-GGUF",
-      "path": "Qwen3.6-35B-A3B-UD-Q5_K_M.gguf",
-      "revision": "main",
-      "sha256": null,
-      "sizeGB": 26.46
-    },
-    "deepseek-r1-distill-qwen-32b-q6_k.gguf": {
-      "repo": "unsloth/DeepSeek-R1-Distill-Qwen-32B-GGUF",
-      "path": "DeepSeek-R1-Distill-Qwen-32B-Q6_K.gguf",
-      "revision": "main",
-      "sha256": null,
-      "sizeGB": 26.89
+      "sha256": "f648c25dfd5a0870c4ad76724a745124ab5667ff97b664534fcbe46089b75ab8",
+      "sizeGB": 3.4
     },
     "qwen3.5-4b-q5_k_m.gguf": {
       "repo": "unsloth/Qwen3.5-4B-GGUF",
