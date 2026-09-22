@@ -92,8 +92,9 @@ def resolve_runtime_config(user_path: Optional[Path] = None) -> dict:
         "voice": copy.deepcopy(runtime.get("voice", {})),
         "agent": copy.deepcopy(runtime.get("agent", {})),
     }
-    # agentPort default lives under agent (that's where the server reads it, via _port).
+    # agentPort/mcpPort defaults live under agent (that's where the servers read them, via _port).
     cfg["agent"].setdefault("agentPort", ports["agentPort"])
+    cfg["agent"].setdefault("mcpPort", ports["mcpPort"])
 
     cfg = _deep_merge(cfg, load_user_overlay(user_path))
     # config/user.json is one file shared with the model-registry resolver (bob_models.load_models_config),

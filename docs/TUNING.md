@@ -116,7 +116,12 @@ endpoint requires `Authorization: Bearer <token>`.
 | `agent.maxSessionTokens` | `0` | Per-session token budget; `0` = unlimited. Once reached, that session's completions return HTTP 402. |
 | `agent.gitAllowedRoots` | `[]` | Extra repos `git_*` may read; the Bob repo root is always allowed. |
 | `agent.logMaxBytes` / `logBackupCount` | `5000000` / `3` | Rotation for `logs/bob-agent.log`. |
-| `agent.mcpEnabled` | `false` | Enable `bob agent mcp` (expose tools over MCP). |
+| `agent.mcpEnabled` | `false` | Enable `bob agent mcp` (expose tools over MCP). Gates both transports. |
+| `agent.mcpTransport` | `"stdio"` | `stdio` (the client spawns Bob) or `http` (Streamable HTTP, so a client on another machine can reach a running Bob). `bob agent mcp --http` overrides it for one run. |
+| `agent.mcpPort` / `agent.mcpHost` | `8085` / `"127.0.0.1"` | Where the HTTP transport binds. `0.0.0.0` exposes it to the LAN: give remote clients a dedicated `agent.apiTokens` entry rather than the litellm key. |
+| `agent.mcpAllowedHosts` | `[]` | Extra `Host` header values the HTTP transport answers to (DNS-rebinding protection). Loopback and the bind host are always allowed; add the LAN address or DNS name a remote client dials. |
+| `agent.mcpAllowedOrigins` | `[]` | Browser `Origin` values allowed against the HTTP transport. |
+| `agent.mcpUrl` | `""` | The URL `bob gen` writes into the dsh drop-in, when the harness reaches Bob at something other than the local bind address. |
 
 See [AGENT-SERVER.md](AGENT-SERVER.md) for the endpoint contract.
 

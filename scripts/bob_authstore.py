@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Bob auth store — DB-backed agent API tokens with hot revocation, RBAC scopes, per-owner rate.
 
-Extends the static token→owner map ([bob_agent_server.py] `_build_token_owner`) with a SQLite token
+Holds the static config token→owner map (`config_token_owners`, shared by the agent HTTP server and
+the MCP HTTP transport so both accept exactly the same bearers) and extends it with a SQLite token
 store living beside the session DB (`data/sessions.db`). It closes the multi-user gap: an admin can
 issue a scoped, rate-limited token to an owner and revoke it **without restarting the server** (the
 server hashes+looks up the presented bearer per request, so `revoked=1` takes effect on the next call).
@@ -36,6 +37,24 @@ _SALT_SECRET = "agent_token_salt"   # secret name (osenv.secret)
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def config_token_owners(config: dict) -> dict:
+    """Map each accepted STATIC bearer token to an owner id. The litellm key maps to
+    agent.defaultOwner; agent.apiTokens entries may be {token, owner} records or bare strings
+    (legacy: token maps to itself as the owner).
+
+    One source for every HTTP surface Bob exposes (the agent API and the MCP Streamable HTTP
+    transport), so a token issued in config is accepted identically by both."""
+    agent = config.get("agent", {})
+    default_owner = agent.get("defaultOwner", "local")
+    owners = {config.get("litellmKey", "sk-local"): default_owner}
+    for entry in agent.get("apiTokens", []):
+        if isinstance(entry, dict) and entry.get("token"):
+            owners[entry["token"]] = entry.get("owner") or default_owner
+        elif isinstance(entry, str) and entry:
+            owners[entry] = entry  # legacy flat-string token -> token-as-owner
+    return owners
 
 
 class AuthStore:

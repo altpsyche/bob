@@ -64,7 +64,8 @@ the cross OS CI acceptance gate runs on every PR.
 - Safety by construction: an OS level sandbox (Linux namespaces and seccomp, Windows job objects),
   granular per tool and per owner permissions (`allow`, `ask`, `deny`, audited), owner scoped sessions, an
   auth token store with RBAC, and OpenTelemetry tracing into Langfuse.
-- Speaks MCP both ways. It mounts external MCP servers' tools, and exposes its own tools over MCP.
+- Speaks MCP both ways. It mounts external MCP servers' tools, and exposes its own over stdio or
+  Streamable HTTP, so a client on another machine can borrow them.
 
 ### A real coding agent
 - Repo map and symbol index, plus fast ripgrep based code search for code aware retrieval.
@@ -158,14 +159,21 @@ GPU acceptance runs locally at release time rather than in CI on purpose. This r
 hosted GPU runner is a standing attack surface, because a pull request from a fork runs the workflow file
 from the fork's own commit.
 
+Closed in 1.3.x:
+
+- **A leaner engine download.** The published CUDA build drops NCCL (~350 MB of multi-GPU collectives a
+  single-GPU box never calls), every asset moved from gzip and Windows zip to a single `.tar.xz` format
+  worth about another quarter of the size, and one shared packer produces both platforms' archives so
+  they cannot drift. Rows carry the byte size, so the installer states the download size instead of
+  going quiet for minutes.
+- **An honest word for the unbuilt targets.** `lifecycle.unbuilt_target_notice` names them before the
+  work starts: arm64 Linux has no prebuilt and compiles, and an AMD or Intel GPU runs the CPU tier
+  because the accelerated tier is NVIDIA CUDA only. `bob diagnose` repeats it.
+
 Carried forward, still open:
 
 - **Windows CUDA on real Windows GPU hardware.** Bob builds and publishes that binary, but nothing has ever
   run it on an actual Windows GPU.
-- **A leaner engine download.** The CUDA math library is most of the asset size.
-- **An honest word for the unbuilt targets.** arm64 Linux and AMD or Intel GPUs have no prebuilt and fall
-  back to a source build or the CPU tier. Install should say that plainly instead of leaving the user to
-  infer it from a long compile.
 
 ### 1.3 a current registry, and long-form prose (shipped)
 This line refreshed the models rather than the harness, so the coding agent work originally scoped here
@@ -194,13 +202,16 @@ Continue and aider, and takes nothing on in return, because dsh is Node and Bob'
 pure Python, Docker-free.
 
 - **Shipped: dsh is a wired client.** `bob gen` writes a pi-ai provider route for every chat-capable role
-  and enabled pro peer, and mounts Bob's whole tool registry in dsh as an MCP server over stdio. A model
+  and enabled pro peer, and mounts Bob's whole tool registry in dsh as an MCP server (stdio, or HTTP when
+  `agent.mcpTransport` says so). A model
   refresh reaches the harness with one command, the same way it reaches every other client.
-- **Bob's MCP server over Streamable HTTP.** It is stdio only today, so the harness has to run on the
-  same machine as Bob. dsh already speaks both transports, and a remote harness reaching a home Bob is
-  the same want as 2.0's "reach your Bob from anywhere".
-- The 1.2.x residuals above still stand: Windows CUDA on real hardware, a leaner engine download, and an
-  honest word at install time for arm64 and AMD or Intel.
+- **Shipped: Bob's MCP server over Streamable HTTP.** `bob agent mcp --http` serves the same registry on
+  `agent.mcpHost:agent.mcpPort/mcp`, authenticated with the agent API's bearer tokens and with
+  DNS-rebinding protection on. stdio is one process per client and must be co-located; the HTTP transport
+  keeps sessions, so a harness on another machine, or several at once, can share one running Bob.
+  `bob gen` writes the dsh entry for whichever transport `agent.mcpTransport` names.
+- Carried forward from 1.2.x: **Windows CUDA on real Windows GPU hardware** is still unproven, the one
+  residual that needs hardware rather than code.
 
 ### 1.4 a deeper coding agent
 Take the coding loop from good to measured best in class for a local harness.

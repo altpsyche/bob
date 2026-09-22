@@ -868,6 +868,49 @@ def gpu_arch():
         return None
 
 
+# PCI vendor ids for the GPU makers Bob has no accelerated backend for. Used only to SAY SO honestly
+# at install time; nothing branches on it.
+_PCI_VENDORS = {"0x1002": "AMD", "0x1022": "AMD", "0x8086": "Intel"}
+
+
+def other_gpu_vendors() -> list:
+    """Non-NVIDIA GPU makers present on this machine, e.g. ['AMD'] (empty when none, or when the probe
+    cannot tell). Bob accelerates NVIDIA/CUDA only, so this exists to name the gap out loud at install
+    time instead of leaving an AMD owner to infer it from a long CPU build. Never raises.
+
+    Linux reads the PCI vendor id of each DRM card (no lspci dependency); Windows reads the display-class
+    driver descriptions from the registry (stdlib winreg, no PowerShell)."""
+    found = []
+    if os_name() == "windows":  # pragma: no cover — exercised only on Windows
+        try:
+            import winreg
+            key_path = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as k:
+                for i in range(winreg.QueryInfoKey(k)[0]):
+                    try:
+                        with winreg.OpenKey(k, winreg.EnumKey(k, i)) as sub:
+                            desc = str(winreg.QueryValueEx(sub, "DriverDesc")[0]).lower()
+                    except OSError:
+                        continue
+                    for needle, vendor in (("amd", "AMD"), ("radeon", "AMD"), ("intel", "Intel")):
+                        if needle in desc and vendor not in found:
+                            found.append(vendor)
+        except (OSError, ImportError, ValueError):
+            return []
+        return found
+    try:
+        for card in sorted(Path("/sys/class/drm").glob("card[0-9]*")):
+            vendor_file = card / "device" / "vendor"
+            if not vendor_file.exists():
+                continue
+            vendor = _PCI_VENDORS.get(vendor_file.read_text(encoding="utf-8").strip().lower())
+            if vendor and vendor not in found:
+                found.append(vendor)
+    except OSError:
+        return []
+    return found
+
+
 def gpu_info():
     """Unified GPU probe → {'VramGB', 'CudaArch', 'Gen', 'MinCudaMajor'} for GPU 0, or None.
     Composes gpu_arch + gpu_vram_gb; None when no NVIDIA GPU."""

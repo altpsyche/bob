@@ -70,6 +70,11 @@ short version:
 | **Windows 11** | gated on the CPU tier every PR; NVIDIA CUDA proven in the release-tag GPU tier | `scoop` shim for the `bob` command; toolchain via `install_prereqs.bat` |
 | **macOS** | not yet | n/a |
 | **AMD / ROCm** | not yet | n/a |
+| **arm64 Linux** | runs, but no prebuilt engine is published: it compiles llama.cpp on install | as Linux above |
+
+Bob says both gaps out loud at install time rather than leaving them to be inferred from a long build:
+`lifecycle.unbuilt_target_notice` names an unbuilt CPU architecture and a non-NVIDIA GPU, and
+`bob diagnose` repeats it on the `Target` row.
 
 Package installation goes through `osenv` (`PACKAGE_MAP` / `resolve_package_*` / `install_package`),
 which selects the right manager for the host. The driver-only prebuilt engine runs across distros,

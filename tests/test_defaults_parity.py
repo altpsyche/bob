@@ -33,7 +33,7 @@ _TASKS = ["chat", "code", "ponder", "vision", "voice"]
 class TestDefaultsPythonSide(unittest.TestCase):
     def test_ports_load_and_resolve(self):
         ports = bob_core.load_defaults()["ports"]
-        for name in ("port", "litellmPort", "agentPort", "searxngPort", "sttPort",
+        for name in ("port", "litellmPort", "agentPort", "mcpPort", "searxngPort", "sttPort",
                      "ttsPort", "webuiPort", "langfusePort", "n8nPort"):
             self.assertIn(name, ports)
             self.assertEqual(bob_core._port({}, name), ports[name])

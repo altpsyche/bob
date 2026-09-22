@@ -490,5 +490,66 @@ class TestEnsureEnginePrebuiltFirst(unittest.TestCase):
         bl.assert_called_once()
 
 
+class TestUnbuiltTargetNotice(unittest.TestCase):
+    """The honest word for the targets Bob publishes no engine for. Nothing branches on it — it exists so
+    an arm64 or AMD owner is told, not left to infer it from a 40-minute compile or from slow inference."""
+
+    def test_built_target_says_nothing(self):
+        with mock.patch("osenv.normalized_cpu_arch", return_value="x86_64"), \
+             mock.patch("osenv.other_gpu_vendors", return_value=[]):
+            self.assertEqual(lifecycle.unbuilt_target_notice(), [])
+
+    def test_nvidia_box_with_an_igpu_says_nothing(self):
+        """An AMD/Intel integrated GPU next to a working NVIDIA card is not a gap; only a box with no
+        NVIDIA GPU at all lands the CPU tier."""
+        with mock.patch("osenv.normalized_cpu_arch", return_value="x86_64"), \
+             mock.patch("osenv.other_gpu_vendors", return_value=["AMD"]), \
+             mock.patch("osenv.gpu_info", return_value=_BLACKWELL):
+            self.assertEqual(lifecycle.unbuilt_target_notice(), [])
+
+    def test_arm64_is_told_it_will_compile(self):
+        with mock.patch("osenv.normalized_cpu_arch", return_value="arm64"), \
+             mock.patch("osenv.other_gpu_vendors", return_value=[]), \
+             mock.patch("osenv.os_name", return_value="linux"):
+            lines = lifecycle.unbuilt_target_notice()
+        self.assertEqual(len(lines), 1)
+        self.assertIn("linux/arm64", lines[0])
+        self.assertIn("compiles", lines[0])
+
+    def test_amd_only_box_is_told_it_runs_cpu(self):
+        with mock.patch("osenv.normalized_cpu_arch", return_value="x86_64"), \
+             mock.patch("osenv.other_gpu_vendors", return_value=["AMD"]), \
+             mock.patch("osenv.gpu_info", return_value=None):
+            lines = lifecycle.unbuilt_target_notice()
+        self.assertEqual(len(lines), 1)
+        self.assertIn("AMD", lines[0])
+        self.assertIn("CPU tier", lines[0])
+
+    def test_ensure_engine_says_it_before_the_work(self):
+        """Printed by the one seam every entry point routes through, so setup, build and update are
+        equally honest."""
+        build = __import__("build")
+        with mock.patch.object(lifecycle, "unbuilt_target_notice", return_value=["heads up"]), \
+             mock.patch("osenv.gpu_info", return_value=None), mock.patch("osenv.gpu_arch", return_value=None), \
+             mock.patch.object(lifecycle, "_select_engine_row", return_value=None), \
+             mock.patch.object(build, "build_llama", return_value="built"), \
+             mock.patch("sys.stderr") as err:
+            lifecycle.ensure_engine(cpu=True)
+        self.assertTrue(any("heads up" in str(c) for c in err.write.call_args_list))
+
+
+class TestHumanBytes(unittest.TestCase):
+    """The download size is announced up front: a silent multi-minute pause reads like a hang."""
+
+    def test_formats_the_sizes_a_row_carries(self):
+        self.assertEqual(lifecycle._human_bytes(512), "512 B")
+        self.assertEqual(lifecycle._human_bytes(700 * 1024 * 1024), "700.0 MB")
+        self.assertEqual(lifecycle._human_bytes(2 * 1024 ** 3), "2.0 GB")
+
+    def test_absent_or_junk_size_is_silent(self):
+        for v in (None, 0, "", "x"):
+            self.assertEqual(lifecycle._human_bytes(v), "")
+
+
 if __name__ == "__main__":
     unittest.main()

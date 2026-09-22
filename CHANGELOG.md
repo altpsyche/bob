@@ -9,6 +9,44 @@ rebuilds only what changed, verifies, and rolls back on failure.
 ## [Unreleased]
 
 ### Added
+- **Bob's MCP server speaks Streamable HTTP, so a harness can reach it from another machine.**
+  `bob agent mcp --http` serves the same tool registry as the stdio transport on
+  `agent.mcpHost:agent.mcpPort` (loopback `:8085` by default) at `/mcp`, and `agent.mcpTransport = "http"`
+  makes it the default for a bare `bob agent mcp`. stdio is one process per client and must be co-located,
+  which is exactly the constraint that kept a laptop from borrowing a desktop's Bob; the HTTP transport
+  keeps sessions, so several clients share one running Bob. It is authenticated with the **same** static
+  bearer tokens as the agent API (the litellm key or an `agent.apiTokens` entry, now resolved by one map
+  in [scripts/bob_authstore.py](scripts/bob_authstore.py) that both servers read), only `/health` is open,
+  and an anonymous call gets a 401 rather than a mount redirect because the gate wraps the whole app.
+  DNS-rebinding protection is on: loopback and the bind host are accepted, and the name a remote client
+  dials goes in `agent.mcpAllowedHosts`. `bob gen` writes the dsh drop-in for whichever transport is
+  configured (a spawn entry for stdio, a URL + Bearer header for HTTP, overridable with `agent.mcpUrl`),
+  and `bob services` lists `mcp-http` alongside the agent API.
+  [scripts/bob_mcp_server.py](scripts/bob_mcp_server.py), [scripts/tools/generate.py](scripts/tools/generate.py),
+  [docs/USAGE.md](docs/USAGE.md), [docs/TUNING.md](docs/TUNING.md)
+- **Install says what this machine will not get, before the work starts.** `lifecycle.unbuilt_target_notice`
+  names the two honest gaps: a CPU architecture with no published prebuilt (arm64 Linux, which therefore
+  compiles llama.cpp) and an AMD or Intel GPU, which gets no acceleration because the GPU tier is NVIDIA
+  CUDA only. Every entry point that provisions an engine routes through `ensure_engine`, so setup, `bob
+  build` and `bob update` are equally honest, and `bob diagnose` repeats it on a `Target` row. The probe
+  (`osenv.other_gpu_vendors`) reads PCI vendor ids from `/sys/class/drm` on Linux and the display-class
+  driver descriptions from the registry on Windows, and never raises.
+  [scripts/bob/lifecycle.py](scripts/bob/lifecycle.py), [scripts/osenv.py](scripts/osenv.py)
+
+### Changed
+- **The prebuilt engine download is substantially smaller.** Three changes, no capability lost on the
+  machines the prebuilt exists for: the published CUDA build sets `-DGGML_CUDA_NCCL=OFF`, dropping a
+  ~350 MB multi-GPU collectives library that a single-GPU box never calls (llama.cpp keeps working
+  without it, and a multi-GPU owner builds `--from-source`, where NCCL stays on); every asset is now
+  `.tar.xz` instead of gzip or Windows zip, worth roughly 25% on these binaries and read by the client
+  with stdlib `tarfile`; and both publish jobs share one packer
+  ([.github/scripts/pack_engine.py](.github/scripts/pack_engine.py)) so the two platforms cannot drift in
+  format, layout or reported size. Manifest rows now carry `bytes`, and the installer announces the
+  download size up front instead of pausing silently for minutes. Staging keeps a SONAME symlink a
+  symlink, so a half-gigabyte CUDA lib is no longer copied twice into `bin/`.
+  [.github/workflows/ci.yml](.github/workflows/ci.yml), [scripts/tools/build.py](scripts/tools/build.py),
+  [scripts/bob/lifecycle.py](scripts/bob/lifecycle.py)
+
 - **DeepSeek Harness (dsh) is a wired client.** `bob gen` now generates `config/dsh/settings.yaml`, a
   pi-ai provider route pointing every chat-capable role and enabled pro peer at Bob's LiteLLM proxy, and
   `config/dsh/cordis.patch.yml`, which mounts Bob's tool registry in dsh as an MCP server over stdio

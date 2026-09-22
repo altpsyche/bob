@@ -280,6 +280,31 @@ def prebuilt_available(cpu: bool = False) -> bool:
         return False
 
 
+# The platforms the release publishes a prebuilt engine for. Anything outside this set is a supported
+# but UNBUILT target: it works, it just gets there by compiling (or by running the CPU tier).
+_PREBUILT_ARCHES = ("x86_64",)
+
+
+def unbuilt_target_notice() -> list:
+    """Plain lines naming what this machine will NOT get, or [] when it is a fully built target.
+
+    Two honest gaps, said up front rather than inferred from a 40-minute compile or from wondering why
+    a GPU box is slow: a CPU architecture no prebuilt is published for (arm64 Linux), and a non-NVIDIA
+    GPU (AMD/Intel), which Bob has no accelerated backend for and which therefore lands the CPU tier."""
+    lines = []
+    arch = osenv.normalized_cpu_arch()
+    if arch not in _PREBUILT_ARCHES:
+        lines.append(f"No prebuilt engine is published for {osenv.os_name()}/{arch} yet, so Bob compiles "
+                     "llama.cpp here instead of downloading it. Expect a long first build (tens of "
+                     "minutes); everything after it is unaffected.")
+    vendors = osenv.other_gpu_vendors()
+    if vendors and osenv.gpu_info() is None:
+        lines.append(f"{' and '.join(vendors)} graphics detected. Bob's accelerated tier is NVIDIA CUDA "
+                     "only, so this machine runs the CPU tier: inference works, just slower than it "
+                     "would on the same hardware with a Vulkan or ROCm backend, which Bob does not ship.")
+    return lines
+
+
 def _binary_runs(exe) -> bool:
     """True if the staged binary actually executes here (runs `--version` without an OS/loader error). This is
     the safety net that makes prebuilt-for-all-distros honest: a binary built against a newer glibc than the
@@ -297,12 +322,28 @@ def _binary_runs(exe) -> bool:
         return False
 
 
+def _human_bytes(n) -> str:
+    """'742 MB' from a byte count (None/0 -> '')."""
+    try:
+        n = int(n or 0)
+    except (TypeError, ValueError):
+        return ""
+    if n <= 0:
+        return ""
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit in ("B", "KB") else f"{n:.1f} {unit}"
+        n /= 1024.0
+    return ""
+
+
 def _install_prebuilt(row: dict, bin_dir) -> str:
-    """Download the prebuilt engine archive in `row`, SHA-verify it against the lock (tamper-evident), extract,
-    and stage every file (the binary + its bundled CUDA runtime libs) into bin/ so the result is driver-only.
-    urllib/tarfile/zipfile (stdlib, pre-venv safe). Raises RuntimeError/OSError on any failure so ensure_engine
-    can fall back to a source build."""
+    """Download the prebuilt engine archive in `row`, SHA-verify it against the manifest (tamper-evident),
+    extract, and stage every entry (the binary + its bundled CUDA runtime libs) into bin/ so the result is
+    driver-only. urllib/tarfile/zipfile (stdlib, pre-venv safe). Raises RuntimeError/OSError on any failure
+    so ensure_engine can fall back to a source build."""
     import hashlib
+    import os
     import shutil
     import tarfile
     import tempfile
@@ -316,6 +357,11 @@ def _install_prebuilt(row: dict, bin_dir) -> str:
     tmp = Path(tempfile.mkdtemp(prefix="bob-engine-"))
     try:
         archive = tmp / Path(url).name
+        size = _human_bytes(row.get("bytes"))
+        # Say the size up front: this is a hundreds-of-megabytes download on a CUDA tier, and a silent
+        # multi-minute pause reads like a hang.
+        print(f"Downloading prebuilt {row.get('component')} ({row.get('tier')}"
+              + (f", {size}" if size else "") + ")...", file=sys.stderr)
         urllib.request.urlretrieve(url, archive)  # noqa: S310 — pinned release URL, SHA-verified below
         want = (row.get("sha256") or "").strip().lower()
         if want:
@@ -338,9 +384,21 @@ def _install_prebuilt(row: dict, bin_dir) -> str:
             raise RuntimeError(f"unrecognized archive format: {archive.name}")
         bin_dir.mkdir(parents=True, exist_ok=True)
         staged = 0
-        for p in extract.rglob("*"):
-            if p.is_file():
-                shutil.copy2(p, bin_dir / p.name)
+        for p in sorted(extract.rglob("*")):
+            dest = bin_dir / p.name
+            if p.is_symlink():
+                # A SONAME link (libcublas.so.12 -> libcublas.so.12.8.4.1) must stay a link: copying it
+                # would dereference into a second copy of a lib that can be half a gigabyte. Windows
+                # refuses symlinks without privilege, so fall back to the copy there.
+                try:
+                    dest.unlink(missing_ok=True)
+                    os.symlink(os.readlink(p), dest)
+                except (OSError, NotImplementedError):
+                    if p.is_file():
+                        shutil.copy2(p, dest)
+                staged += 1
+            elif p.is_file():
+                shutil.copy2(p, dest)
                 staged += 1
         if staged == 0:
             raise RuntimeError("archive contained no files to stage")
@@ -365,6 +423,11 @@ def ensure_engine(cpu: bool = False, from_source: bool = False, force: bool = Fa
 
     Returns the decision dict augmented with {'source': 'source'|'prebuilt', 'detail': <status>}."""
     bin_dir = osenv.REPO / "bin"
+
+    # Say what this machine will not get BEFORE the work starts (arm64 has no prebuilt; an AMD/Intel GPU
+    # gets no acceleration). One place, so every entry point that ensures an engine is equally honest.
+    for line in unbuilt_target_notice():
+        print(f"NOTE: {line}", file=sys.stderr)
 
     # Prebuilt-first, and CRUCIALLY before any toolkit probe: a prebuilt is driver-only, so it must NOT
     # trigger a CUDA-toolkit install (mutable) or a block (atomic) — those belong only to the source path.

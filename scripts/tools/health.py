@@ -461,6 +461,13 @@ def diagnose(config: dict) -> str:
     if is_issue:
         issues += 1
 
+    # The unbuilt targets (arm64, AMD/Intel graphics), worded once in the lifecycle seam and repeated
+    # here so the answer to "why is this slow / why did it compile?" is in the report, not just in the
+    # install log. Not an issue: nothing is broken, it is the honest ceiling of this machine.
+    from bob.lifecycle import unbuilt_target_notice
+    for ln in unbuilt_target_notice():
+        row("Target", ln)
+
     # mlock privilege
     st = osenv.mlock_status()
     mlock_enabled = defaults.get("mlockBig") is True

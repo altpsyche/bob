@@ -529,7 +529,33 @@ bob agent serve            # binds agent.serveHost:agent.agentPort (default 127.
 
 Exposes the agent loop over HTTP for n8n / WebUI / other clients. Every endpoint except `/health` requires `Authorization: Bearer <token>` (the litellm key or an `agent.apiTokens` entry). Each token maps to an owner, and sessions are owner-scoped: a token sees only sessions its owner created. Supports one-shot `POST /v1/agent/completions`, token-streaming `POST /v1/agent/completions/stream` (SSE; cancels on client disconnect), and multi-turn `POST/GET/DELETE /v1/sessions`. Full endpoint contract, event schema, and n8n wiring: [AGENT-SERVER.md](AGENT-SERVER.md).
 
-Bob's tools are also exposed over MCP (stdio) with `bob agent mcp`, for MCP-aware clients.
+### Expose Bob's tools over MCP
+
+```
+bob agent mcp              # stdio: the client spawns Bob as a child process
+bob agent mcp --http       # Streamable HTTP on 127.0.0.1:8085/mcp
+```
+
+Both need `agent.mcpEnabled = true` in `config/user.json`, and both expose the same registry: memory,
+web, git, file, shell, fabric, code search, and any plugin.
+
+Use stdio when the client sits on this machine; it needs no port and no token. Use `--http` when the
+client is somewhere else, or when several clients share one Bob: the HTTP transport keeps sessions, so
+it serves many clients from one process, which stdio cannot do.
+
+The HTTP transport is authenticated with the same Bearer tokens as the agent server (the litellm key or
+an `agent.apiTokens` entry), and only `/health` is open. It binds loopback by default. To reach it from
+another machine, set `agent.mcpHost` to `0.0.0.0`, list the address that machine dials in
+`agent.mcpAllowedHosts`, and issue that client its own token:
+
+```jsonc
+{ "agent": { "mcpEnabled": true, "mcpTransport": "http", "mcpHost": "0.0.0.0",
+             "mcpAllowedHosts": ["bob.lan:8085"],
+             "apiTokens": [{ "token": "sk-harness", "owner": "laptop" }] } }
+```
+
+Anything reachable over a LAN deserves the same care as the agent server: every Bob tool is available
+to a token holder, so keep `agent.allowPrivateFetch` off and hand out per-client tokens you can revoke.
 
 ### Check agent health
 
@@ -733,7 +759,7 @@ too, when it is already installed. Two drop-ins land in the harness home (`$DSH_
 | File | What Bob writes | How |
 |---|---|---|
 | `settings.yaml` | a `bob` provider route: every chat-capable role plus the enabled pro peers | merged, so your other providers and sections survive |
-| `cordis.patch.yml` | Bob's tool registry as an MCP server (`bob agent mcp`) | appended once, only when `agent.mcpEnabled` is on |
+| `cordis.patch.yml` | Bob's tool registry as an MCP server (`bob agent mcp`), stdio or HTTP per `agent.mcpTransport` | appended once, only when `agent.mcpEnabled` is on |
 
 Both are generated into `config/dsh/` first, from the same registry every other client config comes from,
 so a model refresh reaches dsh with one `bob gen` and dsh re-reads the route on its next request.
@@ -754,8 +780,13 @@ and `maxTokensField: max_tokens`, which is why models work rather than every req
 **Bob's tools inside dsh.** With `agent.mcpEnabled` set to `true` in `config/user.json`, dsh spawns
 `bob agent mcp` over stdio and gets the whole registry: memory, web, git, file, shell, fabric, code
 search, and any plugin. The entry runs the server in the harness's own working directory, so those tools
-act on the project dsh has open, not on Bob's repo. Bob's MCP server is stdio only, so the harness has to
-be on the same machine.
+act on the project dsh has open, not on Bob's repo.
+
+**A harness on another machine.** Set `agent.mcpTransport = "http"` and `bob gen` writes the same entry
+as a Streamable HTTP connection instead of a spawn, so dsh dials a Bob that is already running
+(`bob agent mcp --http`). Set `agent.mcpUrl` when dsh reaches Bob at something other than the local bind
+address, and export `BOB_LITELLM_KEY` (or the token you issued that client) on the dsh side, since the
+generated entry sends it as a Bearer header.
 
 ## Shell AI Patterns: fabric
 

@@ -101,7 +101,7 @@ fails partway, fix it and re-run; completed steps are skipped. Common flags (sam
 - `--skip-voice`: skip the voice + vision step (whisper + model downloads)
 - `--profile 12gb` / `--profile cpu`: pick a model profile before downloading anything
 - `--cpu`: the CPU tier (no GPU engine)
-- `--from-source`: build the engine from source (installs the CUDA toolkit) instead of using the prebuilt
+- `--from-source`: build the engine from source (installs the CUDA toolkit) instead of using the prebuilt. Also the way to get NCCL back: the published prebuilt is built without it, since it only speeds up multi-GPU boxes and costs every downloader ~350 MB
 - `--with-webui`: also build the Open WebUI venv (opt-in; multi-GB torch/transformers)
 - `--launch`: start the stack when setup finishes
 
@@ -117,7 +117,7 @@ the `cpu` tier automatically. Verify with `bob doctor` (see [Verifying the insta
 
 0. **Diagnose**: a machine summary (GPU, VRAM, RAM, CUDA, NUMA topology, mlock privilege, active profile, model files) before anything is installed. Run `bob diagnose` at any time to see the same report.
 1. `git submodule update --init --recursive` fetches the llama.cpp and llama-swap source trees.
-2. **Provision the engine** (`lifecycle.ensure_engine`), the single decision point shared by setup, `bob build`, and `bob update`: it downloads the prebuilt, driver-only engine and SHA256-verifies it against `versions.lock`, or builds from source on the CPU tier / with `--from-source` / when no matching prebuilt exists, writing the binaries to `bin/`. If a downloaded engine cannot run on the host it falls back to a source build automatically, so a machine is never left without a working engine. Skips if the binary already exists (`bob build --force` to re-provision). `bob update` snapshots `bin/` before a change and rolls back automatically if the new engine fails to verify.
+2. **Provision the engine** (`lifecycle.ensure_engine`), the single decision point shared by setup, `bob build`, and `bob update`: it downloads the prebuilt, driver-only engine (a `.tar.xz` whose size it announces before the download starts) and SHA256-verifies it against the release manifest, or builds from source on the CPU tier / with `--from-source` / when no matching prebuilt exists, writing the binaries to `bin/`. It also says up front what this machine will *not* get: arm64 Linux has no prebuilt and compiles instead, and an AMD or Intel GPU gets no acceleration, because the GPU tier is NVIDIA CUDA only. If a downloaded engine cannot run on the host it falls back to a source build automatically, so a machine is never left without a working engine. Skips if the binary already exists (`bob build --force` to re-provision). `bob update` snapshots `bin/` before a change and rolls back automatically if the new engine fails to verify.
 3. **Build llama-swap**: the model-swap proxy (Go).
 4. **Python venvs**: `tools/venv-aider` and `tools/venv-litellm` (plus `tools/venv-webui` with `--with-webui`) are created via `osenv.new_bob_venv` and their deps installed. Kept separate on purpose, their pins conflict. (`venv-eval` is provisioned lazily by `bob eval`.)
 5. **Generate configs** (`generate.gen_all`), writes `config/llama-swap.yaml` + `config/litellm.yaml` from `config/models.json`. Never edit them by hand; both are regenerated on every `bob up`/`serve`.

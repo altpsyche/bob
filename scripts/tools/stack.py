@@ -71,6 +71,8 @@ SERVICES = [
      "desc": "tracing / observability (optional)"},
     {"name": "agent-api",  "port": "agentPort",   "group": "Agent", "kind": "external", "hint": "bob agent serve",
      "desc": "bob agent serve (REST/SSE)"},
+    {"name": "mcp-http",   "port": "mcpPort",     "group": "Agent", "kind": "external",
+     "hint": "bob agent mcp --http", "desc": "bob agent mcp --http (Bob's tools over MCP, remote-capable)"},
 ]
 
 # Derived views — kept as module constants so callers/tests read one canonical list, never a fresh copy.

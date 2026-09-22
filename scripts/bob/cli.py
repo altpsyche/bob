@@ -136,9 +136,11 @@ def _handle_agent_serve(rest: list) -> int:
 
 
 def _handle_agent_mcp(rest: list) -> int:
+    """bob agent mcp [--http|--stdio] [--host H] [--port N] — the transport choice lives in
+    bob_mcp_server.main (one parser), so the verb just forwards its flags."""
     import bob_mcp_server  # lazy
 
-    return bob_mcp_server.main() or 0
+    return bob_mcp_server.main(rest) or 0
 
 
 

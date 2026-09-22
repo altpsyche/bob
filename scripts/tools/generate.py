@@ -447,6 +447,44 @@ def _dsh_models(mcfg: dict, profile: str = None):
     return out
 
 
+def _dsh_mcp_lines(bobcfg: dict) -> list:
+    """The dsh MCP plugin-instance block for Bob's tool registry, for whichever transport
+    agent.mcpTransport selects.
+
+    stdio (the default): dsh spawns `bob agent mcp` as a child, so the harness must sit on the same
+    machine as Bob. http: dsh connects to an already-running `bob agent mcp --http`, which is what
+    lets a harness on another machine borrow a home Bob's tools. One generator for both, so the
+    transport is chosen in config rather than by hand-editing the harness."""
+    import osenv
+    from bob_core import _port
+
+    agent = bobcfg.get("agent", {}) or {}
+    if (agent.get("mcpTransport") or "stdio").lower() == "http":
+        host = agent.get("mcpHost", "127.0.0.1")
+        # 0.0.0.0 is a bind address, not a reachable one: a remote harness needs a name it can dial,
+        # so fall back to loopback and let agent.mcpUrl name the public address.
+        if host in ("0.0.0.0", "::"):  # noqa: S104 — comparison, not a bind
+            host = "127.0.0.1"
+        url = agent.get("mcpUrl") or f"http://{host}:{_port(agent, 'mcpPort')}/mcp"
+        return [
+            "# Bob's tool registry as a dsh MCP server (Streamable HTTP). Appended to",
+            "# $DSH_HOME/cordis.patch.yml by `bob gen` when agent.mcpEnabled is on. Bob must be serving",
+            "# it: `bob agent mcp --http`. Set agent.mcpUrl when dsh runs on another machine.",
+            "- insert:", f"    - id: {_DSH_MCP_ID}", "      name: '@deepseek-ai/dsh-mcp-client'",
+            "      config:", "        serverName: bob", "        transport: http",
+            f"        url: {_yaml_str(url)}", "        headers:",
+            "          Authorization: !!js `Bearer ${process.env.BOB_LITELLM_KEY || 'sk-local'}`"]
+    shim = "bob.cmd" if osenv.os_name() == "windows" else str(REPO / "bob")
+    return [
+        "# Bob's tool registry as a dsh MCP server (stdio). Appended to $DSH_HOME/cordis.patch.yml by",
+        "# `bob gen` when agent.mcpEnabled is on. cwd is the harness's own, so Bob's file and git tools",
+        "# act on the project dsh is open in, not on Bob's repo.",
+        "- insert:", f"    - id: {_DSH_MCP_ID}", "      name: '@deepseek-ai/dsh-mcp-client'",
+        "      config:", "        serverName: bob", "        transport: stdio",
+        f"        command: {_yaml_str(shim)}", "        args: [agent, mcp]",
+        "        cwd: !!js process.cwd()"]
+
+
 def gen_dsh(profile: str = None) -> str:
     """Generate the DeepSeek Harness (dsh) drop-ins: config/dsh/settings.yaml (a pi-ai provider route
     pointing at Bob's LiteLLM proxy) and config/dsh/cordis.patch.yml (Bob's MCP server as a dsh plugin
@@ -485,15 +523,7 @@ def gen_dsh(profile: str = None) -> str:
             out.append("          input: [text, image]")
     settings = _write(REPO / "config" / "dsh" / "settings.yaml", "\n".join(out) + "\n")
 
-    shim = "bob.cmd" if osenv.os_name() == "windows" else str(REPO / "bob")
-    patch = header + [
-        "# Bob's tool registry as a dsh MCP server (stdio). Appended to $DSH_HOME/cordis.patch.yml by",
-        "# `bob gen` when agent.mcpEnabled is on. cwd is the harness's own, so Bob's file and git tools",
-        "# act on the project dsh is open in, not on Bob's repo.",
-        "- insert:", f"    - id: {_DSH_MCP_ID}", "      name: '@deepseek-ai/dsh-mcp-client'",
-        "      config:", "        serverName: bob", "        transport: stdio",
-        f"        command: {_yaml_str(shim)}", "        args: [agent, mcp]",
-        "        cwd: !!js process.cwd()"]
+    patch = header + _dsh_mcp_lines(bobcfg)
     patch_file = _write(REPO / "config" / "dsh" / "cordis.patch.yml", "\n".join(patch) + "\n")
     return f"Generated {settings}\nGenerated {patch_file}"
 

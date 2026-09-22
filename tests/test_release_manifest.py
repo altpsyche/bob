@@ -33,8 +33,8 @@ def _published_row(os_name, arch, tier, commit):
     key = f"llama-server-{os_name}-{arch}-{tier}"
     return key, {
         "component": "llama-server", "os": os_name, "cpuArch": arch, "tier": tier,
-        "url": f"https://github.com/o/r/releases/download/v9.9.9/{key}.tar.gz",
-        "sha256": "b" * 64, "builtFromCommit": commit,
+        "url": f"https://github.com/o/r/releases/download/v9.9.9/{key}.tar.xz",
+        "sha256": "b" * 64, "bytes": 512345678, "builtFromCommit": commit,
         "cudaArchs": ("75;80;89;120" if tier == "cuda" else ""),
         "cudaMajor": (12 if tier == "cuda" else None),
     }

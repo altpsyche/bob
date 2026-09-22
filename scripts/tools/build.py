@@ -179,6 +179,13 @@ def build_llama(cpu: bool = False, arch: int = 0, force: bool = False, cuda_root
         cfg = [cmake, "-B", "build", "-G", flags["Generator"], "-DGGML_CUDA=ON",
                f"-DCMAKE_CUDA_COMPILER={nvcc}", f"-DCMAKE_CUDA_ARCHITECTURES={arch_cmake}",
                "-DGGML_CUDA_FORCE_CUBLAS=OFF", f"-DCUDAToolkit_ROOT={cuda_root}", "-DCMAKE_BUILD_TYPE=Release"]
+        if cuda_archs:
+            # Distribution build only: NCCL is a multi-GPU collective library that costs ~350 MB in the
+            # published archive and does nothing on the single-GPU machines the prebuilt exists for.
+            # llama.cpp keeps working without it (its own words: "performance for multiple CUDA GPUs will
+            # be suboptimal"), and a multi-GPU owner builds from source, where NCCL stays on by default.
+            cfg.append("-DGGML_CUDA_NCCL=OFF")
+            lines.append("Distribution build: NCCL off (multi-GPU collectives; ~350 MB of download)")
         if cuda_host_cxx:
             cfg.append(f"-DCMAKE_CUDA_HOST_COMPILER={cuda_host_cxx}")
     else:

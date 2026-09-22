@@ -85,18 +85,11 @@ _rate_buckets: dict = {}  # owner -> [tokens_float, last_monotonic] token bucket
 
 
 def _build_token_owner(config: dict) -> dict:
-    """Map each accepted bearer token to an owner id. The litellm key maps to
-    agent.defaultOwner; agent.apiTokens entries may be {token, owner} records or bare
-    strings (legacy: token maps to itself as the owner)."""
-    agent = config.get("agent", {})
-    default_owner = agent.get("defaultOwner", "local")
-    owners = {config.get("litellmKey", "sk-local"): default_owner}
-    for entry in agent.get("apiTokens", []):
-        if isinstance(entry, dict) and entry.get("token"):
-            owners[entry["token"]] = entry.get("owner") or default_owner
-        elif isinstance(entry, str) and entry:
-            owners[entry] = entry  # legacy flat-string token -> token-as-owner
-    return owners
+    """Map each accepted bearer token to an owner id. Delegates to the one static-token map in
+    bob_authstore, which the MCP HTTP transport reads too, so both surfaces accept the same bearers."""
+    from bob_authstore import config_token_owners
+
+    return config_token_owners(config)
 
 
 def _build_token_meta(config: dict) -> dict:

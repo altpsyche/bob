@@ -503,6 +503,33 @@ class TestGpuSeams(unittest.TestCase):
             self.assertIsNone(osenv.gpu_info())
 
 
+class TestOtherGpuVendors(unittest.TestCase):
+    """The non-NVIDIA probe. It drives no decision — it exists so install can name the gap out loud."""
+
+    def _fake_drm(self, tmp, vendors):
+        for i, v in enumerate(vendors):
+            dev = tmp / f"card{i}" / "device"
+            dev.mkdir(parents=True)
+            (dev / "vendor").write_text(v + "\n", encoding="utf-8")
+        return tmp
+
+    def test_reads_pci_vendor_ids(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            drm = self._fake_drm(Path(d), ["0x1002", "0x10de", "0x8086"])
+            with mock.patch("osenv.os_name", return_value="linux"), \
+                 mock.patch("osenv.Path", side_effect=lambda p: drm if p == "/sys/class/drm" else Path(p)):
+                self.assertEqual(osenv.other_gpu_vendors(), ["AMD", "Intel"])   # NVIDIA is not "other"
+
+    def test_no_drm_tree_is_empty_not_an_error(self):
+        with mock.patch("osenv.os_name", return_value="linux"), \
+             mock.patch("osenv.Path", side_effect=lambda p: Path("/nonexistent-drm")):
+            self.assertEqual(osenv.other_gpu_vendors(), [])
+
+    def test_real_host_probe_never_raises(self):
+        self.assertIsInstance(osenv.other_gpu_vendors(), list)
+
+
 class TestRamAndNuma(unittest.TestCase):
     def test_system_ram_from_proc_meminfo(self):
         meminfo = "MemTotal:       32000000 kB\nMemFree: 1 kB\nMemAvailable:   16000000 kB\n"

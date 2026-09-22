@@ -257,6 +257,26 @@ class TestDsh(unittest.TestCase):
         self.assertIn("        args: [agent, mcp]", patch)
         self.assertIn("        cwd: !!js process.cwd()", patch)   # the project dsh is open in
 
+    def test_mcp_patch_switches_to_http_when_configured(self):
+        """agent.mcpTransport = http makes the generated plugin instance dial a RUNNING Bob instead of
+        spawning one, which is what lets the harness sit on another machine."""
+        lines = "\n".join(gen._dsh_mcp_lines(
+            {"agent": {"mcpTransport": "http", "mcpPort": 8085, "mcpHost": "127.0.0.1"}}))
+        self.assertIn("        transport: http", lines)
+        self.assertIn('        url: "http://127.0.0.1:8085/mcp"', lines)
+        self.assertIn("Authorization:", lines)
+        self.assertNotIn("args: [agent, mcp]", lines)           # nothing is spawned over HTTP
+
+    def test_mcp_http_url_is_dialable_not_the_bind_address(self):
+        """0.0.0.0 is a bind address; the generated url must be something a client can actually open,
+        and agent.mcpUrl is how a remote harness is given the real one."""
+        wild = "\n".join(gen._dsh_mcp_lines({"agent": {"mcpTransport": "http", "mcpHost": "0.0.0.0"}}))
+        self.assertIn("127.0.0.1", wild)
+        self.assertNotIn("0.0.0.0", wild)
+        named = "\n".join(gen._dsh_mcp_lines(
+            {"agent": {"mcpTransport": "http", "mcpUrl": "https://bob.example/mcp"}}))
+        self.assertIn('        url: "https://bob.example/mcp"', named)
+
     def test_install_skips_when_dsh_is_absent(self):
         with tempfile.TemporaryDirectory() as d:
             msg = self._install(Path(d) / "nope")
