@@ -2472,15 +2472,21 @@ def main():
     # Interactive CLI: approve gated tools at the console when attached to a TTY (piped/CI → None
     # → fail-closed). The server passes no approver and so never prompts on its own console.
     approve = _console_approve if getattr(sys.stdin, "isatty", lambda: False)() else None
-    result, exit_requested = run_agent(
-        goal,
-        config,
-        role=args.role,
-        agency=args.agency,
-        exit_on_tools=exit_on_tools,
-        stream=args.stream,
-        approve=approve,
-    )
+    try:
+        result, exit_requested = run_agent(
+            goal,
+            config,
+            role=args.role,
+            agency=args.agency,
+            exit_on_tools=exit_on_tools,
+            stream=args.stream,
+            approve=approve,
+            raise_on_error=True,
+        )
+    except AgentRunError:
+        # A failed run is a failed command: scripts and CI must see a non-zero exit, not an empty answer.
+        # run_agent has already printed the error to stderr.
+        sys.exit(1)
 
     if args.notify and result:
         import osenv

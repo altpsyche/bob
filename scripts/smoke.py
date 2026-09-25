@@ -113,6 +113,36 @@ def _wait_url(url: str, seconds: float, headers: dict = None) -> bool:
     return False
 
 
+def _dump_service_logs(lines: int = 40) -> None:
+    """On a failed run, print the tail of each service log, so a CI failure shows the backend's own error
+    instead of only the symptom the client saw."""
+    tools = str(SCRIPTS / "tools")
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
+    try:
+        import stack
+    except ImportError:
+        return
+    for svc in ("litellm", "llama-swap", "agent-server"):
+        path = stack._logfile(svc)
+        if not path.exists():
+            continue
+        tail = path.read_text(encoding="utf-8", errors="replace").splitlines()[-lines:]
+        print(f"--- {path.name} (last {len(tail)} lines) ---")
+        for line in tail:
+            print(f"    {line}")
+
+
+def _http_detail(err) -> str:
+    """Status and the start of the body of an HTTPError, for a SKIP/FAIL line that says what went wrong."""
+    code = getattr(err, "code", "")
+    try:
+        body = err.read().decode("utf-8", "replace")[:300] if hasattr(err, "read") else str(err)
+    except Exception:
+        body = str(err)
+    return f"{code} {body}".strip()
+
+
 def _is_backend_hiccup(err) -> bool:
     """After /health + a session succeed, a failed TURN is a backend-model problem, not a contract bug:
     a 5xx / 422 / timeout / dropped connection -> SKIP; a 4xx (401/404/400) -> real contract FAIL."""
@@ -202,7 +232,8 @@ def main(argv=None) -> int:
         elif answer and len(answer) >= 2 and not answer.startswith(("ERROR", "Traceback", "Error:")):
             ok(f"bob agent 'say hi' answered ({len(answer)} chars)")
         else:
-            bad(f"bob agent 'say hi' returned no coherent answer on stdout: {answer[:120]!r}")
+            bad(f"bob agent 'say hi' returned no coherent answer on stdout: {answer[:120]!r}; "
+                f"stderr: {(proc.stderr or '').strip()[-400:]!r}")
     except subprocess.TimeoutExpired:
         if osenv.gpu_info() is None:
             skip(f"bob agent 'say hi' — backend/timeout on the CPU tier (cold load > {timeout}s); "
@@ -258,7 +289,7 @@ def main(argv=None) -> int:
                         bad(f"session turn returned no result / an error: {r.get('error')}")
                 except urllib.error.HTTPError as e:
                     (skip if _is_backend_hiccup(e) else bad)(
-                        f"session turn — {'backend model error; contract OK' if _is_backend_hiccup(e) else e}")
+                        f"session turn — {f'backend model error; contract OK ({_http_detail(e)})' if _is_backend_hiccup(e) else e}")
                 except (urllib.error.URLError, OSError, ValueError) as e:
                     skip(f"session turn — backend/timeout on the CPU tier; server routed it, contract OK ({e})")
 
@@ -287,6 +318,8 @@ def main(argv=None) -> int:
 
     if up and _skip > max_skips:
         bad(f"{_skip} checks skipped (limit {max_skips}): this run proved little beyond a reachable endpoint")
+    if _fail:
+        _dump_service_logs()
     print(f"\n{_pass} passed, {_fail} failed, {_skip} skipped")
     return 1 if _fail else 0
 

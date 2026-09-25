@@ -798,3 +798,23 @@ class TestProfileInjection(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCliExitCode(unittest.TestCase):
+    """`bob agent <goal>` is a command scripts and CI check: a run that ends in an error must exit non-zero,
+    not print an empty answer and exit 0."""
+
+    def test_error_run_exits_1(self):
+        import sys
+        err = bob_loop.AgentRunError("LLM error at step 1: context exceeded", "upstream_error")
+        with mock.patch.object(sys, "argv", ["bob-agent", "say hi"]), \
+                mock.patch.object(bob_loop, "run_agent", side_effect=err):
+            with self.assertRaises(SystemExit) as ctx:
+                bob_loop.main()
+        self.assertEqual(ctx.exception.code, 1)
+
+    def test_answer_exits_0(self):
+        import sys
+        with mock.patch.object(sys, "argv", ["bob-agent", "say hi"]), \
+                mock.patch.object(bob_loop, "run_agent", return_value=("hi", False)):
+            bob_loop.main()   # returns normally, no SystemExit
