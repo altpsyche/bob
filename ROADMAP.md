@@ -22,14 +22,15 @@ dependency locks, the minimum toolchain, and the model manifest (repo, revision,
 reports the running release. `bob update` moves between releases lockfile to lockfile, rebuilds only what
 changed, verifies, and rolls back on failure.
 
-> **1.3 is the current line.** Bob started as a Windows first, two language (PowerShell plus Python)
+> **2.0 is the current line.** Bob started as a Windows first, two language (PowerShell plus Python)
 > experiment. That whole plan is now complete: one command, one engine, cross platform, reproducible, and
 > test backed. 1.0 marked the point where Bob became a coherent product rather than a build out; 1.1 makes
 > it easy to install and get started, with one command per OS and a Docker-free default; 1.2 sharpens the
 > daily driver with a current local coder, refreshed cloud peers, and a faster, tougher voice path, and its
 > patch line makes a release prove itself with driver-only prebuilt engines, one install lifecycle seam, and
 > a release cut that cannot drift; 1.3 moves the whole local registry a generation and adds a `writer` role
-> for long-form prose. Everything up to and including 1.3 is shipped; everything above it is the plan.
+> for long-form prose; 2.0 makes Bob private by default, closes every seam a repo-wide audit found, and runs
+> each GPU tier on one model. Everything up to and including 2.0 is shipped; everything above it is the plan.
 
 ---
 
@@ -183,7 +184,7 @@ Carried forward, still open:
 
 ### 1.3 a current registry, and long-form prose (shipped)
 This line refreshed the models rather than the harness, so the coding agent work originally scoped here
-moved intact to 1.4.
+moved intact to 2.1.
 
 - **The local registry moved a generation.** `chat` and `agent` to Qwen3.5-9B, `ponder` to Qwen3.6-35B-A3B,
   `vision` to the first-party Qwen3-VL-8B, `embed` and `rerank` to Qwen3-Embedding-0.6B and
@@ -200,7 +201,7 @@ moved intact to 1.4.
 - **One `bob update` is the whole move.** It restarts a running endpoint, so a registry change takes effect
   without a second command nobody knew to run.
 
-### 1.3.x the harness you already use (in progress)
+### 1.3.x the harness you already use (shipped in 2.0)
 DeepSeek Harness (dsh) landed in August 2026 as a model-agnostic coding agent, MIT, with a browser UI, a
 headless mode, and an everything-is-a-plugin architecture. It is the strongest argument yet for what Bob
 already is: a private local brain that other front ends can borrow. So Bob wires it the way it wires
@@ -219,18 +220,41 @@ pure Python, Docker-free.
 - Carried forward from 1.2.x: **Windows CUDA on real Windows GPU hardware** is still unproven, the one
   residual that needs hardware rather than code.
 
-### 1.4 a deeper coding agent
-Take the coding loop from good to measured best in class for a local harness.
+### 2.0 private by default (shipped)
+A major version because it changes the install, config and API surface. Every change came out of a
+repo-wide audit: each finding carries a regression test, and two adversarial reviews checked the fixes.
 
-- **One model, five roles, and a 16 GB card that holds it whole (landed).** The registry's GPU tiers now
+- **One model, five roles, and a 16 GB card that holds it whole.** The registry's GPU tiers now
   run Qwen3.8-27B in IST-DASLab's GSQ-RCO packing, with `coder`, `ponder`, `writer` and `agent` as aliases
   of `chat`: one download, one loaded server, per-alias sampling. Non-uniform quantization is what changed
-  the arithmetic — GSQ quantizes each tensor at its own bit depth and RCO assigns those depths under a size
+  the arithmetic: GSQ quantizes each tensor at its own bit depth and RCO assigns those depths under a size
   budget, so a 10 to 12 GB build scores at its full-precision level on AIME25 and LiveCodeBench rather than
   merely close to it. The 16 GB tier stops paying the offload tax it has paid since 1.2: no MoE experts in
   system RAM, no dense model fitted around the card, 18.6 GB of downloads instead of ~90 GB, and 2.5x the
   context. Auditing the VRAM that made room for it turned up three llama-server defaults reserving about
   8 GB nobody used, and a llama-swap grouping default that made every memory lookup evict the chat model.
+
+- **Private by default.** Every service binds `bindHost` (loopback unless you opt in) and the voice servers
+  bind `voiceBindHost`. Every secret is generated on first use and kept out of tracked files: the LiteLLM
+  key (no more `sk-local`), the Open WebUI, n8n, SearXNG and Langfuse secrets. The proxy reads its key from
+  its environment, the file tools refuse every config that holds one, and clients Bob manages pick up a
+  new key on their own.
+- **One approval gate.** The agent loop, MCP, `bob --run` and skill steps share one gate. Over MCP a tool
+  that needs approval or changes state is refused unless `agent.mcpAllowTools` lists it, sub-runs included,
+  and MCP over HTTP uses the agent API's scoped, revocable tokens.
+- **Budgets that match the model.** The agent's context budget comes from the served role's per-request
+  window, `max_tokens` is always sent, truncated replies are reported instead of accepted, and a small
+  window compacts or drops tools instead of overflowing. The cpu tier falls back to chat for roles it
+  doesn't serve and refuses images it can't read.
+- **A lighter, stricter install.** aider and fabric are opt-in, whisper.cpp is gone, llama-swap installs
+  as a pinned release binary, Go and Node are needed only for source builds, Windows no longer installs
+  Docker Desktop, and every venv installs from its lock. Updates swap engine files atomically and roll
+  back on any error.
+- **Memory that does what it says.** `clear` clears, the recall threshold gates on real similarity,
+  forgotten facts stay forgotten, and embed and rerank inputs fit their models.
+
+### 2.1 a deeper coding agent
+Take the coding loop from good to measured best in class for a local harness.
 
 - **Structural code retrieval.** Add an `ast-grep` escalation tier on top of today's ripgrep and repo map,
   and promote the tree-sitter symbol extraction in [scripts/bob_repomap.py](scripts/bob_repomap.py), today
@@ -260,7 +284,7 @@ Take the coding loop from good to measured best in class for a local harness.
 - **Model-free context pruning.** Bob's compaction summarizes, which costs a model call per compaction.
   Pruning stale tool results needs no model at all, and dsh separates the two for that reason.
 
-### 1.5 more model on the same GPU
+### 2.2 more model on the same GPU
 Push the inference tier so bigger, better models run on the hardware people already own. 1.2 adopted
 llama.cpp's `--n-cpu-moe` and 1.3 added `ngl: "auto"`; this line is about what those two put within reach.
 
@@ -273,7 +297,7 @@ llama.cpp's `--n-cpu-moe` and 1.3 added `ngl: "auto"`; this line is about what t
 - **Streaming, low latency voice.** Parakeet-TDT or Moonshine for sub second streaming STT with VAD, so
   the voice loop feels conversational.
 
-### 2.0 everywhere, and together
+### 3.0 everywhere, and together
 The big leaps that change what Bob *is*, which is why they carry a major version.
 
 - **New platforms.** macOS (a Metal backend) and AMD ROCm, today's honest "not yet" rows on the support

@@ -8,6 +8,8 @@ rebuilds only what changed, verifies, and rolls back on failure.
 
 ## [Unreleased]
 
+## [2.0.0] (2026-09-25)
+
 ### Security
 - **Every service now binds loopback unless you say otherwise.** One top-level `bindHost` (default
   `127.0.0.1`) is the address LiteLLM (`--host`), Open WebUI and n8n (`N8N_LISTEN_ADDRESS`) listen on,
