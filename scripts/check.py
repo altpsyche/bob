@@ -41,6 +41,13 @@ _ALLOWED_SKIPS = (
     ("test_kernel.", {"win32"}),
     ("test_build.", {"win32"}),
     ("test_search_plugin.", {"win32"}),                           # needs a POSIX shell script
+    ("test_kernel_optin.", {"win32"}),                            # POSIX symlink install
+    ("test_generate.TestKeyDrift", {"win32"}),                    # POSIX file modes
+    ("test_generate.TestKeyBearingFilesArePrivate", {"win32"}),   # POSIX file modes
+    ("test_osenv.TestKillByName", {"win32", "darwin"}),           # real /proc scan is Linux-only
+    ("test_osenv.TestStopWaitsForExit", {"win32"}),               # POSIX signal escalation
+    ("test_osenv.TestEnsureSecret", {"win32"}),                   # POSIX file modes
+    ("test_osenv.TestInstallFiles", {"win32", "darwin"}),         # ETXTBSY is Linux; symlinks need privilege
 )
 
 _N8N_FORBIDDEN = ("host.docker.internal", "sk-local")

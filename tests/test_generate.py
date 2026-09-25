@@ -1011,6 +1011,7 @@ class TestFabricLegacyMigration(unittest.TestCase):
             self.assertEqual(gen.refresh_fabric_env(), "")
 
 
+@unittest.skipIf(os.name == "nt", "POSIX file modes; Windows has no group/other permission bits")
 class TestKeyBearingFilesArePrivate(unittest.TestCase):
     """Every generated file that embeds the LiteLLM key is 0600; key-free llama-swap.yaml keeps the umask."""
 

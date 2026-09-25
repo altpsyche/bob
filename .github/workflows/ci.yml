@@ -151,10 +151,11 @@ jobs:
       # check.py's skip guard fails the job on any skip it does not expect. sqlite-utils + requests are
       # bob_memory's deps; rich/prompt_toolkit/pyfiglet the shell UI; PyYAML the skills manifests;
       # python-multipart the STT server's multipart routes; mcp + starlette the MCP Streamable HTTP
-      # transport; numpy the mic-capture path.
+      # transport; numpy the mic-capture path. Constrained to the runtime venv's lock, so CI tests the same
+      # versions an install runs (an unpinned mcp once dropped the low-level Server API under the tests).
       - name: Install core-suite deps
         shell: bash
-        run: python -m pip install --upgrade pip fastapi uvicorn pydantic httpx requests openai sqlite-utils rich prompt_toolkit pyfiglet pyyaml python-multipart mcp starlette numpy
+        run: python -m pip install --upgrade pip && python -m pip install -c tools/litellm-requirements.lock fastapi uvicorn pydantic httpx requests openai sqlite-utils rich prompt_toolkit pyfiglet pyyaml python-multipart mcp starlette numpy
 
       # bubblewrap backs the Linux sandbox's real-confinement tests. Ubuntu 24.04 blocks unprivileged user
       # namespaces through AppArmor by default, which bwrap needs, so lift that on the throwaway runner.

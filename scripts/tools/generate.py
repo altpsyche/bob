@@ -1123,7 +1123,7 @@ def gen_aider(profile: str = None) -> str:
         out += ["architect: false", f"model: openai/{architect}", "edit-format: diff"]
     out += [f"openai-api-base: http://127.0.0.1:{_port(bobcfg, 'litellmPort')}/v1",
             f"openai-api-key: {_yaml_str(_litellm_key(bobcfg))}",
-            f"model-metadata-file: {_yaml_str(str(metadata_file))}",
+            f"model-metadata-file: {_yaml_str(Path(metadata_file).as_posix())}",
             f"map-tokens: {_aider_map_tokens(min(windows.values()))}"
             "                    # sized to the smaller per-request window"]
     conf = _write(aider_dir / ".aider.conf.yml", "\n".join(out) + "\n")

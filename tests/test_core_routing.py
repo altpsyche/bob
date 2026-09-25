@@ -1,5 +1,7 @@
 """bob_core routing + port defaults."""
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import _common
@@ -217,7 +219,8 @@ class TestSharedHelpers(unittest.TestCase):
         import osenv
         self.assertEqual(bob_core.state_path("data/sessions.db"), osenv.data_dir() / "sessions.db")
         self.assertEqual(bob_core.state_path("logs/bob-agent.log"), osenv.cache_dir() / "bob-agent.log")
-        self.assertEqual(str(bob_core.state_path("/abs/x.db")), "/abs/x.db")
+        absolute = Path(tempfile.gettempdir()).resolve() / "x.db"   # absolute on every OS
+        self.assertEqual(bob_core.state_path(str(absolute)), absolute)
 
     def test_check_litellm_uses_osenv(self):
         import osenv
