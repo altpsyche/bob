@@ -404,6 +404,31 @@ jobs:
           echo "prev=$prev"   >> "$GITHUB_OUTPUT"
           echo "pinned=$pinned  prev=${prev:-<none>}  reuse=$reuse"
 
+  # The GitHub release the publish jobs upload into. Created here from the tag's CHANGELOG section when it
+  # does not exist yet, so pushing a tag is the whole release; an existing release (hand-written notes) is
+  # left alone.
+  release-page:
+    name: release-page (create the GitHub release)
+    needs: [core-suite]                  # core-suite asserts the tag is v$(cat VERSION)
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - name: Create the release if missing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if gh release view "$tag" >/dev/null 2>&1; then echo "release $tag exists"; exit 0; fi
+          ver="${tag#v}"
+          awk -v v="$ver" '$0 ~ "^## \\[" v "\\]" {f=1; next} /^## \[/ {if (f) exit} f' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "See CHANGELOG.md." > notes.md
+          gh release create "$tag" --verify-tag --title "Bob $ver" --notes-file notes.md
+
   # Build + publish the prebuilt, DRIVER-ONLY engine binaries for a tagged release (the outlier fix: users
   # download these instead of compiling). Both tiers build in an OLD-glibc container (Ubuntu 20.04, glibc
   # 2.31) so the binary runs on essentially every current distro (manylinux principle: build old, run
@@ -419,7 +444,7 @@ jobs:
   # the one fat multi-arch CUDA binary.
   publish-engines-linux:
     name: publish-engines (linux ${{ matrix.tier }}, release tags)
-    needs: [engine-plan, core-suite]     # core-suite also asserts the tag is v$(cat VERSION)
+    needs: [engine-plan, core-suite, release-page]   # core-suite also asserts the tag is v$(cat VERSION)
     if: ${{ startsWith(github.ref, 'refs/tags/v') && needs.engine-plan.outputs.reuse != 'true' }}
     runs-on: ubuntu-latest
     permissions:
@@ -590,7 +615,7 @@ jobs:
   # to shake out the CUDA-toolkit install + VS build here, like the GPU acceptance tier.
   publish-engines-windows:
     name: publish-engines (windows ${{ matrix.tier }}, release tags)
-    needs: [engine-plan, core-suite]     # core-suite also asserts the tag is v$(cat VERSION)
+    needs: [engine-plan, core-suite, release-page]   # core-suite also asserts the tag is v$(cat VERSION)
     if: ${{ startsWith(github.ref, 'refs/tags/v') && needs.engine-plan.outputs.reuse != 'true' }}
     # windows-2022 = VS 2022 (MSVC 14.4x), which CUDA 12.8's nvcc supports. windows-latest moved to VS 2026
     # (MSVC 14.51), where nvcc's cudafe++ crashes — so the CUDA engine must build on the pinned 2022 image.
@@ -703,7 +728,7 @@ jobs:
   # needed; there is no pull-request permission and nothing to merge to activate a release.
   publish-manifest:
     name: publish-manifest (engines.json release asset)
-    needs: [engine-plan, core-suite, publish-engines-linux, publish-engines-windows]
+    needs: [engine-plan, core-suite, release-page, publish-engines-linux, publish-engines-windows]
     # Runs even when the build jobs SKIP (reuse path): skipped deps are not failures. Blocks only if a build
     # actually failed or engine-plan errored.
     if: ${{ !cancelled() && !failure() && startsWith(github.ref, 'refs/tags/v') }}

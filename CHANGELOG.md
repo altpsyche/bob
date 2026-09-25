@@ -8,6 +8,12 @@ rebuilds only what changed, verifies, and rolls back on failure.
 
 ## [Unreleased]
 
+### Fixed
+- **Pushing a release tag creates its GitHub release.** The engine publish jobs upload into a GitHub release
+  but nothing created one, so a tag without a hand-made release page failed every upload. A `release-page`
+  job now creates it from the tag's CHANGELOG section when it is missing and leaves an existing one alone.
+  [.github/workflows/ci.yml](.github/workflows/ci.yml).
+
 ## [2.0.0] (2026-09-25)
 
 ### Security
