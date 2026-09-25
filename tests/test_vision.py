@@ -58,9 +58,30 @@ class TestDescribeHandler(unittest.TestCase):
         cli._handle_describe([self.img])
         self.assertEqual(self.captured["goal"], "Describe this image.")
 
-    def test_describe_pro_flag(self):
-        cli._handle_describe([self.img, "--pro"])
+    def test_describe_pro_refused_when_peer_takes_no_images(self):
+        # The default vision-pro peer (deepseek) has no supportsVision: refuse clearly, never send a 400.
+        rc = cli._handle_describe([self.img, "--pro"])
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.captured, {})
+
+    def test_describe_pro_flag_with_vision_peer(self):
+        mcfg = {"peers": {"p": {"pro": {"vision": {"model": "m", "supportsVision": True}}}},
+                "defaults": {}}
+        with mock.patch.object(bob_core, "_models_view", return_value=(mcfg, "16gb", {"vision": {}})):
+            cli._handle_describe([self.img, "--pro"])
         self.assertEqual(self.captured["role"], "vision-pro")
+
+    def test_describe_refused_when_vision_disabled(self):
+        cfg = _common.fake_config()
+        cfg["vision"]["enabled"] = False
+        bob_core.load_config = lambda: cfg
+        self.assertEqual(cli._handle_describe([self.img]), 1)
+        self.assertEqual(self.captured, {})
+
+    def test_describe_refused_on_profile_without_vision(self):
+        with mock.patch.object(bob_core, "_models_view", return_value=({}, "8gb", {"chat": {}})):
+            self.assertEqual(cli._handle_describe([self.img]), 1)
+        self.assertEqual(self.captured, {})
 
     def test_describe_missing_file_returns_1(self):
         rc = cli._handle_describe(["/no/such/file.png"])

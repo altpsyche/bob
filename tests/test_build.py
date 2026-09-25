@@ -3,6 +3,7 @@ cmake/nvcc/go stay subprocess and are mocked here (a fake _run writes the staged
 construction, the atomic bin/ swap, and the guards are all exercised without a real compiler. Windows
 branches are `# pragma: no cover`. build is CLI-only (long) — not an agent tool, not on --run."""
 import io
+import os
 import sys
 import tempfile
 import unittest
@@ -117,6 +118,32 @@ class TestLinuxCmake3(unittest.TestCase):
             self.assertEqual(osenv.linux_cmake3(str(repo)), str(exe))   # 3.16 rejected -> pinned
 
 
+    def test_pinned_download_is_sha_verified(self):
+        repo = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, repo, True)
+        got = {}
+
+        def fake_download(url, dest, sha256=None, timeout=None, require_sha=False):
+            got.update(url=url, dest=Path(dest), sha256=sha256, require_sha=require_sha)
+            raise RuntimeError("stop before extracting")
+
+        with mock.patch("osenv.shutil.which", return_value=None), \
+             mock.patch("osenv.platform.machine", return_value="x86_64"), \
+             mock.patch.object(osenv, "download", side_effect=fake_download):
+            with self.assertRaises(RuntimeError):
+                osenv.linux_cmake3(str(repo))
+        self.assertEqual(got["sha256"], osenv.CMAKE_PIN_SHA256["x86_64"])
+        self.assertTrue(got["require_sha"])
+        self.assertIn(osenv.CMAKE_PIN, got["url"])
+        self.assertNotEqual(got["dest"].parent, Path(tempfile.gettempdir()))   # private temp dir, not /tmp/<name>
+
+    def test_range_is_the_one_source(self):
+        self.assertTrue(osenv.cmake_in_range("cmake version 3.18.0"))
+        self.assertTrue(osenv.cmake_in_range(f"cmake version {osenv.CMAKE_PIN}"))
+        self.assertFalse(osenv.cmake_in_range("cmake version 3.16.3"))
+        self.assertFalse(osenv.cmake_in_range("cmake version 4.0.1"))
+
+
 class _BuildTreeMixin:
     def setUp(self):
         self.repo = Path(tempfile.mkdtemp())
@@ -143,6 +170,9 @@ class _BuildTreeMixin:
                 out = self.src / "build" / "bin"
                 out.mkdir(parents=True, exist_ok=True)
                 (out / "llama-server").write_text("ELF")
+                if sys.platform != "win32":
+                    (out / "libggml.so.0.9.4").write_text("L" * 100)
+                    os.symlink("libggml.so.0.9.4", out / "libggml.so.0")
         return run
 
 
@@ -183,6 +213,17 @@ class TestBuildLlama(_BuildTreeMixin, unittest.TestCase):
         self.assertEqual(marker["tier"], "gpu")
         self.assertEqual(marker["arch"], 120)
 
+    @unittest.skipIf(sys.platform == "win32", "symlinks need privilege on Windows")
+    def test_install_keeps_symlinks_and_prunes_stale_libs(self):
+        self.bin.mkdir()
+        (self.bin / "libggml.so.0.9.3").write_text("stale")
+        with mock.patch("osenv.os_name", return_value="linux"), \
+             mock.patch.object(build_mod, "_resolve_cmake", return_value="cmake"), \
+             mock.patch.object(build_mod, "_run", side_effect=self._fake_run([])):
+            build_mod.build_llama(cpu=True, force=True)
+        self.assertTrue((self.bin / "libggml.so.0").is_symlink())      # not a second full copy
+        self.assertFalse((self.bin / "libggml.so.0.9.3").exists())      # old version pruned
+
     def test_cpu_build_disables_cuda(self):
         cap = []
         with mock.patch("osenv.os_name", return_value="linux"), \
@@ -219,25 +260,93 @@ class TestBuildLlama(_BuildTreeMixin, unittest.TestCase):
 
 
 class TestBuildLlamaSwap(_BuildTreeMixin, unittest.TestCase):
+    """llama-swap comes from the sha-verified release pinned in versions.lock by default (no Go); Go is only
+    needed for --from-source or when no usable pin applies."""
+
     def setUp(self):
         super().setUp()
+        import hashlib
+        import tarfile
         (self.repo / "external" / "llama-swap").mkdir(parents=True)
         mock.patch.object(build_mod, "SRC_SWAP", self.repo / "external" / "llama-swap").start()
         self.addCleanup(mock.patch.stopall)
+        payload = self.repo / "payload"
+        payload.mkdir()
+        (payload / osenv.exe_name("llama-swap")).write_text("release-binary")
+        (payload / "README.md").write_text("docs")
+        self.archive = self.repo / "llama-swap_255_linux_amd64.tar.gz"
+        with tarfile.open(self.archive, "w:gz") as t:
+            for f in payload.iterdir():
+                t.add(f, arcname=f.name)
+        self.sha = hashlib.sha256(self.archive.read_bytes()).hexdigest()
 
-    def test_missing_go_raises(self):
-        (self.bin).mkdir(exist_ok=True)
-        with mock.patch("build.shutil.which", return_value=None):
-            with self.assertRaises(RuntimeError):
-                build_mod.build_llama_swap(force=True)
+    def _pin(self, sha=None, built="c0ffee"):
+        return {"version": "v255", "submodule": "external/llama-swap", "builtFromCommit": built,
+                "url": self.archive.as_uri(), "sha256": self.sha if sha is None else sha}
 
-    def test_happy_path_runs_go_build(self):
+    def _patches(self, pin, pinned="c0ffee", go=None):
+        from bob import versions
+        return [mock.patch.object(versions, "pinned_binary", return_value=pin),
+                mock.patch.object(versions, "submodule_commits",
+                                  return_value={"external/llama-swap": pinned}),
+                mock.patch("build.shutil.which", return_value=go)]
+
+    def _call(self, pin, pinned="c0ffee", go=None, **kw):
+        import contextlib
         cap = []
-        with mock.patch("build.shutil.which", return_value="/usr/bin/go"), \
-             mock.patch.object(build_mod, "_run", side_effect=lambda a, **k: cap.append([str(x) for x in a])):
-            out = build_mod.build_llama_swap(force=True)
-        self.assertTrue(any("go" in c[0] and "build" in c for c in cap))
+
+        def fake_run(argv, **k):
+            cap.append([str(a) for a in argv])
+            Path(argv[argv.index("-o") + 1]).write_text("go-built")
+
+        with contextlib.ExitStack() as es:
+            for p in self._patches(pin, pinned, go):
+                es.enter_context(p)
+            es.enter_context(mock.patch.object(build_mod, "_run", side_effect=fake_run))
+            out = build_mod.build_llama_swap(force=True, **kw)
+        return out, cap
+
+    def _installed(self):
+        return (self.bin / osenv.exe_name("llama-swap")).read_text()
+
+    def test_release_binary_installed_without_go(self):
+        out, cap = self._call(self._pin())
+        self.assertEqual(self._installed(), "release-binary")
+        self.assertEqual(cap, [])                                 # no Go build
+        self.assertIn("release binary", out)
+
+    def test_empty_sha_refuses_download_and_needs_go(self):
+        with self.assertRaises(RuntimeError) as cm:
+            self._call(self._pin(sha=""))
+        self.assertIn("Go not found", str(cm.exception))
+        self.assertFalse((self.bin / osenv.exe_name("llama-swap")).exists())
+
+    def test_sha_mismatch_falls_back_to_source(self):
+        out, cap = self._call(self._pin(sha="0" * 64), go="/usr/bin/go")
+        self.assertEqual(self._installed(), "go-built")
+        self.assertTrue(any(c[:2] == ["go", "build"] for c in cap))
+
+    def test_submodule_moved_past_release_builds_from_source(self):
+        out, cap = self._call(self._pin(), pinned="deadbeef", go="/usr/bin/go")
+        self.assertEqual(self._installed(), "go-built")
+
+    def test_from_source_skips_release(self):
+        out, cap = self._call(self._pin(), go="/usr/bin/go", from_source=True)
+        self.assertEqual(self._installed(), "go-built")
         self.assertIn("Built", out)
+
+    def test_missing_go_raises_from_source(self):
+        with self.assertRaises(RuntimeError):
+            self._call(self._pin(), go=None, from_source=True)
+
+    def test_committed_lock_pins_this_submodule_with_real_shas(self):
+        from bob import versions
+        lock = versions.load_lock()
+        entry = lock["binaries"]["llama-swap"]
+        self.assertEqual(entry["builtFromCommit"], lock["submodules"]["external/llama-swap"])
+        for key, asset in entry["assets"].items():
+            self.assertRegex(asset["sha256"], r"^[0-9a-f]{64}$", key)
+            self.assertTrue(asset["url"].startswith("https://github.com/mostlygeek/llama-swap/releases/"))
 
 
 class TestSetupFabric(_BuildTreeMixin, unittest.TestCase):
@@ -252,12 +361,40 @@ class TestSetupFabric(_BuildTreeMixin, unittest.TestCase):
              mock.patch("build.shutil.which", return_value="/usr/bin/go"), \
              mock.patch("osenv.home_config_dir", return_value=fabric_dir), \
              mock.patch("osenv.bin_exe", return_value=self.bin / "fabric"), \
+             mock.patch("bob_core._litellm_key", return_value="sk-generated"), \
              mock.patch.object(build_mod, "_run", side_effect=lambda a, **k: (self.bin.mkdir(exist_ok=True), (self.bin / "fabric").write_text("x"))):
             out = build_mod.setup_fabric(force=True)
         env = (fabric_dir / ".env").read_text()
-        self.assertIn("OPENAI_API_BASE_URL=http://localhost:8081/v1", env)
+        self.assertIn("LITELLM_API_BASE_URL=http://localhost:8081/v1", env)
+        self.assertIn("LITELLM_API_KEY=sk-generated", env)     # the generated key, never sk-local
         self.assertIn("DEFAULT_MODEL=coder", env)
-        self.assertIn("Configured: coder", out)
+        self.assertIn("Configured: LiteLLM", out)
+
+    def test_builds_once(self):
+        # An existing bin/fabric is not rebuilt without force (setup + fabric-setup never double-build).
+        fabric_dir = self.repo / ".config" / "fabric"
+        src_fabric = self.repo / "external" / "fabric"
+        (src_fabric / "data" / "patterns").mkdir(parents=True)
+        (src_fabric / "go.mod").write_text("module fabric")
+        self.bin.mkdir(exist_ok=True)
+        (self.bin / "fabric").write_text("x")
+        build_mod.configure(CFG)
+        with mock.patch.object(build_mod, "SRC_FABRIC", src_fabric), \
+             mock.patch("osenv.home_config_dir", return_value=fabric_dir), \
+             mock.patch("osenv.bin_exe", return_value=self.bin / "fabric"), \
+             mock.patch("bob_core._litellm_key", return_value="k"), \
+             mock.patch.object(build_mod, "_run") as run:
+            build_mod.setup_fabric()
+        run.assert_not_called()
+
+
+class TestReinstallVenv(unittest.TestCase):
+    def test_aider_venv_refreshed_only_where_installed(self):
+        for present, want in ((False, ["venv-litellm"]), (True, ["venv-litellm", "venv-aider"])):
+            with mock.patch("osenv.venv_exe", return_value=mock.Mock(exists=lambda: present)), \
+                 mock.patch("osenv.new_bob_venv") as nbv:
+                build_mod._reinstall_venv()
+            self.assertEqual([c.args[0] for c in nbv.call_args_list], want)
 
 
 class TestUpdateStack(unittest.TestCase):
@@ -265,7 +402,8 @@ class TestUpdateStack(unittest.TestCase):
     # git/network/compiler runs. CLI-only.
     def _run(self, before, after, verify=True, tag=None, changed="llama.cpp", cfg=None,
              gpu=None, cuda_ok=True, on_branch=True, prebuilt=False, from_source=False, pending_path=None,
-             channel=None, on_tag=False, latest_tag="", stable_target=""):
+             channel=None, on_tag=False, latest_tag="", stable_target="", swap_effect=None,
+             fabric_installed=True):
         """Run update_stack with everything mocked; return (rc, mocks-by-name, git-calls). `changed`
         picks which submodule moves (before -> after); every other submodule stays put, so the test
         controls exactly which component the update should rebuild. `prebuilt` = whether a GPU prebuilt
@@ -281,8 +419,8 @@ class TestUpdateStack(unittest.TestCase):
         # Isolate the pending-rebuild marker to a temp path (never the real data/ dir). Callers can pass a
         # shared pending_path to chain two update_stack runs (fail -> re-run) in one test.
         pend = pending_path or (exe.parent / "update-pending.json")
-        src_of = {"llama.cpp": build_mod.SRC_LLAMA, "whisper.cpp": build_mod.SRC_WHISPER,
-                  "llama-swap": build_mod.SRC_SWAP, "fabric": build_mod.SRC_FABRIC}
+        src_of = {"llama.cpp": build_mod.SRC_LLAMA, "llama-swap": build_mod.SRC_SWAP,
+                  "fabric": build_mod.SRC_FABRIC}
         changed_src = src_of[changed]
         phase = {"after": False}   # flipped by the _reinstall_venv mock, which runs after the submodule sync
         def head(p):
@@ -295,14 +433,15 @@ class TestUpdateStack(unittest.TestCase):
             "_reinstall_venv": mock.patch.object(build_mod, "_reinstall_venv",
                                                  side_effect=lambda *a, **k: phase.update(after=True)),
             "build_llama": mock.patch.object(build_mod, "build_llama", return_value="built"),
-            "build_whisper": mock.patch.object(build_mod, "build_whisper", return_value="built"),
-            "build_llama_swap": mock.patch.object(build_mod, "build_llama_swap", return_value="built"),
+            "build_llama_swap": mock.patch.object(build_mod, "build_llama_swap", return_value="built",
+                                                  side_effect=swap_effect),
             "setup_fabric": mock.patch.object(build_mod, "setup_fabric", return_value="built"),
             "_verify_binary": mock.patch.object(build_mod, "_verify_binary", return_value=verify),
             "backup": mock.patch("osenv.backup_build_output", return_value=Path("/bin.bak")),
             "restore": mock.patch("osenv.restore_build_output", return_value=True),
             "remove_bak": mock.patch("osenv.remove_build_output_backup"),
-            "bin_exe": mock.patch("osenv.bin_exe", return_value=exe),
+            "bin_exe": mock.patch("osenv.bin_exe", side_effect=lambda name: exe if (fabric_installed or name != "fabric")
+                                  else exe.parent / "no-such-fabric"),
             "on_branch": mock.patch.object(build_mod, "_on_branch", return_value=on_branch),
             # Git-state helpers for channel logic — mocked so the update tests never depend on the real repo's
             # tags/branch. Defaults (on a branch, no tags) reproduce a dev-on-main / latest checkout.
@@ -322,7 +461,7 @@ class TestUpdateStack(unittest.TestCase):
             "prebuilt_avail": mock.patch("bob.lifecycle.prebuilt_available", return_value=prebuilt),
             # Isolate the owed-rebuild marker so tests never write the real data/ dir.
             "pending_path": mock.patch.object(build_mod, "_pending_rebuild_path", return_value=pend),
-            "write_lock": mock.patch("bob.versions.write_lock"),
+            "write_lock": mock.patch("bob.versions.write_lock"),   # asserted NOT called: update never relocks
             # update_stack fetches any newly-added models (best-effort). Keep the unit hermetic — never
             # touch the network / attempt a real GGUF download.
             "fetch_models": mock.patch("provision.fetch_models", return_value="models: all present"),
@@ -338,12 +477,14 @@ class TestUpdateStack(unittest.TestCase):
             rc = build_mod.update_stack(tag=tag, from_source=from_source, channel=channel)
         return rc, mocks, git
 
-    def test_unchanged_skips_rebuild_but_relocks(self):
+    def test_unchanged_skips_rebuild_and_never_relocks(self):
         rc, mocks, git = self._run("abc", "abc")
         self.assertEqual(rc, 0)
-        for m in ("build_llama", "build_whisper", "build_llama_swap", "setup_fabric"):
+        for m in ("build_llama", "build_llama_swap", "setup_fabric"):
             mocks[m].assert_not_called()            # nothing moved -> no rebuild
-        mocks["write_lock"].assert_called_once()    # relock still happens
+        # versions.lock is tracked and arrived with the checkout: rewriting it here would bake this machine's
+        # state into it and dirty the tree, blocking the next update's checkout.
+        mocks["write_lock"].assert_not_called()
         mocks["health_check"].assert_called_once()
         self.assertTrue(any("pull" in c for c in git))
 
@@ -351,11 +492,19 @@ class TestUpdateStack(unittest.TestCase):
         rc, mocks, _ = self._run("aaa", "bbb", verify=True)
         self.assertEqual(rc, 0)
         mocks["build_llama"].assert_called_once()
-        for m in ("build_whisper", "build_llama_swap", "setup_fabric"):
+        for m in ("build_llama_swap", "setup_fabric"):
             mocks[m].assert_not_called()            # only the moved submodule is rebuilt
         mocks["backup"].assert_called_once()
         mocks["remove_bak"].assert_called_once()    # backup discarded on verified success
         mocks["restore"].assert_not_called()
+
+    def test_fabric_rebuilds_on_move_only_where_installed(self):
+        # fabric is opt-in: a submodule move must not install it where fabric-setup never ran.
+        rc, mocks, _ = self._run("f1", "f2", changed="fabric", fabric_installed=False)
+        self.assertEqual(rc, 0)
+        mocks["setup_fabric"].assert_not_called()
+        rc, mocks, _ = self._run("f1", "f2", changed="fabric", fabric_installed=True)
+        mocks["setup_fabric"].assert_called_once()
 
     def test_nonengine_submodule_rebuilds_when_moved(self):
         # A llama-swap bump (engine unchanged) must still rebuild llama-swap — the regression this guards.
@@ -410,14 +559,20 @@ class TestUpdateStack(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertFalse(mocks["build_llama"].call_args.kwargs["cpu"])   # GPU tier kept, not downgraded
 
-    def test_whisper_still_downgrades_to_cpu_when_toolkit_missing(self):
-        # whisper.cpp has NO prebuilt, so a missing toolkit DOES downgrade it to a CPU source build even when a
-        # llama-server GPU prebuilt is available — the prebuilt-awareness is scoped to the component that has one.
-        rc, mocks, _ = self._run("aaa", "bbb", changed="whisper.cpp",
-                                 gpu={"CudaArch": 120}, cuda_ok=False, prebuilt=True)
+    def test_non_runtime_error_still_rolls_back(self):
+        # A download dying with OSError / IncompleteRead / a tarfile error (not a RuntimeError) must still
+        # reach the rollback, never escape with bin/ half-replaced and the snapshot left behind.
+        import http.client
+        for exc in (OSError("disk full"), http.client.IncompleteRead(b"x"), __import__("tarfile").ReadError()):
+            rc, mocks, _ = self._run("v230", "v239", changed="llama-swap", swap_effect=exc)
+            self.assertEqual(rc, 1, exc)
+            mocks["restore"].assert_called_once()
+            mocks["remove_bak"].assert_not_called()
+
+    def test_llama_swap_rebuild_honors_from_source(self):
+        rc, mocks, _ = self._run("v230", "v239", changed="llama-swap", from_source=True)
         self.assertEqual(rc, 0)
-        self.assertTrue(mocks["build_whisper"].call_args.kwargs["cpu_only"])
-        mocks["build_llama"].assert_not_called()
+        self.assertTrue(mocks["build_llama_swap"].call_args.kwargs["from_source"])
 
     def test_failed_rebuild_is_finished_on_rerun(self):
         # H1: a rebuild that fails rolls bin/ back, but the tree/venv already advanced. The owed-rebuild

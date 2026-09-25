@@ -128,18 +128,27 @@ def _log_file(config: dict) -> Path:
     return REPO / rel
 
 
-def _run_goal(goal: str, role: str, config: dict) -> str:
+def _run_goal(goal: str, role: str, config: dict, ctx=None) -> str:
     """Run one agent goal in-process (silent) and return the trimmed final answer. In-process (not a
-    subprocess) now that the loop is Python — bob_loop.run_agent returns (result, exit_requested)."""
+    subprocess) now that the loop is Python — bob_loop.run_agent returns (result, exit_requested).
+    `ctx` is the RunContext of the agent run that called schedule_run: like spawn_agent, the scheduled
+    run inherits its approver, owner, role scopes and unattended allow-set (agent.mcpAllowTools), so a
+    tool the calling surface refuses stays refused inside it; it prints nothing, since its answer is
+    the tool's result."""
     import bob_loop
-    result, _ = bob_loop.run_agent(goal, config, role=role, agency="silent")
+    kw = {}
+    if ctx is not None:
+        kw = dict(approve=getattr(ctx, "approve", None), owner=getattr(ctx, "owner", None),
+                  allowed_roles=getattr(ctx, "allowed_roles", None),
+                  unattended_allow=getattr(ctx, "unattended_allow", None), quiet=True)
+    result, _ = bob_loop.run_agent(goal, config, role=role, agency="silent", **kw)
     return (result or "").strip()
 
 
 # --- CRUD cores -----------------------------------------------------------------------------------
 
 def schedule_list(config: dict) -> str:
-    """Tabular view of all schedules. Read-only. Port of the `schedule list` case."""
+    """Tabular view of all schedules. Read-only."""
     s = _read_schedules(config)
     if not s:
         return "No schedules. Add: bob agent schedule add <name> --cron <expr> --goal <text>"
@@ -156,7 +165,7 @@ def schedule_list(config: dict) -> str:
 
 def schedule_add(config: dict, name: str, cron: str = "0 9 * * 1-5", goal: str = None,
                  role: str = "agent", notify: bool = False, title: str = None) -> str:
-    """Add a schedule and auto-register the OS task if not already registered. Port of `schedule add`."""
+    """Add a schedule and auto-register the OS task if not already registered."""
     if not name:
         return "Usage: bob agent schedule add <name> --cron <expr> --goal <text>"
     s = _read_schedules(config)
@@ -181,7 +190,7 @@ def schedule_add(config: dict, name: str, cron: str = "0 9 * * 1-5", goal: str =
 
 
 def schedule_remove(config: dict, name: str) -> str:
-    """Remove a schedule by name. Port of `schedule remove`."""
+    """Remove a schedule by name."""
     if not name:
         return "Usage: bob agent schedule remove <name>"
     s = _read_schedules(config)
@@ -208,25 +217,26 @@ def _set_enabled(config: dict, name: str, on: bool) -> str:
 
 
 def schedule_enable(config: dict, name: str) -> str:
-    """Enable a schedule. Port of `schedule enable`."""
+    """Enable a schedule."""
     return _set_enabled(config, name, True)
 
 
 def schedule_disable(config: dict, name: str) -> str:
-    """Disable a schedule (keeps it, stops firing). Port of `schedule disable`."""
+    """Disable a schedule (keeps it, stops firing)."""
     return _set_enabled(config, name, False)
 
 
 def schedule_run(config: dict, name: str) -> str:
     """Run one schedule NOW regardless of its cron, persist lastRun/lastRunResult, notify if configured.
-    Port of `schedule run`. Mutating (fires the agent + writes the store)."""
+    Mutating (fires the agent + writes the store)."""
     if not name:
         return "Usage: bob agent schedule run <name>"
     entry = next((e for e in _read_schedules(config) if e.get("name") == name), None)
     if not entry:
         return f"Schedule not found: {name}"
     role = _role_for(entry, config)
-    result = _run_goal(entry.get("action", {}).get("goal", name), role, config)
+    from tool_registry import get_run_context
+    result = _run_goal(entry.get("action", {}).get("goal", name), role, config, ctx=get_run_context())
     if entry.get("notify") and result:
         import osenv
         osenv.notify(entry.get("notifyTitle") or entry.get("name"), result)
@@ -291,7 +301,7 @@ def _append_log(log: Path, line: str) -> None:
 # --- agent OS-task lifecycle (install/uninstall CLI-only; status/log also agent tools) ------------
 
 def agent_install(config: dict) -> str:
-    """Register the every-minute BobAgent OS task (fires the Python runner). Port of `agent install`."""
+    """Register the every-minute BobAgent OS task (fires the Python runner)."""
     import osenv
     try:
         osenv.register_agent_task(str(osenv.venv_exe("venv-litellm", "python")), str(_runner_path()))
@@ -302,14 +312,14 @@ def agent_install(config: dict) -> str:
 
 
 def agent_uninstall(config: dict) -> str:
-    """Remove the BobAgent OS task. Port of `agent uninstall`."""
+    """Remove the BobAgent OS task."""
     import osenv
     osenv.unregister_agent_task()
     return "BobAgent task removed."
 
 
 def agent_status(config: dict) -> str:
-    """BobAgent task registration/state + a short tail of the runner log. Port of `agent status`.
+    """BobAgent task registration/state + a short tail of the runner log.
     Read-only."""
     import osenv
     st = osenv.agent_task_status()
@@ -326,7 +336,7 @@ def agent_status(config: dict) -> str:
 
 def agent_log(config: dict, n: int = 50) -> str:
     """The last `n` lines of the runner log (bounded read; the `-Wait` follow stays a CLI concern).
-    Port of `agent log`."""
+   """
     log = _log_file(config)
     if not log.exists():
         return f"No log yet: {log}"

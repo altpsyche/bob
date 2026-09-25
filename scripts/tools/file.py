@@ -129,6 +129,22 @@ def _file_write(path: str, content: str) -> str:
         return f"Error writing {path}: {e}"
 
 
+# file_write changes the working tree: declared mutating (permission class `mutating`, serialized in a
+# parallel batch) and its target is declared for pre-mutation checkpointing, like file_edit.
+MUTATING_TOOLS = {"file_write"}
+
+
+def _affected_paths(args: dict) -> list:
+    """The file a file_write call will touch, for pre-mutation checkpointing."""
+    try:
+        return [_abs(args["path"], _allowed_write)]
+    except Exception:
+        return []
+
+
+AFFECTS = {"file_write": _affected_paths}
+
+
 def test() -> str:
     import tempfile
     tmp = Path(tempfile.gettempdir()) / "bob_file_tool_test.txt"

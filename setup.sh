@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Tier-1 shell stub. Thin bootstrapper: ensure python3 is present (install_prereqs
-# put it there), then hand off to the Python cold-start kernel (submodules -> build llama.cpp -> venvs +
-# tools -> gen configs -> fetch models -> wire clients). Zero PowerShell. Run after ./install_prereqs.sh.
-# Idempotent — safe to re-run.
+# put it there), then hand off to the Python cold-start kernel (submodules -> engine -> venvs -> gen
+# configs -> fetch models -> wire clients). Zero PowerShell. Run after ./install_prereqs.sh.
+# Idempotent, safe to re-run.
 #
-#   ./setup.sh                    # full (GPU build if CUDA present, else CPU tier)
+#   ./setup.sh                    # full (prebuilt GPU engine on NVIDIA, else the CPU tier)
 #   ./setup.sh --skip-models      # skip the model downloads
 #   ./setup.sh --profile cpu      # force the tiny CPU profile
+#   ./setup.sh --with-aider       # also install aider (opt-in; later: bob aider-setup)
+#   ./setup.sh --with-fabric      # also build fabric (opt-in, needs Go; later: bob fabric-setup)
 #   ./setup.sh --launch           # start the stack when finished
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

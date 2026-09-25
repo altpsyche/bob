@@ -20,6 +20,31 @@ REPO = Path(__file__).resolve().parent.parent
 MODELS_FILE = REPO / "config" / "models.json"
 USER_FILE = REPO / "config" / "user.json"
 
+# Canonical role order for every listing, generator and diagnostic: these first, then any other role
+# the profile defines, sorted. Import this rather than restating it.
+ROLE_ORDER = ("ponder", "coder", "chat", "writer", "fim", "embed")
+
+
+# Roles that are not chat models: autocomplete, embeddings and reranking. A chat client lists none of them
+# as a chat model (Continue maps fim/embed onto its own autocomplete/embed slots instead).
+NON_CHAT_ROLES = frozenset({"fim", "embed", "rerank"})
+# Bob's own agent-loop model: served for Bob, never offered to an outside chat client.
+INTERNAL_ROLES = frozenset({"agent"})
+
+
+def is_chat_role(role: str, spec: dict = None) -> bool:
+    """True for a role a chat client should offer: not internal, not a non-chat role, and not an
+    embedding or reranking model under any other name."""
+    spec = spec or {}
+    return (role not in NON_CHAT_ROLES and role not in INTERNAL_ROLES
+            and not spec.get("embedding") and not spec.get("reranking"))
+
+
+def ordered_roles(roles) -> list:
+    """`roles` in ROLE_ORDER, then the rest sorted."""
+    roles = list(roles)
+    return [r for r in ROLE_ORDER if r in roles] + sorted(r for r in roles if r not in ROLE_ORDER)
+
 
 def _active_profile_file() -> Path:
     """The writable activeProfile override — under the data dir.
@@ -35,7 +60,12 @@ def load_models_config(models_file: Optional[Path] = None, user_file: Optional[P
     if not mf.exists():
         raise RuntimeError(f"models config not found: {mf}")
     config = json.loads(mf.read_text(encoding="utf-8"))
-    overlay = load_user_overlay(user_file or USER_FILE)   # one loader/policy (bob_config); {} if bad
+    # One loader/policy (bob_config); {} if bad. env BOB_USER_CONFIG redirects the overlay unless a
+    # caller passes a file explicitly.
+    if user_file is None and os.environ.get("BOB_USER_CONFIG"):
+        overlay = load_user_overlay(None)
+    else:
+        overlay = load_user_overlay(user_file or USER_FILE)
     if overlay:
         config = _deep_merge(config, overlay)
     apf = _active_profile_file()
@@ -112,7 +142,7 @@ def regenerate_configs() -> bool:
     models.json via the Python generators. Best-effort: True on success, False if generation raised
     (leaving the existing configs in place). Single-sourced here so the stack bring-up
     (scripts/tools/stack.py) and profile switch (scripts/tools/models.py) share ONE regen. `bob gen`
-    regenerates all four (adds Continue + WebUI); the hot path only needs these two."""
+    regenerates the rest too (Continue, dsh, aider, Open WebUI); the hot path only needs these two."""
     import sys as _sys
 
     tools = str(REPO / "scripts" / "tools")

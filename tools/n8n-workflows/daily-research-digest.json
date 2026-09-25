@@ -124,7 +124,7 @@
       "continueOnFail": true,
       "parameters": {
         "method": "GET",
-        "url": "http://host.docker.internal:8888/search",
+        "url": "http://127.0.0.1:8888/search",
         "sendQuery": true,
         "queryParameters": {
           "parameters": [
@@ -217,7 +217,7 @@
       "continueOnFail": true,
       "parameters": {
         "method": "GET",
-        "url": "http://host.docker.internal:8888/search",
+        "url": "http://127.0.0.1:8888/search",
         "sendQuery": true,
         "queryParameters": {
           "parameters": [
@@ -255,15 +255,14 @@
       "typeVersion": 4.2,
       "position": [2480, 80],
       "continueOnFail": true,
+      "credentials": {
+        "httpHeaderAuth": { "id": "bob-litellm", "name": "Bob LiteLLM" }
+      },
       "parameters": {
         "method": "POST",
-        "url": "http://host.docker.internal:8081/v1/chat/completions",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "Authorization", "value": "Bearer sk-local" }
-          ]
-        },
+        "url": "http://127.0.0.1:8081/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "contentType": "raw",
         "rawContentType": "application/json",
@@ -350,7 +349,7 @@
         "width": 480,
         "height": 180,
         "color": 2,
-        "content": "## On-Demand Research Mode (webhook)\nPOST a topic to trigger a one-off research digest.\n\n```powershell\nInvoke-RestMethod -Method POST \\\n  http://localhost:5678/webhook/research-digest \\\n  -Body '{\"topic\": \"llm quantization techniques\"}' \\\n  -ContentType application/json\n```\n\nSearXNG is searched instead of RSS. Result posts to Discord."
+        "content": "## On-Demand Research Mode (webhook)\nPOST a topic to trigger a one-off research digest.\n\n```bash\ncurl -X POST http://localhost:5678/webhook/research-digest \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"topic\": \"llm quantization techniques\"}'\n```\n\nSearXNG is searched instead of RSS. Result posts to Discord."
       }
     },
     {
@@ -363,7 +362,7 @@
         "width": 520,
         "height": 180,
         "color": 3,
-        "content": "## Local Stack Endpoints (inside Docker)\n\n| Service | URL |\n|---------|-----|\n| LLM (llama-swap) | `host.docker.internal:8080` |\n| LiteLLM proxy | `host.docker.internal:8081` |\n| Whisper STT | `host.docker.internal:8082` |\n| Piper TTS | `host.docker.internal:8083` |\n| SearXNG | `host.docker.internal:8888` |\n\nAuth: `Bearer sk-local`\nModels: `chat`, `ponder`, `coder`, `fim`, `embed`, `vision`\n`vision`: POST image_url content parts to `host.docker.internal:8081/v1/chat/completions` — see **vision-describe** workflow\nDedup: article URLs stored 7 days in workflow static data"
+        "content": "## Local Stack Endpoints (n8n runs on the host)\n\n| Service | URL |\n|---------|-----|\n| LLM (llama-swap) | `127.0.0.1:8080` |\n| LiteLLM proxy | `127.0.0.1:8081` |\n| STT (faster-whisper) | `127.0.0.1:8082` |\n| Piper TTS | `127.0.0.1:8083` |\n| SearXNG | `127.0.0.1:8888` |\n\nDefault ports from config/defaults.json; edit the URLs if you changed them.\nAuth: the `Bob LiteLLM` header credential (Bob imports it into n8n on start)\nModels: `chat`, `ponder`, `coder`, `fim`, `embed`, `vision`\n`vision`: POST image_url content parts to `127.0.0.1:8081/v1/chat/completions`, see the **vision-describe** workflow\nDedup: article URLs stored 7 days in workflow static data"
       }
     }
   ],

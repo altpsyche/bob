@@ -45,6 +45,8 @@ def main(argv=None) -> int:
 
     entry = registry.by_name().get(name)
     handler = _HANDLERS.get(entry["handler"]) if entry else None
+    if handler is None and entry is None and _plugin_invoke(argv[0]).exists():
+        return _run_plugin(argv[0], argv[1:])
     if handler is None:
         print(f"Unknown command: {' '.join(argv)}\n", file=sys.stderr)
         _print_help()
@@ -52,22 +54,50 @@ def main(argv=None) -> int:
     return handler(rest) or 0
 
 
+# --- drop-in plugins ------------------------------------------------------------------------------
+
+def _plugin_invoke(verb: str) -> Path:
+    """plugins/<verb>/invoke.py (may not exist). A path separator in `verb` never names a plugin."""
+    if not verb or "/" in verb or "\\" in verb or verb.startswith("."):
+        return REPO / "plugins" / "_" / "_missing"
+    return REPO / "plugins" / verb / "invoke.py"
+
+
+def _run_plugin(verb: str, rest: list) -> int:
+    """`bob <verb>` for a drop-in plugin (plugins/<verb>/invoke.py) that isn't a registry command:
+    import plugins.<verb>.invoke with the repo on sys.path and return its main(rest)."""
+    import importlib
+
+    if str(REPO) not in sys.path:
+        sys.path.insert(0, str(REPO))
+    mod = importlib.import_module(f"plugins.{verb}.invoke")
+    main = getattr(mod, "main", None)
+    if main is None:
+        print(f"plugin '{verb}' has no main(argv) in plugins/{verb}/invoke.py", file=sys.stderr)
+        return 2
+    return main(list(rest)) or 0
+
+
 # --- the deterministic invoker -------------------------------------------------------------------
 
 def _build_registry(config: dict):
-    """Build the same ToolRegistry the agent loop builds (same disabledTools parsing, bob_loop.py:1147),
-    so `--run` dispatches through an identical toolset. scripts/tools must be importable first."""
+    """Build the same ToolRegistry the agent loop builds (ToolRegistry.from_config, which applies
+    agent.disabledTools), so `--run` dispatches through an identical toolset. scripts/tools must be
+    importable first."""
     tools_dir = str(SCRIPTS / "tools")
     if tools_dir not in sys.path:
         sys.path.insert(0, tools_dir)
     from tool_registry import ToolRegistry
 
-    disabled_raw = config.get("agent", {}).get("disabledTools", [])
-    if isinstance(disabled_raw, str):
-        disabled = {t.strip() for t in disabled_raw.split(",") if t.strip()}
-    else:
-        disabled = set(disabled_raw)
-    return ToolRegistry.build(config, disabled, quiet=True)
+    return ToolRegistry.from_config(config, quiet=True)
+
+
+def _tty_approver():
+    """The console approver when stdin is a terminal, else None (fail closed)."""
+    if getattr(sys.stdin, "isatty", lambda: False)():
+        from bob_loop import _console_approve
+        return _console_approve
+    return None
 
 
 def _handle_run(rest: list) -> int:
@@ -92,11 +122,16 @@ def _handle_run(rest: list) -> int:
 
     from bob.shell import _is_error_result
     from bob_core import load_config
+    from bob_permissions import run_gated
 
-    registry = _build_registry(load_config())
-    result = registry.dispatch_call(cap, args_json)
+    config = load_config()
+    registry = _build_registry(config)
+    # The same approval gate as the loop: policy, hooks and the REQUIRES_APPROVAL floor. An approval-
+    # gated tool asks on a terminal and is denied when piped (no one to ask).
+    result = run_gated(registry, cap, args_json, config=config, approve=_tty_approver(), surface="run")
     print(result)
-    return 1 if _is_error_result(result) else 0
+    did_not_run = result.endswith("; it did not run.")
+    return 1 if (_is_error_result(result) or did_not_run) else 0
 
 
 # --- python handlers -----------------------------------------------------------------------------
@@ -117,12 +152,12 @@ def _handle_agent_serve(rest: list) -> int:
     import uvicorn  # lazy
 
     import bob_agent_server  # noqa: F401 — defines the FastAPI `app`
-    from bob_core import _port, capability_probe, load_config
+    from bob_core import capability_probe, load_config, service_port
 
     config = load_config()
     agent = config.get("agent", {})
-    host = agent.get("serveHost", "127.0.0.1")
-    port = _port(agent, "agentPort")
+    host = agent.get("serveHost") or config.get("bindHost") or "127.0.0.1"
+    port = service_port(config, "agentPort")
 
     ok, msg = capability_probe(config)
     print(f"[probe] {msg}", file=sys.stderr)  # degrade with a clear message, don't hard-fail
@@ -272,14 +307,28 @@ def _handle_skill(rest: list) -> int:
     from tool_registry import ToolRegistry
 
     config = load_config()
-    tools = ToolRegistry.build(config, set())
+    tools = ToolRegistry.from_config(config, quiet=True)   # honours agent.disabledTools, like the loop
     args = " ".join(a for a in rest[1:] if not a.startswith("--"))   # skill input; flags aren't args
-    print(reg.run(name, tools, config=config, args=args))
+    print(reg.run(name, tools, config=config, args=args, approve=_tty_approver()))
     return 0
 
 
-_CHAT_KNOWN_ROLES = {"chat", "coder", "ponder", "fim", "embed",
-                     "chat-pro", "coder-pro", "ponder-pro"}
+def _chat_known_roles(config: dict) -> set:
+    """Model roles `bob chat <role> <prompt>` accepts as its first token: the canonical roles
+    (bob_models.ROLE_ORDER), every role the active profile serves, the roleTable fallbacks (agent,
+    vision, ...), and each of those as a *-pro cloud role."""
+    from bob_core import load_defaults
+    roles = set()
+    try:
+        import bob_models
+        roles |= set(bob_models.ROLE_ORDER)
+        roles |= set(bob_models.profile_roles())
+    except Exception:
+        pass
+    for entry in load_defaults().get("roleTable", {}).values():
+        roles |= {entry.get("fallback"), entry.get("proFallback")}
+    roles.discard(None)
+    return roles | {f"{r}-pro" for r in roles if not r.endswith("-pro")}
 
 
 def _chat(task: str, rest: list) -> int:
@@ -325,7 +374,7 @@ def _chat(task: str, rest: list) -> int:
 
     config = load_config()
     # Legacy `bob chat <knownRole> <prompt...>` — first token is an explicit model/role.
-    if len(prompt) >= 2 and prompt[0] in _CHAT_KNOWN_ROLES:
+    if len(prompt) >= 2 and prompt[0] in _chat_known_roles(config):
         role = prompt[0]
         prompt = prompt[1:]
     else:
@@ -342,9 +391,9 @@ def _chat(task: str, rest: list) -> int:
 
     # One-shot: run_agent prints the answer (streams + newline unless --raw, which prints bare text).
     import bob_loop
-    bob_loop.run_agent(" ".join(prompt), config, role=role, agency="silent",
-                       stream=not raw, no_tools=True, max_tokens=max_tokens, think=think)
-    return 0
+    result, _ = bob_loop.run_agent(" ".join(prompt), config, role=role, agency="silent",
+                                   stream=not raw, no_tools=True, max_tokens=max_tokens, think=think)
+    return 0 if result is not None else 1   # an error was already printed to stderr
 
 
 def _handle_chat(rest: list) -> int:
@@ -379,7 +428,12 @@ def _describe(image: str, rest: list) -> int:
         return 1
     prompt = " ".join(rest) if rest else "Describe this image."
     config = load_config()
+    from bob_core import image_refusal
     role = get_role(config, "vision", pro=pro)
+    refusal = image_refusal(config, role)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     prepared = bob_vision.resize_image(image)
     try:
         bob_loop.run_agent(prompt, config, role=role, agency="silent",
@@ -436,17 +490,22 @@ def _handle_voice(rest: list) -> int:
     rest = list(rest)
     pro = "--pro" in rest
     config = load_config()
+    from bob_core import voice_disabled
+    off = voice_disabled(config)
+    if off:
+        print(off, file=sys.stderr)
+        return 1
     if is_interactive():
         _ensure_endpoint(config)   # voice turns hit the LLM — auto-start inference, like `bob chat` does
-                                   # (whisper STT is auto-started in the shell's /voice preflight)
+                                   # (speech-to-text is auto-started in the shell's /voice preflight)
     if "--agent" in rest:
         return run_voice(config=config)                     # agent role + tools (shell default)
     return run_voice(config=config, role=get_role(config, "voice", pro=pro), no_tools=True)
 
 
 def _handle_listen(rest: list) -> int:
-    """bob listen — record the mic until silence, print the transcript (whisper). The STT client
-    is bob_voice (shared with the /voice mode)."""
+    """bob listen: record the mic until silence, print the transcript (faster-whisper). The STT
+    client is bob_voice (shared with the /voice mode)."""
     import bob_voice
     from bob_core import load_config
 
@@ -464,7 +523,7 @@ def _handle_listen(rest: list) -> int:
 
 
 def _handle_transcribe(rest: list) -> int:
-    """bob transcribe <file> — transcribe an audio file via whisper-server."""
+    """bob transcribe <file>: transcribe an audio file via the faster-whisper STT server."""
     import bob_voice
     from bob_core import load_config
 
@@ -532,8 +591,12 @@ def _handle_recall(rest: list) -> int:
 
 
 def _handle_memory(rest: list) -> int:
-    """bob memory <sub> — inspect/curate memory. 1:1 onto bob_memory.py's argparse subcommands (the
-    --db path resolves from config). No args -> status."""
+    """bob memory [--db PATH] <sub>: inspect/curate memory. 1:1 onto bob_memory.py's argparse
+    subcommands; the --db path resolves from config unless given explicitly first. No args -> status."""
+    rest = list(rest)
+    explicit_db = None
+    if len(rest) >= 2 and rest[0] == "--db":
+        explicit_db, rest = rest[1], rest[2:]
     if rest and rest[0] not in _MEMORY_SUBCOMMANDS:
         print("Usage: bob memory <" + "|".join(sorted(_MEMORY_SUBCOMMANDS)) + "> [args]",
               file=sys.stderr)
@@ -542,7 +605,7 @@ def _handle_memory(rest: list) -> int:
     from bob_core import _get_db_path, load_config
 
     sub = rest or ["status"]
-    db_path = _get_db_path(load_config())
+    db_path = explicit_db or _get_db_path(load_config())
     saved = sys.argv
     try:
         sys.argv = ["bob_memory", "--db", db_path] + sub
@@ -576,8 +639,8 @@ def _handle_tools(rest: list) -> int:
     sub = rest[0] if rest else "list"
     tool_args = rest[1:]
     if sub == "list":
-        disabled_raw = load_config().get("agent", {}).get("disabledTools", [])
-        disabled = ",".join(disabled_raw) if isinstance(disabled_raw, list) else str(disabled_raw)
+        from tool_registry import ToolRegistry
+        disabled = ",".join(sorted(ToolRegistry.disabled_from_config(load_config())))
         argv = ["--list", "--disabled", disabled]
     elif sub in ("test", "info"):
         if not tool_args:
@@ -594,8 +657,7 @@ def _handle_tools(rest: list) -> int:
 
 
 def _handle_plugins(rest: list) -> int:
-    """bob plugins [list] — enumerate plugins/<name>/ (invoke.ps1|invoke.py + description.txt). Filesystem
-    scan."""
+    """bob plugins [list]: enumerate plugins/<name>/ (invoke.py + description.txt). Filesystem scan."""
     if rest and rest[0] != "list":
         print("Usage: bob plugins list", file=sys.stderr)
         return 1
@@ -606,8 +668,7 @@ def _handle_plugins(rest: list) -> int:
         return 0
     print("\nInstalled plugins:")
     for p in dirs:
-        kind = ("ps1" if (p / "invoke.ps1").exists()
-                else "py" if (p / "invoke.py").exists() else "?")
+        kind = "py" if (p / "invoke.py").exists() else "?"
         desc_file = p / "description.txt"
         desc = desc_file.read_text(encoding="utf-8").strip() if desc_file.exists() else ""
         print(f"  bob {p.name:<15} [{kind}]  {desc}")
@@ -627,14 +688,23 @@ def _handle_fabric(rest: list) -> int:
 
 
 def _handle_aider(rest: list) -> int:
-    """bob aider [args] — start aider in the current folder (venv-aider console script)."""
-    import osenv
+    """bob aider [args]: start aider in the current folder with Bob's generated config
+    (kernel.run_aider: opt-in venv-aider, --config, the LiteLLM key through the environment)."""
+    from bob import kernel
 
-    exe = osenv.venv_exe("venv-aider", "aider")
-    if not exe.exists():
-        print(f"aider not installed: {exe}  (run: python -m bob.kernel venv aider)", file=sys.stderr)
+    return kernel.run_aider(list(rest))
+
+
+def _handle_aider_setup(rest: list) -> int:
+    """bob aider-setup [--force]: opt-in: install aider (tools/venv-aider) and generate its config."""
+    from bob import kernel
+
+    try:
+        print(kernel.setup_aider(force=any(f in rest for f in ("--force", "-Force"))))
+    except RuntimeError as e:
+        print(f"aider-setup failed: {e}", file=sys.stderr)
         return 1
-    return subprocess.run([str(exe)] + rest).returncode
+    return 0
 
 
 # --- lifecycle ------------------------------------------------------------------------------------
@@ -661,24 +731,31 @@ def _ensure_endpoint(config) -> None:
     'start inference' lives in exactly one place. No-op when already up. Best-effort: a launch failure
     prints a hint, not a crash (the turn then surfaces the real connection error).
 
-    'Reachable' is bob_core.check_litellm (a TCP connect), NOT an HTTP GET — LiteLLM answers /v1/models
-    with 401 when up, which an urlopen probe would misread as 'down' and relaunch on every call."""
-    from bob_core import check_litellm
-    if check_litellm(config):
+    'Reachable' is bob_core.check_litellm (a TCP connect), NOT an unauthenticated HTTP GET: LiteLLM answers
+    /v1/models with 401 when up, which an urlopen probe would misread as 'down' and relaunch on every call.
+    A reachable proxy that rejects Bob's own key (bob_core.litellm_key_rejected: it was started before the
+    key changed) goes through ensure_deps too, which regenerates the stale configs and restarts it."""
+    from bob_core import check_litellm, litellm_key_rejected
+    up = check_litellm(config)
+    if up and not litellm_key_rejected(config):
         return
-    print("Starting local inference (first run loads the model — a few seconds)…", file=sys.stderr)
+    if not up:
+        print("Starting local inference (first run loads the model — a few seconds)…", file=sys.stderr)
     try:
-        ok, _lines = _stack().ensure_deps(config, inference=True)  # the one ensure-deps seam; waits internally
+        ok, lines = _stack().ensure_deps(config, inference=True)  # the one ensure-deps seam; waits internally
     except Exception as e:  # noqa: BLE001 — advisory; the turn reports the real error if this didn't help
         print(f"(couldn't auto-start inference: {e} — try `bob up`)", file=sys.stderr)
         return
+    for line in lines:
+        if line.startswith(("warning:", "Regenerated", "LiteLLM was running", "The LiteLLM proxy")):
+            print(line, file=sys.stderr)
     if not ok:
         print("(inference is still starting — the first turn may take a moment; see `bob logs`.)",
               file=sys.stderr)
 
 
 def _handle_up(rest: list) -> int:
-    """bob up [-NoOpen] [-WithServices] — background bring-up (endpoint + proxy + WebUI)."""
+    """bob up [--no-open] [--with-services]: background bring-up (endpoint + proxy + WebUI)."""
     rest = list(rest)
     open_browser = not any(f in rest for f in ("-NoOpen", "--no-open"))
     with_services = any(f in rest for f in ("-WithServices", "--with-services"))
@@ -1372,8 +1449,9 @@ def _handle_computer(rest: list) -> int:
 
 
 def _handle_code_index(rest: list) -> int:
-    """bob code index — build the semantic code index (embeddings) over allowedReadPaths into data/code.db,
-    for code_search action=semantic. Needs the embed server (bob up)."""
+    """bob code index [--rebuild]: build the semantic code index (embeddings) over allowedReadPaths into
+    data/code.db, for code_search action=semantic. --rebuild clears the repo's chunks and re-embeds them
+    all (after an embed-model swap). Needs the embed server (bob up)."""
     import bob_repomap
     from bob_core import load_config
 
@@ -1384,8 +1462,9 @@ def _handle_code_index(rest: list) -> int:
         return 1
     _ensure_endpoint(config)   # embeddings need the inference stack
     repo = bob_repomap.RepoMap(roots)
+    index = bob_repomap.rebuild_semantic if "--rebuild" in rest else bob_repomap.index_semantic
     try:
-        n = bob_repomap.index_semantic(repo)
+        n = index(repo)
     except Exception as e:
         print(f"code index failed: {e} (is the embed server up? try 'bob up')", file=sys.stderr)
         return 1
@@ -1485,6 +1564,7 @@ _HANDLERS = {
     "computer": _handle_computer,
     "code_index": _handle_code_index,
     "aider": _handle_aider,
+    "aider-setup": _handle_aider_setup,
     "up": _handle_up,                 # lifecycle (scripts/tools/stack.py)
     "serve": _handle_serve,
     "restart": _handle_restart,

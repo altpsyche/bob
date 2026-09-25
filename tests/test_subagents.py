@@ -167,8 +167,8 @@ class TestRegistryGating(unittest.TestCase):
 
 
 class TestTypedRoles(unittest.TestCase):
-    """agent.subAgentRoles gives a role a distinct prompt + per-role tool whitelist; an unknown role
-    still works as a plain model-role override (back-compat)."""
+    """agent.subAgentRoles gives a role a distinct prompt + per-role tool whitelist; any other role is a
+    plain model-role override, limited to local roles unless agent.subAgentAllowPro is set."""
 
     def test_resolve_profile_known_and_unknown(self):
         cfg = {"subAgentRoles": {"reviewer": {"prompt": "You are a strict reviewer.",
@@ -214,9 +214,106 @@ class TestTypedRoles(unittest.TestCase):
         self.assertIn("ok", out)
 
     def test_unknown_role_is_model_override_only(self):
-        seen, _ = self._drive(_cfg(subAgents=True), "coder-pro")
-        self.assertEqual(seen["role"], "coder-pro")                # role still means model-role
+        seen, _ = self._drive(_cfg(subAgents=True), "coder")
+        self.assertEqual(seen["role"], "coder")                    # role still means model-role
         self.assertIsNone(seen["system_prompt"])                    # persona unchanged
+
+    def test_model_chosen_pro_role_refused_by_default(self):
+        # A paid cloud peer is never reachable from a model-chosen role: the sub-run does not start.
+        for role in ("coder-pro", "chat-pro", "ponder-pro"):
+            seen, out = self._drive(_cfg(subAgents=True), role)
+            self.assertNotIn("role", seen, role)                   # run_agent_events never reached
+            self.assertIn("subAgentAllowPro", out)
+
+    def test_unrecognized_role_refused(self):
+        seen, out = self._drive(_cfg(subAgents=True), "some-cloud-alias")
+        self.assertNotIn("role", seen)
+        self.assertIn("unknown role", out)
+
+    def test_pro_role_allowed_with_explicit_flag(self):
+        seen, _ = self._drive(_cfg(subAgents=True, subAgentAllowPro=True), "coder-pro")
+        self.assertEqual(seen["role"], "coder-pro")
+
+    def test_configured_pro_route_counts_as_pro(self):
+        # A routing override naming a cloud alias is still classed pro (not local) by the resolver.
+        cfg = _cfg(subAgents=True)
+        cfg["routing"] = dict(cfg["routing"], proCodeRole="glm-coder")
+        local, pro = spawn_tool.local_roles(cfg)
+        self.assertIn("glm-coder", pro)
+        self.assertNotIn("glm-coder", local)
+        self.assertIn("coder", local)
+
+    def test_profile_model_role_is_trusted_config(self):
+        # A user-authored profile may point at a pro role: that is config, not a model choice.
+        cfg = _cfg(subAgents=True, subAgentRoles={"deep": {"modelRole": "ponder-pro"}})
+        seen, _ = self._drive(cfg, "deep")
+        self.assertEqual(seen["role"], "ponder-pro")
+
+
+class _DelegatingRegistry(_SpawnableRegistry):
+    """Runs spawn_agent for real (with the dispatch's run context set, as ToolRegistry does); every other
+    tool is recorded and answered from the scripted results."""
+
+    def dispatch_call(self, name, arguments_json, context=None):
+        if name != "spawn_agent":
+            return super().dispatch_call(name, arguments_json, context)
+        self.dispatched.append(name)
+        tok = tool_registry._RUN_CONTEXT.set(context)
+        try:
+            return spawn_tool._spawn_agent(**json.loads(arguments_json or "{}"))
+        finally:
+            tool_registry._RUN_CONTEXT.reset(tok)
+
+
+class TestUnattendedRuleHoldsInSubRuns(unittest.TestCase):
+    """Over MCP (no operator) agent.mcpAllowTools is the allow-set. It rides on the RunContext, so a
+    sub-agent spawned from an MCP call cannot run a gated tool the list does not name, and spawn_agent
+    itself is refused unless listed."""
+
+    GATED = ("stack_stop", "file_write", "memory_store")
+
+    def setUp(self):
+        self._orig_check = bob_core.check_litellm
+        self._orig_client = bob_core.get_llm_client
+        bob_core.check_litellm = lambda config=None: True
+
+    def tearDown(self):
+        bob_core.check_litellm = self._orig_check
+        bob_core.get_llm_client = self._orig_client
+
+    def _mcp(self, allow, sub_turns):
+        import bob_permissions
+        bob_core.get_llm_client = lambda config=None: _common.scripted_client(sub_turns)
+        reg = _DelegatingRegistry(mutating_tools=self.GATED)
+        out = bob_permissions.run_gated(reg, "spawn_agent", json.dumps({"task": "tidy up"}),
+                                        config=_cfg(subAgents=True), owner="mcp", agency="silent",
+                                        allow_unattended=allow, surface="mcp")
+        return reg, out
+
+    def _calls(self, *names):
+        calls = "".join(f'<tool_call>{{"name": "{n}", "arguments": {{}}}}</tool_call>' for n in names)
+        return [calls, "done"]
+
+    def test_spawn_agent_is_refused_unless_listed(self):
+        reg, out = self._mcp([], self._calls(*self.GATED))
+        self.assertIn("refused", out)
+        self.assertEqual(reg.dispatched, [])
+
+    def test_a_sub_run_cannot_run_unlisted_gated_tools(self):
+        reg, out = self._mcp(["spawn_agent"], self._calls(*self.GATED))
+        self.assertEqual(reg.dispatched, ["spawn_agent"])   # none of the gated tools reached dispatch
+        self.assertEqual(json.loads(out)["result"], "done")
+
+    def test_a_listed_tool_runs_in_the_sub_run(self):
+        reg, _ = self._mcp(["spawn_agent", "file_write"], self._calls(*self.GATED))
+        self.assertEqual(reg.dispatched, ["spawn_agent", "file_write"])
+
+    def test_the_parallel_path_honours_the_rule(self):
+        ctx = _ctx(_cfg(), registry=_common.FakeRegistry())
+        ctx.unattended_allow = frozenset()
+        self.assertFalse(bob_loop._parallel_eligible("spawn_agent", ctx.registry, ctx, "silent"))
+        ctx.unattended_allow = None
+        self.assertTrue(bob_loop._parallel_eligible("spawn_agent", ctx.registry, ctx, "silent"))
 
 
 if __name__ == "__main__":

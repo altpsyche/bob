@@ -18,6 +18,16 @@ import bob_models  # noqa: E402
 CFG = {"port": 8080}
 
 
+class _PinnedProfile(unittest.TestCase):
+    """The listing/show assertions are written against the 16gb registry: pin it through the
+    highest-precedence override so neither $BOB_PROFILE nor data/active-profile.json can move it."""
+
+    def setUp(self):
+        p = mock.patch.dict("os.environ", {"BOB_PROFILE": _common.TEST_PROFILE})
+        p.start()
+        self.addCleanup(p.stop)
+
+
 class TestModelsToolSurface(unittest.TestCase):
     def test_tools_registered_and_only_profile_mutates(self):
         self.assertEqual(set(models_mod.DISPATCH), {
@@ -29,7 +39,7 @@ class TestModelsToolSurface(unittest.TestCase):
         self.assertNotIn("eval_model", models_mod.DISPATCH)
 
 
-class TestModelsList(unittest.TestCase):
+class TestModelsList(_PinnedProfile):
     def _resp(self, ids):
         r = mock.Mock()
         r.json.return_value = {"data": [{"id": i} for i in ids]}
@@ -50,7 +60,7 @@ class TestModelsList(unittest.TestCase):
         self.assertIn("Endpoint not running", out)
 
 
-class TestModelShow(unittest.TestCase):
+class TestModelShow(_PinnedProfile):
     def test_known_role_fields(self):
         out = models_mod.model_show("coder", CFG)
         self.assertIn("Role:     coder", out)
@@ -64,7 +74,7 @@ class TestModelShow(unittest.TestCase):
         self.assertIn("Unknown role 'bogus'", out)
 
 
-class TestProfilesList(unittest.TestCase):
+class TestProfilesList(_PinnedProfile):
     def test_marks_active_and_suggests(self):
         with mock.patch.object(models_mod, "gpu_vram_gb", return_value=16):
             out = models_mod.profiles_list(CFG)
@@ -164,6 +174,10 @@ class TestEvalModel(unittest.TestCase):
         self.venv_exe = Path(tempfile.mkdtemp()) / "lm_eval"
         self.venv_exe.write_text("#!/bin/sh\n")  # exists
         self.roles = {"coder": {"gguf": "c.gguf", "tokenizer": "Qwen/Qwen2.5-Coder-14B"}}
+        # eval_model writes its results dir under REPO: point it at a temp tree.
+        repo = mock.patch.object(models_mod, "REPO", Path(tempfile.mkdtemp()))
+        repo.start()
+        self.addCleanup(repo.stop)
 
     def _run(self, role="coder", task="mmlu", shots=0, limit=0, roles=None, endpoint_ok=True,
              venv_exists=True, captured=None):

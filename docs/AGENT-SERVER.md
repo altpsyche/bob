@@ -20,20 +20,27 @@ exercises `/health` + an owner-scoped session turn + an SSE stream as the end-to
   `agent.allowPrivateFetch` left `false` (the default), so a remote caller can't use `web_fetch` for
   SSRF against your private network. `bob agent serve` prints a warning when it binds `0.0.0.0`.
 - **Auth:** every endpoint except `/health` requires `Authorization: Bearer <token>`, where `<token>`
-  is the litellm key (`litellmKey`, default `sk-local`) or an `agent.apiTokens` entry.
+  is the litellm key (generated per machine, the `litellmKey` entry in `data/secrets.json`; set
+  `agent.acceptLitellmKey = false` to stop accepting it), an `agent.apiTokens` entry, or, with
+  `agent.authStore` on, a scoped, rate-limited, revocable store token. The MCP HTTP transport
+  (`bob agent mcp --http`) uses the same token map.
 - **Identity + ownership (N1):** each token maps to an owner id: `agent.apiTokens` entries are
   `{ "token": "sk-alice-…", "owner": "alice" }` records (bare strings still work, mapping the token
   to itself), and the litellm key maps to `agent.defaultOwner` (default `local`). Sessions are
   owner-scoped: a token can only read/delete/continue sessions its owner created; any other
   `session_id` returns **404**, indistinguishable from an unknown id. Revoke a token by removing it
   from config and restarting `bob agent serve`. See [SECURITY.md](SECURITY.md).
+- **The litellm key is unscoped here.** Every generated client config, n8n, fabric and Open WebUI hold
+  it, so with `agent.acceptLitellmKey` on anyone holding it reaches every tool and role as
+  `agent.defaultOwner`. For a hardened setup, give each client a scoped `agent.apiTokens` entry and set
+  `agent.acceptLitellmKey = false`.
 
 ## Config
 
 All under the `agent` block of the runtime config, override in `config/user.json`;
 defaults live in `config/defaults.json` under `runtime.agent`:
-`serveHost`, `agentPort`, `apiTokens`, `defaultOwner`, `sessionDbPath`, `maxSessionTokens`,
-`gitAllowedRoots`, `logMaxBytes`/`logBackupCount`, `mcpEnabled`. See [TUNING.md](TUNING.md).
+`serveHost`, `agentPort`, `apiTokens`, `acceptLitellmKey`, `defaultOwner`, `authStore`, `sessionDbPath`,
+`maxSessionTokens`, `gitAllowedRoots`, `logMaxBytes`/`logBackupCount`, `mcpEnabled`, `mcpAllowTools`. See [TUNING.md](TUNING.md).
 
 ## Endpoints
 
@@ -52,14 +59,21 @@ Request:
 - `agency`: `silent` | `show` | `confirm` (default `silent`; `confirm` is unusable server-side, no stdin).
 - `role`: model role override (default `routing.agentRole`).
 - `session_id`: optional; continue a session created via `POST /v1/sessions`. Prior turns are seeded
-  into the loop; the new turn (goal + result) is appended and its token estimate charged to the budget.
+  into the loop; the new turn (goal + result) is appended and the run's reported token usage (prompt +
+  completion over its model calls) is charged to the budget, with an estimate only when a run reports none.
 
 Response `200`:
 ```json
 { "result": "…", "session_id": "…", "error": null }
 ```
-Errors: `401` bad/missing bearer; `402` session over budget; `404` unknown `session_id`;
-`422` agent hit `maxSteps` with no final answer; `503` not initialized / config missing; `500` other.
+Errors: `401` bad/missing bearer; `402` session over budget; `403` role outside the token's scope;
+`404` unknown `session_id`; `409` conflict; `422` agent hit `maxSteps` with no final answer, a reply
+truncated at the output limit, image input the active profile cannot read, or `context_overflow`: the
+role's window cannot hold the system prompt, the tool schemas and a 256-token reply even after Bob
+compacts the schemas and leaves out non-core tools (the detail names what to trim: `agent.disabledTools`,
+the persona, injected memory, or a profile with a larger window); `429` rate limit; `502` the model
+backend failed or returned nothing; `503` the model backend is unreachable, or the server is not
+initialized; `500` anything else.
 
 ### `POST /v1/agent/completions/stream`: Server-Sent Events (M15)
 Same request body. Response is `text/event-stream`; each line is `data: {json}`. Event types:
@@ -70,28 +84,31 @@ Same request body. Response is `text/event-stream`; each line is `data: {json}`.
 | `tool_call` | `name`, `arguments` | the model requested a tool |
 | `tool_result` | `name`, `result` | a tool returned |
 | `final` | `result`, `exit_requested`, `reason`, `session_id?` | terminal: `reason` ∈ `answer`/`max_steps`/`interrupted`/`aborted` |
-| `error` | `message` | terminal: pre-flight or LLM failure |
+| `error` | `message`, `kind?` | terminal: pre-flight or LLM failure; `kind` names the failure (`upstream_unreachable`, `upstream_error`, `vision_unavailable`, `context_overflow`, ...) |
 
 A `final` or `error` is always the last event. The session turn is recorded when the stream ends.
 
 ## Examples
 
+`BOB_KEY` holds the litellm key (see [USAGE.md § Calling the API directly](USAGE.md#calling-the-api-directly)
+for reading it from `data/secrets.json`) or one of your `agent.apiTokens`.
+
 ```bash
 # one-shot
 curl -s http://127.0.0.1:8084/v1/agent/completions \
-  -H "Authorization: Bearer sk-local" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $BOB_KEY" -H "Content-Type: application/json" \
   -d '{"goal":"what is 2+2","agency":"silent"}'
 
 # multi-turn
-SID=$(curl -s http://127.0.0.1:8084/v1/sessions -H "Authorization: Bearer sk-local" \
+SID=$(curl -s http://127.0.0.1:8084/v1/sessions -H "Authorization: Bearer $BOB_KEY" \
       -H "Content-Type: application/json" -d '{}' | jq -r .session_id)
 curl -s http://127.0.0.1:8084/v1/agent/completions \
-  -H "Authorization: Bearer sk-local" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $BOB_KEY" -H "Content-Type: application/json" \
   -d "{\"goal\":\"remember my name is Siva\",\"session_id\":\"$SID\"}"
 
 # streaming
 curl -N http://127.0.0.1:8084/v1/agent/completions/stream \
-  -H "Authorization: Bearer sk-local" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $BOB_KEY" -H "Content-Type: application/json" \
   -d '{"goal":"say hi in 3 words"}'
 ```
 
@@ -110,6 +127,6 @@ Use `http://host.docker.internal:8084` only if you run n8n in a container yourse
 
 ```
 URL:    http://localhost:8084/v1/agent/completions
-Header: Authorization: Bearer <litellm key or an agent.apiTokens entry>
+Auth:   Header Auth credential: the "Bob LiteLLM" one bob keeps in sync, or an agent.apiTokens entry
 Body:   { "goal": "{{ $json.goal }}" }
 ```

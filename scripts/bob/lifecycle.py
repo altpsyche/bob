@@ -1,11 +1,10 @@
 """The single install/update lifecycle seam — one place that decides the build tier and makes a working
 inference engine present in bin/.
 
-Before this module, four entry points each decided GPU-vs-CPU their own way (kernel bootstrap, `bob build`,
-`bob update`, and build_llama's internal guard). That drift let a GPU box silently run CPU inference and let
-`bob update` hard-fail where `bob setup` would have fallen back. Now every entry point delegates here, so the
-tier is decided in exactly one place and it is structurally impossible for the paths to diverge. This mirrors
-the SERVICES + ensure_inference single-source pattern in scripts/tools/stack.py.
+Every entry point that needs an engine (kernel bootstrap, `bob build`, `bob update`, and build_llama's
+internal guard) delegates the build-tier decision here, so GPU-vs-CPU is decided in exactly one place and the
+paths cannot diverge (a GPU box never silently runs CPU inference; `bob update` falls back where `bob setup`
+would). This mirrors the SERVICES + ensure_inference single-source pattern in scripts/tools/stack.py.
 
 Tier-0: stdlib + osenv only (plus lazy imports of the sibling Tier-0/tool modules), so the cold-start kernel
 can call it under the system python BEFORE any venv exists.
@@ -91,7 +90,7 @@ def apply_block_policy(decision: dict, on_block: str = "stop") -> dict:
             "reason": decision["reason"] + " -> CPU fallback"}
 
 
-_COMPONENT_SUBMODULE = {"llama-server": "external/llama.cpp", "whisper-server": "external/whisper.cpp"}
+_COMPONENT_SUBMODULE = {"llama-server": "external/llama.cpp"}
 
 
 def _pinned_submodule_commit(component: str):
@@ -338,16 +337,14 @@ def _human_bytes(n) -> str:
 
 
 def _install_prebuilt(row: dict, bin_dir) -> str:
-    """Download the prebuilt engine archive in `row`, SHA-verify it against the manifest (tamper-evident),
-    extract, and stage every entry (the binary + its bundled CUDA runtime libs) into bin/ so the result is
-    driver-only. urllib/tarfile/zipfile (stdlib, pre-venv safe). Raises RuntimeError/OSError on any failure
-    so ensure_engine can fall back to a source build."""
-    import hashlib
-    import os
+    """Download the prebuilt engine archive in `row`, SHA-verify it against the manifest (a row with no sha256
+    is refused: an engine binary is never run unverified), extract, and install every entry (the binary + its
+    bundled CUDA runtime libs) into bin/ so the result is driver-only. osenv.download + tarfile/zipfile
+    (stdlib, pre-venv safe); osenv.install_files replaces each file (new inode) so a running engine is never
+    overwritten in place. Raises on any failure so ensure_engine can fall back to a source build."""
     import shutil
     import tarfile
     import tempfile
-    import urllib.request
     import zipfile
 
     url = row.get("url")
@@ -356,22 +353,13 @@ def _install_prebuilt(row: dict, bin_dir) -> str:
     bin_dir = Path(bin_dir)
     tmp = Path(tempfile.mkdtemp(prefix="bob-engine-"))
     try:
-        archive = tmp / Path(url).name
         size = _human_bytes(row.get("bytes"))
         # Say the size up front: this is a hundreds-of-megabytes download on a CUDA tier, and a silent
         # multi-minute pause reads like a hang.
         print(f"Downloading prebuilt {row.get('component')} ({row.get('tier')}"
               + (f", {size}" if size else "") + ")...", file=sys.stderr)
-        urllib.request.urlretrieve(url, archive)  # noqa: S310 — pinned release URL, SHA-verified below
-        want = (row.get("sha256") or "").strip().lower()
-        if want:
-            h = hashlib.sha256()
-            with open(archive, "rb") as f:
-                for block in iter(lambda: f.read(1 << 20), b""):
-                    h.update(block)
-            got = h.hexdigest().lower()
-            if got != want:
-                raise RuntimeError(f"SHA256 mismatch for {url} (got {got[:12]}..., want {want[:12]}...)")
+        archive = osenv.download(url, tmp / Path(url).name, sha256=row.get("sha256"), timeout=60,
+                                 require_sha=True)
         extract = tmp / "x"
         extract.mkdir()
         if tarfile.is_tarfile(archive):
@@ -382,27 +370,12 @@ def _install_prebuilt(row: dict, bin_dir) -> str:
                 z.extractall(extract)
         else:
             raise RuntimeError(f"unrecognized archive format: {archive.name}")
-        bin_dir.mkdir(parents=True, exist_ok=True)
-        staged = 0
-        for p in sorted(extract.rglob("*")):
-            dest = bin_dir / p.name
-            if p.is_symlink():
-                # A SONAME link (libcublas.so.12 -> libcublas.so.12.8.4.1) must stay a link: copying it
-                # would dereference into a second copy of a lib that can be half a gigabyte. Windows
-                # refuses symlinks without privilege, so fall back to the copy there.
-                try:
-                    dest.unlink(missing_ok=True)
-                    os.symlink(os.readlink(p), dest)
-                except (OSError, NotImplementedError):
-                    if p.is_file():
-                        shutil.copy2(p, dest)
-                staged += 1
-            elif p.is_file():
-                shutil.copy2(p, dest)
-                staged += 1
-        if staged == 0:
+        entries = {p.name: p for p in sorted(extract.rglob("*")) if p.is_file() or p.is_symlink()}
+        if not entries:
             raise RuntimeError("archive contained no files to stage")
-        return f"Installed prebuilt {row.get('component')} ({row.get('tier')}): {staged} file(s) -> {bin_dir}"
+        osenv.install_files(entries, bin_dir)
+        return (f"Installed prebuilt {row.get('component')} ({row.get('tier')}): {len(entries)} file(s) "
+                f"-> {bin_dir}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -413,10 +386,12 @@ def ensure_engine(cpu: bool = False, from_source: bool = False, force: bool = Fa
     (kernel setup/bootstrap, `bob build`, and via resolve_build_tier the `bob update` rebuild) routes its tier
     decision through here, so gpu-vs-cpu is chosen in one place and can never drift.
 
-    Prebuilt-first (the outlier fix): if versions.lock carries a matching (component, os, arch, tier) engine
-    row, download + SHA-verify + stage the driver-only binary (CUDA runtime libs bundled) so the user never
-    compiles. Falls back to a source build when `from_source` is set, no row matches (or the manifest is
-    empty), or the download/verify fails. Source-build stays the reproducibility ground truth.
+    Prebuilt-first: if the engine manifest (the release's engines.json, or a local config/engines.json
+    override; see _load_engine_manifest) has a (component, os, arch, tier) row built from the llama.cpp commit
+    this checkout pins, download + SHA-verify + stage the driver-only binary (CUDA runtime libs bundled) so the
+    user never compiles. An installed prebuilt is reused only when its tier AND recorded commit match. Falls
+    back to a source build when `from_source` is set, no row matches, or the download/verify fails.
+    Source-build stays the reproducibility ground truth.
 
     self_heal=False lets a caller that has ALREADY resolved+ensured the tier (e.g. `bob update`) reuse that
     decision without a second toolkit probe.
@@ -438,8 +413,12 @@ def ensure_engine(cpu: bool = False, from_source: bool = False, force: bool = Fa
         row = _select_engine_row("llama-server", osenv.os_name(), osenv.normalized_cpu_arch(), tier)
         if row:
             marker = osenv.build_tier_marker(bin_dir) or {}
+            # The installed prebuilt is current only when it came from the same llama.cpp commit this row (and
+            # this checkout) pins: a tier match alone would keep a stale engine after a submodule bump.
+            row_commit = row.get("builtFromCommit") or _pinned_submodule_commit("llama-server")
             if (not force and osenv.bin_exe("llama-server").exists()
-                    and marker.get("source") == "prebuilt" and marker.get("tier") == tier):
+                    and marker.get("source") == "prebuilt" and marker.get("tier") == tier
+                    and marker.get("commit") == row_commit):
                 return {"tier": tier, "source": "prebuilt", "blocked": False,
                         "reason": "prebuilt already present", "cuda_root": None, "arch": 0,
                         "detail": "llama-server prebuilt already present (use --force to reinstall)."}
@@ -452,10 +431,11 @@ def ensure_engine(cpu: bool = False, from_source: bool = False, force: bool = Fa
                     osenv.bin_exe("llama-server").unlink(missing_ok=True)
                     raise RuntimeError("prebuilt engine does not run on this system (e.g. glibc too old)")
                 osenv.write_build_tier_marker(tier=tier, arch=0, cuda=row.get("cudaMajor"),
-                                              source="prebuilt", bin_dir=bin_dir)
+                                              source="prebuilt", bin_dir=bin_dir, commit=row_commit)
                 return {"tier": tier, "source": "prebuilt", "blocked": False,
                         "reason": f"prebuilt {tier} engine", "cuda_root": None, "arch": 0, "detail": detail}
-            except (RuntimeError, OSError) as e:
+            except Exception as e:  # noqa: BLE001 — any download/extract failure (OSError, IncompleteRead,
+                # tarfile/zipfile errors) falls back to the source build rather than escaping the seam
                 print(f"prebuilt engine unavailable ({e}); building from source.", file=sys.stderr)
 
     # Source fallback. When self_heal=True (setup / `bob build`) ensure_engine OWNS the decision: resolve the

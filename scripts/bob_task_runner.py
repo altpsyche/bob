@@ -19,19 +19,26 @@ sys.path.insert(0, str(_SCRIPTS / "tools"))
 def run_task(config: dict, run_id: str, owner: str, goal: str = None, resume: bool = False,
              cancel=None, allow_computer: bool = False) -> int:
     """Run one durable agent run to completion. `resume` continues a checkpointed run (goal is loaded
-    from its row); otherwise `goal` starts a fresh run under `run_id`. Returns a process exit code."""
+    from its row); otherwise `goal` starts a fresh run under `run_id`. Returns a process exit code:
+    0 for an answer (or a cancelled run), 1 when the run failed (upstream down, backend error, a
+    refused resume), 2 when it stopped without an answer (max steps)."""
     import bob_loop
     agent = config.setdefault("agent", {})
     agent["checkpoint"] = True     # a detached task always persists its state
     agent["unattended"] = True     # no interactive operator: gates the most dangerous tools off
     if allow_computer:
         agent.setdefault("computerUse", {})["allowUnattended"] = True
-    try:
-        bob_loop.run_agent(goal or "", config, agency="silent", run_id=run_id, owner=owner,
-                           cancel=cancel, resume=(run_id if resume else None))
-    except Exception as e:
-        print(f"bob-task: run {run_id} failed — {e}", file=sys.stderr)
+    out = bob_loop.fold_events(bob_loop.run_agent_events(
+        goal or "", config, agency="silent", run_id=run_id, owner=owner,
+        cancel=cancel, resume=(run_id if resume else None)))
+    if out.error is not None:
+        print(f"bob-task: run {run_id} failed ({out.error_kind}): {out.error}", file=sys.stderr)
         return 1
+    if out.result is None and out.reason == "max_steps":
+        print(f"bob-task: run {run_id} stopped without a final answer (max steps)", file=sys.stderr)
+        return 2
+    if out.result is not None:
+        print(out.result)
     return 0
 
 

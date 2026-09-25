@@ -10,6 +10,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import _common  # noqa: F401 — puts scripts/ + scripts/tools on sys.path
 import bob_core
@@ -160,9 +161,9 @@ class TestOnboardingSkip(unittest.TestCase):
         (repo / "config").mkdir()
         if user_json is not None:
             (repo / "config" / "user.json").write_text(user_json, encoding="utf-8")
-        self.kernel.REPO = repo
         self.kernel._has_profile_rows = lambda: has_profile
-        return self.kernel._needs_onboard()
+        with mock.patch.dict(os.environ, {"BOB_USER_CONFIG": str(repo / "config" / "user.json")}):
+            return self.kernel._needs_onboard()
 
     def test_unmarked_always_onboards(self):
         self.assertTrue(self._needs(None, has_profile=False))

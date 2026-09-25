@@ -66,16 +66,52 @@ def _port(config: dict, name: str) -> int:
     return int(config.get(name, _PORT_DEFAULTS[name]))
 
 
+def service_port(config: dict, key: str) -> int:
+    """THE port accessor for a service port key: reads it from the same config section the service itself
+    reads (agent.agentPort / agent.mcpPort for the agent + MCP servers, top-level for the rest), falling back
+    to config/defaults.json. bob_config places agentPort/mcpPort under `agent`, which is why those two are
+    looked up there."""
+    section = _SECTION_PORTS.get(key)
+    if section:
+        return _port((config or {}).get(section) or {}, key)
+    return _port(config or {}, key)
+
+
+# Port keys that live under a config section rather than at the top level (see bob_config).
+_SECTION_PORTS = {"agentPort": "agent", "mcpPort": "agent"}
+
+
+# --- token estimation ---------------------------------------------------------------------------
+# One estimator for every budget in the runtime (history, injected memory, tool results, repo map):
+# ~4 chars per token for English + JSON. No tokenizer dependency.
+_CHARS_PER_TOKEN = 4
+
+
+def est_tokens(text) -> int:
+    """Rough token estimate of `text` (~4 chars/token). Empty -> 0."""
+    if not text:
+        return 0
+    return (len(text) + _CHARS_PER_TOKEN - 1) // _CHARS_PER_TOKEN
+
+
+def tokens_to_chars(tokens) -> int:
+    """The character budget matching `tokens` under est_tokens' ratio (never negative)."""
+    return max(0, int(tokens) * _CHARS_PER_TOKEN)
+
+
 def get_role(config: dict, task: str = "chat", pro: bool = False) -> str:
     """Resolve a model role from config for a task.
 
-    task: chat | code | think | voice | vision | agent
+    task: a config/defaults.json roleTable key (chat | voice | code | ponder | writer | agent | vision).
     pro:  prefer the *-pro variant where one exists.
     Centralizes the routing lookup so the plugins don't each re-derive it. The task->key
-    mapping and fallback literals live in config/defaults.json roleTable, not inline here.
+    mapping and fallback literals live in config/defaults.json roleTable, not inline here. An unknown
+    task raises ValueError: a typo must not silently route to the chat model.
     """
     table = load_defaults()["roleTable"]
-    entry = table.get(task) or table["chat"]
+    entry = table.get(task)
+    if entry is None:
+        raise ValueError(f"unknown routing task '{task}'; known: {', '.join(table)}")
     # vision routing lives in its own config section, not under routing.
     section = config.get(entry.get("section", "routing"), {})
     base_key, pro_key = entry["base"], entry["pro"]
@@ -95,13 +131,28 @@ def load_config() -> dict:
     return bob_config.resolve_runtime_config()
 
 
+# The environment variable the LiteLLM proxy reads its master key from (litellm.yaml says
+# `master_key: os.environ/LITELLM_MASTER_KEY`); stack passes it to every proxy it starts.
+LITELLM_KEY_ENV = "LITELLM_MASTER_KEY"
+
+
 def _litellm_key(config: dict) -> str:
-    """Return the LiteLLM master key, resolved through the secret seam: env -> keychain
-    -> data/secrets.json -> the config value (sk-local default). On Windows with no env/secret set
-    this is unchanged (the config value wins as the default)."""
+    """THE LiteLLM master key, for every client and every server that checks it. Precedence: the process
+    env (litellmKey / BOB_LITELLMKEY), then an explicit `litellmKey` the user set in config/user.json,
+    then the stored secret (OS keychain, <data_dir>/secrets.json), else a random key generated once and
+    kept there (osenv.ensure_secret). There is no fixed default: a well-known key would open the proxy,
+    the agent API and MCP to anyone who can reach them."""
+    import os
+
     import osenv
 
-    return osenv.secret("litellmKey", default=config.get("litellmKey", "sk-local"), config=config)
+    env = os.environ.get("litellmKey") or os.environ.get("BOB_LITELLMKEY")
+    if env:
+        return env
+    explicit = (config or {}).get("litellmKey")
+    if explicit:
+        return str(explicit)
+    return osenv.ensure_secret("litellmKey", nbytes=24, prefix="sk-bob-")
 
 
 def get_llm_client(config: Optional[dict] = None):
@@ -115,15 +166,29 @@ def get_llm_client(config: Optional[dict] = None):
 
 def check_litellm(config: Optional[dict] = None) -> bool:
     """Return True if the LiteLLM proxy port is open (TCP connect; avoids slow /health backend checks)."""
-    import socket
+    import osenv
 
     cfg = config or load_config()
-    port = _port(cfg, "litellmPort")
+    return osenv.is_port_in_use(_port(cfg, "litellmPort"))
+
+
+def litellm_key_rejected(config: Optional[dict] = None) -> bool:
+    """True when the proxy on litellmPort answers GET /v1/models with 401/403 for Bob's key: it is running
+    with another master key (started before the key changed). Anything else, including no answer, is
+    False, so a slow or absent proxy is never mistaken for a key mismatch."""
+    import urllib.error
+    import urllib.request
+
+    cfg = config or load_config()
+    req = urllib.request.Request(f"http://127.0.0.1:{_port(cfg, 'litellmPort')}/v1/models",
+                                 headers={"Authorization": f"Bearer {_litellm_key(cfg)}"})
     try:
-        with socket.create_connection(("localhost", port), timeout=3):
-            return True
-    except OSError:
+        urllib.request.urlopen(req, timeout=5).close()  # noqa: S310 (loopback only)
+    except urllib.error.HTTPError as e:
+        return e.code in (401, 403)
+    except (urllib.error.URLError, OSError, ValueError):
         return False
+    return False
 
 
 def capability_probe(config: Optional[dict] = None) -> tuple:
@@ -142,10 +207,32 @@ def capability_probe(config: Optional[dict] = None) -> tuple:
     )
 
 
+def state_path(path: str) -> Path:
+    """Resolve a configured state path (DB, log). Absolute paths stand; a relative one resolves under the
+    state directories rather than the checkout: `logs/...` under osenv.cache_dir(), anything else (with or
+    without a leading `data/`) under osenv.data_dir(). Both default to the repo's data/ and logs/, and
+    move with BOB_DATA_DIR."""
+    import osenv
+
+    p = Path(str(path).replace("\\", "/"))
+    if p.is_absolute():
+        return p
+    parts = p.parts
+    if parts and parts[0] == "logs":
+        return osenv.cache_dir().joinpath(*parts[1:])
+    if parts and parts[0] == "data":
+        return osenv.data_dir().joinpath(*parts[1:])
+    return osenv.data_dir() / p
+
+
+def session_db_path(config: dict) -> Path:
+    """THE session DB path (agent.sessionDbPath), shared by the agent server, the shell and the token store."""
+    return state_path((config or {}).get("agent", {}).get("sessionDbPath") or "data/sessions.db")
+
+
 def _get_db_path(config: Optional[dict] = None) -> str:
     cfg = config or load_config()
-    rel = _mem(cfg.get("memory", {}), "dbPath")
-    return str(REPO / rel.replace("\\", "/"))
+    return str(state_path(_mem(cfg.get("memory", {}), "dbPath")))
 
 
 def project_key(cwd: Optional[str] = None, config: Optional[dict] = None) -> Optional[str]:
@@ -295,7 +382,10 @@ def memory_recall(query: str, k: int = 5, config: Optional[dict] = None,
     # The reranker is served by llama-swap (LiteLLM's /rerank wants a cloud provider, not local llama.cpp),
     # so the rerank call targets the endpoint port directly; memory.rerankBaseUrl overrides for a remote one.
     rerank_on = bool(_mem(mem, "rerank"))
-    rerank_url = (mem.get("rerankBaseUrl") or f"http://localhost:{_port(cfg, 'port')}/v1") if rerank_on else None
+    rerank_url = (_mem(mem, "rerankBaseUrl") or f"http://localhost:{_port(cfg, 'port')}/v1") if rerank_on else None
+    # memory.rerankThreshold gates the cross-encoder scores; unset leaves the recall default in charge.
+    rerank_threshold = _mem(mem, "rerankThreshold")
+    extra = {"rerank_threshold": float(rerank_threshold)} if rerank_threshold is not None else {}
     results = bob_memory.recall(
         query, k=k, db_path=db_path,
         threshold=float(_mem(mem, "recallThreshold")),
@@ -306,6 +396,7 @@ def memory_recall(query: str, k: int = 5, config: Optional[dict] = None,
         retrieval=_mem(mem, "retrieval"), rrf_k=int(_mem(mem, "rrfK")),
         # Optional cross-encoder second stage over the fused candidates (default off -> hybrid unchanged).
         rerank=rerank_on, rerank_top_n=int(_mem(mem, "rerankTopN")), rerank_url=rerank_url,
+        **extra,
     )
     if not results:
         return "(no results)"
@@ -327,7 +418,7 @@ def memory_profile_block(owner: Optional[str] = None, config: Optional[dict] = N
     max_tokens = int(_mem(mem, "profileMaxTokens"))
     try:
         import bob_memory  # type: ignore
-        body = bob_memory.profile_block(owner, db_path, max_chars=max_tokens * 4)
+        body = bob_memory.profile_block(owner, db_path, max_chars=tokens_to_chars(max_tokens))
     except Exception:
         return None
     if not body:
@@ -365,7 +456,7 @@ def project_memory_block(project_dir: Optional[str], config: Optional[dict] = No
             parts.append(txt)
     if not parts:
         return None
-    body = "\n\n".join(parts)[: int(_mem(mem, "bobMdMaxTokens")) * 4]
+    body = "\n\n".join(parts)[: tokens_to_chars(_mem(mem, "bobMdMaxTokens"))]
     return "Project instructions (from BOB.md — follow these for this project):\n" + body
 
 
@@ -376,7 +467,7 @@ def budget_injection(blocks: list, max_tokens: int) -> tuple:
     even if it alone exceeds the budget (so we never inject nothing when a large BOB.md is present).
     Trim order therefore drops autoRecall before profile before BOB.md. Returns
     (joined_text, kept_labels, dropped_labels)."""
-    max_chars = max(0, int(max_tokens) * 4)
+    max_chars = tokens_to_chars(max_tokens)
     ordered = sorted([b for b in blocks if b[1] and b[1].strip()], key=lambda b: -b[2])
     kept, dropped, used = [], [], 0
     for label, text, _prio in ordered:
@@ -429,3 +520,259 @@ def _ensure_memory_importable() -> None:
     scripts_dir = str(REPO / "scripts")
     if scripts_dir not in sys.path:
         sys.path.insert(0, scripts_dir)
+
+
+# --- model windows, role availability, and the one non-agent completion path -----------------------
+
+def slot_ctx(spec: dict, defaults: dict) -> int:
+    """The window ONE request gets from a llama-server: -c split across its slots unless the KV cache is
+    unified. Slots come from the role's own --parallel/-np flag or the registry defaults' `parallel`; a
+    split is assumed unless --kv-unified is explicit, since overstating the window is the failure (the
+    request overruns its slot) and understating it is not."""
+    flags = [str(f) for f in (spec.get("flags") or [])]
+    slots = int((defaults or {}).get("parallel") or 1)
+    for i, f in enumerate(flags[:-1]):
+        if f in ("--parallel", "-np"):
+            slots = int(flags[i + 1])
+    ctx = int(spec.get("ctx") or 0)
+    if slots > 1 and not {"--kv-unified", "-kvu"} & set(flags):
+        return ctx // slots
+    return ctx
+
+
+def _models_view():
+    """(registry, active-profile name, role->spec) from bob_models, or (None, None, None) when the model
+    registry can't be read (a stripped checkout, a malformed user.json). Callers then degrade to
+    'unknown' rather than failing a run over a lookup."""
+    try:
+        import bob_models
+        mcfg = bob_models.load_models_config()
+        name = bob_models.resolve_profile_name(config=mcfg)
+        return mcfg, name, bob_models.profile_roles(name, config=mcfg)
+    except Exception:
+        return None, None, None
+
+
+def _pro_spec(mcfg: dict, role: str):
+    """(peer, role spec) for a `<role>-pro` model: the first enabled peer that serves `<role>`, the same
+    first-peer-wins rule the LiteLLM generator applies. (None, None) when no enabled peer serves it."""
+    if not mcfg or not role or not role.endswith("-pro"):
+        return None, None
+    base = role[: -len("-pro")]
+    for peer in (mcfg.get("peers") or {}).values():
+        if not isinstance(peer, dict) or peer.get("enabled") is False:
+            continue
+        pro = peer.get("pro") or {}
+        if base in pro:
+            return peer, (pro[base] if isinstance(pro[base], dict) else {})
+    return None, None
+
+
+def role_window(config: dict, role: str) -> int:
+    """The per-request context window (tokens) of the model serving `role`: a local role's ctx on the
+    active profile divided across its slots (slot_ctx), or a pro role's contextWindow from the peer that
+    serves it. 0 when the role is unknown or the registry can't be read."""
+    mcfg, _name, roles = _models_view()
+    if roles is None or not role:
+        return 0
+    spec = roles.get(role)
+    if spec:
+        return slot_ctx(spec, mcfg.get("defaults") or {})
+    peer, rv = _pro_spec(mcfg, role)
+    if peer is not None:
+        return int(rv.get("contextWindow") or peer.get("contextWindow") or 0)
+    return 0
+
+
+def request_window(config: dict, role: str, explicit=None) -> int:
+    """The context one request on `role` may fill: the model's per-request window (role_window), capped by
+    agent.maxContextTokens when that is a positive number (0 / 'auto' means the model's own window).
+    `explicit` stands in for the config value. 0 when neither is known."""
+    window = role_window(config, role)
+    if explicit is None:
+        explicit = ((config or {}).get("agent", {}) or {}).get("maxContextTokens", 0)
+    try:
+        explicit = int(explicit or 0)
+    except (TypeError, ValueError):
+        explicit = 0                      # 'auto' (or junk) -> the model's own window
+    if explicit > 0:
+        return min(explicit, window) if window else explicit
+    return window
+
+
+def cap_output(max_out: int, window: int) -> int:
+    """`max_out` clamped to half of `window`, leaving the other half for the prompt; unclamped when the
+    window is unknown (0). Never below 1."""
+    max_out = max(1, int(max_out))
+    return min(max_out, max(1, window // 2)) if window else max_out
+
+
+def role_output_tokens(config: dict, role: str) -> int:
+    """The generation a request on `role` asks for by default. A pro role takes its peer's maxOutputTokens
+    (the role's, else the peer's: the same value gen-litellm writes as that model's max_tokens), because
+    a cloud model's reply is not what the local window has to hold. Everything else, and a pro role with
+    no maxOutputTokens, takes agent.outputReserveTokens."""
+    reserve = int(((config or {}).get("agent", {}) or {}).get("outputReserveTokens", 1024))
+    if not role or not role.endswith("-pro"):
+        return reserve
+    mcfg, _name, _roles = _models_view()
+    peer, rv = _pro_spec(mcfg, role)
+    if peer is None:
+        return reserve
+    return int(rv.get("maxOutputTokens") or peer.get("maxOutputTokens") or reserve)
+
+
+def is_local_role(model: str, config: dict = None) -> bool:
+    """True if `model` is a locally served (llama-swap) role rather than a cloud peer. Scopes the
+    reasoning chat-template kwarg to local models: llama-server consumes `enable_thinking`, cloud peers
+    have their own reasoning behavior and don't take it. When the registry can't be read, treat it as
+    local so local reasoning suppression (the common path) still applies."""
+    _mcfg, _name, roles = _models_view()
+    if roles is None:
+        return True
+    return model in roles
+
+
+# A role the active profile doesn't serve falls back to the chat model (the one role every profile has):
+# the cpu profile serves only chat/writer/agent, and 8gb/12gb have no vision model.
+_PROFILE_FALLBACK = {"coder": "chat", "ponder": "chat", "writer": "chat", "agent": "chat"}
+
+
+def served_role(config: dict, role: str, notice=None) -> str:
+    """`role`, or the chat model when the active profile doesn't serve it (coder/ponder/writer/agent ->
+    chat), announcing the swap once on stderr (or through `notice(text)`). Pro roles and names outside
+    the fallback table pass through unchanged, as does everything when the registry can't be read."""
+    if not role or role.endswith("-pro"):
+        return role
+    _mcfg, name, roles = _models_view()
+    if roles is None or role in roles:
+        return role
+    fallback = _PROFILE_FALLBACK.get(role)
+    if not fallback or fallback not in roles:
+        return role
+    msg = f"[bob] the '{name}' profile has no '{role}' model; using '{fallback}' instead."
+    if notice is not None:
+        notice(msg)
+    else:
+        print(msg, file=sys.stderr)
+    return fallback
+
+
+def image_refusal(config: dict, role: str) -> Optional[str]:
+    """None when `role` may be sent image input, else an actionable message. Refuses when vision is
+    switched off (vision.enabled=false), when the active profile serves no vision model, when a local role
+    is text-only (neither supportsVision nor an mmproj in its spec, e.g. a pinned --role coder), and when a
+    pro role routes to a peer that doesn't take images (supportsVision unset), instead of letting the
+    backend answer with a 400."""
+    vcfg = (config or {}).get("vision", {}) or {}
+    if vcfg.get("enabled", True) is False:
+        return "Vision is disabled (vision.enabled=false in config/user.json); image input is refused."
+    mcfg, name, roles = _models_view()
+    if roles is None or not role:
+        return None
+    if role.endswith("-pro"):
+        peer, rv = _pro_spec(mcfg, role)
+        if peer is None:
+            return (f"No enabled cloud peer serves '{role}', so it can't take this image. "
+                    "Drop --pro to use the local vision model.")
+        if not bool(rv.get("supportsVision", peer.get("supportsVision", False))):
+            return (f"'{role}' routes to {rv.get('model') or 'a cloud model'}, which takes no images. "
+                    "Drop --pro to use the local vision model, or point vision.visionProRole at a "
+                    "vision-capable peer.")
+        return None
+    if role in roles:
+        spec = roles[role] or {}
+        if spec.get("supportsVision") or spec.get("mmproj"):
+            return None
+        return (f"'{role}' on the '{name}' profile is a text-only model and can't read images. Drop the "
+                "role override so the image routes to the vision model.")
+    vision_role = vcfg.get("visionRole") or "vision"
+    if role == vision_role or role == "vision":
+        return (f"The '{name}' profile serves no vision model, so image input can't be read. Switch to a "
+                "profile with one (bob profile 16gb) or use a vision-capable cloud role (--pro).")
+    return None
+
+
+def voice_disabled(config: dict) -> Optional[str]:
+    """A clear refusal when voice is switched off (voice.enabled=false), else None. Gates `bob voice`
+    and the shell's /voice."""
+    if ((config or {}).get("voice", {}) or {}).get("enabled", True) is False:
+        return "Voice is disabled (voice.enabled=false in config/user.json). Set it to true to use voice."
+    return None
+
+
+class CompletionError(RuntimeError):
+    """A completion call failed (unreachable proxy, backend error). The message names the role."""
+
+
+# Headroom kept between the fitted prompt and the window so template tokens never tip it over.
+_COMPLETE_MARGIN_TOKENS = 64
+
+
+def _message_tokens_est(m: dict) -> int:
+    content = m.get("content") or ""
+    if not isinstance(content, str):
+        content = json.dumps(content)
+    return est_tokens(content) + 4
+
+
+def fit_messages(messages: list, budget: int) -> list:
+    """Fit a chat message list into `budget` tokens: the system message(s) and the newest message are
+    always kept; older messages are dropped oldest-first, and a newest message that alone overflows is
+    cut in the middle (head and tail survive). Returns a new list; `budget` <= 0 returns it unchanged."""
+    if budget <= 0:
+        return list(messages)
+    system = [m for m in messages if m.get("role") == "system"]
+    rest = [m for m in messages if m.get("role") != "system"]
+    room = budget - sum(_message_tokens_est(m) for m in system)
+    kept: list = []
+    for m in reversed(rest):
+        t = _message_tokens_est(m)
+        if room - t >= 0:
+            kept.append(m)
+            room -= t
+            continue
+        if not kept:
+            content = m.get("content")
+            if isinstance(content, str):
+                chars = max(0, tokens_to_chars(max(room, 0) - 8))
+                head = chars // 2
+                marker = "\n\n[...middle truncated to fit the model's context window...]\n\n"
+                cut = content[:head] + marker + (content[-(chars - head):] if chars - head > 0 else "")
+                kept.append({**m, "content": cut})
+            else:
+                kept.append(m)
+        break
+    return system + list(reversed(kept))
+
+
+def complete(config: dict, role: str, messages: list, max_out: int, *, timeout: int = None,
+             think: bool = False) -> tuple:
+    """One non-agent completion: the shared path for summaries, plan/verify turns and the plugins.
+    Returns (text, finish_reason). The role falls back to one the active profile serves (served_role);
+    the input is fitted to that model's per-request window minus `max_out` (fit_messages); thinking is
+    switched off on local roles unless `think` (a reasoning model would otherwise spend max_out thinking
+    and return nothing). The window honours agent.maxContextTokens (request_window). Empty content is
+    logged with its finish_reason. Raises CompletionError on failure, never returns a silent ''."""
+    import logging
+
+    role = served_role(config, role)
+    window = request_window(config, role)
+    max_out = cap_output(max_out, window)
+    if window:
+        messages = fit_messages(messages, window - max_out - _COMPLETE_MARGIN_TOKENS)
+    kwargs = dict(model=role, messages=messages, max_tokens=max_out, stream=False,
+                  timeout=int(timeout or (config or {}).get("agent", {}).get("requestTimeout", 600)))
+    if is_local_role(role, config):
+        kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": bool(think)}}
+    try:
+        resp = get_llm_client(config).chat.completions.create(**kwargs)
+        choice = resp.choices[0]
+    except Exception as e:
+        raise CompletionError(f"completion on '{role}' failed: {e}") from e
+    text = (getattr(choice.message, "content", None) or "") if getattr(choice, "message", None) else ""
+    finish = getattr(choice, "finish_reason", None)
+    if not text.strip():
+        logging.getLogger("bob.agent").warning(
+            "completion on '%s' returned no content (finish_reason=%s, max_tokens=%d)", role, finish, max_out)
+    return text, finish

@@ -45,6 +45,48 @@ def resolve_profile(role: str, agent_cfg: dict) -> dict:
     return {"prompt": None, "tools": None, "modelRole": role}
 
 
+def local_roles(config: dict) -> tuple:
+    """(local, pro) model roles as routing resolves them: `local` is every roleTable task's base role
+    (plus the task names themselves), `pro` every *-pro variant. A pro role is a paid cloud peer."""
+    from bob_core import get_role, load_defaults
+    tasks = list(load_defaults().get("roleTable", {}))
+    base = set(tasks) | {get_role(config, t) for t in tasks}
+    pro = {get_role(config, t, pro=True) for t in tasks} - base
+    pro |= {r for r in base if r and r.endswith("-pro")}
+    return {r for r in base if r and r not in pro}, pro
+
+
+def check_role_scope(role: str, allowed_roles):
+    """None if the caller's role scopes (RunContext.allowed_roles, from the agent API token's
+    `role:<name>` scopes) permit `role`, else a refusal. No scopes (None) or no explicit role means
+    unrestricted, matching the agent API's own role gate."""
+    if not role or not allowed_roles:
+        return None
+    if role in allowed_roles:
+        return None
+    return (f"spawn_agent: role '{role}' is not permitted for this caller "
+            f"(allowed: {', '.join(sorted(allowed_roles))}).")
+
+
+def check_model_role(role: str, config: dict):
+    """None if the model may route a sub-run to `role`, else a refusal message. Only local roles are
+    reachable unless agent.subAgentAllowPro is set, so a model-chosen role can never send a sub-run to
+    a paid cloud peer on its own."""
+    if not role:
+        return None
+    local, pro = local_roles(config)
+    allow_pro = bool(config.get("agent", {}).get("subAgentAllowPro", False))
+    is_pro = role in pro or role.endswith("-pro")
+    if role in local and not is_pro:
+        return None
+    if is_pro and allow_pro:
+        return None
+    if is_pro:
+        return (f"spawn_agent: role '{role}' is a cloud (pro) role; sub-agents run on local roles "
+                f"unless agent.subAgentAllowPro is enabled. Local roles: {', '.join(sorted(local))}.")
+    return f"spawn_agent: unknown role '{role}'. Local roles: {', '.join(sorted(local))}."
+
+
 def _spawn_agent(task: str, role: str = None) -> str:
     from tool_registry import get_run_context
 
@@ -70,44 +112,46 @@ def _spawn_agent(task: str, role: str = None) -> str:
     # `role` is just a model-role override (back-compat). Per-role tools win when a profile is used, else
     # the flat agent.subAgentTools whitelist applies (None = inherit the full, already-restricted view).
     profile = resolve_profile(role, agent_cfg)
+    # A typed profile's modelRole is user-authored config and is trusted; a bare `role` is chosen by the
+    # model, so it is limited to local roles (see check_model_role).
+    if not isinstance((agent_cfg.get("subAgentRoles") or {}).get(role), dict):
+        refusal = check_model_role(role, config)
+        if refusal:
+            return refusal
+    # The caller's token may be limited to some model roles; a sub-run can't reach past that.
+    refusal = check_role_scope(profile["modelRole"], getattr(ctx, "allowed_roles", None))
+    if refusal:
+        return refusal
     allow = profile["tools"] or agent_cfg.get("subAgentTools") or None
     sub_registry = base_registry.filtered(allow=allow)
 
-    from bob_loop import run_agent_events, CancelToken
+    from bob_loop import CancelToken, fold_events, run_agent_events
 
     parent_cancel = getattr(ctx, "cancel", None)
     child_cancel = parent_cancel.child() if isinstance(parent_cancel, CancelToken) else None
     parent_rid = getattr(ctx, "run_id", None) or "root"
     child_rid = f"{parent_rid}.sub{parent_depth + 1}"
 
-    result, error, tools_used = None, None, []
-    try:
-        for ev in run_agent_events(
-            task, config, role=profile["modelRole"], agency=agent_cfg.get("agency", "show"),
-            registry=sub_registry, stream=False, history=None,
-            cancel=child_cancel, run_id=child_rid, approve=getattr(ctx, "approve", None),
-            owner=getattr(ctx, "owner", None), agent_depth=parent_depth + 1,
-            scope=getattr(ctx, "scope", None),
-            trace_parent=getattr(ctx, "trace_span", None),   # nest the sub-run under the parent
-            system_prompt=profile["prompt"],                 # typed role -> distinct persona (else None)
-        ):
-            t = ev.get("type")
-            if t == "tool_call":
-                tools_used.append(ev.get("name"))
-            elif t == "final":
-                result = ev.get("result")
-            elif t == "error":
-                error = ev.get("message")
-    except Exception as e:   # a sub-run failure must not crash the parent step
-        error = str(e)
+    # fold_events never raises: a sub-run failure comes back as an error, not a crash of the parent step.
+    out = fold_events(run_agent_events(
+        task, config, role=profile["modelRole"], agency=agent_cfg.get("agency", "show"),
+        registry=sub_registry, stream=False, history=None,
+        cancel=child_cancel, run_id=child_rid, approve=getattr(ctx, "approve", None),
+        owner=getattr(ctx, "owner", None), agent_depth=parent_depth + 1,
+        scope=getattr(ctx, "scope", None),
+        trace_parent=getattr(ctx, "trace_span", None),   # nest the sub-run under the parent
+        system_prompt=profile["prompt"],                 # typed role -> distinct persona (else None)
+        allowed_roles=getattr(ctx, "allowed_roles", None),
+        unattended_allow=getattr(ctx, "unattended_allow", None),   # MCP's allow-set holds at every depth
+    ))
 
     summary = {
-        "result": result if result is not None else "(sub-agent produced no final answer)",
-        "steps": len(tools_used),
-        "tools_used": list(dict.fromkeys(t for t in tools_used if t)),
+        "result": out.result if out.result is not None else "(sub-agent produced no final answer)",
+        "steps": out.steps,
+        "tools_used": list(dict.fromkeys(t for t in out.tools_used if t)),
     }
-    if error:
-        summary["error"] = error
+    if out.error:
+        summary["error"] = out.error
     return json.dumps(summary, ensure_ascii=False)
 
 
@@ -132,7 +176,8 @@ TOOL_DEFS = [
                     "task": {"type": "string",
                              "description": "The subtask, self-contained (the sub-agent starts with no history)."},
                     "role": {"type": "string",
-                             "description": "Optional model role override for the sub-run (default: the agent role)."},
+                             "description": ("Optional sub-agent profile or local model role for the "
+                                             "sub-run (default: the agent role).")},
                 },
                 "required": ["task"],
             },

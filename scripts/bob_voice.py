@@ -63,7 +63,7 @@ def format_for_speech(text: str) -> str:
     return t.strip()
 
 
-# --- STT: whisper-server client (record via the osenv seam, transcribe via HTTP) -----------------
+# --- STT: faster-whisper server client (record via the osenv seam, transcribe via HTTP) -----------
 
 def stt_port(config: dict) -> int:
     from bob_core import _port
@@ -71,19 +71,13 @@ def stt_port(config: dict) -> int:
 
 
 def stt_ready(config: dict) -> bool:
-    """True if the whisper STT port is open (TCP connect; mirrors bob_core.check_litellm)."""
-    import socket
-    try:
-        with socket.create_connection(("localhost", stt_port(config)), timeout=2):
-            return True
-    except OSError:
-        return False
+    """True if the STT server port accepts a connection (the one TCP probe, osenv.is_port_in_use)."""
+    return osenv.is_port_in_use(stt_port(config))
 
 
 def transcribe(wav_path: str, port: int) -> str:
-    """POST a WAV file to the STT server (whisper.cpp or faster-whisper share the /inference contract),
-    return the transcript text. Every backend failure (unreachable, timeout, 5xx crash mid-request,
-    malformed body) is wrapped as a RuntimeError with an actionable message, so the /voice loop and the
+    """POST a WAV file to the faster-whisper STT server's /inference endpoint, return the transcript
+    text. Every backend failure (unreachable, timeout, 5xx crash mid-request, malformed body) is wrapped as a RuntimeError with an actionable message, so the /voice loop and the
     STT CLI can recover instead of surfacing a raw traceback. Single source for both callers."""
     import requests
 
@@ -128,7 +122,7 @@ def record(config: dict, silence_sec: float = None) -> bytes:
 
 
 def transcribe_bytes(wav_bytes: bytes, port: int) -> str:
-    """Transcribe raw WAV bytes via whisper-server ('' if empty). The temp-file seam shared by listen()
+    """Transcribe raw WAV bytes via the STT server ('' if empty). The temp-file seam shared by listen()
     and the /voice loop, so both handle STT identically."""
     if not wav_bytes:
         return ""
@@ -142,7 +136,7 @@ def transcribe_bytes(wav_bytes: bytes, port: int) -> str:
 
 
 def listen(config: dict, silence_sec: float = None) -> str:
-    """Record the mic until silence (osenv seam), transcribe via whisper-server, return the transcript
+    """Record the mic until silence (osenv seam), transcribe via the STT server, return the transcript
     ('' when nothing was captured). Raises RuntimeError if the audio stack or the server is missing."""
     return transcribe_bytes(record(config, silence_sec), stt_port(config))
 

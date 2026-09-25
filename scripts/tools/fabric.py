@@ -1,30 +1,51 @@
-"""Bob tool: fabric_run — runs a fabric pattern on text input."""
+"""Bob tool: fabric_run, runs a fabric pattern on text input.
+
+The binary is the repo-staged one (bin/fabric, bin/fabric.exe on Windows) when present, else `fabric`
+on PATH; the resolved absolute path is what runs. A pattern is a bare name, so a value shaped like a
+flag or a path is refused before it reaches the command line. Every call names Bob's LiteLLM vendor and
+model explicitly (the ones `bob fabric-setup` configures), so a user's own DEFAULT_VENDOR in fabric's .env
+never reroutes the agent's calls."""
+import re
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
-_fabric_available: bool = False
+for _d in (str(Path(__file__).parent.parent), str(Path(__file__).parent)):
+    if _d not in sys.path:
+        sys.path.insert(0, _d)
+
+import osenv  # noqa: E402
+from build import _FABRIC_MODEL, _FABRIC_VENDOR  # noqa: E402
+
+_fabric_bin: str = ""
+_PATTERN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+
+
+def resolve_fabric() -> str:
+    """Absolute path of the fabric binary to run: repo bin/ first, then PATH. Empty if neither."""
+    staged = osenv.bin_exe("fabric")
+    if staged.exists():
+        return str(staged)
+    return shutil.which("fabric") or ""
 
 
 def configure(config: dict) -> None:
-    global _fabric_available
-    _fabric_available = bool(shutil.which("fabric"))
-    if not _fabric_available:
-        # Also check bin/ in the repo
-        from pathlib import Path
-        repo_bin = Path(__file__).parent.parent.parent / "bin" / "fabric.exe"
-        _fabric_available = repo_bin.exists()
+    global _fabric_bin
+    _fabric_bin = resolve_fabric()
 
 
 def _fabric_run(pattern: str, input: str) -> str:
-    if not _fabric_available:
+    if not _fabric_bin:
         return (
-            "fabric not found on PATH.\n"
+            "fabric not found (repo bin/ or PATH).\n"
             "Run: bob fabric-setup   (installs and configures fabric)"
         )
+    if not isinstance(pattern, str) or not _PATTERN_RE.match(pattern) or ".." in pattern:
+        return f"fabric_run: invalid pattern name {pattern!r} (letters, digits, '_', '-', '.' only)"
     try:
         r = subprocess.run(
-            ["fabric", "--pattern", pattern],
+            [_fabric_bin, "--pattern", pattern, "--vendor", _FABRIC_VENDOR, "--model", _FABRIC_MODEL],
             input=input,
             capture_output=True,
             text=True,
@@ -44,7 +65,7 @@ def _fabric_run(pattern: str, input: str) -> str:
 
 
 def test() -> str:
-    if not _fabric_available:
+    if not _fabric_bin:
         return "fabric not available — skipping test"
     # Use a simple built-in pattern that always works
     result = _fabric_run("summarize", "The quick brown fox jumps over the lazy dog.")

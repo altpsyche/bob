@@ -1,12 +1,17 @@
-"""Speech-to-text server wrapping faster-whisper (Whisper on CTranslate2).
+"""Speech-to-text server wrapping faster-whisper (Whisper on CTranslate2), Bob's only STT engine.
 
-Drop-in replacement for the whisper.cpp `whisper-server`: exposes the SAME HTTP contract
-(`POST /inference`, multipart `file`, returns `{"text": ...}`) on `sttPort`, so bob_voice's
-transcribe client, the /voice loop, and the stack lifecycle need no change to talk to it.
-The CT2 model is loaded ONCE at startup (warm), with built-in Silero VAD for endpointing.
+Two endpoints on `sttPort`, same model:
+  POST /inference                 multipart `file` -> {"text": ...}; the contract bob_voice's transcribe
+                                  client and the /voice loop use.
+  POST /v1/audio/transcriptions   the OpenAI-compatible form (multipart `file`, `model` accepted and
+                                  ignored, optional `language` / `prompt` / `temperature` /
+                                  `response_format` json|text|verbose_json), for Open WebUI and n8n.
+The CT2 model loads on the first request (or at startup with STT_PRELOAD) with built-in Silero VAD for
+endpointing; a GPU whose CUDA runtime does not load falls back to CPU int8.
 
 Config (set via env vars by scripts/tools/stack.py):
   STT_PORT         — port to listen on (default: sttPort from config/defaults.json)
+  STT_HOST         — interface to bind (default 127.0.0.1; stack passes the voiceBindHost config key)
   STT_MODEL        — model size/name for auto-download (default "small")
   STT_MODEL_DIR    — local CT2 model directory; used verbatim when it exists (offline / pinned)
   STT_COMPUTE_TYPE — "auto" (float16 on GPU, int8 on CPU), or a CT2 compute type
@@ -24,10 +29,13 @@ import time
 from pathlib import Path
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.responses import PlainTextResponse
 
+import osenv
 from bob_core import _port   # the STT port default lives in config/defaults.json
 
 STT_PORT = int(os.environ.get("STT_PORT") or _port({}, "sttPort"))
+STT_HOST = os.environ.get("STT_HOST") or "127.0.0.1"
 STT_MODEL = os.environ.get("STT_MODEL", "small")
 STT_MODEL_DIR = os.environ.get("STT_MODEL_DIR", "")
 STT_COMPUTE_TYPE = os.environ.get("STT_COMPUTE_TYPE", "auto")
@@ -62,7 +70,7 @@ def _preload_cuda_libs() -> None:
     nvidia = Path(purelib) / "nvidia"
     if not nvidia.is_dir():
         return
-    win = os.name == "nt"
+    win = osenv.os_name() == "windows"
     for sub in ("cublas", "cudnn"):
         libdir = nvidia / sub / ("bin" if win else "lib")
         if not libdir.is_dir():
@@ -164,16 +172,13 @@ def health():
     return {"status": "ok", "model": _model_ref or "(unloaded)"}
 
 
-@app.post("/inference")
-async def inference(file: UploadFile = File(...),
-                    temperature: str = Form("0.0"),
-                    response_format: str = Form("json")):
-    """whisper.cpp-compatible endpoint: accept a WAV upload, return {"text": transcript}."""
-    model = _ensure_model()
-    data = await file.read()
+def _transcribe_upload(data: bytes, temperature: str = "0.0", language: str = None, prompt: str = None,
+                       suffix: str = ".wav"):
+    """(text, segments, info) for one uploaded audio file; the shared core of both endpoints."""
     if not data:
-        return {"text": ""}
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        return "", [], None
+    model = _ensure_model()
+    with tempfile.NamedTemporaryFile(suffix=suffix or ".wav", delete=False) as f:
         f.write(data)
         tmp = f.name
     try:
@@ -181,13 +186,45 @@ async def inference(file: UploadFile = File(...),
             temp = float(temperature)
         except (TypeError, ValueError):
             temp = 0.0
-        segments, _info = model.transcribe(tmp, temperature=temp, vad_filter=True)
-        text = "".join(seg.text for seg in segments).strip()
-        return {"text": text}
+        segments, info = model.transcribe(tmp, temperature=temp, vad_filter=True,
+                                          language=language or None, initial_prompt=prompt or None)
+        segs = list(segments)
+        return "".join(seg.text for seg in segs).strip(), segs, info
     except Exception as e:   # never leak a stack trace to the HTTP client; the loop wraps 5xx
         raise HTTPException(500, f"transcription failed: {e}")
     finally:
         Path(tmp).unlink(missing_ok=True)
+
+
+@app.post("/inference")
+async def inference(file: UploadFile = File(...),
+                    temperature: str = Form("0.0"),
+                    response_format: str = Form("json")):
+    """Accept a WAV upload, return {"text": transcript}."""
+    text, _segs, _info = _transcribe_upload(await file.read(), temperature)
+    return {"text": text}
+
+
+@app.post("/v1/audio/transcriptions")
+async def openai_transcriptions(file: UploadFile = File(...),
+                                model: str = Form("whisper-1"),
+                                language: str = Form(None),
+                                prompt: str = Form(None),
+                                temperature: str = Form("0.0"),
+                                response_format: str = Form("json")):
+    """OpenAI-compatible transcription. `model` is accepted for client compatibility and ignored: the server
+    always uses its configured faster-whisper model."""
+    suffix = Path(file.filename or "").suffix or ".wav"
+    text, segs, info = _transcribe_upload(await file.read(), temperature, language, prompt, suffix)
+    if response_format == "text":
+        return PlainTextResponse(text)
+    if response_format == "verbose_json":
+        return {"task": "transcribe", "text": text,
+                "language": getattr(info, "language", None) or language,
+                "duration": getattr(info, "duration", None),
+                "segments": [{"id": i, "start": s.start, "end": s.end, "text": s.text}
+                             for i, s in enumerate(segs)]}
+    return {"text": text}
 
 
 if __name__ == "__main__":
@@ -196,4 +233,4 @@ if __name__ == "__main__":
         _load_model()   # warm before the port opens, so a port probe == ready
     if STT_IDLE_SECONDS > 0:
         threading.Thread(target=_idle_reaper, daemon=True).start()
-    uvicorn.run(app, host="127.0.0.1", port=STT_PORT)
+    uvicorn.run(app, host=STT_HOST, port=STT_PORT)

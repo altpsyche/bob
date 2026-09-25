@@ -33,20 +33,36 @@ from bob_tracing import Tracer, make_tracer   # import-light span seam (stdlib-o
 _NOOP_TRACER = Tracer(enabled=False)
 
 
-def _estimate_tokens(text: str) -> int:
-    """Rough token estimate (~4 chars/token for English + JSON). No tokenizer dependency —
-    good enough for budgeting message history and tool results."""
-    if not text:
-        return 0
-    return (len(text) + 3) // 4
+# The one token estimator lives in bob_core; the loop keeps its historical name for it.
+from bob_core import est_tokens as _estimate_tokens, tokens_to_chars  # noqa: E402
+
+# Flat token cost of one image content block. An image's prompt cost depends on its pixels (the vision
+# encoder's patch count), not on the length of its base64 text, so it is charged at a fixed estimate
+# sized for bob_vision.resize_image's 1024px output.
+_IMAGE_BLOCK_TOKENS = 1024
+
+
+def _content_tokens(content) -> int:
+    """Estimated tokens of a message's content: a string by length; an OpenAI content-block list by its
+    text parts plus _IMAGE_BLOCK_TOKENS per image block."""
+    if isinstance(content, str):
+        return _estimate_tokens(content)
+    if isinstance(content, list):
+        total = 0
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "image_url":
+                total += _IMAGE_BLOCK_TOKENS
+            elif isinstance(block, dict) and isinstance(block.get("text"), str):
+                total += _estimate_tokens(block["text"])
+            else:
+                total += _estimate_tokens(json.dumps(block))
+        return total
+    return _estimate_tokens(json.dumps(content)) if content else 0
 
 
 def _message_tokens(m: dict) -> int:
     """Estimated token cost of a single chat message, including tool-call payloads."""
-    content = m.get("content") or ""
-    if not isinstance(content, str):
-        content = json.dumps(content)
-    total = _estimate_tokens(content) + 4  # per-message role/format overhead
+    total = _content_tokens(m.get("content") or "") + 4  # per-message role/format overhead
     for tc in (m.get("tool_calls") or []):
         total += _estimate_tokens(json.dumps(tc))
     return total
@@ -83,7 +99,7 @@ def _clamp_message(m: dict, budget: int) -> dict:
     room = budget - overhead
     if room <= 0:
         return m
-    chars = room * 4
+    chars = tokens_to_chars(room)
     if len(content) <= chars:
         return m
     head = chars // 2
@@ -307,6 +323,35 @@ def _final_answer(text, hermes: bool):
     return _strip_tool_calls(text) if (hermes and text) else text
 
 
+def _visible_text(content: str, hermes: bool) -> str:
+    """The answer text of a reply cut off mid-output: paired tool-call markup removed and, in hermes
+    mode, everything from an unclosed <tool_call> onward dropped (that call was never finished)."""
+    if not content:
+        return ""
+    if not hermes:
+        return content.strip()
+    text = _strip_tool_calls(content)
+    cut = text.find(_TOOL_OPEN)
+    return (text[:cut] if cut != -1 else text).strip()
+
+
+# Context window assumed for a model whose window the registry can't tell us (a cloud peer with no
+# contextWindow, an unreadable registry), when agent.maxContextTokens is auto.
+_FALLBACK_WINDOW = 8192
+
+
+def _context_budget(config: dict, role: str, explicit, output_tokens: int, tools_tokens: int) -> tuple:
+    """(total, output, send) token budgets for one request on `role`. `total` is the model's per-request
+    window (bob_core.role_window) when agent.maxContextTokens is 0/'auto', else min(explicit, window).
+    `output` is the generation asked for (max_tokens), clamped to half the window. `send` is what the
+    history may use: total minus the output reservation and the request-borne tool schemas."""
+    from bob_core import cap_output, request_window
+
+    total = request_window(config, role, explicit) or _FALLBACK_WINDOW
+    output = cap_output(output_tokens, total)
+    return total, output, max(0, total - tools_tokens - output)
+
+
 def _compact_schema(fn: dict) -> dict:
     """Strip verbose descriptions from a function schema, keeping the callable contract
     (name, param names, types/enums, required). Used when the tool count is high so the
@@ -355,16 +400,77 @@ def _openai_tools_payload(tool_schemas: list, compact_after: int = 12):
     return tool_schemas
 
 
+# A small window (the cpu profile's 4096 tokens, a 4096-token vision model) cannot hold a large tool set,
+# a reply and some history at once. The reply the fit keeps room for, at least, before tools are dropped:
+_MIN_OUTPUT_TOKENS = 256
+# compact_after value that compacts every schema, whatever the tool count.
+_ALWAYS_COMPACT = -1
+# Tools a fitted run keeps however small the window: reading and editing files, the shell, memory, the
+# web and the TODO list. Everything else is dropped first, largest schema first.
+_CORE_TOOL_PREFIXES = ("file_", "shell_", "memory_", "web_", "todo_")
+
+
+def _tool_name(schema: dict) -> str:
+    return (schema.get("function") or {}).get("name", "")
+
+
+def _tail_reserve(window: int) -> int:
+    """History room a request keeps beyond its system head: the floor _tail_budget never goes below."""
+    return min(_MIN_TAIL_TOKENS, max(1, window // 4))
+
+
+def _schema_head_tokens(system_prompt: str, tool_schemas: list, *, hermes: bool, compact_after: int,
+                        constrained: bool) -> tuple:
+    """(system-message tokens, request-borne schema tokens) for a tool set: hermes mode bakes the schemas
+    into the system message; OpenAI mode, and a grammar-constrained hermes call, send them as `tools=`."""
+    base = system_prompt
+    if hermes and tool_schemas:
+        base += _hermes_tool_system_addendum(tool_schemas, compact_after)
+    payload = None
+    if tool_schemas and (not hermes or constrained):
+        payload = _openai_tools_payload(tool_schemas, compact_after)
+    return _message_tokens({"role": "system", "content": base}), _tools_payload_tokens(payload)
+
+
+def _fit_tools_to_window(system_prompt: str, tool_schemas: list, *, window: int, output: int, hermes: bool,
+                         compact_after: int, constrained: bool, reserve: int = 0) -> tuple:
+    """Fit the fixed head (system prompt + tool schemas) so a reply of min(output, _MIN_OUTPUT_TOKENS), the
+    minimal history and `reserve` more tokens (a pending image turn) still fit `window`: first compact every
+    schema, then drop non-core tools (_CORE_TOOL_PREFIXES are kept), largest schema first. Returns
+    (tool_schemas, compact_after, dropped names); unchanged when the head already fits."""
+    reply = min(max(1, int(output)), _MIN_OUTPUT_TOKENS)
+
+    def fits(schemas, ca):
+        sys_t, req_t = _schema_head_tokens(system_prompt, schemas, hermes=hermes, compact_after=ca,
+                                           constrained=constrained)
+        return sys_t + req_t + reply + _tail_reserve(window) + reserve <= window
+
+    if not tool_schemas or fits(tool_schemas, compact_after):
+        return tool_schemas, compact_after, []
+    compact_after = _ALWAYS_COMPACT
+    schemas = list(tool_schemas)
+    droppable = sorted((s for s in schemas if not _tool_name(s).startswith(_CORE_TOOL_PREFIXES)),
+                       key=lambda s: len(json.dumps(s)), reverse=True)
+    dropped = []
+    for victim in droppable:
+        if fits(schemas, compact_after):
+            break
+        schemas.remove(victim)
+        dropped.append(_tool_name(victim))
+    return schemas, compact_after, dropped
+
+
 class RunContext:
     """Run-scoped services carried into dispatch_call and reachable by a tool via
     tool_registry.get_run_context(): the cancel token, the resolved config, the tool registry, the
     run id, and the approval callback. Lets a tool (a future sub-agent tool) reach these without any
     change to its fn(**args) signature."""
     __slots__ = ("cancel", "config", "registry", "run_id", "approve", "owner", "agent_depth", "scope",
-                 "policy", "todos", "tracer", "trace_span")
+                 "policy", "todos", "tracer", "trace_span", "allowed_roles", "session_id", "unattended_allow")
 
     def __init__(self, cancel, config, registry, run_id, approve, owner="local", agent_depth=0,
-                 scope=None, policy=None, todos=None, tracer=None, trace_span=None):
+                 scope=None, policy=None, todos=None, tracer=None, trace_span=None, allowed_roles=None,
+                 session_id=None, unattended_allow=None):
         self.cancel = cancel
         self.config = config
         self.registry = registry
@@ -387,6 +493,15 @@ class RunContext:
         # Project scope (git-root/cwd key) for this run; None = global. Threaded from the
         # shell/CLI; the memory tools read it via get_run_context() to scope project-type facts.
         self.scope = scope
+        # Model roles this run's caller may use (the agent API token's `role:<name>` scopes); None means
+        # unrestricted. spawn_agent enforces it so a sub-run can't reach a role the caller couldn't.
+        self.allowed_roles = set(allowed_roles) if allowed_roles else None
+        # The persisted session (shell / agent API) this run belongs to, stamped on transcript rows so
+        # `bob memory forget --session` reaches them. None for a stateless run.
+        self.session_id = session_id
+        # A surface with no operator (MCP): the tool names agent.mcpAllowTools lets run there. None for an
+        # attended run. dispatch_with_approval refuses gated tools not in it; spawn_agent hands it to the sub-run.
+        self.unattended_allow = frozenset(unattended_allow) if unattended_allow is not None else None
 
 
 def _call_id(tc, step: int, idx: int) -> str:
@@ -396,65 +511,13 @@ def _call_id(tc, step: int, idx: int) -> str:
     return getattr(tc, "id", None) or f"{step}.{idx}"
 
 
-def _approval_required(tool_name: str, agency: str, registry) -> bool:
-    """Approval trigger (mechanism, not the config policy): approve when the whole run is in confirm mode,
-    or when the tool self-declares it always needs approval (e.g. shell_run's REQUIRES_APPROVAL)."""
-    return agency == "confirm" or tool_name in getattr(registry, "approval_required_tools", set())
-
-
-def _render_preview(registry, name: str, args: str):
-    """A human-readable preview of a call from the tool's PREVIEW renderer (e.g. file_edit's diff), or
-    None. Fail-safe: any error (no renderer, bad JSON, renderer raises) yields None so approvals never
-    break on a preview bug."""
-    render = getattr(registry, "previews", {}).get(name)
-    if render is None:
-        return None
-    try:
-        return render(json.loads(args) if args else {})
-    except Exception:
-        return None
-
-
-def _fire_pre_hooks(registry, name, args, context, log, rid):
-    """Run PreToolUse hooks. Each may return {'decision': 'deny'|'ask', 'updatedInput': dict}. Hooks may
-    only TIGHTEN (force deny/ask) -- an 'allow' never loosens the approval floor. Returns
-    (decision_override, new_args): decision_override in {None,'deny','ask'}; new_args is the (possibly
-    rewritten) argument JSON string. A hook that raises is caught + logged (a bad hook can't strand a run)."""
-    hooks = getattr(registry, "hooks", {}).get("PreToolUse", [])
-    decision, cur_args = None, args
-    for hook in hooks:
-        try:
-            out = hook(name, cur_args, context)
-        except Exception as e:
-            log.warning(f"[{rid}] PreToolUse hook error (ignored): {e}")
-            continue
-        if not out:
-            continue
-        d = out.get("decision")
-        if d == "deny":
-            decision = "deny"                         # strongest tightening wins; stop
-            break
-        if d == "ask" and decision != "deny":
-            decision = "ask"
-        if out.get("updatedInput") is not None:
-            try:
-                cur_args = json.dumps(out["updatedInput"])
-            except (TypeError, ValueError):
-                log.warning(f"[{rid}] PreToolUse updatedInput not serializable (ignored)")
-    return decision, cur_args
-
-
-def _fire_post_hooks(registry, name, args, result, context, log, rid):
-    """Run PostToolUse hooks; each may return {'result': str} to rewrite the tool result. Fail-safe."""
-    for hook in getattr(registry, "hooks", {}).get("PostToolUse", []):
-        try:
-            out = hook(name, args, result, context)
-        except Exception as e:
-            log.warning(f"[{rid}] PostToolUse hook error (ignored): {e}")
-            continue
-        if out and isinstance(out.get("result"), str):
-            result = out["result"]
-    return result
+# The approval gate is shared by every front door (loop, MCP, `bob --run`, skill steps) and lives in
+# bob_permissions; these names are the loop's handles on it.
+from bob_permissions import (approval_required as _approval_required, audit as _audit,  # noqa: E402
+                             dispatch_with_approval as _dispatch_with_approval,
+                             fire_post_hooks as _fire_post_hooks, fire_pre_hooks as _fire_pre_hooks,
+                             render_preview as _render_preview, resolve_approval as _resolve_approval,
+                             unattended_refusal as _unattended_refusal)
 
 
 def _fire_stop_hooks(registry, final, context, log, rid):
@@ -469,113 +532,6 @@ def _fire_stop_hooks(registry, final, context, log, rid):
         if out and isinstance(out.get("inject"), str) and out["inject"].strip():
             return out["inject"]
     return None
-
-
-def _resolve_approval(approve, action: dict) -> bool:
-    """Ask the injected approve callback for a decision. Fail-closed: no approver wired (server,
-    scheduler, tests, non-TTY) → deny, so a dangerous tool never runs unattended by default."""
-    if approve is None:
-        return False
-    try:
-        return bool(approve(action))
-    except (EOFError, KeyboardInterrupt):
-        return False
-
-
-def _audit(log, rid, name, args, decision, owner):
-    """One append-only audit line per tool call: tool, an args DIGEST (never the raw args, so
-    secrets in arguments aren't logged), the decision, the owner, and the run id. Every mutation is
-    attributable via a single `grep <rid>`."""
-    digest = hashlib.sha1((args or "").encode("utf-8", "replace")).hexdigest()[:12]
-    log.info(f"[{rid}] AUDIT tool={name} decision={decision} owner={owner} args_sha1={digest}")
-
-
-def _dispatch_with_approval(tc, call_id, *, registry, context, agency, approve, log, rid):
-    """Generator: resolve the permission policy, request approval if required, then dispatch one
-    tool call. Yields protocol events (approval_required, tool_result) and RETURNS the result string
-    that goes into the transcript. A denied call does not run and returns a denial message the model
-    can react to.
-
-    The decision = the config PermissionPolicy (allow|ask|deny per tool/owner/depth) combined with the
-    approval floor: 'deny' short-circuits; 'ask' — OR the approval floor (agency='confirm' / REQUIRES_APPROVAL) —
-    prompts the approve callback; else the call runs. An empty policy resolves to 'allow', so behavior
-    is identical to running with no policy configured."""
-    name = tc.function.name
-    args = tc.function.arguments
-    owner = getattr(context, "owner", "local")
-    policy = getattr(context, "policy", None)
-    mutating = name in getattr(registry, "mutating_tools", set())
-    # A remote MCP tool (mcp:<server>:<tool>) defaults to 'ask': reaching an external server is a
-    # side effect worth a prompt. A local tool keeps the 'allow' default. Either way an explicit
-    # policy rule (per tool/owner/depth) wins over this default.
-    remote = name in getattr(registry, "remote_tools", set())
-    tool_default = "ask" if remote else "allow"
-    decision = (policy.resolve(name, owner=owner, agent_depth=getattr(context, "agent_depth", 0),
-                               mutating=mutating, default=tool_default)
-                if policy is not None else tool_default)
-
-    # PreToolUse hooks may TIGHTEN the decision (force deny/ask) and rewrite the arguments; they never
-    # loosen below the policy/approval floor. A hook-forced deny short-circuits like a policy deny.
-    pre_decision, args = _fire_pre_hooks(registry, name, args, context, log, rid)
-    if pre_decision == "deny":
-        _audit(log, rid, name, args, "deny(hook)", owner)
-        denied = f"Tool call to '{name}' was blocked by a PreToolUse hook; it did not run."
-        yield {"type": "tool_result", "call_id": call_id, "name": name, "result": denied}
-        return denied
-    if pre_decision == "ask" and decision != "deny":
-        decision = "ask"
-
-    # deny — never dispatches; the model gets a clean refusal it can read and react to.
-    if decision == "deny":
-        _audit(log, rid, name, args, "deny", owner)
-        denied = f"Tool call to '{name}' was denied by policy; it did not run."
-        yield {"type": "tool_result", "call_id": call_id, "name": name, "result": denied}
-        return denied
-
-    # ask — policy 'ask' OR the approval floor (whole run in confirm mode, or the tool self-declares
-    # REQUIRES_APPROVAL). The floor is a lower bound the config can tighten but never loosen.
-    if decision == "ask" or _approval_required(name, agency, registry):
-        risk = "high" if name in getattr(registry, "approval_required_tools", set()) else "confirm"
-        # If the tool supplies a preview renderer (e.g. file_edit renders the diff), surface it so the
-        # operator approves the actual change, not raw args. Fail-safe: a preview that raises falls back
-        # to no preview -- a rendering bug must never break approvals. Raw args are always kept.
-        preview = _render_preview(registry, name, args)
-        action = {"call_id": call_id, "tool": name, "arguments": args, "risk": risk}
-        if preview is not None:
-            action["preview"] = preview
-        yield {"type": "approval_required", **action}
-        if not _resolve_approval(approve, action):
-            _audit(log, rid, name, args, "deny(unapproved)", owner)
-            log.info(f"[{rid}] tool {name} denied (call_id={call_id})")
-            denied = f"Tool call to '{name}' was denied by the user; it did not run."
-            yield {"type": "tool_result", "call_id": call_id, "name": name, "result": denied}
-            return denied
-
-    _audit(log, rid, name, args, decision if policy is not None else "allow", owner)
-    # One tool span per dispatch (child of the run span). No yield inside the block, so the span's
-    # timing is just the dispatch. Disabled tracer => shared no-op (behaviorally inert).
-    tracer = getattr(context, "tracer", None) or _NOOP_TRACER
-    with tracer.span("agent.tool", {"tool": name, "owner": owner, "decision": decision},
-                     parent=getattr(context, "trace_span", None)) as _sp:
-        result = registry.dispatch_call(name, args, context=context)
-        is_err = result.startswith(("Tool error", "Unknown tool", "Bad arguments"))
-        # Self-repair: retry a failed tool call ONCE, catching a flaky/transient tool failure. A
-        # deterministic error just fails again and is returned as today. Default off (agent.selfRepair).
-        if is_err and _self_repair_on(context):
-            retried = registry.dispatch_call(name, args, context=context)
-            if not retried.startswith(("Tool error", "Unknown tool", "Bad arguments")):
-                log.info(f"[{rid}] self-repair: {name} succeeded on retry (call_id={call_id})")
-                result, is_err = retried, False
-        _sp.set("result_chars", len(result)).set_status("error" if is_err else "ok")
-    # PostToolUse hooks may rewrite/redact the result before it enters the transcript.
-    result = _fire_post_hooks(registry, name, args, result, context, log, rid)
-    log.log(
-        logging.WARNING if is_err else logging.INFO,
-        f"[{rid}] tool {name} -> {len(result)}c (call_id={call_id})"
-        + (f" ERROR: {result[:200]}" if is_err else ""),
-    )
-    yield {"type": "tool_result", "call_id": call_id, "name": name, "result": result}
-    return result
 
 
 def _parallel_cap(max_parallel) -> int:
@@ -599,6 +555,9 @@ def _parallel_eligible(name: str, registry, ctx, agency: str) -> bool:
     if name in getattr(registry, "mutating_tools", set()):
         return False
     if _approval_required(name, agency, registry):
+        return False
+    unattended = getattr(ctx, "unattended_allow", None)
+    if unattended is not None and _unattended_refusal(registry, name, unattended):
         return False
     policy = getattr(ctx, "policy", None)
     if policy is not None and policy.resolve(
@@ -766,18 +725,16 @@ def _is_local_model(model: str, config: dict) -> bool:
     reasoning chat-template kwarg to local models: llama-server consumes `enable_thinking`, cloud peers
     (DeepSeek/GLM) have their own reasoning behavior and don't take it. Best-effort: on any lookup
     failure treat it as local, so local reasoning suppression (the common path) still applies."""
-    try:
-        import bob_models
-        return model in bob_models.profile_roles()
-    except Exception:
-        return True
+    from bob_core import is_local_role
+    return is_local_role(model, config)
 
 
-def _single_turn(client, role, messages, cancel, timeout, hermes, extra_body=None) -> str:
+def _single_turn(client, role, messages, cancel, timeout, hermes, extra_body=None) -> tuple:
     """One internal, non-emitting LLM turn (plan or verify). Consumed as a stream so `cancel` is
-    honored, but yields no 'token' events; returns the assistant content ('' on empty / cancel / error
-    so a plan/verify hiccup degrades to today's behavior rather than failing the run). `extra_body`
-    carries the same reasoning-mode kwarg as the main loop so internal turns reason consistently."""
+    honored, but yields no 'token' events. Returns (content, error): content is '' on empty / cancel,
+    and `error` is the failure text when the call raised (None otherwise), so the caller can say so
+    instead of mistaking a failed verify for an accepted answer. `extra_body` carries the same
+    reasoning-mode kwarg as the main loop so internal turns reason consistently."""
     try:
         kwargs = dict(model=role, messages=messages, tools=None, stream=True, timeout=timeout)
         if extra_body is not None:
@@ -792,10 +749,10 @@ def _single_turn(client, role, messages, cancel, timeout, hermes, extra_body=Non
                 msg = stop.value
                 break
         if msg is None or getattr(msg, "cancelled", False):
-            return ""
-        return getattr(msg, "content", None) or ""
-    except Exception:
-        return ""
+            return "", None
+        return getattr(msg, "content", None) or "", None
+    except Exception as e:  # noqa: BLE001 (reported to the caller, which decides how to degrade)
+        return "", str(e) or type(e).__name__
 
 
 def _recitation_block(goal: str, todos, max_items: int = 10, max_task_chars: int = 200) -> str:
@@ -812,27 +769,59 @@ def _recitation_block(goal: str, todos, max_items: int = 10, max_task_chars: int
     return "\n".join(lines)
 
 
-def _self_repair_on(context) -> bool:
-    """Whether a failed tool call should be retried once (agent.selfRepair). Read off the run's
-    config via the RunContext so no tool/dispatch signature changes. Default False == disabled."""
-    cfg = getattr(context, "config", None) or {}
-    return bool(cfg.get("agent", {}).get("selfRepair", False))
 
+def _compact_span(dropped: list, model: str, max_tokens: int, config: dict = None) -> str:
+    """Summarize the dropped span into a structured compaction note through bob_core.complete (input
+    fitted to the model's window, thinking off). A failure is logged and returns "", so the caller falls
+    back to plain truncation instead of failing the run."""
+    from bob_core import complete, load_config
 
-def _compact_span(dropped: list, model: str, max_tokens: int) -> str:
-    """Summarize the dropped span into a structured compaction note. Best-effort: returns "" on
-    any failure (no reachable LLM in tests, etc.), so the caller falls back to plain truncation."""
-    try:
-        from bob_memory import summarize_turns
-        return summarize_turns(dropped, model=model, system_prompt=_COMPACT_SYSTEM,
-                               max_tokens=max_tokens)
-    except Exception:
+    convo = []
+    for m in dropped:
+        content = m.get("content")
+        if content is None or m.get("role") == "system":
+            continue
+        text = content if isinstance(content, str) else json.dumps(content)
+        convo.append({"role": m.get("role"), "content": text})
+    if not convo:
         return ""
+    try:
+        cfg = config if config is not None else load_config()
+        text, _finish = complete(cfg, model, [{"role": "system", "content": _COMPACT_SYSTEM},
+                                              {"role": "user", "content": json.dumps(convo)}],
+                                 max_tokens, timeout=int(cfg.get("agent", {}).get("requestTimeout", 600)))
+    except Exception as e:  # noqa: BLE001 (compaction is best-effort by design)
+        logging.getLogger("bob.agent").warning("compaction summary failed (model=%s): %s", model, e)
+        return ""
+    return (text or "").strip()
+
+
+def _suffix_that_fits(msgs: list, budget, limit: int) -> int:
+    """The largest n <= `limit` such that the newest n of `msgs` fit `budget` tokens (budget None or 0
+    means unbounded)."""
+    n, used = 0, 0
+    for m in reversed(msgs[len(msgs) - min(limit, len(msgs)):] if limit else []):
+        t = _message_tokens(m)
+        if budget and used + t > budget:
+            break
+        used += t
+        n += 1
+    return n
+
+
+def _summarize_keep(original: list, tail: list, keep_last: int, budget) -> list:
+    """The verbatim tail kept by summarize compaction: the budget window's `tail`, grown back towards the
+    last `keep_last` messages only as far as they still fit `budget`, so the kept turns plus the summary
+    never exceed the budget the window was computed for."""
+    grow = _suffix_that_fits(original, budget, max(keep_last, len(tail)))
+    if grow > len(tail):
+        return original[-grow:]
+    return tail
 
 
 def _truncate_stable_prefix(messages: list, max_msgs: int, max_tokens: int, *,
                             keep_last: int, summary_max_tokens: int, summary_model: str,
-                            pin_goal: dict, summarize: bool) -> list:
+                            pin_goal: dict, summarize: bool, config: dict = None) -> list:
     """Prefix-cache-aware variant of truncate_history (stablePrefix=on).
 
     Keeps a FROZEN head — base system message(s) + the single compaction summary block + the pinned
@@ -869,6 +858,7 @@ def _truncate_stable_prefix(messages: list, max_msgs: int, max_tokens: int, *,
         tail = tail[-max(0, max_msgs - len(head)):]
 
     # 2. Token-budget window on the tail; reserve room for a (possibly new) summary block.
+    budget = None
     if max_tokens:
         budget = _tail_budget(max_tokens, sum(_message_tokens(m) for m in head),
                               summary_max_tokens if (summarize and prior_summary is None) else 0)
@@ -885,13 +875,13 @@ def _truncate_stable_prefix(messages: list, max_msgs: int, max_tokens: int, *,
         tail = list(reversed(kept))
 
     if summarize:
-        n_keep = min(len(original_tail), max(len(tail), keep_last))
-        tail = original_tail[-n_keep:] if n_keep else []
+        tail = _summarize_keep(original_tail, tail, keep_last, budget)
         dropped = original_tail[: len(original_tail) - len(tail)]
         while tail and tail[0].get("role") == "tool":
             dropped.append(tail.pop(0))
         if dropped:
-            note = _compact_span(dropped, summary_model, summary_max_tokens)
+            note = (_compact_span(dropped, summary_model, summary_max_tokens) if config is None
+                    else _compact_span(dropped, summary_model, summary_max_tokens, config=config))
             if note:
                 # APPEND to the frozen block (prior bytes unchanged) — or create it after base system.
                 content = (prior_summary["content"] + "\n" + note if prior_summary is not None
@@ -965,46 +955,62 @@ def _clear_old_tool_results(messages: list, registry, keep_last: int, hermes: bo
 def truncate_history(messages: list, max_msgs: int, max_tokens: int = 0, *,
                      compaction: str = "truncate", keep_last: int = 6,
                      summary_max_tokens: int = 512, summary_model: str = "chat",
-                     stable_prefix: bool = False, pin_goal: dict = None) -> list:
-    """Sliding window that keeps the system message(s) + most recent turns.
+                     stable_prefix: bool = False, pin_goal: dict = None, config: dict = None) -> list:
+    """Sliding window that keeps the system message(s), the pinned goal, and the most recent turns.
 
-    Trims by message count first (max_msgs), then by an optional token budget
-    (max_tokens): drop oldest non-system messages until the estimated total fits. The system
-    message is always kept. An orphaned leading tool-response (whose assistant call got
-    trimmed) is dropped so the remaining sequence stays valid for the OpenAI tool format.
+    Trims by message count first (max_msgs), then by an optional token budget (max_tokens): drop oldest
+    non-system messages until the estimated total fits. The system message is always kept, and so is
+    `pin_goal` (matched by identity): the turn's goal never falls out of the window, whatever the tool
+    turns after it cost, so the model always knows what it was asked. An orphaned leading tool-response
+    (whose assistant call got trimmed) is dropped so the remaining sequence stays valid for the OpenAI
+    tool format.
 
     `compaction='summarize'` (opt-in) replaces the dropped oldest span with ONE compact
-    "conversation so far" system note (via bob_memory.summarize_turns, the consolidation core) instead of
-    discarding it, keeps the last `keep_last` turns verbatim, and reserves `summary_max_tokens` from
-    the budget so the note itself can't re-overflow. `compaction='truncate'` (**default**) is the
-    lossy drop-oldest window, identical to the behavior when summarize compaction is off. This owns the
-    rolling TRANSCRIPT; the budget_injection helper bounds SAVED-memory injection — kept distinct, no
-    double-summarizing.
+    "conversation so far" system note (via _compact_span) instead of discarding it, keeps up to the last
+    `keep_last` turns verbatim as far as they fit the budget, and reserves `summary_max_tokens` from the
+    budget so the note itself can't re-overflow. `compaction='truncate'` (**default**) is the lossy
+    drop-oldest window. This owns the rolling TRANSCRIPT; the budget_injection helper bounds SAVED-memory
+    injection, kept distinct, no double-summarizing. `config` is handed to the summarizer (loaded when
+    omitted).
 
     `stable_prefix=True` (opt-in, default off) routes to the prefix-cache-aware layout: a frozen
     head (system + append-only summary block + `pin_goal`) so llama.cpp reuses the KV prefix across
-    turns. Default `stable_prefix=False` keeps the exact behavior below (byte-identical to the
-    non-stable-prefix path)."""
+    turns."""
     if stable_prefix:
         return _truncate_stable_prefix(
             messages, max_msgs, max_tokens, keep_last=keep_last,
             summary_max_tokens=summary_max_tokens, summary_model=summary_model,
-            pin_goal=pin_goal, summarize=(compaction == "summarize"))
+            pin_goal=pin_goal, summarize=(compaction == "summarize"), config=config)
     system = [m for m in messages if m.get("role") == "system"]
     rest = [m for m in messages if m.get("role") != "system"]
+    goal, n_after = None, 0
+    if pin_goal is not None:
+        for i, m in enumerate(rest):
+            if m is pin_goal:
+                goal = rest.pop(i)
+                n_after = len(rest) - i          # messages that came after the goal
+                break
     original_rest = list(rest)
     summarize = compaction == "summarize"
+    pinned = [goal] if goal is not None else []
 
     # 1. Message-count window.
-    if len(system) + len(rest) > max_msgs:
-        keep = max(0, max_msgs - len(system))
-        rest = rest[-keep:]
+    if len(system) + len(pinned) + len(rest) > max_msgs:
+        keep = max(0, max_msgs - len(system) - len(pinned))
+        rest = rest[-keep:] if keep else []
 
-    # 2. Token-budget window — keep as many recent messages as fit under the budget. In summarize
-    # mode, reserve room for the compaction note so summary + kept stays within max_tokens.
+    # 2. Token-budget window: keep as many recent messages as fit under the budget. In summarize mode,
+    # reserve room for the compaction note so summary + kept stays within max_tokens.
+    budget = None
     if max_tokens:
-        budget = _tail_budget(max_tokens, sum(_message_tokens(m) for m in system),
-                              summary_max_tokens if summarize else 0)
+        head_tokens = sum(_message_tokens(m) for m in system)
+        if goal is not None:
+            room = max_tokens - head_tokens - (summary_max_tokens if summarize else 0)
+            if _message_tokens(goal) > room // 2:        # a goal bigger than half the room is clamped
+                goal = _clamp_message(goal, max(1, room // 2))
+                pinned = [goal]
+            head_tokens += _message_tokens(goal)
+        budget = _tail_budget(max_tokens, head_tokens, summary_max_tokens if summarize else 0)
         kept: list = []
         running = 0
         for m in reversed(rest):
@@ -1018,27 +1024,33 @@ def truncate_history(messages: list, max_msgs: int, max_tokens: int = 0, *,
             kept.append(m)
         rest = list(reversed(kept))
 
+    def _assemble(tail: list) -> list:
+        # `tail` is a suffix of before-goal + after-goal messages: put the goal back where it sat.
+        if goal is None:
+            return tail
+        split = len(tail) - min(n_after, len(tail))
+        return tail[:split] + [goal] + tail[split:]
+
     if summarize:
-        # Guarantee the last `keep_last` turns survive verbatim (window may keep more; never fewer).
-        n_keep = min(len(original_rest), max(len(rest), keep_last))
-        rest = original_rest[-n_keep:] if n_keep else []
+        rest = _summarize_keep(original_rest, rest, keep_last, budget)
         dropped = original_rest[: len(original_rest) - len(rest)]
         # Drop an orphaned leading tool response from the KEPT tail before summarizing/returning.
         while rest and rest[0].get("role") == "tool":
             dropped.append(rest.pop(0))
         if dropped:
-            note = _compact_span(dropped, summary_model, summary_max_tokens)
+            note = (_compact_span(dropped, summary_model, summary_max_tokens) if config is None
+                    else _compact_span(dropped, summary_model, summary_max_tokens, config=config))
             if note:
                 summary_msg = {"role": "system", "content": f"{_COMPACT_FRAME}\n{note}"}
-                return system + [summary_msg] + rest
+                return system + [summary_msg] + _assemble(rest)
         # empty note (no LLM / failure) -> fall through to plain truncation semantics.
-        return system + rest
+        return system + _assemble(rest)
 
     # 3. Don't leave an orphaned tool response at the front (truncate mode).
     while rest and rest[0].get("role") == "tool":
         rest.pop(0)
 
-    return system + rest
+    return system + _assemble(rest)
 
 
 def build_tool_message(tc, result: str) -> dict:
@@ -1087,8 +1099,8 @@ def _agent_logger(config: dict):
     if not log.handlers:
         log.setLevel(logging.INFO)
         agent = config.get("agent", {})
-        rel = agent.get("logFile", "logs/bob-agent.log").replace("\\", "/")
-        path = REPO / rel
+        from bob_core import state_path
+        path = state_path(agent.get("logFile") or "logs/bob-agent.log")
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             h = RotatingFileHandler(
@@ -1211,7 +1223,12 @@ def _consume_stream(stream_resp, cancel=None, emit_tokens=True, hermes=True):
     agent mode passes emit_tokens=False and drops the tokens). Polls `cancel` between chunks and
     closes the stream promptly when tripped, so an in-flight call aborts within ~1s. Yields
     ('token', text) content deltas (only when emit_tokens) and returns
-    SimpleNamespace(content, tool_calls, cancelled).
+    SimpleNamespace(content, tool_calls, cancelled, finish_reason, usage, reasoning_chars): usage is the
+    final chunk's token usage when the backend reports it (stream_options.include_usage), else None;
+    reasoning_chars counts the separate reasoning channel, so an answer-less reply can say why.
+
+    A reply cut off at the output limit (finish_reason 'length') carries no tool calls: a truncated
+    <tool_call> (or structured call) is neither parsed as a call nor flushed as answer text.
 
     Tool-call boundary handling:
       * OpenAI (hermes=False): tool calls arrive as structured deltas, not text — stream every
@@ -1226,6 +1243,9 @@ def _consume_stream(stream_resp, cancel=None, emit_tokens=True, hermes=True):
     buf = ""             # hermes: un-emitted tail that might begin a marker
     suppressing = False  # hermes: inside/after a confirmed tool_call marker
     cancelled = False
+    finish_reason = None
+    usage = None
+    reasoning_chars = 0
 
     def _hermes_feed(piece):
         """Yield the safe-to-emit prefix of a content piece; hold back a partial-marker tail."""
@@ -1254,9 +1274,14 @@ def _consume_stream(stream_resp, cancel=None, emit_tokens=True, hermes=True):
             _close_stream(stream_resp)
             cancelled = True
             break
+        usage = getattr(chunk, "usage", None) or usage
         if not chunk.choices:
             continue
+        finish_reason = getattr(chunk.choices[0], "finish_reason", None) or finish_reason
         delta = chunk.choices[0].delta
+        reasoning = getattr(delta, "reasoning_content", None)
+        if isinstance(reasoning, str):
+            reasoning_chars += len(reasoning)
         piece = getattr(delta, "content", None)
         if piece:
             content_parts.append(piece)
@@ -1276,7 +1301,13 @@ def _consume_stream(stream_resp, cancel=None, emit_tokens=True, hermes=True):
 
     content = "".join(content_parts)
     if cancelled:
-        return SimpleNamespace(content=content, tool_calls=None, cancelled=True)
+        return SimpleNamespace(content=content, tool_calls=None, cancelled=True, finish_reason=finish_reason,
+                               usage=usage, reasoning_chars=reasoning_chars)
+    if finish_reason == "length":
+        # Cut off at the output limit: whatever call was being written is incomplete, so nothing runs
+        # and a withheld partial <tool_call> is never flushed as answer text.
+        return SimpleNamespace(content=content, tool_calls=None, cancelled=False, finish_reason=finish_reason,
+                               usage=usage, reasoning_chars=reasoning_chars)
 
     tool_calls = None
     if tool_acc:
@@ -1297,7 +1328,8 @@ def _consume_stream(stream_resp, cancel=None, emit_tokens=True, hermes=True):
         elif emit_tokens and emitted < len(content):
             yield ("token", content[emitted:])
 
-    return SimpleNamespace(content=content, tool_calls=tool_calls, cancelled=False)
+    return SimpleNamespace(content=content, tool_calls=tool_calls, cancelled=False, finish_reason=finish_reason,
+                           usage=usage, reasoning_chars=reasoning_chars)
 
 
 def run_agent_events(
@@ -1322,14 +1354,23 @@ def run_agent_events(
     system_prompt: str = None,
     resume: str = None,
     think: bool = None,
+    session_id: str = None,
+    allowed_roles=None,
+    unattended_allow=None,
 ):
     """Generator core of the agent loop. Yields event dicts:
         {"type": "token",             "text": str}                          # final-answer deltas (stream=True)
         {"type": "tool_call",         "call_id": str, "name": str, "arguments": str}
         {"type": "approval_required", "call_id": str, "tool": str, "arguments": str, "risk": str}
         {"type": "tool_result",       "call_id": str, "name": str, "result": str}
-        {"type": "final",             "result": str|None, "exit_requested": bool, "reason": str}
-        {"type": "error",             "message": str}
+        {"type": "notice",            "message": str}                       # e.g. a role fallback
+        {"type": "final",             "result": str|None, "exit_requested": bool, "reason": str,
+                                      "usage": {...}}
+        {"type": "error",             "message": str, "kind": str, "usage": {...}}
+    `reason` is answer | truncated | forced_answer | cancelled | max_steps. An error's `kind` tells an
+    upstream failure (upstream_unreachable, upstream_error, empty_response) from a run-level one
+    (truncated, vision_unavailable, not_found, conflict). `usage` sums the backend-reported prompt +
+    completion tokens over the run's LLM calls (estimated when the backend reports none).
     A terminal 'final' or 'error' is always the last event. run_agent() is the blocking wrapper
     used by the CLI; the server's SSE endpoint consumes these events directly. Pass a CancelToken
     to abort in-flight — SIGINT (CLI) and client-disconnect (server) both trip it; the run
@@ -1341,25 +1382,38 @@ def run_agent_events(
     the server/scheduler never run a gated tool unattended; the CLI wrapper installs a console approver
     on a TTY, and the interactive shell will pass one that drives the TUI. `call_id` correlates
     tool_call↔approval_required↔tool_result (forward-compat for parallel tools)."""
-    from bob_core import (MEMORY_CONTEXT_FRAME, _port, budget_injection, check_litellm,
-                          core_blocks_block, get_llm_client, get_role, memory_profile_block,
-                          memory_recall, project_memory_block)
+    from bob_core import (MEMORY_CONTEXT_FRAME, _mem, _port, budget_injection, check_litellm,
+                          core_blocks_block, get_llm_client, get_role, image_refusal, memory_profile_block,
+                          memory_recall, project_memory_block, role_output_tokens, served_role)
 
     agent_cfg = config.get("agent", {})
     effective_role = role or config.get("routing", {}).get("agentRole", "chat")
     # An image-bearing turn routes to the vision role unless the caller pinned a role.
     if images and role is None:
         effective_role = get_role(config, "vision")
+    # A role the active profile doesn't serve (the cpu profile has no coder/ponder) falls back to chat,
+    # announced as a notice event rather than failing the request at the backend.
+    notices: list = []
+    effective_role = served_role(config, effective_role, notice=notices.append)
+    if images:
+        refusal = image_refusal(config, effective_role)
+        if refusal:
+            yield {"type": "error", "message": refusal, "kind": "vision_unavailable"}
+            return
+    for _n in notices:
+        yield {"type": "notice", "message": _n}
     # Reasoning ("think") is a MODE on whichever model is active, not a model swap: forward the
     # `enable_thinking` chat-template kwarg to llama-server via extra_body. `think=None` -> the config
     # default (agent.think). llama-server is pinned to --reasoning-format deepseek, so any reasoning
     # lands in a separate `reasoning_content` field the stream reader drops, so it never reaches the
     # transcript or memory. Scoped to locally served models; cloud peers don't take the kwarg.
     enable_thinking = agent_cfg.get("think", False) if think is None else bool(think)
-    reasoning_extra_body = (
-        {"chat_template_kwargs": {"enable_thinking": enable_thinking}}
-        if _is_local_model(effective_role, config) else None
-    )
+
+    def _reasoning_body(for_role):
+        return ({"chat_template_kwargs": {"enable_thinking": enable_thinking}}
+                if _is_local_model(for_role, config) else None)
+
+    reasoning_extra_body = _reasoning_body(effective_role)
     effective_agency = agency or agent_cfg.get("agency", "show")
     max_steps = int(agent_cfg.get("maxSteps", 10))
     # Loop-pathology guard: a (small) model can fixate on one tool and call it with identical args
@@ -1408,12 +1462,13 @@ def run_agent_events(
     # per step = llmRetries + 1, with an escalating backoff so a restarting backend has time to come up.
     llm_attempts = max(1, int(agent_cfg.get("llmRetries", 2)) + 1)
     llm_backoff = float(agent_cfg.get("llmRetryBackoffSec", 2.0))
-    # Token-aware context: cap history to a token budget (0 = count-only) and shrink
-    # the injected tool schemas once the tool count crosses compactSchemasAfter.
-    max_context_tokens = int(agent_cfg.get("maxContextTokens", 6000))
+    # Token-aware context: the history budget is the serving model's per-request window (0/'auto') or
+    # an explicit agent.maxContextTokens capped at that window; the injected tool schemas shrink once
+    # the tool count crosses compactSchemasAfter.
+    max_context_cfg = agent_cfg.get("maxContextTokens", 0)
     # llama.cpp charges prompt + n_predict against the same ctx, so the generation the step is about
-    # to ask for comes out of the history budget too. --max wins when the caller set it.
-    output_reserve = int(agent_cfg.get("outputReserveTokens", 1024))
+    # to ask for comes out of the history budget too, and is sent as max_tokens so the reservation
+    # holds (_budget_for). --max wins when the caller set it.
     compact_after = int(agent_cfg.get("compactSchemasAfter", 12))
     # Max concurrent side-effect-free tools per step. Default 1 = sequential.
     max_parallel_tools = int(agent_cfg.get("maxParallelTools", 1))
@@ -1443,12 +1498,14 @@ def run_agent_events(
         except Exception as _e:
             log.warning(f"[{rid}] resume load failed: {_e}")
         if resumed is None:
-            yield {"type": "error", "message": f"cannot resume run {resume!r}: not found for this owner"}
+            yield {"type": "error", "message": f"cannot resume run {resume!r}: not found for this owner",
+                   "kind": "not_found"}
             return
         lease_token = uuid.uuid4().hex
         if not resume_store.acquire_lease(resume, owner, holder=lease_token):
             yield {"type": "error",
-                   "message": f"run {resume!r} is already active (held by another process)"}
+                   "message": f"run {resume!r} is already active (held by another process)",
+                   "kind": "conflict"}
             return
         rid = resume
         owner = resumed["owner"]
@@ -1468,13 +1525,8 @@ def run_agent_events(
             # fast and prints no tool summary; the run is a plain chat completion.
             registry = ToolRegistry()
         else:
-            disabled_raw = agent_cfg.get("disabledTools", [])
-            if isinstance(disabled_raw, str):
-                disabled = {t.strip() for t in disabled_raw.split(",") if t.strip()}
-            else:
-                disabled = set(disabled_raw)
             _t0 = time.monotonic()
-            registry = ToolRegistry.build(config, disabled)
+            registry = ToolRegistry.from_config(config)
             reg_build_ms = (time.monotonic() - _t0) * 1000
     elif no_tools and hasattr(registry, "filtered"):
         # Chat mode over a caller-supplied registry (e.g. the shell): an EMPTY tool view via the
@@ -1496,7 +1548,7 @@ def run_agent_events(
         port = _port(config, "litellmPort")
         msg = f"LiteLLM proxy not reachable at localhost:{port}. Run: bob up"
         log.error(f"[{rid}] preflight failed: {msg}")
-        yield {"type": "error", "message": msg}
+        yield {"type": "error", "message": msg, "kind": "upstream_unreachable"}
         return
 
     # A caller (e.g. a typed sub-agent) may override the persona; default None reads the configured
@@ -1520,7 +1572,7 @@ def run_agent_events(
     # concatenating into the one system message truncate_history always keeps (so injected memory can't
     # overflow the context window). Priority (kept longest): coreBlocks > BOB.md > profile > autoRecall.
     inject_blocks: list = []   # (label, text, priority)
-    inject_budget = int(mem_cfg.get("maxInjectedTokens", 1200))
+    inject_budget = int(_mem(mem_cfg, "maxInjectedTokens"))
 
     # autoRecall is a ROOT-run behavior only: a sub-agent runs an isolated
     # transcript by design and must not pull the owner's saved notes every turn (mirrors the
@@ -1528,10 +1580,10 @@ def run_agent_events(
     if mem_cfg.get("autoRecall") and agent_depth == 0:
         try:
             # Recall as the RUN's owner/scope, not the 'local' default.
-            recalled = memory_recall(goal, k=int(mem_cfg.get("recallK", 5)), config=config,
+            recalled = memory_recall(goal, k=int(_mem(mem_cfg, "recallK")), config=config,
                                      owner=owner, scope=scope)
             if recalled and recalled.strip() and recalled != "(no results)":
-                recalled = recalled[: inject_budget * 4]   # hard-cap autoRecall length
+                recalled = recalled[: tokens_to_chars(inject_budget)]   # hard-cap autoRecall length
                 inject_blocks.append(("autoRecall", MEMORY_CONTEXT_FRAME + "\n" + recalled, 1))
         except Exception as e:
             log.warning(f"[{rid}] memory recall skipped: {e}")
@@ -1581,6 +1633,22 @@ def run_agent_events(
 
     tool_fmt = agent_cfg.get("toolFormat", "hermes").lower()
     hermes_mode = tool_fmt == "hermes"
+    # Fit the tool set to a small window before it is baked into the prompt: compact every schema, then
+    # leave out the least essential tools, so the head never crowds out the reply (see _fit_tools_to_window).
+    output_request = max_tokens or role_output_tokens(config, effective_role)
+    if tool_schemas and resumed is None:
+        fit_window = _context_budget(config, effective_role, max_context_cfg, output_request, 0)[0]
+        tool_schemas, compact_after, dropped_tools = _fit_tools_to_window(
+            system_prompt, tool_schemas, window=fit_window, output=output_request, hermes=hermes_mode,
+            compact_after=compact_after, constrained=constrained_tool_calls)
+        if dropped_tools:
+            if hasattr(registry, "filtered"):
+                registry = registry.filtered(allow={_tool_name(t) for t in tool_schemas})
+            yield {"type": "notice", "message": (
+                f"The {effective_role} model's {fit_window}-token window can't hold all the tools; left out "
+                f"{len(dropped_tools)} for this run: {', '.join(dropped_tools)}. List tools you don't need in "
+                "agent.disabledTools (config/user.json) to choose the set yourself.")}
+            log.info(f"[{rid}] window {fit_window}: dropped {len(dropped_tools)} tools {dropped_tools}")
     base_system = (
         system_prompt + _hermes_tool_system_addendum(tool_schemas, compact_after)
         if hermes_mode and tool_schemas
@@ -1630,7 +1698,8 @@ def run_agent_events(
             from bob_core import _get_db_path
             import bob_memory  # type: ignore
             bob_memory.transcript_append(rid, role, str(content), _get_db_path(config),
-                                         owner=cap_owner, scope=scope, tool_name=tool_name)
+                                         owner=cap_owner, scope=scope, tool_name=tool_name,
+                                         session_id=session_id)
         except Exception as e:
             log.warning(f"[{rid}] transcript capture skipped: {e}")
 
@@ -1666,12 +1735,45 @@ def run_agent_events(
     # grammar-constraint payload on a hermes call. They share the backend's context window with the
     # history, so they come out of the budget before the window trims. Constant across steps.
     request_tools_tokens = _tools_payload_tokens(openai_tools or constrain_tools_payload)
-    send_budget = (max(0, max_context_tokens - request_tools_tokens - (max_tokens or output_reserve))
-                   if max_context_tokens else 0)
-    if max_context_tokens:
-        log.info(f"[{rid}] context budget {send_budget} "
-                 f"(maxContextTokens={max_context_tokens} schemas={request_tools_tokens} "
-                 f"output={max_tokens or output_reserve})")
+
+    def _budget_for(for_role):
+        """The budget of a request on `for_role`: out (max_tokens), send (history budget), fits, total
+        (window), head (system tokens) and shrunk. The output (--max, else the role's default: a pro peer's
+        maxOutputTokens, else agent.outputReserveTokens) shrinks to what the window leaves after the system
+        head, the schemas and the minimal history, so prompt + max_tokens never exceeds the window; `shrunk`
+        says it did, and `fits` is False when not even a _MIN_OUTPUT_TOKENS reply is left."""
+        total, out, send = _context_budget(config, for_role, max_context_cfg,
+                                           max_tokens or role_output_tokens(config, for_role),
+                                           request_tools_tokens)
+        head = sum(_message_tokens(m) for m in messages if m.get("role") == "system")
+        room = total - request_tools_tokens - head - _tail_reserve(total)
+        fits = room >= min(out, _MIN_OUTPUT_TOKENS)
+        shrunk = out > room
+        if shrunk:
+            out = max(1, room)
+            send = max(0, total - request_tools_tokens - out)
+        log.info(f"[{rid}] context budget {send} (role={for_role} window={total} head={head} "
+                 f"schemas={request_tools_tokens} output={out})")
+        return SimpleNamespace(out=out, send=send, fits=fits, total=total, head=head, shrunk=shrunk)
+
+    budget = _budget_for(effective_role)
+    output_tokens, send_budget = budget.out, budget.send
+
+    def _raise_output_hint():
+        """How to get a longer reply. When the window, not the setting, capped the output, raising
+        outputReserveTokens would change nothing: the fixed head is what has to shrink."""
+        if budget.shrunk:
+            return (f"free room in the {budget.total}-token window, which the system prompt and tools "
+                    f"fill ({budget.head + request_tools_tokens} tokens): list tools you don't need in "
+                    "agent.disabledTools (config/user.json) or use a profile with a larger window")
+        return "raise agent.outputReserveTokens (or pass --max)"
+    if not budget.fits:
+        yield {"type": "error", "kind": "context_overflow", "message": (
+            f"The {effective_role} model's context window ({budget.total} tokens) is too small for the system "
+            f"prompt and tool schemas ({budget.head + request_tools_tokens} tokens) plus a reply. List tools "
+            "you don't need in agent.disabledTools (config/user.json), shorten the persona or injected "
+            "memory, or use a profile with a larger window.")}
+        return
 
     cancel = cancel or CancelToken()
     # Resolve the allow|ask|deny policy once per run from config (empty config -> everything
@@ -1689,15 +1791,20 @@ def run_agent_events(
     # and the approve callback the loop consults before a tool that requires approval.
     run_ctx = RunContext(cancel=cancel, config=config, registry=registry, run_id=rid,
                          approve=approve, owner=owner, agent_depth=agent_depth, scope=scope,
-                         policy=policy, tracer=tracer, trace_span=run_span)
+                         policy=policy, tracer=tracer, trace_span=run_span,
+                         allowed_roles=allowed_roles, session_id=session_id,
+                         unattended_allow=unattended_allow)
     if resumed is not None and resumed.get("todos"):
         run_ctx.todos = resumed["todos"]   # restore the living TODO list so recitation/recall continue
     # Plan phase: one bounded ponder turn whose step list is injected as context before the loop.
     if plan_enabled and resumed is None:
-        plan_text = _single_turn(client, effective_role,
-                                 [{"role": "system", "content": _PLAN_SYSTEM},
-                                  {"role": "user", "content": goal}],
-                                 cancel, request_timeout, hermes_mode, extra_body=reasoning_extra_body)
+        plan_text, plan_err = _single_turn(client, effective_role,
+                                           [{"role": "system", "content": _PLAN_SYSTEM},
+                                            {"role": "user", "content": goal}],
+                                           cancel, request_timeout, hermes_mode, extra_body=reasoning_extra_body)
+        if plan_err:
+            log.warning(f"[{rid}] plan turn failed (continuing without a plan): {plan_err}")
+            yield {"type": "notice", "message": f"planning step failed ({plan_err}); continuing without a plan"}
         if plan_text.strip():
             messages.insert(1, {"role": "system", "content": f"Plan for this task:\n{plan_text.strip()}"})
             log.info(f"[{rid}] plan injected ({len(plan_text)}c)")
@@ -1722,6 +1829,13 @@ def run_agent_events(
     def _run_metrics():
         return {"steps": steps_done, "tools": tools_run, "tokens_est": tokens_est}
 
+    # Token usage over the run's LLM calls: what the backend reported (stream_options.include_usage),
+    # or an estimate of the prompt sent + the reply when it reports none.
+    usage = {"prompt_tokens": 0, "completion_tokens": 0, "estimated": False}
+
+    def _usage_view():
+        return {**usage, "total_tokens": usage["prompt_tokens"] + usage["completion_tokens"]}
+
     def _save_run(status, next_step):
         if not run_persist:
             return
@@ -1739,6 +1853,7 @@ def run_agent_events(
         """Record a run's terminal status/result before yielding its final/error event, so the finally
         block can persist it even if the consumer abandons the generator right after the event."""
         nonlocal end_status, end_result
+        ev.setdefault("usage", _usage_view())
         if run_persist:
             if ev["type"] == "error":
                 end_status, end_result = "failed", ev.get("message")
@@ -1751,6 +1866,7 @@ def run_agent_events(
     _save_run("running", step_start)
 
     verified = False   # verify pass runs at most once per run (bounded)
+    verify_state = None   # 'passed' | 'failed' once the verify pass ran; reported on the final event
     stop_hook_fired = False   # Stop hooks may nudge the run to continue, at most once (bounded)
     autofix_rounds = 0        # objective test-fix gate: bounded by autofix_max_rounds
     autofix_last_sig = None   # forward-progress guard: same failure twice in a row -> stop re-running
@@ -1781,8 +1897,8 @@ def run_agent_events(
                 messages = _clear_old_tool_results(messages, registry, compact_keep_last, hermes_mode)
             messages = truncate_history(messages, max_hist, send_budget,
                                         compaction=compaction_mode, keep_last=compact_keep_last,
-                                        summary_max_tokens=compact_summary_max,
-                                        stable_prefix=stable_prefix, pin_goal=goal_msg)
+                                        summary_max_tokens=compact_summary_max, summary_model=effective_role,
+                                        stable_prefix=stable_prefix, pin_goal=goal_msg, config=config)
             # The recitation rides only on THIS request (never persisted to `messages`, so it can't
             # accumulate or disturb truncate/the stable prefix); rebuilt each step from the live TODOs.
             send_messages = messages
@@ -1805,9 +1921,10 @@ def run_agent_events(
                     # applies; the stable-prefix assembly above is what makes that reuse pay off. Adding
                     # that kwarg would change request bytes and break OpenAI-compat, so we don't.
                     base_kwargs = dict(model=effective_role, messages=send_messages, tools=tools,
-                                       stream=True, timeout=request_timeout)
-                    if max_tokens:   # --max — cap output tokens; None/0 omits it (unchanged)
-                        base_kwargs["max_tokens"] = max_tokens
+                                       stream=True, timeout=request_timeout,
+                                       # the output reservation the history budget was computed with
+                                       max_tokens=output_tokens,
+                                       stream_options={"include_usage": True})
                     # Reasoning mode: forwarded via extra_body so the OpenAI client passes the
                     # non-standard chat-template kwarg straight through the proxy to llama-server. The
                     # enable_thinking value is fixed per run and the prompt bytes are unchanged, so the
@@ -1854,7 +1971,10 @@ def run_agent_events(
                             return
                         continue
                     log.error(f"[{rid}] LLM error step {step + 1}: {e}")
-                    yield from _term({"type": "error", "message": f"LLM error at step {step + 1}: {e}"})
+                    kind = ("upstream_unreachable" if type(e).__name__ in ("APIConnectionError", "ConnectionError")
+                            else "upstream_error")
+                    yield from _term({"type": "error", "message": f"LLM error at step {step + 1}: {e}",
+                                      "kind": kind})
                     return
 
             if getattr(msg, "cancelled", False):
@@ -1863,13 +1983,56 @@ def run_agent_events(
                                   "exit_requested": exit_requested, "reason": "cancelled"})
                 return
 
-            if not (msg.content or msg.tool_calls):  # empty completion — preserve the empty-response guard
-                log.error(f"[{rid}] empty response step {step + 1}")
-                yield from _term({"type": "error",
-                                  "message": f"LLM returned an empty response at step {step + 1}"})
+            rep_usage = getattr(msg, "usage", None)
+            if rep_usage is not None and getattr(rep_usage, "prompt_tokens", None) is not None:
+                usage["prompt_tokens"] += int(rep_usage.prompt_tokens or 0)
+                usage["completion_tokens"] += int(getattr(rep_usage, "completion_tokens", 0) or 0)
+            else:
+                usage["estimated"] = True
+                usage["prompt_tokens"] += sum(_message_tokens(m) for m in send_messages) + request_tools_tokens
+                usage["completion_tokens"] += _estimate_tokens(msg.content or "")
+            finish_reason = getattr(msg, "finish_reason", None)
+            reasoned = int(getattr(msg, "reasoning_chars", 0) or 0)
+
+            if not (msg.content or msg.tool_calls):  # empty completion: say why when we can tell
+                log.error(f"[{rid}] empty response step {step + 1} finish_reason={finish_reason} "
+                          f"reasoning_chars={reasoned}")
+                if reasoned and finish_reason == "length":
+                    why = (f"the model spent its whole output budget ({output_tokens} tokens) reasoning and "
+                           f"returned no answer. Turn thinking off (/think off) or {_raise_output_hint()}")
+                elif reasoned:
+                    why = "the model returned only reasoning and no answer"
+                elif finish_reason == "length":
+                    why = f"the reply hit the output limit ({output_tokens} tokens) before any text"
+                else:
+                    why = f"finish_reason={finish_reason or 'unknown'}"
+                yield from _term({"type": "error", "kind": "empty_response",
+                                  "message": f"LLM returned an empty response at step {step + 1}: {why}."})
                 return
 
             content = msg.content or ""
+            if finish_reason == "length":
+                # Cut off at the output limit. A partial tool call never runs; partial answer text is
+                # returned marked as truncated rather than passed off as complete.
+                visible = _visible_text(content, hermes_mode)
+                last_content = content
+                steps_done += 1
+                tokens_est += _estimate_tokens(content)
+                _cap("assistant", visible or content)
+                log.warning(f"[{rid}] reply truncated at max_tokens={output_tokens} step {step + 1}")
+                if not visible:
+                    yield from _term({"type": "error", "kind": "truncated",
+                                      "message": (f"The reply was cut off at the output limit ({output_tokens} "
+                                                  "tokens) in the middle of a tool call, so nothing ran. To "
+                                                  f"fix it, {_raise_output_hint()}.")})
+                    return
+                marker = (f"\n\n[reply truncated at the output limit ({output_tokens} tokens); for longer "
+                          f"answers, {_raise_output_hint()}]")
+                yield from _term({"type": "final", "result": visible + marker,
+                                  "exit_requested": exit_requested, "reason": "truncated",
+                                  "hint": _raise_output_hint()})
+                return
+
             last_content = content
             _cap("assistant", content)      # every model turn, incl. the final answer (not appended to messages)
             steps_done += 1
@@ -1921,16 +2084,24 @@ def run_agent_events(
                 # silently failed. On "not done" (and steps remain) inject the critique and continue.
                 if verify_enabled and not verified and step + 1 < max_steps:
                     verified = True
-                    critique = _single_turn(client, effective_role,
+                    critique, verify_err = _single_turn(client, effective_role,
                         [{"role": "system", "content": _VERIFY_SYSTEM},
                          {"role": "user", "content": f"Goal:\n{goal}\n\nProposed final answer:\n{final}"}],
                         cancel, request_timeout, hermes_mode, extra_body=reasoning_extra_body)
-                    if critique.strip() and not critique.strip().upper().startswith("DONE"):
+                    if verify_err or not critique.strip():
+                        # A failed or empty review is not an acceptance: say the answer went unverified.
+                        why = verify_err or "the reviewer returned nothing"
+                        log.warning(f"[{rid}] verify: could not review the answer ({why})")
+                        verify_state = "failed"
+                        yield {"type": "notice", "message": f"verify step failed ({why}); answer is unverified"}
+                    elif not critique.strip().upper().startswith("DONE"):
                         log.info(f"[{rid}] verify: not done — continuing ({critique[:120]!r})")
                         messages.append({"role": "user", "content":
                             f"A reviewer flagged issues with your answer:\n{critique.strip()}\n"
                             "Address them, using tools if needed, then give the corrected final answer."})
                         continue
+                    else:
+                        verify_state = "passed"
                 # Stop hooks may nudge the run to keep going (inject context) instead of finalizing --
                 # at most once, so a hook can't strand the run in a loop.
                 if not stop_hook_fired and step + 1 < max_steps:
@@ -1941,8 +2112,11 @@ def run_agent_events(
                         messages.append({"role": "user", "content": inject})
                         continue
                 log.info(f"[{rid}] final len={len(final)}")
-                yield from _term({"type": "final", "result": final,
-                                  "exit_requested": exit_requested, "reason": "answer"})
+                final_ev = {"type": "final", "result": final, "exit_requested": exit_requested,
+                            "reason": "answer"}
+                if verify_state is not None:
+                    final_ev["verify"] = verify_state
+                yield from _term(final_ev)
                 return
 
             # Loop-guard: the previous step was nothing but repeated calls and we told the model to
@@ -2021,11 +2195,88 @@ def run_agent_events(
             # flips the run to the vision role so the model can actually see them (image_url in a user
             # message is the portable form — works for both hermes and openai tool-result modes).
             if step_images:
-                effective_role = get_role(config, "vision")
-                messages.append({"role": "user",
+                vision_role = get_role(config, "vision")
+                refusal = image_refusal(config, vision_role)
+                if refusal:
+                    # No model here can see them: say so in the transcript instead of sending a request
+                    # the backend would reject.
+                    messages.append({"role": "user", "content":
+                        f"[the tool above returned {len(step_images)} image(s), which were not shown: {refusal}]"})
+                    log.info(f"[{rid}] tool returned {len(step_images)} image(s); vision unavailable")
+                else:
+                    image_msg = {"role": "user",
                                  "content": [{"type": "text", "text": "[image(s) returned by the tool above]"}]
-                                            + [_image_content_block(s) for s in step_images]})
-                log.info(f"[{rid}] tool returned {len(step_images)} image(s); routing to vision={effective_role}")
+                                            + [_image_content_block(s) for s in step_images]}
+                    # The switch is tentative: if the vision window can't hold the head, the images and a
+                    # reply, every piece of run state below goes back to what it was before the switch.
+                    prev_state = (effective_role, reasoning_extra_body, budget, tool_schemas, compact_after,
+                                  registry, base_system, openai_tools, constrain_tools_payload,
+                                  constrain_active, request_tools_tokens)
+                    sys_idx, prev_sys_msg, dropped_now = None, None, []
+                    # The image turn rides in the history, charged at the flat per-image cost.
+                    image_cost = _message_tokens(image_msg)
+                    if vision_role != effective_role:
+                        effective_role = vision_role
+                        reasoning_extra_body = _reasoning_body(effective_role)
+                        # The tools were fitted to the original role's window; a smaller vision window
+                        # (a 4096-token vision model) needs them refitted before the image turn is sent.
+                        # A resumed transcript carries its own system prompt, so only a head this run
+                        # built is rewritten.
+                        sys_idx = next((i for i, m in enumerate(messages) if m.get("role") == "system"
+                                        and m.get("content") == base_system), None)
+                        if tool_schemas and sys_idx is not None:
+                            v_output = max_tokens or role_output_tokens(config, effective_role)
+                            v_window = _context_budget(config, effective_role, max_context_cfg, v_output, 0)[0]
+                            fitted, v_compact, dropped_now = _fit_tools_to_window(
+                                system_prompt, tool_schemas, window=v_window, output=v_output,
+                                hermes=hermes_mode, compact_after=compact_after,
+                                constrained=constrained_tool_calls, reserve=image_cost)
+                            if fitted is not tool_schemas or v_compact != compact_after:
+                                tool_schemas, compact_after = fitted, v_compact
+                                if dropped_now and hasattr(registry, "filtered"):
+                                    registry = registry.filtered(allow={_tool_name(t) for t in tool_schemas})
+                                    run_ctx.registry = registry
+                                base_system = (system_prompt + _hermes_tool_system_addendum(tool_schemas, compact_after)
+                                               if hermes_mode and tool_schemas else system_prompt)
+                                prev_sys_msg = messages[sys_idx]
+                                messages[sys_idx] = {**prev_sys_msg, "content": base_system}
+                                openai_tools = (_openai_tools_payload(tool_schemas, compact_after)
+                                                if (tool_schemas and not hermes_mode) else None)
+                                constrain_tools_payload = None
+                                if constrained_tool_calls and tool_schemas:
+                                    constrain_tools_payload = (openai_tools
+                                                               or _openai_tools_payload(tool_schemas, compact_after))
+                                constrain_active = constrain_active and constrain_tools_payload is not None
+                                request_tools_tokens = _tools_payload_tokens(openai_tools or constrain_tools_payload)
+                        budget = _budget_for(effective_role)
+                    # The reply shrinks to what the window leaves after the head, the schemas, the images
+                    # and the minimal history.
+                    room = (budget.total - request_tools_tokens - budget.head - _tail_reserve(budget.total)
+                            - image_cost)
+                    if not budget.fits or room < min(budget.out, _MIN_OUTPUT_TOKENS):
+                        need = budget.head + request_tools_tokens + image_cost
+                        (effective_role, reasoning_extra_body, budget, tool_schemas, compact_after, registry,
+                         base_system, openai_tools, constrain_tools_payload, constrain_active,
+                         request_tools_tokens) = prev_state
+                        run_ctx.registry = registry
+                        if prev_sys_msg is not None:
+                            messages[sys_idx] = prev_sys_msg
+                        refusal = (f"the {vision_role} model's context window is too small for them next to "
+                                   f"the system prompt and tools (~{need} tokens plus a reply)")
+                        messages.append({"role": "user", "content":
+                            f"[the tool above returned {len(step_images)} image(s), which were not shown: {refusal}]"})
+                        log.info(f"[{rid}] tool returned {len(step_images)} image(s); {refusal}")
+                    else:
+                        if dropped_now:
+                            yield {"type": "notice", "message": (
+                                f"The {effective_role} model's window can't hold all the tools; left out "
+                                f"{len(dropped_now)} for the rest of this run: "
+                                f"{', '.join(dropped_now)}.")}
+                            log.info(f"[{rid}] vision window: dropped {len(dropped_now)} tools {dropped_now}")
+                        output_tokens = min(budget.out, room)
+                        send_budget = max(0, budget.total - request_tools_tokens - output_tokens)
+                        messages.append(image_msg)
+                        log.info(f"[{rid}] tool returned {len(step_images)} image(s); routing to vision={effective_role}")
 
             # Loop-guard: this step was ENTIRELY repeated calls (all blocked). Tell the model to stop
             # calling tools and answer; the force_answer latch makes the next turn finalize regardless.
@@ -2067,6 +2318,59 @@ def run_agent_events(
         )
 
 
+class RunResult(SimpleNamespace):
+    """What a run came to, folded from its event stream by fold_events: `result` (the final answer or
+    None), `reason` (the final event's reason), `error` / `error_kind` (set when the run ended in an
+    error event), `exit_requested`, `usage` (the run's token usage), `tools_used` (tool names in call
+    order) and `steps` (tool calls made)."""
+
+
+class AgentRunError(RuntimeError):
+    """A run ended in an error event. `kind` is the event's kind (upstream_unreachable, upstream_error,
+    empty_response, truncated, vision_unavailable, not_found, conflict)."""
+
+    def __init__(self, message: str, kind: str = None):
+        super().__init__(message)
+        self.kind = kind or "error"
+
+
+def fold_events(events, on_event=None) -> RunResult:
+    """THE consumer for callers that only need a run's outcome (the agent API, the task worker, skills,
+    sub-agents): drains the event stream into a RunResult, handing every event to `on_event(ev)` first
+    when given. A raised exception becomes an error result rather than propagating."""
+    out = RunResult(result=None, reason=None, error=None, error_kind=None, exit_requested=False,
+                    usage=None, tools_used=[], steps=0)
+    try:
+        for ev in events:
+            if on_event is not None:
+                on_event(ev)
+            t = ev.get("type")
+            if t == "tool_call":
+                out.tools_used.append(ev.get("name"))
+                out.steps += 1
+            elif t == "final":
+                out.result = ev.get("result")
+                out.reason = ev.get("reason")
+                out.exit_requested = bool(ev.get("exit_requested", False))
+                out.usage = ev.get("usage") or out.usage
+            elif t == "error":
+                out.error = ev.get("message") or "error"
+                out.error_kind = ev.get("kind") or "error"
+                out.usage = ev.get("usage") or out.usage
+    except Exception as e:  # noqa: BLE001 (a crashing run is reported, never raised into the consumer)
+        out.error = str(e) or type(e).__name__
+        out.error_kind = "error"
+    return out
+
+
+def usage_tokens(usage, *fallback_texts) -> int:
+    """Tokens a run spent: the usage's prompt + completion total, else an estimate over `fallback_texts`
+    (e.g. goal + answer) when a run reported no usage at all."""
+    if usage and usage.get("total_tokens"):
+        return int(usage["total_tokens"])
+    return sum(_estimate_tokens(t or "") for t in fallback_texts)
+
+
 def run_agent(
     goal: str,
     config: dict,
@@ -2087,30 +2391,35 @@ def run_agent(
     images: list = None,
     resume: str = None,
     think: bool = None,
+    quiet: bool = False,
+    raise_on_error: bool = False,
+    session_id: str = None,
+    unattended_allow=None,
+    allowed_roles=None,
 ) -> tuple[str | None, bool]:
     """Blocking wrapper over run_agent_events for the CLI: prints tool previews to stderr,
     streams/echoes the final answer to stdout, and returns (result, exit_requested).
 
-    `approve` is passed through neutrally (default None → fail-closed deny). The wrapper does
-    NOT auto-install a console approver: the same wrapper serves the HTTP server (bob_agent_server),
-    which must never prompt on its own console. The interactive CLI entry (main) installs the console
-    approver explicitly on a TTY; the interactive shell will pass its own TUI approver."""
+    `quiet=True` prints nothing (a server or worker embedding the loop). `raise_on_error=True` raises
+    AgentRunError (carrying the error event's kind) instead of returning (None, ...), so a caller can
+    tell an upstream failure from a run that simply produced no answer.
+
+    `approve` is passed through neutrally (default None -> fail-closed deny). The wrapper does
+    NOT auto-install a console approver: the interactive CLI entry (main) installs the console
+    approver explicitly on a TTY; the interactive shell passes its own TUI approver."""
     effective_agency = agency or config.get("agent", {}).get("agency", "show")
-    result = None
-    exit_requested = False
-    streamed_any = False
-    for ev in run_agent_events(
-        goal, config, role=role, agency=agency,
-        exit_on_tools=exit_on_tools, registry=registry, stream=stream, history=history,
-        cancel=cancel, run_id=run_id, approve=approve, owner=owner, agent_depth=agent_depth,
-        scope=scope, no_tools=no_tools, max_tokens=max_tokens, images=images, resume=resume,
-        think=think,
-    ):
+    state = {"streamed": False}
+
+    def _echo(ev):
+        if quiet:
+            return
         t = ev["type"]
         if t == "token":
             sys.stdout.write(ev["text"])
             sys.stdout.flush()
-            streamed_any = True
+            state["streamed"] = True
+        elif t == "notice":
+            print(ev["message"], file=sys.stderr)
         elif t == "tool_call":
             if effective_agency != "silent":
                 preview = ev["arguments"][:120].replace("\n", " ")
@@ -2120,16 +2429,28 @@ def run_agent(
                 preview = ev["result"][:100] + ("..." if len(ev["result"]) > 100 else "")
                 print(f"\033[90m    {preview}\033[0m", file=sys.stderr)
         elif t == "final":
-            result = ev["result"]
-            exit_requested = ev.get("exit_requested", False)
-            if streamed_any:
-                print()  # newline after streamed tokens
-            elif result is not None:
-                print(result)
+            if state["streamed"]:
+                if ev.get("reason") == "truncated":
+                    print(ev["result"][ev["result"].rfind("\n\n["):] if ev.get("result") else "")
+                else:
+                    print()  # newline after streamed tokens
+            elif ev.get("result") is not None:
+                print(ev["result"])
         elif t == "error":
             print(ev["message"], file=sys.stderr)
-            return None, exit_requested
-    return result, exit_requested
+
+    out = fold_events(run_agent_events(
+        goal, config, role=role, agency=agency,
+        exit_on_tools=exit_on_tools, registry=registry, stream=stream, history=history,
+        cancel=cancel, run_id=run_id, approve=approve, owner=owner, agent_depth=agent_depth,
+        scope=scope, no_tools=no_tools, max_tokens=max_tokens, images=images, resume=resume,
+        think=think, session_id=session_id, unattended_allow=unattended_allow, allowed_roles=allowed_roles,
+    ), on_event=_echo)
+    if out.error is not None:
+        if raise_on_error:
+            raise AgentRunError(out.error, out.error_kind)
+        return None, out.exit_requested
+    return out.result, out.exit_requested
 
 
 def main():
@@ -2162,8 +2483,8 @@ def main():
     )
 
     if args.notify and result:
-        logs_dir = REPO / "logs"
-        logs_dir.mkdir(exist_ok=True)
+        import osenv
+        logs_dir = osenv.cache_dir()
         # Temp + atomic replace (same pattern as config.json) so a concurrent toast
         # reader never observes a half-written result file.
         dst = logs_dir / ".last-agent-result.txt"

@@ -381,42 +381,387 @@ class TestProcessLifecyclePosix(unittest.TestCase):
 
 
 class TestKillByName(_ForceOSMixin, unittest.TestCase):
-    """Mocked subprocess so the suite never actually pkills anything (a real pkill -f can match the
-    test runner itself). Asserts the right command per OS and the killed-names return contract."""
+    """Name-kill matches only Bob's OWN executables under the repo's bin/ and tools/, never a substring of
+    some other command line (an editor on logs/llama-swap.log, a `tail -f`, a system llama-server)."""
 
-    def test_linux_uses_pkill_f_and_returns_killed(self):
-        self._force("linux")
-        calls = []
+    def setUp(self):
+        super().setUp()
+        self.repo = Path(tempfile.mkdtemp(prefix="bob-repo-"))
+        self.addCleanup(shutil.rmtree, self.repo, True)
+        p = mock.patch.object(osenv, "REPO", self.repo)
+        p.start()
+        self.addCleanup(p.stop)
 
-        def fake_run(argv, **kw):
-            calls.append(argv)
-            rc = 0 if argv[-1] == "llama-swap" else 1  # only llama-swap "matched"
-            return types.SimpleNamespace(returncode=rc)
+    def _table(self):
+        r = str(self.repo)
+        return [
+            (100, f"{r}/bin/llama-swap", [f"{r}/bin/llama-swap", "--config", "x"]),
+            (101, "/usr/bin/vim", ["vim", f"{r}/logs/llama-swap.log"]),
+            (102, "/usr/bin/tail", ["tail", "-f", "llama-swap"]),
+            (103, "/usr/bin/python3.12", [f"{r}/tools/venv-webui/bin/python",
+                                          f"{r}/tools/venv-webui/bin/open-webui", "serve"]),
+            (104, "/usr/local/bin/llama-server", ["/usr/local/bin/llama-server", "-m", "x"]),
+            (105, "/usr/bin/bash", ["bash", "-c", f"pkill -f llama-swap; {r}/bin/llama-swap"]),
+            (os.getpid(), f"{r}/bin/llama-swap", []),   # never ourselves
+        ]
 
-        with mock.patch("osenv.subprocess.run", side_effect=fake_run):
-            killed = osenv.stop_processes_by_name(["llama-swap", "open-webui"])
-        self.assertEqual(killed, ["llama-swap"])
-        self.assertEqual(calls[0], ["pkill", "-f", "llama-swap"])
-        self.assertEqual(calls[1], ["pkill", "-f", "open-webui"])
+    def test_matches_only_repo_executables(self):
+        with mock.patch.object(osenv, "_process_table", side_effect=self._table):
+            found = osenv.find_managed_processes(["llama-swap", "llama-server", "open-webui"])
+        self.assertEqual(sorted(found), [(100, "llama-swap"), (103, "open-webui")])
+
+    def test_stop_kills_matches_and_returns_names(self):
+        reaped = []
+        with mock.patch.object(osenv, "_process_table", side_effect=self._table), \
+             mock.patch.object(osenv, "stop_process_tree", side_effect=lambda pid: reaped.append(pid)):
+            killed = osenv.stop_processes_by_name(["llama-swap", "open-webui", "nothing"])
+        self.assertEqual(killed, ["llama-swap", "open-webui"])
+        self.assertEqual(sorted(reaped), [100, 103])
 
     def test_string_arg_is_treated_as_single_name(self):
-        self._force("linux")
-        with mock.patch("osenv.subprocess.run",
-                        return_value=types.SimpleNamespace(returncode=1)):
+        with mock.patch.object(osenv, "_process_table", side_effect=self._table), \
+             mock.patch.object(osenv, "stop_process_tree"):
             self.assertEqual(osenv.stop_processes_by_name("nothing"), [])
 
-    def test_windows_uses_taskkill_im_exe(self):
-        self._force("windows")
+    @unittest.skipUnless(sys.platform.startswith("linux"), "real /proc scan")
+    def test_real_proc_scan_ignores_lookalike_command_lines(self):
+        import warnings
+        warnings.simplefilter("ignore", ResourceWarning)
+        self.addCleanup(warnings.resetwarnings)
+        (self.repo / "bin").mkdir()
+        exe = self.repo / "bin" / "llama-swap"
+        shutil.copy2(shutil.which("sleep"), exe)
+        ours = osenv.start_detached([str(exe), "30"])
+        lookalike = osenv.start_detached(["sh", "-c", "sleep 30 # llama-swap"])
+        try:
+            import time
+            time.sleep(0.2)
+            pids = [pid for pid, _ in osenv.find_managed_processes("llama-swap")]
+            self.assertIn(ours, pids)
+            self.assertNotIn(lookalike, pids)
+        finally:
+            for pid in (ours, lookalike):
+                osenv.stop_process_tree(pid, timeout=2)
+
+
+@unittest.skipIf(osenv.os_name() == "windows", "POSIX signal escalation")
+class TestStopWaitsForExit(unittest.TestCase):
+    def test_term_ignoring_process_is_killed_and_waited_for(self):
+        import time
+        import warnings
+        warnings.simplefilter("ignore", ResourceWarning)
+        self.addCleanup(warnings.resetwarnings)
+        pid = osenv.start_detached(["sh", "-c", "trap '' TERM; sleep 30"])
+        time.sleep(0.2)
+        t0 = time.monotonic()
+        self.assertTrue(osenv.stop_process_tree(pid, timeout=0.5))   # SIGTERM ignored -> SIGKILL
+        self.assertFalse(osenv.pid_alive(pid))                       # gone when it returns, not later
+        self.assertLess(time.monotonic() - t0, 5)
+
+
+class TestCrontabSafety(_ForceOSMixin, unittest.TestCase):
+    """A failing `crontab -l` must never be read as an empty crontab (the rewrite would wipe the user's
+    entries), and the user's lines are written back verbatim."""
+
+    def _fake(self, rc, stdout="", stderr="", written=None):
+        def run(argv, **kw):
+            r = types.SimpleNamespace(returncode=0, stdout="", stderr="")
+            if argv[:2] == ["crontab", "-l"]:
+                r.returncode, r.stdout, r.stderr = rc, stdout, stderr
+            elif argv == ["crontab", "-"]:
+                if written is not None:
+                    written.append(kw.get("input", ""))
+            return r
+        return run
+
+    def test_read_failure_aborts_without_writing(self):
+        self._force("linux")
+        written = []
+        with mock.patch("osenv.crontab_available", return_value=True), \
+             mock.patch("osenv.shutil.which", return_value=None), \
+             mock.patch("osenv.subprocess.run", side_effect=self._fake(1, stderr="crontab: permission denied",
+                                                                     written=written)):
+            with self.assertRaises(RuntimeError):
+                osenv.register_agent_task("/py", "/runner.py")
+        self.assertEqual(written, [])
+
+    def test_no_crontab_yet_is_empty(self):
+        self._force("linux")
+        written = []
+        with mock.patch("osenv.crontab_available", return_value=True), \
+             mock.patch("osenv.shutil.which", return_value=None), \
+             mock.patch("osenv.subprocess.run", side_effect=self._fake(1, stderr="no crontab for siva",
+                                                                     written=written)):
+            osenv.register_agent_task("/py", "/runner.py")
+        self.assertEqual(len(written), 1)
+        self.assertIn("# BobAgent", written[0])
+
+    def test_user_lines_preserved_verbatim(self):
+        self._force("linux")
+        existing = "MAILTO=me\n\n# nightly backup\n0 5 * * * backup\n\n"
+        written = []
+        with mock.patch("osenv.crontab_available", return_value=True), \
+             mock.patch("osenv.shutil.which", return_value=None), \
+             mock.patch("osenv.subprocess.run", side_effect=self._fake(0, stdout=existing, written=written)):
+            osenv.register_agent_task("/py", "/runner.py")
+        self.assertTrue(written[0].startswith("MAILTO=me\n\n# nightly backup\n0 5 * * * backup\n\n"))
+
+    def test_status_reports_unknown_on_read_failure(self):
+        self._force("linux")
+        with mock.patch("osenv.crontab_available", return_value=True), \
+             mock.patch("osenv.subprocess.run", side_effect=self._fake(1, stderr="boom")):
+            st = osenv.agent_task_status()
+        self.assertFalse(st["registered"])
+        self.assertIn("unknown", st["state"])
+
+
+class TestDownload(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.src = self.tmp / "src.bin"
+        self.src.write_bytes(b"payload" * 1000)
+        import hashlib
+        self.sha = hashlib.sha256(self.src.read_bytes()).hexdigest()
+
+    def test_verified_download_lands_atomically(self):
+        dest = self.tmp / "out" / "file.bin"
+        osenv.download(self.src.as_uri(), dest, sha256=self.sha)
+        self.assertEqual(dest.read_bytes(), self.src.read_bytes())
+        self.assertFalse(dest.with_name("file.bin.part").exists())
+
+    def test_mismatch_leaves_nothing_behind(self):
+        dest = self.tmp / "file.bin"
+        with self.assertRaises(RuntimeError):
+            osenv.download(self.src.as_uri(), dest, sha256="0" * 64)
+        self.assertFalse(dest.exists())                             # never looks "present"
+        self.assertFalse((self.tmp / "file.bin.part").exists())
+
+    def test_interrupted_download_leaves_nothing_behind(self):
+        dest = self.tmp / "file.bin"
+        with mock.patch("urllib.request.urlopen", side_effect=OSError("connection reset")):
+            with self.assertRaises(OSError):
+                osenv.download("https://example.invalid/x", dest)
+        self.assertFalse(dest.exists())
+
+    def test_require_sha_refuses_empty(self):
+        with mock.patch("urllib.request.urlopen") as uo:
+            with self.assertRaises(RuntimeError):
+                osenv.download("https://example.invalid/x", self.tmp / "x", sha256="", require_sha=True)
+        uo.assert_not_called()
+
+
+def _ensure_secret_worker(args):
+    """One process's first use of a secret, released at `start` so the calls overlap (multiprocessing)."""
+    import time as _time
+    data_dir, name, start = args
+    os.environ["BOB_DATA_DIR"] = data_dir
+    sys.modules["keyring"] = None
+    _time.sleep(max(0.0, start - _time.time()))
+    return osenv.ensure_secret(name)
+
+
+class TestEnsureSecret(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self._env = {k: os.environ.pop(k) for k in ("BOB_DATA_DIR", "bobTestSecret", "BOB_BOBTESTSECRET")
+                     if k in os.environ}
+        os.environ["BOB_DATA_DIR"] = str(self.tmp)
+        self.addCleanup(self._restore)
+        p = mock.patch.dict(sys.modules, {"keyring": None})   # never touch the real OS keychain
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _restore(self):
+        os.environ.pop("BOB_DATA_DIR", None)
+        os.environ.update(self._env)
+
+    def test_generated_once_then_stable(self):
+        a = osenv.ensure_secret("bobTestSecret", prefix="pk-")
+        self.assertTrue(a.startswith("pk-") and len(a) > 20)
+        self.assertEqual(osenv.ensure_secret("bobTestSecret"), a)
+        data = json.loads(osenv.secrets_file().read_text())
+        self.assertEqual(data["bobTestSecret"], a)
+        if osenv.os_name() != "windows":
+            self.assertEqual(osenv.secrets_file().stat().st_mode & 0o777, 0o600)
+
+    def test_concurrent_first_use_agrees_on_one_value(self):
+        """Many processes generating the same secret at once: every one returns the value that was stored,
+        and each earlier secret in the file survives (no lost update)."""
+        import multiprocessing
+        import time
+        osenv.ensure_secret("bobKeepSecret")
+        kept = json.loads(osenv.secrets_file().read_text())["bobKeepSecret"]
+        start = time.time() + 1.5
+        names = [f"race{i % 4}" for i in range(24)]
+        with multiprocessing.get_context("spawn").Pool(8) as pool:
+            got = pool.map(_ensure_secret_worker, [(str(self.tmp), n, start) for n in names])
+        data = json.loads(osenv.secrets_file().read_text())
+        for n, v in zip(names, got):
+            self.assertEqual(v, data[n], n)
+        self.assertEqual(len(set(got)), 4)
+        self.assertEqual(data["bobKeepSecret"], kept)
+        self.assertEqual([p.name for p in self.tmp.glob("*.tmp")], [])
+
+    def test_the_temp_file_is_never_wider_than_0600(self):
+        if osenv.os_name() == "windows":
+            self.skipTest("POSIX modes")
+        modes = []
+        real_replace = os.replace
+
+        def spy(src, dst):
+            modes.append(os.stat(src).st_mode & 0o777)
+            return real_replace(src, dst)
+
+        old_umask = os.umask(0o022)
+        try:
+            with mock.patch.object(osenv.os, "replace", side_effect=spy):
+                osenv.ensure_secret("bobTestSecret")
+        finally:
+            os.umask(old_umask)
+        self.assertEqual(modes, [0o600])
+
+    def test_legacy_value_adopted_for_existing_data(self):
+        self.assertEqual(osenv.ensure_secret("bobTestSecret", legacy="old-key"), "old-key")
+
+    def test_a_malformed_file_is_moved_aside_not_overwritten(self):
+        sf = osenv.secrets_file()
+        sf.parent.mkdir(parents=True, exist_ok=True)
+        broken = '{"N8N_ENCRYPTION_KEY": "keep-me", "WEBUI_SECRET_KEY": '
+        sf.write_text(broken)
+        self.assertIsNone(osenv.secret("bobTestSecret"))           # a read still does not crash
+        with self.assertRaises(osenv.SecretsFileCorrupt) as cm:
+            osenv.ensure_secret("bobTestSecret")
+        self.assertFalse(sf.exists())                               # nothing was written in its place
+        aside = list(self.tmp.glob("secrets.json.corrupt-*"))
+        self.assertEqual(len(aside), 1)
+        self.assertEqual(aside[0].read_text(), broken)
+        self.assertIn(str(aside[0]), str(cm.exception))
+        if osenv.os_name() != "windows":
+            self.assertEqual(aside[0].stat().st_mode & 0o777, 0o600)
+
+    def test_a_non_object_file_is_also_refused(self):
+        sf = osenv.secrets_file()
+        sf.parent.mkdir(parents=True, exist_ok=True)
+        sf.write_text('["not", "a", "mapping"]')
+        with self.assertRaises(osenv.SecretsFileCorrupt):
+            osenv.ensure_secret("bobTestSecret")
+
+    def test_a_read_racing_the_replace_on_windows_retries(self):
+        sf = osenv.secrets_file()
+        sf.parent.mkdir(parents=True, exist_ok=True)
+        sf.write_text('{"bobTestSecret": "v"}')
+        real = Path.read_text
+        fails = iter([PermissionError("sharing violation")])
+
+        def flaky(self_, *a, **k):
+            err = next(fails, None)
+            if err is not None:
+                raise err
+            return real(self_, *a, **k)
+
+        with mock.patch.object(osenv, "is_windows", return_value=True), \
+             mock.patch.object(Path, "read_text", flaky), \
+             mock.patch("time.sleep"):
+            self.assertEqual(osenv.secret("bobTestSecret"), "v")
+
+    def test_env_wins(self):
+        os.environ["bobTestSecret"] = "from-env"
+        self.addCleanup(os.environ.pop, "bobTestSecret", None)
+        self.assertEqual(osenv.ensure_secret("bobTestSecret"), "from-env")
+        self.assertFalse(osenv.secrets_file().exists())
+
+
+class TestVenvInstallsFromLock(_ForceOSMixin, unittest.TestCase):
+    """Every OS installs a venv from the pinned .lock (not the unpinned .txt), and extras resolve against it."""
+
+    def test_linux_uses_lock_and_constrains_extras(self):
+        self._force("linux")
+        repo = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, repo, True)
+        (repo / "tools").mkdir()
+        (repo / "tools" / "x-requirements.lock").write_text("litellm==1.0.0\n")
+        (repo / "tools" / "x-requirements.txt").write_text("litellm>=1.0\n")
+        vpy = repo / "tools" / "venv-x" / "bin" / "python"
+        vpy.parent.mkdir(parents=True)
+        vpy.write_text("")
         calls = []
+        with mock.patch.object(osenv, "REPO", repo), \
+             mock.patch.object(osenv, "_py_minor", return_value=(3, 12)), \
+             mock.patch("osenv.subprocess.run",
+                        side_effect=lambda argv, **k: calls.append(argv) or types.SimpleNamespace(returncode=0)):
+            osenv.new_bob_venv("venv-x", "x-requirements", extra_packages=["sounddevice"], python="py")
+        req = next(c for c in calls if "-r" in c)
+        self.assertTrue(req[req.index("-r") + 1].endswith("x-requirements.lock"))
+        extra = next(c for c in calls if "sounddevice" in c)
+        self.assertIn("-c", extra)
 
-        def fake_run(argv, **kw):
-            calls.append(argv)
-            return types.SimpleNamespace(returncode=0)
+    def test_committed_litellm_lock_installs_everywhere(self):
+        lock = (Path(osenv.REPO) / "tools" / "litellm-requirements.lock").read_text().splitlines()
+        rows = [ln for ln in lock if ln.strip() and not ln.startswith("#")]
+        for ln in rows:
+            self.assertRegex(ln, r"^[A-Za-z0-9_.\-]+==[^ ;]+( ; sys_platform [!=]= \"win32\")?$", ln)
+        names = {ln.split("==")[0].lower() for ln in rows}
+        # The Langfuse callback + OTLP exporter the docs promise, and yt-dlp (music plugin) must be pinned.
+        for need in ("langfuse", "opentelemetry-exporter-otlp-proto-http", "yt-dlp", "litellm"):
+            self.assertIn(need, names)
+        self.assertTrue(any(ln.startswith("pywin32==") and "win32" in ln for ln in rows))
 
-        with mock.patch("osenv.subprocess.run", side_effect=fake_run):
-            killed = osenv.stop_processes_by_name("llama-swap")
-        self.assertEqual(killed, ["llama-swap"])
-        self.assertEqual(calls[0], ["taskkill", "/IM", "llama-swap.exe", "/F"])
+
+class TestInstallFiles(unittest.TestCase):
+    """bin/ installs replace each file (new inode) instead of rewriting it in place, keep SONAME symlinks as
+    symlinks, and prune older versions of a lib the new set ships."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.src = self.tmp / "src"
+        self.src.mkdir()
+        self.bin = self.tmp / "bin"
+        self.bin.mkdir()
+
+    def test_replaces_with_a_new_inode(self):
+        (self.bin / "llama-server").write_text("old")
+        before = (self.bin / "llama-server").stat().st_ino
+        (self.src / "llama-server").write_text("new")
+        osenv.install_files({"llama-server": self.src / "llama-server"}, self.bin)
+        self.assertEqual((self.bin / "llama-server").read_text(), "new")
+        self.assertNotEqual((self.bin / "llama-server").stat().st_ino, before)
+        self.assertEqual([p.name for p in self.bin.iterdir() if p.name.startswith(".staging")], [])
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "ETXTBSY is a Linux behaviour")
+    def test_running_binary_can_be_replaced(self):
+        import time
+        import warnings
+        warnings.simplefilter("ignore", ResourceWarning)
+        self.addCleanup(warnings.resetwarnings)
+        exe = self.bin / "llama-server"
+        shutil.copy2(shutil.which("sleep"), exe)
+        pid = osenv.start_detached([str(exe), "30"])
+        try:
+            time.sleep(0.2)
+            with self.assertRaises(OSError):          # the in-place copy the installer must never do
+                shutil.copy2(shutil.which("sleep"), exe)
+            shutil.copy2(shutil.which("sleep"), self.src / "llama-server")
+            osenv.install_files({"llama-server": self.src / "llama-server"}, self.bin)
+            self.assertTrue(osenv.pid_alive(pid))      # the running engine is untouched
+        finally:
+            osenv.stop_process_tree(pid, timeout=2)
+
+    @unittest.skipIf(sys.platform == "win32", "symlinks need privilege on Windows")
+    def test_symlinks_kept_and_stale_versions_pruned(self):
+        (self.bin / "libggml-base.so.0.9.3").write_text("old-lib")
+        (self.bin / "libcublas.so.12").write_text("unrelated, not shipped by this set")
+        (self.src / "libggml-base.so.0.9.4").write_text("x" * 1000)
+        os.symlink("libggml-base.so.0.9.4", self.src / "libggml-base.so.0")
+        os.symlink("libggml-base.so.0", self.src / "libggml-base.so")
+        entries = {p.name: p for p in self.src.iterdir()}
+        osenv.install_files(entries, self.bin)
+        self.assertTrue((self.bin / "libggml-base.so").is_symlink())
+        self.assertEqual(os.readlink(self.bin / "libggml-base.so.0"), "libggml-base.so.0.9.4")
+        self.assertFalse((self.bin / "libggml-base.so.0.9.3").exists())   # stale version pruned
+        self.assertTrue((self.bin / "libcublas.so.12").exists())          # other libs untouched
 
 
 class TestOpenUrl(_ForceOSMixin, unittest.TestCase):
@@ -616,6 +961,26 @@ class TestBuildOutputRollback(unittest.TestCase):
 
     def test_restore_false_when_no_backup(self):
         self.assertFalse(osenv.restore_build_output(self.tmp / "bin"))
+
+    def test_restore_undoes_added_and_removed_entries_without_nesting(self):
+        d = self.tmp / "bin"
+        d.mkdir()
+        (d / "llama-server").write_text("v1")
+        (d / "voices").mkdir()
+        (d / "voices" / "a.onnx").write_text("voice")
+        if sys.platform != "win32":
+            os.symlink("llama-server", d / "llama-server-link")
+        bak = osenv.backup_build_output(d)
+        if sys.platform != "win32":
+            self.assertTrue((bak / "llama-server-link").is_symlink())   # snapshot keeps links as links
+        (d / "llama-server").write_text("v2-broken")
+        (d / "libnew.so.1").write_text("added by the failed update")
+        self.assertTrue(osenv.restore_build_output(d, bak))
+        self.assertEqual((d / "llama-server").read_text(), "v1")
+        self.assertFalse((d / "libnew.so.1").exists())
+        self.assertEqual((d / "voices" / "a.onnx").read_text(), "voice")
+        self.assertFalse((d / "bin.bak").exists() or (d / bak.name).exists())   # never nested
+        self.assertFalse(bak.exists())
 
     def test_remove_backup_discards(self):
         d = self.tmp / "bin"

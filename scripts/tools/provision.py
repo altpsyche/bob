@@ -5,7 +5,7 @@ duplicated logic — the agent tool (DISPATCH), the `bob <verb>` cli handler (sc
 `bob --run <cap>`. The cold-start KERNEL also calls these same fns directly (they must stay import-clean
 under a bare system python — no `requests`, no venv-only deps; downloads shell `curl` to stay venv-free).
 
-`fetch` (ported from the former fetch-models script): download the active-profile GGUFs with resume
+`fetch`: download the active-profile GGUFs with resume
 (`curl -C -`), verify each against versions.lock (pinned SHA256 -> loud-fail; unpinned -> TOFU + warn),
 and record the SHA256 into models/manifest.json. mmproj (multimodal projector) rides the model's revision.
 Model set + repos/paths/sizes come from the neutral registry (bob_models, config/models.json)."""
@@ -78,8 +78,7 @@ def _model_revision(gguf: str, lock) -> str:
 def _verify_download(file: Path, gguf: str, lock) -> str:
     """Hash the freshly-downloaded file and compare to the versions.lock pin. Pinned + mismatch -> delete
     the bad file and raise (loud-fail); pinned + match -> ok; unpinned -> TOFU + warn. Returns the
-    computed lowercase hash so the caller records it without re-hashing a multi-GB file. Port of
-    Confirm-Download."""
+    computed lowercase hash so the caller records it without re-hashing a multi-GB file."""
     from bob.versions import sha256_file
 
     sha = sha256_file(file)
@@ -139,9 +138,14 @@ def _download(url: str, dest: Path, headers: list) -> None:
     """Resumable download to <dest> via curl (`-C -` resume, `--fail-with-body`). Writes to <dest>.part
     then atomically moves. On curl 22 (HTTP >=400 with --fail-with-body: the error page was written INTO
     the .part, poisoning a future resume) the .part is deleted; other non-zero exits (a network drop)
-    leave a valid partial that -C - can legitimately resume. Raises on failure. Port of the fetch loop."""
+    leave a valid partial that -C - can legitimately resume. Raises on failure."""
     part = Path(f"{dest}.part")
-    cmd = [_curl_exe(), "-L", "-C", "-", "--fail-with-body", "--progress-bar", *headers,
+    # --retry rides out transient network/5xx failures (resuming via -C -); --speed-limit/--speed-time abort a
+    # transfer that has stalled below 1 KB/s for a minute, so a hung connection fails (and can be resumed)
+    # instead of blocking setup forever.
+    cmd = [_curl_exe(), "-L", "-C", "-", "--fail-with-body", "--progress-bar",
+           "--retry", "5", "--retry-delay", "3", "--retry-connrefused",
+           "--speed-limit", "1024", "--speed-time", "60", *headers,
            "-o", str(part), url]
     rc = subprocess.run(cmd).returncode
     if rc != 0:
@@ -224,57 +228,69 @@ def _files_for(m: dict):
         yield m["mmproj"], m["mmproj"], 0.6
 
 
-# --- setup-voice: provision whisper + piper (post-venv) --------------------------------------
+# --- setup-voice: provision the STT model + piper (post-venv) -----------------------------------
 
-def _dl_file(url: str, dest: Path, label: str, force: bool, out: list) -> None:
-    import urllib.request
+# The piper release setup-voice installs, with the SHA-256 of each archive (an executable is never run
+# unverified; a platform with no entry here cannot install piper and voice falls back to text).
+_PIPER_RELEASE = "2023.11.14-2"
+_PIPER_ASSETS = {
+    "linux": ("piper_linux_x86_64.tar.gz", "a50cb45f355b7af1f6d758c1b360717877ba0a398cc8cbe6d2a7a3a26e225992"),
+    "windows": ("piper_windows_amd64.zip", "f3c58906402b24f3a96d92145f58acba6d86c9b5db896d207f78dc80811efcea"),
+}
+
+
+def _dl_file(url: str, dest: Path, label: str, force: bool, out: list, sha256: str = None) -> None:
+    """Fetch one file via the atomic osenv.download (a .part until complete, so an interrupted download is
+    retried next run instead of counting as present)."""
+    import osenv
     if dest.exists() and not force:
         out.append(f"  {label} already present — skipping.")
         return
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    urllib.request.urlretrieve(url, dest)  # noqa: S310 — fixed HF/GitHub https URLs
+    osenv.download(url, dest, sha256=sha256, timeout=60)
     out.append(f"  saved {label}")
 
 
-def _install_piper(url: str, win: bool, bindir: Path, out: list) -> None:
-    """Download + extract the piper release: binary -> bin/piper(.exe), shared libs + espeak-ng-data ->
-    bin/."""
+def _install_piper(url: str, win: bool, bindir: Path, out: list, sha256: str = None) -> None:
+    """Download (SHA-256 verified) + extract the piper release: the binary, its shared libs (SONAME links kept
+    as links) and espeak-ng-data -> bin/."""
     import tarfile
     import tempfile
-    import urllib.request
     import zipfile
 
-    tmp = Path(tempfile.mkdtemp())
-    arc = tmp / ("piper.zip" if win else "piper.tar.gz")
-    urllib.request.urlretrieve(url, arc)  # noqa: S310
-    if win:  # pragma: no cover — Windows piper .zip
-        with zipfile.ZipFile(arc) as z:
-            z.extractall(tmp)
-        binname = "piper.exe"
-    else:
-        with tarfile.open(arc) as t:
-            t.extractall(tmp, filter="data")  # 3.12+ safe-extraction filter
-        binname = "piper"
-    found = next((p for p in tmp.rglob(binname) if p.is_file()), None)
-    if not found:
-        raise RuntimeError(f"{binname} not found in the extracted piper archive")
-    bindir.mkdir(parents=True, exist_ok=True)
-    dst = bindir / binname
-    shutil.copy2(found, dst)
-    if not win:
-        dst.chmod(0o755)
-    for lib in found.parent.glob("*.so*" if not win else "*.dll"):
-        shutil.copy2(lib, bindir / lib.name)
-    espeak = found.parent / "espeak-ng-data"
-    if espeak.exists():
-        dest = bindir / "espeak-ng-data"
-        if dest.exists():
-            shutil.rmtree(dest)
-        shutil.copytree(espeak, dest)
-        out.append("  espeak-ng-data/ copied to bin/")
-    else:
-        out.append("  WARNING: espeak-ng-data not found beside piper — TTS phonemization may fail")
-    shutil.rmtree(tmp, ignore_errors=True)
+    import osenv
+
+    tmp = Path(tempfile.mkdtemp(prefix="bob-piper-"))
+    try:
+        arc = osenv.download(url, tmp / ("piper.zip" if win else "piper.tar.gz"), sha256=sha256, timeout=60,
+                             require_sha=True)
+        if win:  # pragma: no cover — Windows piper .zip
+            with zipfile.ZipFile(arc) as z:
+                z.extractall(tmp)
+            binname = "piper.exe"
+        else:
+            with tarfile.open(arc) as t:
+                t.extractall(tmp, filter="data")  # 3.12+ safe-extraction filter
+            binname = "piper"
+        found = next((p for p in tmp.rglob(binname) if p.is_file()), None)
+        if not found:
+            raise RuntimeError(f"{binname} not found in the extracted piper archive")
+        if not win:
+            found.chmod(0o755)
+        entries = {binname: found}
+        for lib in found.parent.glob("*.so*" if not win else "*.dll"):
+            entries[lib.name] = lib
+        osenv.install_files(entries, bindir)
+        espeak = found.parent / "espeak-ng-data"
+        if espeak.exists():
+            dest = bindir / "espeak-ng-data"
+            if dest.exists():
+                shutil.rmtree(dest)
+            shutil.copytree(espeak, dest, symlinks=True)
+            out.append("  espeak-ng-data/ copied to bin/")
+        else:
+            out.append("  WARNING: espeak-ng-data not found beside piper — TTS phonemization may fail")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
     out.append("  piper extracted to bin/")
 
 
@@ -302,7 +318,7 @@ def _multipart(fields: dict, filename: str, file_bytes: bytes) -> "tuple[bytes, 
 
 
 def _voice_smoke(stt_port: int) -> str:
-    """Best-effort STT smoke: start whisper, POST a silent WAV, stop. Never fatal (port of step 5). Stdlib
+    """Best-effort STT smoke: start the STT server, wait for /health, POST a silent WAV, stop. Never fatal. Stdlib
     urllib (no requests) so it works both under `bob setup-voice` (venv) and the cold-start kernel (system
     python3)."""
     import json as _json
@@ -318,7 +334,9 @@ def _voice_smoke(stt_port: int) -> str:
     try:
         stack.configure(_cfg)
         stack.service_control(_cfg, "whisper", "start")
-        time.sleep(2)
+        deadline = time.monotonic() + 60
+        while not stack._stt_health_ok(stt_port) and time.monotonic() < deadline:
+            time.sleep(0.5)
         body, ctype = _multipart({"temperature": "0.0", "response_format": "json"},
                                  wav.name, wav.read_bytes())
         req = urllib.request.Request(f"http://localhost:{stt_port}/inference", data=body,
@@ -339,8 +357,7 @@ def _voice_smoke(stt_port: int) -> str:
 
 def _fetch_ct2_model(size: str, force: bool, out: list) -> None:
     """Fetch a faster-whisper CTranslate2 model directory from Systran/faster-whisper-<size> into
-    models/faster-whisper/<size>/. STT models are provisioned here (like the whisper.cpp ggml model),
-    not pinned in the GGUF manifest. The vocabulary file extension varies by conversion (.txt on
+    models/faster-whisper/<size>/. STT models are provisioned here, not pinned in the GGUF manifest. The vocabulary file extension varies by conversion (.txt on
     small/base/medium, .json on large-v3), so it is fetched best-effort — newer tokenizers embed the
     vocabulary in tokenizer.json."""
     repo = f"Systran/faster-whisper-{size}"
@@ -359,9 +376,8 @@ def _fetch_ct2_model(size: str, force: bool, out: list) -> None:
 
 
 def setup_voice(force: bool = False, smoke: bool = True) -> str:
-    """Provision Phase-2 voice for the configured STT backend (voice.sttEngine): faster-whisper (default,
-    fetch the CT2 model, run in venv-litellm) or whisper.cpp (build whisper-server + fetch the ggml model,
-    the fallback). Always: piper binary/voice + espeak-ng-data + audio python deps into venv-litellm, then
+    """Provision voice: the faster-whisper CT2 model (STT runs in venv-litellm, GPU when the CUDA wheels load,
+    else CPU int8), the piper binary/voice + espeak-ng-data, and the audio python deps into venv-litellm, then
     a best-effort STT smoke. Post-venv (needs venv-litellm pip)."""
     import subprocess
 
@@ -369,7 +385,6 @@ def setup_voice(force: bool = False, smoke: bool = True) -> str:
     from bob_core import _port
 
     voice = (_cfg or {}).get("voice", {})
-    stt_engine = voice.get("sttEngine", "faster-whisper")
     stt_model = voice.get("sttModel", "small")
     tts_voice = voice.get("ttsVoice", "en_GB-alan-medium")
     win = osenv.os_name() == "windows"
@@ -379,49 +394,39 @@ def setup_voice(force: bool = False, smoke: bool = True) -> str:
     lang = parts[0].split("_")[0]
     vbase = (f"https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/{lang}/{parts[0]}/"
              f"{parts[1]}/{parts[2]}/{tts_voice}")
-    piper_url = ("https://github.com/rhasspy/piper/releases/download/2023.11.14-2/"
-                 + ("piper_windows_amd64.zip" if win else "piper_linux_x86_64.tar.gz"))
+    piper_asset, piper_sha = _PIPER_ASSETS.get("windows" if win else "linux")
+    piper_url = f"https://github.com/rhasspy/piper/releases/download/{_PIPER_RELEASE}/{piper_asset}"
 
-    # [1/4] STT engine + model
-    if stt_engine == "whisper.cpp":
-        server = osenv.bin_exe("whisper-server")
-        if force or not server.exists():
-            sys.path.insert(0, str(SCRIPTS / "tools"))
-            import build
-            build.configure(_cfg)
-            out.append(build.build_whisper(force=force))
-        else:
-            out.append("  whisper-server already built — skipping.")
-        _dl_file(f"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{stt_model}.bin",
-                 REPO / "models" / "whisper" / f"ggml-{stt_model}.bin", f"ggml-{stt_model}.bin", force, out)
-    else:
-        _fetch_ct2_model(stt_model, force, out)
+    # [1/4] STT model
+    _fetch_ct2_model(stt_model, force, out)
 
     # [2/4] piper binary + voice model
     bindir = REPO / "bin"
     voices = bindir / "voices"
     if force or not osenv.bin_exe("piper").exists():
-        _install_piper(piper_url, win, bindir, out)
+        _install_piper(piper_url, win, bindir, out, sha256=piper_sha)
     _dl_file(f"{vbase}.onnx", voices / f"{tts_voice}.onnx", f"{tts_voice}.onnx", force, out)
     _dl_file(f"{vbase}.onnx.json", voices / f"{tts_voice}.onnx.json", f"{tts_voice}.onnx.json", force, out)
 
-    # [3/4] python deps: audio capture (both engines) + faster-whisper when it is the active backend
+    # [3/4] python deps: audio capture + faster-whisper, resolved against the venv's pinned lock so they never
+    # move a pinned package.
     pip = osenv.venv_exe("venv-litellm", "pip")
     if not pip.exists():
         raise RuntimeError("venv-litellm not found — run bootstrap first")
-    subprocess.run([str(pip), "install", "--quiet", "sounddevice", "numpy"])
+    lock = REPO / "tools" / "litellm-requirements.lock"
+    pins = ["-c", str(lock)] if lock.exists() else []
+    subprocess.run([str(pip), "install", "--quiet", *pins, "sounddevice", "numpy"])
     out.append("  sounddevice + numpy installed")
-    if stt_engine != "whisper.cpp":
-        subprocess.run([str(pip), "install", "--quiet", "faster-whisper"])
-        out.append("  faster-whisper installed")
-        # GPU STT is an optional upgrade: when an NVIDIA GPU is present, install the CUDA-12 runtime
-        # wheels so CTranslate2 can run faster-whisper on the GPU (the server preloads them; if they are
-        # absent or fail it falls back to CPU int8, so this is best-effort and CPU still works by default).
-        if osenv.gpu_info() is not None:
-            rc = subprocess.run([str(pip), "install", "--quiet",
-                                 "nvidia-cublas-cu12", "nvidia-cudnn-cu12>=9,<10"]).returncode
-            out.append("  GPU STT libs (cu12 cuBLAS/cuDNN) installed" if rc == 0
-                       else "  GPU STT libs skipped (falling back to CPU int8)")
+    subprocess.run([str(pip), "install", "--quiet", *pins, "faster-whisper"])
+    out.append("  faster-whisper installed")
+    # GPU STT is an optional upgrade: when an NVIDIA GPU is present, install the CUDA-12 runtime wheels so
+    # CTranslate2 can run faster-whisper on the GPU (the server preloads them; if they are absent or fail it
+    # falls back to CPU int8, so this is best-effort and CPU still works by default).
+    if osenv.gpu_info() is not None:
+        rc = subprocess.run([str(pip), "install", "--quiet",
+                             "nvidia-cublas-cu12", "nvidia-cudnn-cu12>=9,<10"]).returncode
+        out.append("  GPU STT libs (cu12 cuBLAS/cuDNN) installed" if rc == 0
+                   else "  GPU STT libs skipped (falling back to CPU int8)")
 
     # [4/4] smoke test (best-effort)
     if smoke:

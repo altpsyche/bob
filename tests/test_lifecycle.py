@@ -490,6 +490,61 @@ class TestEnsureEnginePrebuiltFirst(unittest.TestCase):
         bl.assert_called_once()
 
 
+class TestPrebuiltCommitAndIntegrity(unittest.TestCase):
+    """An installed prebuilt is reused only when it came from the commit the manifest row (and this checkout)
+    pins; an unverifiable row is refused; any download failure falls back to source."""
+
+    def setUp(self):
+        self.repo = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, self.repo, True)
+        self.bin = self.repo / "bin"
+        self.bin.mkdir()
+        (self.bin / "llama-server").write_text("ELF")
+
+    def _ensure(self, marker_commit, row_commit="new0c0mm1t"):
+        build = __import__("build")
+        osenv.write_build_tier_marker(tier="cpu", source="prebuilt", bin_dir=self.bin, commit=marker_commit)
+        row = {"component": "llama-server", "builtFromCommit": row_commit, "tier": "cpu"}
+        with mock.patch("osenv.gpu_info", return_value=None), mock.patch("osenv.gpu_arch", return_value=None), \
+             mock.patch.object(osenv, "REPO", self.repo), \
+             mock.patch.object(lifecycle, "_select_engine_row", return_value=row), \
+             mock.patch.object(lifecycle, "_install_prebuilt", return_value="Installed") as inst, \
+             mock.patch.object(lifecycle, "_binary_runs", return_value=True), \
+             mock.patch("osenv.bin_exe", return_value=self.bin / "llama-server"), \
+             mock.patch("osenv.write_build_tier_marker") as wm, \
+             mock.patch.object(build, "build_llama") as bl:
+            res = lifecycle.ensure_engine(cpu=True)
+        return res, inst, wm, bl
+
+    def test_same_commit_is_reused(self):
+        res, inst, _wm, _bl = self._ensure("new0c0mm1t")
+        inst.assert_not_called()
+        self.assertIn("already present", res["detail"])
+
+    def test_stale_commit_is_reinstalled_and_marker_records_the_commit(self):
+        res, inst, wm, bl = self._ensure("old0c0mm1t")
+        inst.assert_called_once()
+        bl.assert_not_called()
+        self.assertEqual(wm.call_args.kwargs["commit"], "new0c0mm1t")
+
+    def test_row_without_sha_is_refused(self):
+        with self.assertRaises(RuntimeError) as cm:
+            lifecycle._install_prebuilt({"url": "https://example.invalid/e.tar.gz", "sha256": ""}, self.bin)
+        self.assertIn("sha256", str(cm.exception))
+
+    def test_non_runtime_download_error_falls_back_to_source(self):
+        import http.client
+        build = __import__("build")
+        with mock.patch("osenv.gpu_info", return_value=None), mock.patch("osenv.gpu_arch", return_value=None), \
+             mock.patch.object(lifecycle, "_select_engine_row", return_value={"component": "llama-server"}), \
+             mock.patch.object(lifecycle, "_install_prebuilt", side_effect=http.client.IncompleteRead(b"")), \
+             mock.patch("osenv.bin_exe", return_value=Path("/nonexistent/llama-server")), \
+             mock.patch.object(build, "build_llama", return_value="built") as bl:
+            res = lifecycle.ensure_engine(cpu=True)
+        self.assertEqual(res["source"], "source")
+        bl.assert_called_once()
+
+
 class TestUnbuiltTargetNotice(unittest.TestCase):
     """The honest word for the targets Bob publishes no engine for. Nothing branches on it — it exists so
     an arm64 or AMD owner is told, not left to infer it from a 40-minute compile or from slow inference."""

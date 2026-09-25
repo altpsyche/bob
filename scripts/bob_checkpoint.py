@@ -24,7 +24,18 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 REPO = Path(__file__).parent.parent
-DEFAULT_DB = REPO / "data" / "checkpoints.db"
+# None resolves lazily to <data_dir>/checkpoints.db (default_db); a caller or test may pin a path here.
+DEFAULT_DB = None
+
+
+def default_db() -> Path:
+    """The checkpoint DB used when no db_path is given: DEFAULT_DB if set, else under osenv.data_dir()
+    (the repo's data/ by default, BOB_DATA_DIR when set). A relative agent.checkpointDbPath resolves the
+    same way through bob_core.state_path."""
+    if DEFAULT_DB is not None:
+        return Path(DEFAULT_DB)
+    import osenv
+    return osenv.data_dir() / "checkpoints.db"
 
 
 def _now() -> str:
@@ -55,7 +66,11 @@ class CheckpointStore:
     run_id for resume across process death."""
 
     def __init__(self, db_path=None, shadow_dir=None, default_owner: str = "local"):
-        self.path = Path(db_path or DEFAULT_DB)
+        if db_path:
+            from bob_core import state_path
+            self.path = state_path(db_path)
+        else:
+            self.path = default_db()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.shadow_dir = Path(shadow_dir or (self.path.parent / "checkpoints"))
         self.shadow_dir.mkdir(parents=True, exist_ok=True)

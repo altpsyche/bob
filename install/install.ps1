@@ -5,7 +5,11 @@
 # Clones Bob (with submodules) into $env:BOB_HOME (default %USERPROFILE%\bob), runs the prereq + setup
 # steps (the .bat stubs, which hand off to `python -m bob.kernel`), then verifies against versions.lock.
 # Idempotent: a re-run fast-forwards an existing clone. This is an OS-shell bootstrap, not a return of
-# the retired PowerShell harness - it mirrors how install_prereqs.bat bootstraps today.
+# the retired PowerShell harness: it mirrors how install_prereqs.bat bootstraps today.
+#
+# Flags: --dev / --channel <stable|latest> are consumed here; --cpu, --from-source and --with-node also
+# reach the prereq step; every other flag (--with-aider, --with-fabric, --with-webui, --skip-models, ...)
+# passes through to setup.
 $ErrorActionPreference = 'Stop'
 
 $RepoUrl = if ($env:BOB_REPO_URL) { $env:BOB_REPO_URL } else { 'https://github.com/altpsyche/bob.git' }
@@ -48,16 +52,21 @@ for ($i = 0; $i -lt $args.Count; $i++) {
 if ($channel -eq 'stable') {
   git -C $BobHome fetch --tags --quiet 2>$null
   # Pick the newest release whose engines.json is actually published, so an install DURING a release's publish
-  # window (tag exists but assets not up yet) lands on the newest READY release, not a source build. Fall back
+  # window (tag exists but assets not up yet) lands on the newest READY release, not a source build. Same rule
+  # as lifecycle.latest_ready_release_tag (which cannot run before Python exists): the newest 5 v* tags by
+  # version order (_MAX_TAG_WALK), each probed at https://github.com/<slug>/releases/download/<tag>/engines.json,
+  # ready when that manifest carries at least one real row (a top-level key not starting with '_'). Fall back
   # to the newest tag if none look ready (offline / no origin).
   $slug = ((git -C $BobHome remote get-url origin 2>$null) -replace '.*github\.com[:/]','' -replace '\.git$','' -replace '/$','')
   $tag = $null
   foreach ($t in (git -C $BobHome tag --list 'v*' --sort=-v:refname | Select-Object -First 5)) {
     if ($slug) {
       try {
-        Invoke-WebRequest -Method Head -UseBasicParsing -TimeoutSec 15 `
-          -Uri "https://github.com/$slug/releases/download/$t/engines.json" | Out-Null
-        $tag = $t; break
+        $m = Invoke-RestMethod -UseBasicParsing -TimeoutSec 20 `
+          -Uri "https://github.com/$slug/releases/download/$t/engines.json"
+        if ($m -and @($m.PSObject.Properties.Name | Where-Object { -not $_.StartsWith('_') }).Count -gt 0) {
+          $tag = $t; break
+        }
       } catch { }
     }
   }
@@ -70,13 +79,16 @@ if ($channel -eq 'stable') {
     Log 'Stable channel requested but no release tag exists yet; staying on the default branch.'
   }
 } else {
-  Log 'Dev channel: tracking the latest main (source build).'
+  Log 'Dev channel: tracking the latest main (prebuilt engine when one matches this commit, else a source build).'
 }
 
-# Forward the prereq-relevant flags (--cpu, --from-source) to the prereq step.
+# Forward the prereq-relevant flags (--cpu, --from-source, --with-node) to the prereq step. --with-node is
+# prereq-only, so it is not passed on to setup.
 $prereqFlags = @()
 if ($setupArgs -contains '--cpu') { $prereqFlags += '--cpu' }
 if ($setupArgs -contains '--from-source') { $prereqFlags += '--from-source' }
+if ($setupArgs -contains '--with-node') { $prereqFlags += '--with-node' }
+$setupArgs = @($setupArgs | Where-Object { $_ -ne '--with-node' })
 Log 'Installing prerequisites ...'
 & .\install_prereqs.bat @prereqFlags
 Log 'Running setup ...'

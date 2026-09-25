@@ -2,13 +2,15 @@
 REM ============================================================================
 REM  Bob master setup (Python kernel, zero PowerShell).
 REM  Run ONCE after cloning + install_prereqs.bat. Idempotent (safe to re-run).
-REM  Builds engine+proxy -> creates venvs + installs tools -> fetches models ->
-REM  wires Continue/aider, via `python -m bob.kernel setup`.
+REM  Installs engine+proxy -> creates venvs -> fetches models -> wires Continue
+REM  and dsh, via `python -m bob.kernel setup`.
 REM
 REM  Usage:   setup.bat                 (full, includes voice+vision)
-REM           setup.bat --skip-models   (skip the ~38GB model downloads)
-REM           setup.bat --skip-voice    (skip whisper/piper/mmproj downloads)
+REM           setup.bat --skip-models   (skip the multi-GB model downloads)
+REM           setup.bat --skip-voice    (skip the STT model / piper voice downloads)
 REM           setup.bat --profile 12gb  (smaller models for ~12GB VRAM)
+REM           setup.bat --with-aider    (also install aider; opt-in)
+REM           setup.bat --with-fabric   (also build fabric; opt-in, needs Go)
 REM           setup.bat --launch        (start the stack when done)
 REM ============================================================================
 setlocal

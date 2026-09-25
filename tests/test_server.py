@@ -124,13 +124,14 @@ class TestServer(unittest.TestCase):
 
     def test_completion_records_turn(self):
         sid = srv.create_session(srv.SessionCreate(), authorization=GOOD)["session_id"]
-        orig = bob_loop.run_agent
-        bob_loop.run_agent = lambda *a, **k: ("answer", False)
+        orig = bob_loop.run_agent_events
+        bob_loop.run_agent_events = lambda *a, **k: iter([{"type": "final", "result": "answer",
+                                                          "reason": "answer"}])
         try:
             resp = srv.agent_completions(
                 srv.AgentRequest(goal="hi", session_id=sid), authorization=GOOD)
         finally:
-            bob_loop.run_agent = orig
+            bob_loop.run_agent_events = orig
         self.assertEqual(resp.result, "answer")
         self.assertEqual(resp.session_id, sid)
         self.assertEqual(len(srv.get_session(sid, authorization=GOOD)["history"]), 2)
@@ -138,16 +139,82 @@ class TestServer(unittest.TestCase):
     def test_completion_max_steps_422_records_no_turn(self):
         # N-review: on a 422 (result None) the non-stream route must NOT record a turn or charge tokens.
         sid = self._alice_session()
-        orig = bob_loop.run_agent
-        bob_loop.run_agent = lambda *a, **k: (None, False)
+        orig = bob_loop.run_agent_events
+        bob_loop.run_agent_events = lambda *a, **k: iter([{"type": "final", "result": None,
+                                                          "reason": "max_steps"}])
         try:
             with self.assertRaises(HTTPException) as ctx:
                 srv.agent_completions(
                     srv.AgentRequest(goal="hi", session_id=sid), authorization=GOOD)
         finally:
-            bob_loop.run_agent = orig
+            bob_loop.run_agent_events = orig
         self.assertEqual(ctx.exception.status_code, 422)
         self.assertEqual(len(srv.get_session(sid, authorization=GOOD)["history"]), 0)
+
+    def _complete_with_events(self, events, sid=None):
+        orig = bob_loop.run_agent_events
+        bob_loop.run_agent_events = lambda *a, **k: iter(events)
+        try:
+            return srv.agent_completions(srv.AgentRequest(goal="hi", session_id=sid), authorization=GOOD)
+        finally:
+            bob_loop.run_agent_events = orig
+
+    def test_upstream_down_is_503_not_max_steps(self):
+        # An unreachable LiteLLM is a service outage, not "reached max steps".
+        with self.assertRaises(HTTPException) as ctx:
+            self._complete_with_events([{"type": "error", "message": "LiteLLM proxy not reachable",
+                                         "kind": "upstream_unreachable"}])
+        self.assertEqual(ctx.exception.status_code, 503)
+        self.assertIn("not reachable", ctx.exception.detail)
+
+    def test_upstream_error_is_502(self):
+        with self.assertRaises(HTTPException) as ctx:
+            self._complete_with_events([{"type": "error", "message": "LLM error at step 1: boom",
+                                         "kind": "upstream_error"}])
+        self.assertEqual(ctx.exception.status_code, 502)
+
+    def test_context_overflow_is_422(self):
+        # The request can't fit the role's window: a client-side limit, like a truncated reply.
+        with self.assertRaises(HTTPException) as ctx:
+            self._complete_with_events([{"type": "error", "message": "window too small for the tool set",
+                                         "kind": "context_overflow"}])
+        self.assertEqual(ctx.exception.status_code, 422)
+
+    def test_blocking_completion_prints_nothing(self):
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            resp = self._complete_with_events([{"type": "token", "text": "ans"},
+                                               {"type": "tool_result", "call_id": "1", "name": "x",
+                                                "result": "secret tool output"},
+                                               {"type": "final", "result": "ans", "reason": "answer"}])
+        self.assertEqual(resp.result, "ans")
+        self.assertEqual(buf.getvalue(), "")
+
+    def test_turn_charges_reported_usage(self):
+        sid = self._alice_session()
+        self._complete_with_events([{"type": "final", "result": "a", "reason": "answer",
+                                     "usage": {"prompt_tokens": 900, "completion_tokens": 100,
+                                               "total_tokens": 1000}}], sid=sid)
+        self.assertEqual(srv._sessions.get(sid)["tokens_spent"], 1000)
+
+    def test_role_scopes_reach_the_run_context(self):
+        seen = {}
+        orig = bob_loop.run_agent_events
+
+        def fake(*a, **k):
+            seen["allowed_roles"] = k.get("allowed_roles")
+            yield {"type": "final", "result": "ok", "reason": "answer"}
+
+        bob_loop.run_agent_events = fake
+        srv._token_meta = {"sk-test": {"scopes": ["role:chat"], "rate": 0}}
+        try:
+            srv.agent_completions(srv.AgentRequest(goal="hi"), authorization=GOOD)
+        finally:
+            bob_loop.run_agent_events = orig
+            srv._token_meta = {}
+        self.assertEqual(seen["allowed_roles"], {"chat"})
 
     def test_completion_over_budget_402(self):
         sid = srv.create_session(srv.SessionCreate(token_budget=1), authorization=GOOD)["session_id"]

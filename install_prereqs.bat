@@ -2,13 +2,16 @@
 REM ============================================================================
 REM  Bob prerequisite installer (Python kernel, zero PowerShell).
 REM  Ensures Python is present, then hands off to `python -m bob.kernel prereqs`,
-REM  which installs Node.js, uv, Go, Python 3.12, CUDA Toolkit, cmake, Docker.
+REM  which installs uv + Python 3.12, and only when needed: Go, cmake and the
+REM  CUDA Toolkit (--from-source), Node.js (--with-node). Docker Desktop is
+REM  installed on first use of a Docker service, not here.
 REM  Run ONCE on a fresh machine. Idempotent.
 REM
 REM  Manual prereqs (install before running this):
 REM    Git          https://git-scm.com
 REM    Python 3.12  winget install Python.Python.3.12
-REM    VS2022 C++   winget install Microsoft.VisualStudio.2022.Community
+REM    VS2022 C++   only for --from-source:
+REM                 winget install Microsoft.VisualStudio.2022.Community
 REM                 (then: VS Installer -> Modify -> Desktop development with C++)
 REM ============================================================================
 setlocal

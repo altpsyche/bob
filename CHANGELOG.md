@@ -8,7 +8,131 @@ rebuilds only what changed, verifies, and rolls back on failure.
 
 ## [Unreleased]
 
+### Security
+- **Every service now binds loopback unless you say otherwise.** One top-level `bindHost` (default
+  `127.0.0.1`) is the address LiteLLM (`--host`), Open WebUI and n8n (`N8N_LISTEN_ADDRESS`) listen on,
+  and the Docker services publish their ports on `${BIND_HOST}`. llama-swap always stays on loopback,
+  since LiteLLM fronts it. faster-whisper and piper have no authentication, so they bind their own
+  top-level `voiceBindHost` (default `127.0.0.1`), and opening `bindHost` never exposes them. **Action:** LAN access now needs
+  `"bindHost": "0.0.0.0"` in `config/user.json`. [scripts/tools/stack.py](scripts/tools/stack.py),
+  [tools/compose/docker-compose.yml](tools/compose/docker-compose.yml)
+- **No more well-known keys.** The LiteLLM key is generated per machine on first use (`sk-bob-...`) by
+  `osenv.ensure_secret`, which keeps it in `data/secrets.json` (mode 0600) unless the environment or the
+  OS keychain already holds one; an explicit `litellmKey` in `config/user.json` still wins, and `sk-local`
+  is neither the default nor accepted. The Open WebUI session secret, the n8n encryption key, the SearXNG
+  secret and every Langfuse secret (project keys, database passwords, and the admin password,
+  `langfuseAdminPassword`) are generated the same way; an existing Postgres or n8n data dir keeps the
+  value it was created with. Generated configs that carry the key (`litellm.yaml`, Continue, aider,
+  dsh) are written 0600. `litellm.yaml` itself no longer holds the key: it reads
+  `master_key: os.environ/LITELLM_MASTER_KEY`, and Bob passes the key in that variable when it starts the
+  proxy. Secrets are written under an inter-process lock (`osenv.file_lock`) through 0600 temp files, so
+  two processes generating at once agree on one value. **Action:** clients Bob starts or configures pick
+  up the new key on their own (see the upgrade self-heal under Fixed); clients Bob does not configure (a
+  phone, another machine, your own scripts) need the new key from `data/secrets.json` or the keychain.
+  [scripts/osenv.py](scripts/osenv.py), [scripts/bob_core.py](scripts/bob_core.py),
+  [scripts/tools/generate.py](scripts/tools/generate.py), [scripts/tools/stack.py](scripts/tools/stack.py)
+- **The file tools cannot read a generated key.** `file_read` and `search_code` refuse the configs that
+  embed or wire the LiteLLM key (`litellm.yaml`, `continue/config.yaml`, `aider/*`, `dsh/*`, listed once in
+  `bob_fsguard.KEY_BEARING`), any `config` under `tools/n8n-data/`, `.webui_secret_key`, dsh's
+  `.credentials.yaml` and `secrets.json`. [scripts/bob_fsguard.py](scripts/bob_fsguard.py)
+- **One approval gate for every front door.** The agent loop, the shell, skill steps, `bob --run` and
+  MCP all dispatch through `bob_permissions.dispatch_with_approval`. `bob --run` asks on a terminal and
+  fails closed when piped; a skill's tool steps can no longer run a gated tool unasked. In the shell,
+  **a** now approves only that exact call and **t** approves the tool for any arguments.
+  [scripts/bob_permissions.py](scripts/bob_permissions.py), [scripts/bob/shell.py](scripts/bob/shell.py)
+- **MCP refuses what it cannot ask about.** Approval-required and state-changing tools are refused over
+  MCP unless listed in `agent.mcpAllowTools`, and the HTTP transport uses the agent API's full token auth
+  (scopes, per-owner rate limit, revocable store tokens). `spawn_agent` must be listed too, and a sub-run
+  it starts is held to the same list (`RunContext.unattended_allow`). `agent.acceptLitellmKey = false`
+  stops the LiteLLM key from opening the agent API and MCP. With it on, anyone holding that key (every
+  client config, n8n, fabric, Open WebUI) gets an unscoped `agent.defaultOwner` identity; the hardened
+  setup is scoped `agent.apiTokens` with `acceptLitellmKey` false. [scripts/bob_mcp_server.py](scripts/bob_mcp_server.py),
+  [scripts/bob_authstore.py](scripts/bob_authstore.py)
+- **Tool arguments can no longer become options.** `git_diff` puts its file after `--` and runs with
+  `--no-ext-diff --no-textconv`, a repo path starting with `-` is refused, and `git_log`'s count must be
+  an integer; `search_code` keeps the query behind `-e` or `/c:` and obeys the same read allowlist and
+  secrets denylist as `file_read`. [scripts/tools/git.py](scripts/tools/git.py),
+  [plugins/search/invoke.py](plugins/search/invoke.py)
+- **State-changing tools are declared as such.** `file_write`, `music_play` and `music_stop` are
+  mutating, so the permission policy, checkpointing and MCP's refusal apply. A tool whose name another
+  module already registered is refused rather than shadowing it, and `spawn_agent` can reach a cloud
+  role only with `agent.subAgentAllowPro`, with a role's tool scopes carried into the sub-run.
+  [scripts/tools/tool_registry.py](scripts/tools/tool_registry.py),
+  [scripts/tools/spawn_agent.py](scripts/tools/spawn_agent.py)
+- **Computer use's virtual display is enforced.** `agent.computerUse.display: "virtual"` now drives only
+  the display in `BOB_VIRTUAL_DISPLAY` (Linux, with `xdotool` and `scrot` or ImageMagick), and refuses
+  every action without one instead of touching the real desktop. **Action:** on Windows and macOS set
+  `display: "host"`. [scripts/tools/computer.py](scripts/tools/computer.py)
+- **n8n workflows no longer see Bob's key.** The LiteLLM nodes use a **Bob LiteLLM** Header Auth
+  credential that `bob services n8n start` imports (and re-imports only when the key or n8n's encryption
+  key changes), instead of reading `$env.BOB_LITELLM_KEY`; n8n's environment is not exposed to
+  workflows. [scripts/tools/stack.py](scripts/tools/stack.py),
+  [tools/n8n-workflows/README.md](tools/n8n-workflows/README.md)
+- **CI actions are pinned by commit SHA**, with a skip guard and release gates on the publish jobs.
+  [.github/workflows/ci.yml](.github/workflows/ci.yml)
+- **The key-file denylist ignores case.** On a case-insensitive filesystem (APFS, NTFS)
+  `CONFIG/Continue/config.yaml` opens the real file, so `bob_fsguard` now compares the `KEY_BEARING`
+  paths and n8n's `config` casefolded. [scripts/bob_fsguard.py](scripts/bob_fsguard.py)
+- **A stale LiteLLM pidfile can no longer kill another process.** Before restarting a proxy that rejects
+  Bob's key, the pid in `logs/litellm.pid` must name Bob's own LiteLLM (`osenv.find_managed_processes`);
+  after a reboot it can name anything, and that process is now reported as a foreign proxy and left
+  running. [scripts/tools/stack.py](scripts/tools/stack.py)
+- **A malformed `secrets.json` is never overwritten.** It used to read as empty, so the next generated
+  secret rewrote the file with only itself, wiping the n8n, Open WebUI and Langfuse secrets (a new n8n
+  key cannot decrypt n8n's stored credentials). It is now moved aside to `secrets.json.corrupt-<timestamp>`
+  (0600) and `osenv.SecretsFileCorrupt` says how to restore it. On Windows a read that races the atomic
+  replace is retried. [scripts/osenv.py](scripts/osenv.py)
+- **`schedule_run` is held to the calling surface's allow list.** Run as a tool, the scheduled loop now
+  inherits the caller's approver, owner, role scopes and `agent.mcpAllowTools` set, the way `spawn_agent`
+  does, and it is gated on MCP like `spawn_agent` (`UNATTENDED_GATED`).
+  [scripts/tools/schedule.py](scripts/tools/schedule.py), [scripts/bob_permissions.py](scripts/bob_permissions.py)
+- **LiteLLM never starts without its master key.** Without `LITELLM_MASTER_KEY` LiteLLM only logs a
+  warning and serves unauthenticated, so Bob's launcher refuses to start it with no key, and the generated
+  `litellm.yaml` header warns that a hand run (`litellm --config config/litellm.yaml`) needs the variable
+  exported. [scripts/tools/stack.py](scripts/tools/stack.py), [scripts/tools/generate.py](scripts/tools/generate.py),
+  [docs/SECURITY.md](docs/SECURITY.md)
+
 ### Added
+- **Budgets follow the model that serves the request.** `agent.maxContextTokens = 0` (the new default)
+  uses the per-slot window of the role being served, minus the output reservation and the tool schemas;
+  an explicit value is capped at that window, and bounds summaries, plan and verify turns and plugin
+  calls as well (`bob_core.complete`). `max_tokens` is always sent: a pro role asks for its peer's
+  `maxOutputTokens` (the role's override, else the peer's), a local role for `agent.outputReserveTokens`,
+  both capped at half the window. A reply cut off at it is marked as truncated, and a tool call in a
+  truncated reply is never run. Session budgets charge the run's real token usage. A small window (4096
+  on cpu `chat` and 16gb `vision`) compacts the tool schemas, then leaves out non-core tools largest
+  first (core is `file_`, `shell_`, `memory_`, `web_`, `todo_`) with one notice naming them and pointing
+  to `agent.disabledTools`; `max_tokens` shrinks to fit, and when under 256 output tokens fit the run
+  ends with a `context_overflow` error that says what to trim.
+  [scripts/bob_loop.py](scripts/bob_loop.py), [scripts/bob_core.py](scripts/bob_core.py)
+- **The CPU profile degrades clearly.** `coder`, `ponder`, `writer` and `agent` fall back to `chat` with
+  a notice, image input is refused with a message when the profile has no vision model, when
+  `vision.enabled` is false, when a pinned local role is text-only (neither `supportsVision` nor an
+  `mmproj`), or when `--pro` routes to a peer without `supportsVision`, and memory runs
+  keyword-only without an embed role. `voice.enabled = false` now gates `bob voice` and `/voice`.
+  [scripts/bob_core.py](scripts/bob_core.py)
+- **The STT server speaks OpenAI.** `POST /v1/audio/transcriptions` sits alongside `/inference`, so Open
+  WebUI and the n8n voice workflow reach it directly. [scripts/faster_whisper_server.py](scripts/faster_whisper_server.py)
+- **Memory commands do what they say.** `bob memory clear` wipes memories, core blocks, the transcript
+  and their FTS indexes; `forget --query` shows the match and asks (`--yes` skips); `forget --session`
+  covers the transcript; a forgotten fact leaves the profile and can be stored again. The transcript is
+  bounded (`memory.transcriptMaxRows` 20000, `memory.transcriptMaxDays` 90), the DB runs in WAL mode,
+  and `bob memory --db PATH` and `bob code index --rebuild` are new. [scripts/bob_memory.py](scripts/bob_memory.py),
+  [docs/MEMORY.md](docs/MEMORY.md)
+- **aider and fabric are opt-in tools.** `./setup.sh --with-aider` or `bob aider-setup` creates
+  `tools/venv-aider` and generates `config/aider/.aider.conf.yml` plus a model-metadata file with each
+  role's per-slot window; `bob aider` passes it with `--config`, and a `~/.aider.conf.yml` symlink into
+  the repo is removed. `--with-fabric` or `bob fabric-setup` builds fabric and adds Bob as its LiteLLM
+  vendor without overwriting the rest of `~/.config/fabric/.env`, and `fabric_run` always passes
+  `--vendor LiteLLM --model coder`. **Action:** run one of them if you use aider or fabric.
+  [scripts/bob/kernel.py](scripts/bob/kernel.py), [scripts/tools/build.py](scripts/tools/build.py)
+- **`bob <plugin> ...` runs a plugin's CLI**, `main(argv)` in `plugins/<name>/invoke.py`. Plugins are
+  Python only, and `agent.disabledTools` (by directory name) is the one way to disable one.
+  [scripts/bob/cli.py](scripts/bob/cli.py), [plugins/AUTHORING.md](plugins/AUTHORING.md)
+- **Langfuse runs v3 with nothing to copy.** Web and worker with Postgres, ClickHouse, Redis and MinIO;
+  the project is created with the generated key pair, LiteLLM gets the same pair, and the agent's OTLP
+  export defaults to the local `/api/public/otel/v1/traces` with Basic auth from those keys.
+  [tools/compose/docker-compose.yml](tools/compose/docker-compose.yml), [scripts/bob_tracing.py](scripts/bob_tracing.py)
 - **One 27B model now serves five roles, and it fits a 16 GB card whole.** `chat` on every GPU tier is
   Qwen3.8-27B in IST-DASLab's GSQ-RCO packing, and `coder`, `ponder`, `writer` and `agent` are
   `aliasOf: "chat"` — one download, one loaded llama-server, five names. The packing is why: GSQ
@@ -31,6 +155,41 @@ rebuilds only what changed, verifies, and rolls back on failure.
   [scripts/tools/stack.py](scripts/tools/stack.py), [config/defaults.json](config/defaults.json)
 
 ### Fixed
+- **An upgrade no longer strands clients on the old key.** Every start, auto-start included, regenerates
+  the generated configs whose embedded LiteLLM key is stale (`generate.refresh_stale_key_files`) and
+  restarts a Bob-started proxy that rejects Bob's key (`bob_core.litellm_key_rejected`: `GET /v1/models`
+  answers 401 or 403); a proxy Bob did not start is reported, not touched. Open WebUI's stored connection
+  to Bob's LiteLLM port gets the current key before WebUI starts (`generate.webui_sync_key`; connections
+  to anything else keep theirs), and `bob gen` updates fabric's LiteLLM key (`refresh_fabric_env`).
+  `bob doctor` adds a "Generated configs carry the current LiteLLM key" row.
+  [scripts/tools/stack.py](scripts/tools/stack.py), [scripts/tools/generate.py](scripts/tools/generate.py),
+  [scripts/tools/health.py](scripts/tools/health.py)
+- **Per-role sampling could be overridden by any client.** Sampling moved out of `--temp`-style flags
+  into `setParams` on every tier (applied server-side, so a client's `temperature` cannot change it),
+  with the same values per role everywhere; `bob gen` warns on a sampling flag left in `flags`. `ponder`
+  gets its own prompt, pro roles inherit `prompts[role]`, and the cpu `writer` and `agent` are aliases
+  of `chat`. [config/models.json](config/models.json), [scripts/tools/generate.py](scripts/tools/generate.py)
+- **The reranker rejected long pairs.** A rank-pooling reranker refuses any query plus document longer
+  than its ubatch, so `rerank` runs at `-c 1024 -ub 1024 -b 1024` and `bob doctor` flags a batch smaller
+  than the context. The VRAM of the new setting still needs an on-card measurement.
+  [config/models.json](config/models.json), [scripts/tools/health.py](scripts/tools/health.py)
+- **Recall returned loosely related rows.** Recall now gates on the raw semantic score
+  (`memory.recallThreshold`, with an optional `memory.rerankThreshold`) before recency and type reorder
+  anything, and embed and rerank inputs are fitted to the model's context. `memory.embedModel` is now
+  read. [scripts/bob_memory.py](scripts/bob_memory.py)
+- **Client configs overstated the window.** Continue, dsh and aider state each role's per-slot window;
+  Continue ships the SearXNG MCP server only when `agent.searchProvider` is `searxng`, adds Bob's MCP
+  server when `agent.mcpEnabled` is on, and leaves out the npx servers when `npx` is absent. The Open
+  WebUI prompt sync merges instead of clobbering, and the dsh MCP entry is replaced in place when the
+  transport changes. [scripts/tools/generate.py](scripts/tools/generate.py)
+- **The agent API reported an upstream outage as a server fault.** An unreachable model backend returns
+  503 and a failing one 502; the task worker exits 1 on an error and 2 when it stops at max steps.
+  [scripts/bob_agent_server.py](scripts/bob_agent_server.py), [scripts/bob_task_runner.py](scripts/bob_task_runner.py)
+- **Update and stop were rougher than they looked.** `bob update` no longer relocks `versions.lock`, the
+  restart waits for the old processes to exit, the engine update swaps files atomically, and a rollback
+  restores on any error. `bob stop` stops only Bob's own processes. Setup never overrides a profile you
+  chose; it only suggests one. [scripts/bob/cli.py](scripts/bob/cli.py), [scripts/tools/stack.py](scripts/tools/stack.py),
+  [scripts/bob/kernel.py](scripts/bob/kernel.py)
 - **Bob's models in DeepSeek Harness failed with "no credential for provider route bob".** The route
   referenced `BOB_LITELLM_KEY`, but nothing set it, so a fresh install could not connect until the user
   exported it by hand and restarted dsh. `bob gen` (and setup) now stores Bob's `litellmKey` under that
@@ -59,8 +218,7 @@ rebuilds only what changed, verifies, and rolls back on failure.
 - **Two `maxTokens` settings did nothing.** `defaults.maxTokens` was documented as `bob chat`'s default
   and `voice.maxTokens` as the voice reply cap, but no code read either. Both are removed rather than
   wired up: a hard cap cuts a spoken reply mid-sentence, and a reasoning model can spend all of it
-  thinking. Voice replies stay short through the voice system prompt, and `bob chat --max N` still caps
-  a single call.
+  thinking. `bob chat --max N` still caps a single call.
 - **A memory lookup was unloading the chat model.** llama-swap puts any model Bob does not list as a
   swap member into an implicit default group whose `exclusive` defaults to true, so loading `embed` or
   `rerank` evicted everything else — every semantic recall paid a full model reload. `bob gen` now emits
@@ -82,8 +240,40 @@ rebuilds only what changed, verifies, and rolls back on failure.
 - **`bob profiles` was multiplying a profile's size by its role count.** The total and the on-disk count
   are now per file, so roles sharing one GGUF are counted once; `bob model` marks an alias and reads its
   loaded state from the model that actually loads. [scripts/tools/models.py](scripts/tools/models.py)
+- **A tool image on a small vision window no longer overflows it.** Switching to the vision role mid-run
+  (a tool returned an image) now refits the tools to the vision model's window, counts each image at its
+  flat token cost, and shrinks the reply to what is left. When even that does not fit, the images are not
+  sent: the run stays on its role and the transcript says why, instead of a `max_tokens=1` request with an
+  oversized prompt. [scripts/bob_loop.py](scripts/bob_loop.py)
+- **fabric's pre-LiteLLM `.env` is migrated.** `bob gen` now also rewrites a `.env` that still holds the
+  `OPENAI_API_KEY=sk-local` pair an earlier setup wrote, so `fabric_run`'s `--vendor LiteLLM` works.
+  [scripts/tools/generate.py](scripts/tools/generate.py), [scripts/tools/build.py](scripts/tools/build.py)
+- **A rotated key reaches dsh and a running Open WebUI.** Every start now refreshes the key in dsh's
+  credential store (when `$DSH_HOME/.credentials.yaml` exists), not only `bob gen`, and when the key sync
+  updates a running Open WebUI's stored rows it says WebUI needs a restart, since it keeps the key it
+  read at start. [scripts/tools/stack.py](scripts/tools/stack.py), [scripts/tools/generate.py](scripts/tools/generate.py)
 
 ### Changed
+- **A default install downloads and compiles far less.** llama-swap installs as the pinned,
+  SHA-verified release binary (Go only for `--from-source`, including a pinned arm64 build), Node is
+  optional (`--with-node`), and the compiler, cmake and ninja are installed only for a source build or a
+  platform with no prebuilt (arm64 Linux compiles the engine automatically). On rpm-ostree the prebuilt
+  path usually layers nothing and needs no reboot. On Windows, Docker Desktop is installed only when a
+  Docker service is first started, and VS2022 only for `--from-source`. Venvs install from their `.lock`
+  on every OS. [scripts/bob/install_prereqs.py](scripts/bob/install_prereqs.py),
+  [scripts/tools/build.py](scripts/tools/build.py), [scripts/osenv.py](scripts/osenv.py)
+- **whisper.cpp is gone.** faster-whisper is the only STT backend (GPU, with a CPU int8 fallback), so the
+  submodule, its build and `voice.sttEngine` are removed. [scripts/tools/provision.py](scripts/tools/provision.py)
+- **Config keys that did nothing are removed.** `memory.autoSummarize`, `voice.sttEngine`,
+  `voice.ttsEngine`, and the `webuiSecret`, `port`, `langfusePort` and `n8nTimezone` entries in
+  `config/models.json` `defaults`. `bindHost`, `voiceBindHost`, `langfuseEnabled`, `n8nTimezone` and `litellmKey` are
+  top-level runtime keys, and every `config/user.json` override sits at the top level (no `bob`
+  wrapper); `config/user.json.example` lists real keys at their defaults. `vision-pro` is removed (no
+  enabled peer takes images) and `vision.visionProRole` points at the local `vision` model.
+  [config/defaults.json](config/defaults.json), [config/models.json](config/models.json),
+  [config/user.json.example](config/user.json.example)
+- **One code path for each concern.** Session recording, approval, registry building, secret handling
+  and token estimation each have a single implementation that every surface calls. Internal only.
 - **Per-model KV quantization.** `kvQuantK` / `kvQuantV` on a single model override the profile-wide
   macro — the 16gb 27B is held entirely in VRAM at 40960 context, which is only affordable at `q4_0`,
   while everything else on the tier keeps `q8_0`. [config/models.json](config/models.json)

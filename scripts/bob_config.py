@@ -2,14 +2,18 @@
 `config.json` shape from the neutral sources (config/defaults.json + an optional neutral user
 override) in pure Python, so the agent runtime can boot on any OS.
 
-It produces only the ~15 keys the Python core actually reads: port, litellmPort, agentPort,
-searxngPort, litellmKey, routing.*, persona.systemPrompt, agent.*, memory.*, vision.*, voice.*. It
-never reproduces provisioner keys (profiles, peers, model file paths, build flags).
+It produces only the keys the Python core actually reads: port, litellmPort, agentPort, searxngPort,
+litellmKey, bindHost, voiceBindHost, langfuseEnabled, n8nTimezone, routing.*, persona.systemPrompt, agent.*, memory.*,
+vision.*, voice.*. It never reproduces provisioner keys (profiles, peers, model file paths, build flags).
+
+The user overlay is config/user.json (or user.toml) unless env BOB_USER_CONFIG names another file; a
+missing file is an empty overlay.
 
 This is now the ONE config resolve path on every OS — bob_core.load_config calls it unconditionally.
 """
 import copy
 import json
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -42,6 +46,24 @@ def _routing_from_role_table(role_table: dict) -> dict:
     return routing
 
 
+# Top-level runtime scalars carried from config/defaults.json `runtime` into the runtime config (and
+# overridden at the top level of config/user.json).
+_TOP_LEVEL_RUNTIME = ("bindHost", "voiceBindHost", "langfuseEnabled", "n8nTimezone")
+
+
+def user_config_path() -> Optional[Path]:
+    """The per-machine overlay file: env BOB_USER_CONFIG when set, else config/user.json, else
+    config/user.toml when only that exists. None when neither default file exists (no overlay)."""
+    env = os.environ.get("BOB_USER_CONFIG")
+    if env:
+        return Path(env).expanduser()
+    if _USER_JSON.exists():
+        return _USER_JSON
+    if _USER_TOML.exists():
+        return _USER_TOML
+    return None
+
+
 def load_user_overlay(user_path: Optional[Path] = None) -> dict:
     """The ONE loader for the neutral per-machine override (config/user.json, or user.toml if present).
     Both the runtime resolver (resolve_runtime_config) and the model-registry resolver
@@ -49,19 +71,15 @@ def load_user_overlay(user_path: Optional[Path] = None) -> dict:
     Returns {} when absent OR unreadable — a malformed overlay must never break config resolution.
     The override is the runtime/registry-config shape (e.g. {"agent": {"maxSteps": 3}})."""
     try:
-        if user_path is not None:
-            if not user_path.exists():
-                return {}
-            if user_path.suffix == ".toml":
-                return _load_toml(user_path)
-            return json.loads(user_path.read_text(encoding="utf-8"))
-        if _USER_JSON.exists():
-            return json.loads(_USER_JSON.read_text(encoding="utf-8"))
-        if _USER_TOML.exists():
-            return _load_toml(_USER_TOML)
+        path = Path(user_path) if user_path is not None else user_config_path()
+        if path is None or not path.exists():
+            return {}
+        if path.suffix == ".toml":
+            return _load_toml(path)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
     except (json.JSONDecodeError, OSError, RuntimeError):
         return {}   # a bad overlay is ignored, not fatal (matches the model-registry resolver)
-    return {}
 
 
 def _load_toml(path: Path) -> dict:
@@ -84,7 +102,8 @@ def resolve_runtime_config(user_path: Optional[Path] = None) -> dict:
         "port": ports["port"],
         "litellmPort": ports["litellmPort"],
         "searxngPort": ports["searxngPort"],
-        "litellmKey": runtime.get("litellmKey", "sk-local"),
+        # Empty means "generated": bob_core._litellm_key mints and keeps one in the secret store.
+        "litellmKey": runtime.get("litellmKey", ""),
         "routing": _routing_from_role_table(defaults["roleTable"]),
         "persona": copy.deepcopy(runtime.get("persona", {})),
         "memory": copy.deepcopy(runtime.get("memory", {})),
@@ -92,6 +111,9 @@ def resolve_runtime_config(user_path: Optional[Path] = None) -> dict:
         "voice": copy.deepcopy(runtime.get("voice", {})),
         "agent": copy.deepcopy(runtime.get("agent", {})),
     }
+    for key in _TOP_LEVEL_RUNTIME:
+        if key in runtime:
+            cfg[key] = copy.deepcopy(runtime[key])
     # agentPort/mcpPort defaults live under agent (that's where the servers read them, via _port).
     cfg["agent"].setdefault("agentPort", ports["agentPort"])
     cfg["agent"].setdefault("mcpPort", ports["mcpPort"])

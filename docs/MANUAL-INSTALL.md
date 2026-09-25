@@ -41,9 +41,9 @@ step manually.
 7. [Install the `bob` CLI](#7-install-the-bob-cli)
 8. [Generate the runtime configs](#8-generate-the-runtime-configs)
 9. [Download models](#9-download-models)
-10. [Wire the editor clients (Continue + aider)](#10-wire-the-editor-clients-continue--aider)
-11. [Build and configure fabric](#11-build-and-configure-fabric)
-12. [Voice and vision (whisper + piper)](#12-voice-and-vision-whisper--piper)
+10. [Wire the editor clients (Continue, optional aider)](#10-wire-the-editor-clients-continue-optional-aider)
+11. [Build and configure fabric (optional)](#11-build-and-configure-fabric-optional)
+12. [Voice and vision (faster-whisper + piper)](#12-voice-and-vision-faster-whisper--piper)
 13. [Optional add-on services (Langfuse, SearXNG, n8n)](#13-optional-add-on-services-langfuse-searxng-n8n)
 14. [Verify the installation](#14-verify-the-installation)
 
@@ -52,9 +52,13 @@ step manually.
 ## 1. Install the toolchain (prerequisites)
 
 The manual equivalent of `python -m bob.kernel prereqs --from-source`. It installs the build toolchain
-(compiler, `make`, `cmake`, `ninja`, `go`, `node`/`npm`, Python 3.12) plus, for a source GPU build, the
-CUDA toolkit. (The default prebuilt path installs the same supporting tools but no CUDA toolkit, since the
-prebuilt engine is driver-only.) Only **Git** must exist before you start.
+(compiler, `make`, `cmake`, `ninja`, `go`, Python 3.12) plus, for a source GPU build, the CUDA toolkit.
+`node`/`npm` are optional (`--with-node`: n8n and Continue's npx MCP servers need them). The default
+prebuilt path installs only `git`, `curl` and Python: no compiler, cmake, Go or CUDA toolkit, since the
+engine is a driver-only prebuilt and llama-swap is a pinned, SHA-verified release binary. A platform with
+no prebuilt engine (arm64 Linux) needs the compiler and cmake even without `--from-source`, because it
+compiles llama.cpp automatically; its llama-swap still comes from the pinned arm64 release. Only **Git**
+must exist before you start.
 
 The kernel resolves the concrete package names per distro from a single table
 (`PACKAGE_MAP` in `scripts/osenv.py`); the commands below are that table, expanded.
@@ -69,9 +73,12 @@ add-on services in step 13).
 **Debian / Ubuntu (apt):**
 ```bash
 sudo apt-get update
-sudo apt-get install -y git curl build-essential make cmake ninja-build \
-    golang-go nodejs npm python3 python3-pip python3-venv
-# GPU build only:
+sudo apt-get install -y git curl python3 python3-pip python3-venv
+# source build only:
+sudo apt-get install -y build-essential make cmake ninja-build golang-go
+# optional (n8n, Continue's npx MCP servers):
+sudo apt-get install -y nodejs npm
+# GPU source build only:
 sudo apt-get install -y nvidia-cuda-toolkit
 # Optional extras:
 sudo apt-get install -y cron docker.io
@@ -79,9 +86,12 @@ sudo apt-get install -y cron docker.io
 
 **Fedora / RHEL (dnf):**
 ```bash
-sudo dnf install -y git curl gcc-c++ make cmake ninja-build \
-    golang nodejs npm python3 python3-pip
-# GPU build only:
+sudo dnf install -y git curl python3 python3-pip
+# source build only:
+sudo dnf install -y gcc-c++ make cmake ninja-build golang
+# optional (n8n, Continue's npx MCP servers):
+sudo dnf install -y nodejs npm
+# GPU source build only:
 sudo dnf install -y cuda-toolkit
 # Optional extras:
 sudo dnf install -y cronie docker
@@ -89,9 +99,12 @@ sudo dnf install -y cronie docker
 
 **Arch / CachyOS (pacman):**
 ```bash
-sudo pacman -S --needed --noconfirm git curl base-devel cmake ninja \
-    go nodejs npm python
-# GPU build only:
+sudo pacman -S --needed --noconfirm git curl python
+# source build only:
+sudo pacman -S --needed --noconfirm base-devel cmake ninja go
+# optional (n8n, Continue's npx MCP servers):
+sudo pacman -S --needed --noconfirm nodejs npm
+# GPU source build only:
 sudo pacman -S --needed --noconfirm cuda
 # Optional extras:
 sudo pacman -S --needed --noconfirm cronie docker
@@ -99,31 +112,37 @@ sudo pacman -S --needed --noconfirm cronie docker
 
 **openSUSE (zypper):**
 ```bash
-sudo zypper --non-interactive install git curl gcc-c++ make cmake ninja \
-    go nodejs-default npm-default python3 python3-pip
-# GPU build only:
+sudo zypper --non-interactive install git curl python3 python3-pip
+# source build only:
+sudo zypper --non-interactive install gcc-c++ make cmake ninja go
+# optional (n8n, Continue's npx MCP servers):
+sudo zypper --non-interactive install nodejs-default npm-default
+# GPU source build only:
 sudo zypper --non-interactive install cuda
 # Optional extras:
 sudo zypper --non-interactive install cronie docker
 ```
 
 **Atomic Fedora (Bazzite / Silverblue / Kinoite, rpm-ostree):** the base OS is immutable, so packages
-are *layered* and apply on the next boot, reusing the `dnf` package names above:
+are *layered* and apply on the next boot. The prereq step layers only what the image lacks, and on the
+default prebuilt path that is usually nothing (git, curl and Python ship in the image), so there is no
+transaction and no reboot. A source build needs the toolchain, which is layered with the `dnf` names
+above and applies after a reboot:
 ```bash
-sudo rpm-ostree install --idempotent --allow-inactive git curl gcc-c++ make cmake \
-    ninja-build golang nodejs npm python3 python3-pip
+sudo rpm-ostree install --idempotent --allow-inactive gcc-c++ make cmake ninja-build golang
 systemctl reboot        # layered packages apply on the next boot
 ```
+Or skip layering entirely and do the source build inside a Fedora distrobox (below).
 CUDA is deliberately **not** layered on an atomic host (it needs NVIDIA's repo + akmods and is fragile
 there). For GPU work on Bazzite/Silverblue, use a Fedora distrobox: plain `dnf` inside, native build
 and CUDA passthrough just work, and nothing touches the immutable host:
 ```bash
 distrobox create --name bob --image fedora:latest --nvidia
 distrobox enter bob
-cd /path/to/bob && ./install_prereqs.sh && ./setup.sh
+cd /path/to/bob && ./install_prereqs.sh --from-source && ./setup.sh --from-source
 ```
 
-**cmake version note (rolling distros).** llama.cpp and whisper.cpp reject cmake **4.x**, which is all
+**cmake version note (rolling distros, source builds only).** llama.cpp rejects cmake **4.x**, which is all
 Arch/CachyOS and other rolling distros ship. If `cmake --version` reports 4.x, the kernel downloads a
 pinned Kitware **cmake 3.31.7** into `tools/` and uses that. To do it by hand:
 ```bash
@@ -136,41 +155,44 @@ cd ..
 
 ### Windows
 
-The Windows path uses winget / scoop to install the **toolchain** (not Bob itself). Install these once,
-then open a new terminal so each lands on PATH.
+The Windows path uses winget / scoop to install the **toolchain** (not Bob itself). The default prebuilt
+path needs only Python 3.12 and uv; the rest is for a source build or an optional feature. Install these
+once, then open a new terminal so each lands on PATH.
 
 ```bat
 :: Git, install from https://git-scm.com if not already present, then:
 winget install Python.Python.3.12 --accept-package-agreements --accept-source-agreements
-winget install OpenJS.NodeJS --accept-package-agreements --accept-source-agreements
 winget install astral-sh.uv --accept-package-agreements --accept-source-agreements
+:: optional (n8n, Continue's npx MCP servers):
+winget install OpenJS.NodeJS --accept-package-agreements --accept-source-agreements
+:: source build only (llama-swap from source, fabric):
 winget install GoLang.Go --accept-package-agreements --accept-source-agreements
-:: cmake 3.x (4.x is rejected by llama.cpp; VS2022 also bundles a usable 3.31.x):
+:: source build only, cmake 3.x (4.x is rejected by llama.cpp; VS2022 also bundles a usable 3.31.x):
 winget install Kitware.CMake --version 3.31.7 --accept-package-agreements --accept-source-agreements
 ```
 
-VS2022 with the **Desktop development with C++** workload is required to compile llama.cpp and cannot
-be fully automated:
+VS2022 with the **Desktop development with C++** workload is required only to compile llama.cpp
+(`--from-source`) and cannot be fully automated:
 ```bat
 winget install Microsoft.VisualStudio.2022.Community --accept-package-agreements --accept-source-agreements
 :: Then: open "Visual Studio Installer" -> Modify -> check "Desktop development with C++" -> Modify
 ```
 
-For a GPU build, install CUDA (12.8 covers Blackwell, Ada, and Ampere) and, optionally, Docker Desktop:
+For a GPU source build, install CUDA (12.8 covers Blackwell, Ada, and Ampere):
 ```bat
 winget install Nvidia.CUDA --version 12.8 --accept-package-agreements --accept-source-agreements
-winget install Docker.DockerDesktop --accept-package-agreements --accept-source-agreements
 ```
-After installing Docker Desktop, **log out of Windows and back in**: Docker adds your user to the
-`docker-users` group, which only takes effect at login. Restart your terminal after CUDA installs to
-pick up the new PATH entries.
+Restart your terminal after CUDA installs to pick up the new PATH entries. Docker Desktop is not a
+prerequisite: `bob services searxng|langfuse start` installs it the first time you start a Docker
+service. After it installs, **log out of Windows and back in**: Docker adds your user to the
+`docker-users` group, which only takes effect at login.
 
 ---
 
 ## 2. Clone the repository and its submodules
 
-Bob vendors four submodules: `external/llama.cpp` (the engine), `external/llama-swap` (the model-swap
-proxy), `external/whisper.cpp` (STT), and `external/fabric` (prompt patterns).
+Bob vendors three submodules: `external/llama.cpp` (the engine), `external/llama-swap` (the model-swap
+proxy, built from here only with `--from-source`), and `external/fabric` (prompt patterns, opt-in).
 
 Linux:
 ```bash
@@ -332,8 +354,12 @@ path in future.
 
 ## 5. Build llama-swap
 
-llama-swap is a small Go binary that fronts llama.cpp and swaps models on demand. The command is the
-same on every OS (`build_llama_swap` runs `go build -o bin/llama-swap .`):
+llama-swap is a small Go binary that fronts llama.cpp and swaps models on demand. By default
+`build_llama_swap` downloads the release binary pinned in `versions.lock` (`binaries.llama-swap`: a URL
+and SHA-256 per OS and CPU, including arm64 Linux) and installs it into `bin/` only after the checksum
+matches; no Go is needed. It builds from the submodule with Go only for `--from-source`, for a platform
+with no pinned asset, or when the pinned release no longer matches the submodule commit. The source
+build is the same command on every OS (`go build -o bin/llama-swap .`):
 
 Linux:
 ```bash
@@ -351,7 +377,7 @@ cd ..\..
 bin\llama-swap.exe --version
 ```
 
-If you don't have Go, drop a prebuilt llama-swap release binary into `bin/` instead.
+Without Go, run `python -m bob.kernel build-swap` to install the pinned release binary instead.
 
 ---
 
@@ -362,42 +388,45 @@ conflicting dependency pins. Build them with **Python 3.11 or 3.12** (3.13+ has 
 The kernel uses `osenv.new_bob_venv`; the manual equivalent is `python -m venv` plus a `pip install -r`
 of the matching requirements file.
 
-Two venvs are built by default; `venv-webui` is opt-in; `venv-eval` is provisioned on demand by the
-first `bob eval`.
+One venv is built by default; `venv-webui` and `venv-aider` are opt-in; `venv-eval` is provisioned on
+demand by the first `bob eval`.
 
 | Venv | Requirements file | Built by default? |
 |---|---|---|
 | `venv-litellm` | `tools/litellm-requirements.txt` | yes, the LiteLLM proxy **and** the `bob` CLI's runtime deps live here |
-| `venv-aider` | `tools/aider-requirements.txt` | yes |
+| `venv-aider` | `tools/aider-requirements.txt` | no, opt-in (`--with-aider` or `bob aider-setup`) |
 | `venv-webui` | `tools/webui-requirements.txt` | no, opt-in (large: torch/transformers, multi-GB) |
 | `venv-eval` | `tools/eval-requirements.txt` | no, on demand for `bob eval` |
 
 > The `bob` command itself runs under `tools/venv-litellm/bin/python`, so build **venv-litellm first**:
-> nothing else works until it exists. On Windows the venv layout is `tools\<venv>\Scripts\` and the
-> pinned `.lock` files are used in place of `.txt`.
+> nothing else works until it exists. The kernel installs every venv from its pinned `.lock` file on
+> every OS (platform-only rows carry environment markers) and uses the `.txt` only when no lock exists. On
+> Windows the venv layout is `tools\<venv>\Scripts\`.
 
 Linux (repeat per venv, changing the two names):
 ```bash
 python3 -m venv tools/venv-litellm
 tools/venv-litellm/bin/python -m pip install --upgrade pip
-tools/venv-litellm/bin/python -m pip install -r tools/litellm-requirements.txt
+tools/venv-litellm/bin/python -m pip install -r tools/litellm-requirements.lock
 
+# opt-in aider venv (or: bob aider-setup):
 python3 -m venv tools/venv-aider
 tools/venv-aider/bin/python -m pip install --upgrade pip
-tools/venv-aider/bin/python -m pip install -r tools/aider-requirements.txt
+tools/venv-aider/bin/python -m pip install -r tools/aider-requirements.lock
 
 # opt-in Open WebUI venv (only if you want the browser UI):
 python3 -m venv tools/venv-webui
 tools/venv-webui/bin/python -m pip install --upgrade pip
-tools/venv-webui/bin/python -m pip install -r tools/webui-requirements.txt
+tools/venv-webui/bin/python -m pip install -r tools/webui-requirements.lock
 ```
 
-Windows (uses the pinned `.lock` files):
+Windows:
 ```bat
 python -m venv tools\venv-litellm
 tools\venv-litellm\Scripts\python.exe -m pip install --upgrade pip
 tools\venv-litellm\Scripts\python.exe -m pip install -r tools\litellm-requirements.lock
 
+:: opt-in aider venv (or: bob aider-setup):
 python -m venv tools\venv-aider
 tools\venv-aider\Scripts\python.exe -m pip install --upgrade pip
 tools\venv-aider\Scripts\python.exe -m pip install -r tools\aider-requirements.lock
@@ -440,8 +469,9 @@ then `bob help`.
 
 `bob gen` reads the model registry (`config/models.json`, plus your `config/user.json` overrides) and
 writes the runtime configs: `config/llama-swap.yaml` (local model routing) and `config/litellm.yaml`
-(the OpenAI-compatible proxy's model list). Both are overwritten on every `bob gen`: do not edit them
-by hand.
+(the OpenAI-compatible proxy's model list), plus the client configs. They are overwritten on every
+`bob gen`: do not edit them by hand. The first run also generates the LiteLLM key (`sk-bob-...`, kept in
+`data/secrets.json`); every config that carries it is written mode 0600.
 
 ```bash
 bob gen                 # for the active profile
@@ -465,7 +495,7 @@ ls config/llama-swap.yaml config/litellm.yaml
 SHA256 pinned in the registry. Downloads are resumable; re-run if interrupted.
 
 ```bash
-bob fetch                    # download the active profile (~38 GB for 16gb, ~21 GB for 12gb)
+bob fetch                    # download the active profile (~18 GB for 16gb, ~44 GB for 12gb)
 bob fetch --list             # preview what would be downloaded, download nothing
 bob fetch 12gb               # download a specific profile
 ```
@@ -488,28 +518,29 @@ To provide models yourself, copy the `.gguf` files into `models/` manually and s
 
 ---
 
-## 10. Wire the editor clients (Continue + aider)
+## 10. Wire the editor clients (Continue, optional aider)
 
-This points VS Code's Continue extension and the aider CLI at the repo's config files (symlink, with a
-copy fallback where symlinks aren't permitted). The kernel does this in `setup_clients`. By hand:
+This points VS Code's Continue extension at the repo's generated config (symlink, with a copy fallback
+where symlinks aren't permitted). The kernel does this in `setup_clients`. By hand:
 
 Linux:
 ```bash
 bob gen                                                    # regenerates config/continue/config.yaml too
 mkdir -p ~/.continue
 ln -sf "$(pwd)/config/continue/config.yaml" ~/.continue/config.yaml
-ln -sf "$(pwd)/config/aider/.aider.conf.yml" ~/.aider.conf.yml
 ```
 
 Windows (symlinks need Developer Mode or admin; otherwise copy):
 ```bat
 if not exist "%USERPROFILE%\.continue" mkdir "%USERPROFILE%\.continue"
 mklink "%USERPROFILE%\.continue\config.yaml" "C:\bob\config\continue\config.yaml"
-mklink "%USERPROFILE%\.aider.conf.yml" "C:\bob\config\aider\.aider.conf.yml"
 :: fallback if mklink is not permitted:
 ::   copy "C:\bob\config\continue\config.yaml" "%USERPROFILE%\.continue\config.yaml"
-::   copy "C:\bob\config\aider\.aider.conf.yml" "%USERPROFILE%\.aider.conf.yml"
 ```
+
+aider needs no home-dir wiring: after the opt-in venv (step 6, or `bob aider-setup`), `bob gen` writes
+`config/aider/.aider.conf.yml` and `bob aider` passes it with `--config`. Nothing goes in
+`~/.aider.conf.yml`.
 
 Install the VS Code extensions (same on every OS):
 ```bash
@@ -519,10 +550,11 @@ code --install-extension saoudrizwan.claude-dev    # Cline
 
 ---
 
-## 11. Build and configure fabric
+## 11. Build and configure fabric (optional)
 
-fabric is a Go binary that runs 250+ named LLM prompt patterns. `bob fabric-setup` builds it and wires
-`~/.config/fabric`. The manual equivalent (`setup_fabric` in `scripts/tools/build.py`):
+fabric is a Go binary that runs 250+ named LLM prompt patterns. It is opt-in: `bob fabric-setup` (or
+`./setup.sh --with-fabric`) builds it and wires `~/.config/fabric`. The manual equivalent
+(`setup_fabric` in `scripts/tools/build.py`):
 
 Linux:
 ```bash
@@ -531,12 +563,6 @@ go build -o ../../bin/fabric ./cmd/fabric/
 cd ../..
 
 mkdir -p ~/.config/fabric
-cat > ~/.config/fabric/.env <<'EOF'
-OPENAI_API_KEY=sk-local
-OPENAI_API_BASE_URL=http://localhost:8081/v1
-DEFAULT_VENDOR=OpenAI
-DEFAULT_MODEL=coder
-EOF
 ln -sf "$(pwd)/external/fabric/data/patterns" ~/.config/fabric/patterns
 bin/fabric -l            # lists 250+ patterns
 ```
@@ -548,39 +574,46 @@ go build -o ..\..\bin\fabric.exe .\cmd\fabric\
 cd ..\..
 
 if not exist "%USERPROFILE%\.config\fabric" mkdir "%USERPROFILE%\.config\fabric"
-(
-  echo OPENAI_API_KEY=sk-local
-  echo OPENAI_API_BASE_URL=http://localhost:8081/v1
-  echo DEFAULT_VENDOR=OpenAI
-  echo DEFAULT_MODEL=coder
-) > "%USERPROFILE%\.config\fabric\.env"
 mklink /D "%USERPROFILE%\.config\fabric\patterns" "C:\bob\external\fabric\data\patterns"
 bin\fabric.exe -l
 ```
 
-Replace `8081` if you changed `litellmPort` in `config/user.json`.
+Then add Bob as fabric's LiteLLM vendor in `~/.config/fabric/.env`, editing only these lines and keeping
+the rest of the file (this is what `bob fabric-setup` does, mode 0600):
+
+```
+LITELLM_API_KEY=<Bob's litellm key, the litellmKey entry in data/secrets.json>
+LITELLM_API_BASE_URL=http://localhost:8081/v1
+DEFAULT_VENDOR=LiteLLM
+DEFAULT_MODEL=coder
+```
+
+`bob fabric-setup` sets `DEFAULT_VENDOR` and `DEFAULT_MODEL` only when they are unset or still Bob's, so
+a default you chose wins. Replace `8081` if you changed `litellmPort` in `config/user.json`.
 
 ---
 
 ## 12. Voice and vision (faster-whisper + piper)
 
-Optional Phase-2 feature. `bob setup-voice` provisions the configured STT backend, downloads the piper TTS
-binary + voice, and installs the audio deps into `venv-litellm`, which must already exist (step 6).
+Optional. `bob setup-voice` fetches the faster-whisper STT model, downloads the piper TTS binary + voice,
+and installs the audio deps into `venv-litellm`, which must already exist (step 6).
 
 ```bash
 bob setup-voice              # fetch STT model + piper voice + audio deps
 bob setup-voice --force      # re-download everything
 ```
 
-By default (`voice.sttEngine = 'faster-whisper'`) this fetches the CTranslate2 STT model into
-`models/faster-whisper/<size>/` and installs `faster-whisper`; the server runs under `venv-litellm` on port
-8082, exposing the same `POST /inference` contract. On an NVIDIA GPU it also installs the CUDA-12 runtime
-wheels (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`) so CTranslate2 runs on the GPU; the server preloads
-them and falls back to CPU int8 when they are absent or mismatched, so voice works either way. When `voice.sttEngine = 'whisper.cpp'` it instead
-builds `whisper.cpp` with the same CUDA/cmake seams as llama.cpp (`-DWHISPER_CUDA=ON` for a GPU, CPU
-fallback otherwise) into `bin/whisper-server` + `bin/whisper-cli` and downloads `ggml-<size>.bin` into
-`models/whisper/`. Either way it extracts piper into `bin/` and drops the voice model into `bin/voices/`.
-Enable `voice.enabled` / `vision.enabled` in `config/user.json` to use it.
+It fetches the CTranslate2 STT model into `models/faster-whisper/<size>/` and installs `faster-whisper`;
+the server runs under `venv-litellm` on port 8082 (bound to `voiceBindHost`, loopback by default), exposing `POST /inference` and
+the OpenAI-compatible `POST /v1/audio/transcriptions`. On an NVIDIA GPU it also installs the CUDA-12
+runtime wheels (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`) so CTranslate2 runs on the GPU; the server
+preloads them and falls back to CPU int8 when they are absent or mismatched, so voice works either way.
+It extracts piper into `bin/` and drops the voice model into `bin/voices/`. The vision model and its
+mmproj download with the profile's models in step 9.
+
+`voice.enabled` and `vision.enabled` (both `true` by default) are real switches: with `voice.enabled`
+false, `bob voice` and the shell's `/voice` refuse with a message; with `vision.enabled` false, every
+image input is refused.
 
 ---
 
@@ -597,14 +630,20 @@ specific capability. Each starts on demand:
   seam) if Docker is missing, then `docker compose up`. Port 8888.
 - **Langfuse** (LLM tracing dashboard) is a **Docker opt-in**. Tracing is on by default without it: the
   default sink is a local file sink at `logs/traces/<trace_id>.jsonl`, viewed with `bob traces`.
-  Langfuse is an upgrade for a hosted dashboard. `bob services langfuse start` brings up Langfuse and
-  its pinned Postgres from the compose file. Port 3001, login `admin@local.dev` / `admin123`.
+  Langfuse is an upgrade for a hosted dashboard. `bob services langfuse start` brings up Langfuse v3
+  (web + worker) with its pinned Postgres, ClickHouse, Redis and MinIO from the compose file. Port 3001,
+  login `admin@local.dev` with the generated `langfuseAdminPassword` from `data/secrets.json`.
 
-`bob services <name> start` writes `tools/compose/.env`, creates the persistent data dirs, writes a
-default `config/searxng/settings.yml`, installs Docker if needed for the Docker services, then pulls
-and starts that service. Manage them with `bob services start|stop|status|logs`.
+`bob services <name> start` writes `tools/compose/.env` (ports and the bind address only), creates the
+persistent data dirs, writes a default `config/searxng/settings.yml`, installs Docker if needed for the
+Docker services, then pulls and starts that service. The service secrets (SearXNG secret, Langfuse
+passwords and keys) are generated on first start into `data/secrets.json` and passed in the environment
+of `docker compose up`, never written next to the compose file. Manage them with `bob services start|stop|status|logs`.
 
-To drive the Docker opt-ins by hand, install Docker, ensure its daemon is running, then:
+To drive the Docker opt-ins by hand, install Docker and ensure its daemon is running. `bob services
+<name> start` is the supported path, because `docker compose up` needs the generated secrets in its
+environment (`SEARXNG_SECRET`, `LANGFUSE_*`); by hand you must export them from `data/secrets.json`
+first:
 
 Linux:
 ```bash
@@ -620,16 +659,17 @@ docker compose -f tools\compose\docker-compose.yml pull
 docker compose -f tools\compose\docker-compose.yml up -d
 ```
 
-The compose file reads ports from `tools/compose/.env` (defaults: Langfuse `3001`, SearXNG `8888`,
-n8n `5678`), which `bob services <name> start` prepares. To create it by hand:
+The compose file reads the repo path, bind address and ports from `tools/compose/.env` (defaults:
+`BIND_HOST=127.0.0.1`, Langfuse `3001`, SearXNG `8888`), which `bob services <name> start` prepares. To
+create it by hand:
 ```bash
-printf 'REPO_PATH=%s\nLANGFUSE_PORT=3001\nSEARXNG_PORT=8888\nN8N_PORT=5678\nN8N_TIMEZONE=UTC\n' \
+printf 'REPO_PATH=%s\nBIND_HOST=127.0.0.1\nLANGFUSE_PORT=3001\nSEARXNG_PORT=8888\n' \
     "$(pwd)" > tools/compose/.env
 ```
 
 Once up:
 
-- **Langfuse**: http://localhost:3001 (login `admin@local.dev` / `admin123`)
+- **Langfuse**: http://localhost:3001 (login `admin@local.dev`, password: the `langfuseAdminPassword` entry in `data/secrets.json`)
 - **SearXNG**: http://localhost:8888
 - **n8n**: http://localhost:5678
 
@@ -697,6 +737,7 @@ bob build --force
 |---|---|---|
 | cmake fails: `No CUDA toolset found` / can't find nvcc | `CUDA_PATH` not set | Set `CUDA_PATH` and `PATH` (step 3), then re-run the configure |
 | cmake fails: version `4.x` rejected | rolling-distro cmake is 4.x | Use the pinned cmake 3.31.7 from step 1 |
+| `llama-swap` missing after setup | the pinned release download failed and Go is absent | Re-run with network access, or install Go and run `bob build --from-source` |
 | cmake fails: `unsupported Microsoft Visual Studio version` | MSVC newer than CUDA supports | Add `-DCMAKE_CUDA_FLAGS="-allow-unsupported-compiler"`, or install MSVC v14.4x |
 | nvcc errors about host compiler being too new (Linux) | default `g++` newer than nvcc accepts | Set `NVCC_CCBIN` / `-DCMAKE_CUDA_HOST_COMPILER` to an older g++ |
 | `llama-server` crashes immediately (Windows) | CUDA DLLs not staged into `bin\` | Re-copy `cublas64_12.dll`, `cublasLt64_12.dll`, `cudart64_12.dll` (step 4) |
@@ -705,7 +746,7 @@ bob build --force
 | `bob gen`/`bob fetch` error importing deps | `venv-litellm` missing | Build `venv-litellm` first (step 6), the CLI runs under it |
 | `bench` shows ~1000 t/s prefill | CPU fallback build | `bob build --force` with `CUDA_PATH` on 12.8+ |
 | SearXNG `exec format error` (Windows) | containerd snapshotter enabled | Docker Desktop → uncheck containerd → Apply & Restart |
-| Langfuse dashboard shows no traces | tracing still going to the default file sink | Traces default to `logs/traces/*.jsonl` (view with `bob traces`); to send them to Langfuse set `agent.tracingSink: otlp` and `agent.otlpEndpoint` in `config/user.json`. See [USAGE § Langfuse](USAGE.md#langfuse--llm-observability) |
+| Langfuse dashboard shows no traces | tracing still going to the default file sink | Traces default to `logs/traces/*.jsonl` (view with `bob traces`); to send them to Langfuse set `agent.tracing: true` and `agent.tracingSink: otlp` in `config/user.json` (an empty `agent.otlpEndpoint` targets the local Langfuse). See [USAGE § Observability](USAGE.md#observability-file-traces-and-langfuse) |
 
 For alternatives when a build or install won't cooperate (prebuilt binaries, CPU tier, offline models),
 see [FALLBACKS.md](FALLBACKS.md).

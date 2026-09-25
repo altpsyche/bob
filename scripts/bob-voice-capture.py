@@ -1,5 +1,5 @@
 """
-Record mic until silence, POST to whisper-server, print transcript.
+Record mic until silence, POST to the faster-whisper STT server, print transcript.
 Usage:
   python bob-voice-capture.py                    # record mic → transcript
   python bob-voice-capture.py --file <path>      # transcribe audio file
@@ -21,7 +21,7 @@ from bob_core import _port   # the STT port default lives in config/defaults.jso
 
 
 def transcribe(wav_path: str, port: int) -> str:
-    """POST a WAV file to whisper-server, return transcript text (delegates to the shared core)."""
+    """POST a WAV file to the faster-whisper STT server, return transcript text (delegates to the shared core)."""
     try:
         return bob_voice.transcribe(wav_path, port)
     except RuntimeError as e:
@@ -30,7 +30,7 @@ def transcribe(wav_path: str, port: int) -> str:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Mic capture + whisper transcription')
+    parser = argparse.ArgumentParser(description='Mic capture + faster-whisper transcription')
     parser.add_argument('--file',        help='Transcribe this audio file instead of mic')
     parser.add_argument('--port',        type=int,
                         default=int(os.environ.get('BOB_STT_PORT') or _port({}, 'sttPort')))

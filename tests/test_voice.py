@@ -4,6 +4,7 @@ whisper/piper server, no real mic. The point is that /voice wraps the SAME _run_
 turn path (memory/tools/persona/retry) is exercised by the existing shell tests — here we prove the loop
 glue and the STT/TTS edges."""
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import _common
@@ -244,22 +245,34 @@ class TestRecordAudioMicHardening(unittest.TestCase):
         self.assertIn("microphone", str(cm.exception))
 
 
-class TestSttEngineDispatch(unittest.TestCase):
-    """stack._start_stt_bg picks the STT backend from voice.sttEngine (faster-whisper default)."""
+class TestSttIsFasterWhisperOnly(unittest.TestCase):
+    """faster-whisper is the only STT engine: the whisper service starts the faster-whisper server whatever
+    a stale voice.sttEngine says, and the stack no longer knows a whisper.cpp launcher."""
 
-    def test_dispatch_selects_backend(self):
+    def test_start_ignores_a_stale_whisper_cpp_setting(self):
         import stack
-        with mock.patch.object(stack, "_start_whisper_bg", return_value="wc"), \
-             mock.patch.object(stack, "_start_faster_whisper_bg", return_value="fw"):
-            self.assertEqual(stack._start_stt_bg({"voice": {"sttEngine": "whisper.cpp"}}), "wc")
-            self.assertEqual(stack._start_stt_bg({"voice": {"sttEngine": "faster-whisper"}}), "fw")
-            self.assertEqual(stack._start_stt_bg({"voice": {}}), "fw")   # default is faster-whisper
+        self.assertFalse(hasattr(stack, "_start_whisper_bg"))
+        self.assertIs(stack._svc("whisper")["start"], stack._start_stt_bg)
+        self.assertEqual(stack._svc("whisper")["procnames"], ())
+
+    def test_bound_to_bind_host(self):
+        import osenv
+        import stack
+        seen = {}
+        with mock.patch.object(osenv, "venv_exe", return_value=Path(__file__)), \
+             mock.patch.object(stack, "_read_pid", return_value=None), \
+             mock.patch.object(osenv, "is_port_in_use", return_value=False), \
+             mock.patch.object(osenv, "start_detached", side_effect=lambda argv, **k: seen.update(k) or 4242), \
+             mock.patch.object(stack, "_stt_health_ok", return_value=True), \
+             mock.patch.object(stack, "_pidfile", return_value=Path("/nonexistent/whisper.pid")):
+            stack._start_stt_bg({"voice": {"sttEngine": "whisper.cpp"}})
+        self.assertEqual(seen["env"]["STT_HOST"], "127.0.0.1")   # loopback unless bindHost opts in
 
 
 @unittest.skipUnless(_HAS_FASTAPI, "fastapi/httpx not installed (runtime venv only)")
 class TestFasterWhisperServer(unittest.TestCase):
-    """The faster-whisper STT server matches the whisper.cpp /inference contract (multipart file ->
-    {'text': ...}) so the client/lifecycle stay engine-agnostic. The CT2 model is faked (no wheel needed)."""
+    """The faster-whisper STT server's /inference contract (multipart file -> {'text': ...}) and its
+    OpenAI-compatible /v1/audio/transcriptions route. The CT2 model is faked (no wheel needed)."""
 
     def _client(self):
         import faster_whisper_server as fws
@@ -274,6 +287,24 @@ class TestFasterWhisperServer(unittest.TestCase):
                         data={"temperature": "0.0", "response_format": "json"})
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["text"], "hello world")
+
+    def test_openai_transcriptions_endpoint(self):
+        # Open WebUI and the n8n workflow call the OpenAI-compatible route; `model` is accepted and ignored.
+        fws, client = self._client()
+        seg = mock.Mock(text=" hi there", start=0.0, end=1.0)
+        fws._model = mock.Mock(transcribe=mock.Mock(return_value=([seg], mock.Mock(language="en",
+                                                                                   duration=1.0))))
+        r = client.post("/v1/audio/transcriptions", files={"file": ("a.webm", b"audio", "audio/webm")},
+                        data={"model": "whisper-1"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json(), {"text": "hi there"})
+        r = client.post("/v1/audio/transcriptions", files={"file": ("a.wav", b"audio", "audio/wav")},
+                        data={"model": "whisper-1", "response_format": "text"})
+        self.assertEqual(r.text, "hi there")
+        r = client.post("/v1/audio/transcriptions", files={"file": ("a.wav", b"audio", "audio/wav")},
+                        data={"response_format": "verbose_json"})
+        self.assertEqual(r.json()["segments"][0]["text"], " hi there")
+        self.assertEqual(r.json()["language"], "en")
 
     def test_inference_empty_upload_returns_blank(self):
         fws, client = self._client()

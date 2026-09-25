@@ -5,7 +5,8 @@ Exposes POST /v1/audio/speech so Open WebUI can use piper as its TTS engine.
 Config (set via env vars):
   PIPER_EXE   — absolute path to bin/piper.exe
   PIPER_VOICE — absolute path to bin/voices/<voice>.onnx
-  PIPER_PORT  — port to listen on (default 8083)
+  PIPER_PORT  — port to listen on (default: ttsPort from config/defaults.json)
+  PIPER_HOST  — interface to bind (default 127.0.0.1; scripts/tools/stack.py passes the voiceBindHost config key)
 
 Note: the OpenAI 'voice' parameter (alloy, nova, echo, ...) is ignored.
 Piper voices are ONNX files; the configured PIPER_VOICE is always used.
@@ -24,6 +25,7 @@ from bob_core import _port   # the TTS port default lives in config/defaults.jso
 PIPER_EXE   = os.environ.get("PIPER_EXE", "")
 PIPER_VOICE = os.environ.get("PIPER_VOICE", "")
 PIPER_PORT  = int(os.environ.get("PIPER_PORT") or _port({}, "ttsPort"))
+PIPER_HOST  = os.environ.get("PIPER_HOST") or "127.0.0.1"
 
 app = FastAPI(title="piper-tts-server")
 
@@ -94,4 +96,4 @@ async def speech(req: SpeechRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=PIPER_PORT)
+    uvicorn.run(app, host=PIPER_HOST, port=PIPER_PORT)

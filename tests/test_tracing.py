@@ -3,6 +3,7 @@ run/tool spans wire through the real loop carrying the run-id. Hermetic: a fake 
 the OTLP exporter (the opentelemetry package is only touched by _otlp_sink, which is smoke-only), so
 this runs under bare python3."""
 import unittest
+from unittest import mock
 
 import _common
 import bob_core
@@ -176,6 +177,25 @@ class TestTracingInLoop(unittest.TestCase):
         self.assertEqual(rec, [])                        # no OTLP/span activity
         # metrics line still emitted (file-log unchanged whether tracing is on or off)
         self.assertTrue(any("done steps=" in ln for ln in cm.output))
+
+
+class TestOtlpTarget(unittest.TestCase):
+    def setUp(self):
+        global bob_tracing
+        import bob_tracing
+
+    def test_default_endpoint_is_local_langfuse(self):
+        import osenv
+        with mock.patch.object(osenv, "secret", return_value=None):
+            ep, headers = bob_tracing.otlp_target({}, {})
+        self.assertTrue(ep.endswith(":3001/api/public/otel/v1/traces"), ep)
+        self.assertEqual(headers, {})
+
+    def test_basic_auth_from_langfuse_keys(self):
+        import base64
+        with mock.patch.dict("os.environ", {"LANGFUSE_PUBLIC_KEY": "pk", "LANGFUSE_SECRET_KEY": "sk"}):
+            _ep, headers = bob_tracing.otlp_target({"otlpEndpoint": "http://x/v1/traces"}, {})
+        self.assertEqual(headers["Authorization"], "Basic " + base64.b64encode(b"pk:sk").decode())
 
 
 if __name__ == "__main__":

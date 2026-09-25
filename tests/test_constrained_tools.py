@@ -98,8 +98,10 @@ class TestDefaultOffByteIdentical(_LoopBase):
         bob_core.get_llm_client = lambda config=None: _recording_client(calls)
         list(bob_loop.run_agent_events("go", self._cfg(), agency="silent", registry=self._reg()))
         self.assertEqual(len(calls), 1)
-        # Base request + the reasoning-mode carrier (extra_body). No constraint kwargs when off.
-        self.assertEqual(set(calls[0]), {"model", "messages", "tools", "stream", "timeout", "extra_body"})
+        # Base request (with its output cap + usage request) + the reasoning-mode carrier (extra_body).
+        # No constraint kwargs when off.
+        self.assertEqual(set(calls[0]), {"model", "messages", "tools", "stream", "timeout", "max_tokens",
+                                         "stream_options", "extra_body"})
         self.assertNotIn("tool_choice", calls[0])
         self.assertIsNone(calls[0]["tools"])          # hermes mode passes tools=None today
         # think defaults off -> enable_thinking False rides extra_body (stable per request; the prompt

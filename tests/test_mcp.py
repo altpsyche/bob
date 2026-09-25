@@ -33,7 +33,7 @@ class _Reg:
         }},
     ]
 
-    def dispatch_call(self, name, args_json):
+    def dispatch_call(self, name, args_json, context=None):
         return f"ran {name} {json.loads(args_json)}"
 
 
@@ -182,6 +182,96 @@ class TestHttpApp(unittest.TestCase):
         asyncio.run(self.app(scope, cap.receive, cap.send))
         self.assertEqual(cap.status, 200)
         self.assertEqual(json.loads(cap.body)["tools"], len(_Reg.tool_schemas))
+
+
+class TestMcpApprovalGate(unittest.TestCase):
+    """MCP dispatches through the one approval gate: with no operator to ask, approval-required and
+    mutating tools are refused unless agent.mcpAllowTools lists them, and the policy applies to the
+    caller's owner."""
+
+    def _reg(self, **kw):
+        return _common.FakeRegistry(**kw)
+
+    def test_approval_required_tool_refused(self):
+        reg = self._reg(approval_required_tools={"shell_run"})
+        out = mcp.dispatch(reg, "shell_run", {"cmd": "rm -rf /"}, _cfg())
+        self.assertIn("refused", out)
+        self.assertEqual(reg.dispatched, [])
+
+    def test_mutating_tool_refused(self):
+        reg = self._reg(mutating_tools={"file_write"})
+        out = mcp.dispatch(reg, "file_write", {"path": "x"}, _cfg())
+        self.assertIn("refused", out)
+        self.assertEqual(reg.dispatched, [])
+
+    def test_allowlisted_tool_runs(self):
+        reg = self._reg(approval_required_tools={"shell_run"})
+        out = mcp.dispatch(reg, "shell_run", {"cmd": "ls"}, _cfg(mcpAllowTools=["shell_run"]))
+        self.assertEqual(out, "[shell_run ran]")
+        self.assertEqual(reg.dispatched, ["shell_run"])
+
+    def test_read_tool_runs(self):
+        reg = self._reg()
+        self.assertEqual(mcp.dispatch(reg, "file_read", {}, _cfg()), "[file_read ran]")
+
+    def test_policy_applies_to_the_caller_owner(self):
+        cfg = _cfg(permissions={"perOwner": {"guest": {"read": "deny"}}})
+        reg = self._reg()
+        self.assertIn("denied by policy", mcp.dispatch(reg, "file_read", {}, cfg, owner="guest"))
+        self.assertEqual(mcp.dispatch(reg, "file_read", {}, cfg, owner="alice"), "[file_read ran]")
+
+    def test_stdio_owner_is_mcp(self):
+        cfg = _cfg(permissions={"perOwner": {"mcp": {"read": "deny"}}})
+        self.assertIn("denied by policy", mcp.dispatch(self._reg(), "file_read", {}, cfg))
+
+
+class TestHttpUsesAgentApiAuth(unittest.TestCase):
+    """MCP HTTP accepts the agent API's scoped, revocable store tokens, with the same rate limit."""
+
+    def setUp(self):
+        import shutil
+        import tempfile
+        from pathlib import Path
+        from bob_authstore import AuthStore
+        self.dir = Path(tempfile.mkdtemp(prefix="bob-mcp-auth-"))
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.store = AuthStore(self.dir / "s.db", salt="t")
+        self.addCleanup(self.store.close)
+
+    def test_store_token_identifies_owner_and_scopes(self):
+        tok = self.store.issue("harness", ["file_*"], 0)
+        auth = mcp.HttpAuth(_cfg(), store=self.store)
+        ident = auth.identify(f"Bearer {tok}")
+        self.assertEqual(ident.owner, "harness")
+        self.assertEqual(ident.tool_globs(), ["file_*"])
+
+    def test_revoked_store_token_is_refused(self):
+        tok = self.store.issue("harness")
+        auth = mcp.HttpAuth(_cfg(), store=self.store)
+        self.assertTrue(self.store.revoke(tok))
+        self.assertIsNone(auth.identify(f"Bearer {tok}"))
+
+    def test_rate_limit(self):
+        tok = self.store.issue("harness", [], 1)
+        auth = mcp.HttpAuth(_cfg(), store=self.store)
+        ident = auth.identify(f"Bearer {tok}")
+        self.assertTrue(auth.rate_ok(ident))
+        self.assertFalse(auth.rate_ok(ident))
+
+    def test_litellm_key_can_be_dropped(self):
+        self.assertNotIn("sk-test", mcp.accepted_tokens(_cfg(acceptLitellmKey=False)))
+
+    def test_scope_filter_narrows_tools(self):
+        from bob_authstore import Identity
+
+        class _R:
+            tool_schemas = [{"function": {"name": "file_read"}}, {"function": {"name": "shell_run"}}]
+
+            def filtered(self, allow=None, deny=None):
+                return sorted(allow)
+
+        view = mcp._identity_scope_filter(Identity("h", ["file_*"]), _R())
+        self.assertEqual(view, ["file_read"])
 
 
 class TestTransportSelection(unittest.TestCase):

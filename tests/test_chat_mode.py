@@ -61,12 +61,15 @@ class TestLoopChatSeam(unittest.TestCase):
                                        registry=_common.FakeRegistry(), max_tokens=128))
         self.assertEqual(calls[0].get("max_tokens"), 128)
 
-    def test_max_tokens_absent_by_default(self):
+    def test_output_reserve_sent_by_default(self):
+        # Without --max the request still carries max_tokens: the output reservation the history budget
+        # was computed with (agent.outputReserveTokens), so a reply can't overrun the window.
         client, calls = _recording_client(["hi"])
         bob_core.get_llm_client = lambda config=None: client
-        list(bob_loop.run_agent_events("q", self._openai_cfg(), agency="silent",
-                                       registry=_common.FakeRegistry()))
-        self.assertNotIn("max_tokens", calls[0])   # matches the prior path when unset
+        cfg = self._openai_cfg()
+        cfg["agent"]["outputReserveTokens"] = 700
+        list(bob_loop.run_agent_events("q", cfg, agency="silent", registry=_common.FakeRegistry()))
+        self.assertEqual(calls[0].get("max_tokens"), 700)
 
     def test_no_tools_suppresses_tools(self):
         # openai mode: tools kwarg is built from the registry schemas — no_tools must empty it.

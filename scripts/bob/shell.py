@@ -389,11 +389,23 @@ class _TurnRenderer:
             from rich.panel import Panel
             self.console.print(Panel(ev.get("message", ""), border_style=self.t.error,
                                      title="error", title_align="left", expand=False))
+        elif t == "notice":
+            self._stop_spin()
+            self._flush_text()
+            self.console.print(f"[{self.t.muted}]{ev.get('message', '')}[/]")
         elif t == "final":
             self._stop_spin()
             self._flush_text()
+            if not self.streamed and ev.get("result"):
+                # A run that streamed nothing (a skill, a non-streaming sub-run) still shows its answer.
+                self.answer = ev["result"]
+                self.console.print(self._renderable(ev["result"]))
             if ev.get("reason") == "max_steps" and ev.get("result") is None:
                 self.console.print(f"[{self.t.warn}](stopped after max steps without a final answer)[/]")
+            elif ev.get("reason") == "truncated":
+                hint = ev.get("hint") or "raise agent.outputReserveTokens (or pass --max)"
+                self.console.print(f"[{self.t.warn}](reply truncated at the output limit; for longer "
+                                   f"answers, {hint})[/]")
 
     def quiesce(self) -> None:
         """Stop any live display so an approval prompt (prompt_toolkit) can own the terminal cleanly."""
@@ -441,7 +453,11 @@ class BobShell:
         self.session_id = None           # persisted id once created; None = no row yet
         self._last_run_id = None         # run id of the most recent turn, so /rewind can target it
         self.history: list = []          # [{role, content}] — the live context; mirrors the store
-        self._always: set = set()        # tools the user chose "always" for this session
+        # Session-scoped approvals: exact calls (tool + normalized arguments) the user chose "always"
+        # for, and tools the user explicitly allowed for ANY arguments.
+        self._always: set = set()
+        self._always_tools: set = set()
+        self._last_usage = None          # token usage of the most recent turn (from its final event)
         # Two-stage exit: a Ctrl-C at the prompt (or one that cancels a turn) arms this; a second
         # consecutive Ctrl-C at the prompt leaves. Any dispatched line clears it.
         self._pending_exit = False
@@ -463,22 +479,16 @@ class BobShell:
     def build(cls, config=None, role=None, no_tools=False, think=None):
         """Build the shell with warm registries (one tool build, one skill build)."""
         from bob_core import load_config
-        from bob_session import SessionStore
+        from bob_session import open_session_store
         from bob_skills import SkillRegistry
         from tool_registry import ToolRegistry
 
         config = config or load_config()
-        agent_cfg = config.get("agent", {})
-        disabled_raw = agent_cfg.get("disabledTools", [])
-        disabled = ({t.strip() for t in disabled_raw.split(",") if t.strip()}
-                    if isinstance(disabled_raw, str) else set(disabled_raw))
-        tools = ToolRegistry.build(config, disabled, quiet=True)   # clean splash — no startup summary
+        tools = ToolRegistry.from_config(config, quiet=True)   # clean splash, no startup summary
         skills = SkillRegistry.build()
-        # Same SessionStore the agent server uses (agent.sessionDbPath, resolved against the
-        # repo root; _SCRIPTS is scripts/, its parent is the repo), so a session persists across
-        # restarts and is resumable from either surface.
-        session_db = _SCRIPTS.parent / agent_cfg.get("sessionDbPath", "data/sessions.db")
-        sessions = SessionStore(session_db, default_owner=agent_cfg.get("defaultOwner", "local"))
+        # Same SessionStore the agent server uses (bob_session.open_session_store), so a session
+        # persists across restarts and is resumable from either surface.
+        sessions = open_session_store(config)
         return cls(config, tools, skills, sessions=sessions, role=role, no_tools=no_tools, think=think)
 
     # -- splash ---------------------------------------------------------------
@@ -1010,8 +1020,8 @@ class BobShell:
         history, plus a percentage when a session token budget is configured — so how full the window
         is stays visible. Empty string if the estimator is unavailable."""
         try:
-            from bob_loop import _estimate_tokens
-            used = sum(_estimate_tokens(m.get("content", "") or "") for m in self.history)
+            from bob_core import est_tokens
+            used = sum(est_tokens(m.get("content", "") or "") for m in self.history)
         except Exception:
             return ""
         if self._max_tokens:
@@ -1257,11 +1267,8 @@ class BobShell:
         if name not in self.skills.skills:
             self.console.print(f"[yellow]Unknown skill: {name}[/]  (try /skills)")
             return
-        if self.skills.skills[name]["steps"]:            # tool-sequence — synchronous, no model
-            self.console.print(self.skills.run(name, self.tools))
-            return
-        # Sub-agent skill: drive it as an event stream through the SAME renderer as an agent
-        # turn — surface through run_agent_events, never bespoke skill-rendering in the shell.
+        # Both kinds (tool-sequence and sub-agent) run as an event stream through the SAME renderer and
+        # approval bridge as an agent turn, so a gated step asks instead of running unapproved.
         def factory(cancel, approve):
             return self.skills.run_events(
                 name, self.tools, config=self.config, args=skill_args,
@@ -1339,13 +1346,17 @@ class BobShell:
         from bob_loop import run_agent_events
         rid = uuid.uuid4().hex[:8]
         self._last_run_id = rid           # so /rewind can target this turn's checkpoints
+        # With conversation paging on, the turn's transcript rows carry the session id, so the session
+        # row must exist before the run (otherwise it is created lazily after the first answer).
+        if self.config.get("agent", {}).get("conversationPaging"):
+            self._ensure_session(goal)
 
         def factory(cancel, approve):
             return run_agent_events(
                 goal, self.config, role=self.role, agency=self.agency,
                 registry=self.tools, history=self.history, stream=True,
                 cancel=cancel, approve=approve, owner=self.owner, scope=self.scope,
-                no_tools=self.no_tools, run_id=rid, think=self.think,
+                no_tools=self.no_tools, run_id=rid, think=self.think, session_id=self.session_id,
             )
 
         result = self._consume(factory)
@@ -1367,8 +1378,13 @@ class BobShell:
         request's `enable_thinking` kwarg (landing in the model's reasoning channel), never a `/no_think`
         string hack in the message (which would corrupt the persisted turn + memory)."""
         import bob_voice
+        from bob_core import voice_disabled
 
         t = self.theme
+        off = voice_disabled(self.config)
+        if off:
+            self.console.print(f"[{t.warn}]{off}[/]")
+            return
         # Auto-ensure speech-to-text, consistent with chat's auto-start — voice should "just work", not
         # make you go run `bob whisper` first. TTS uses the piper binary directly (no server), and speak()
         # points at `bob setup-voice` itself if the binary/voice model are missing.
@@ -1452,25 +1468,34 @@ class BobShell:
         plain print on a non-terminal console (tests) so nothing hangs waiting on a spinner."""
         return self.console.status(f"[{self.theme.muted}]{label}[/]", spinner=self.theme.spinner)
 
-    def _persist_turn(self, goal: str, result: str) -> None:
-        """Mirror the server's _record_turn ([bob_agent_server.py]): append the turn to the
-        owner-scoped SessionStore, creating the session lazily on the first turn. Best-effort — a
-        store hiccup must not break the turn's UX."""
-        if self.sessions is None:
+    def _ensure_session(self, goal: str) -> None:
+        """Create the owner-scoped session row if there is none yet, named from an explicit /session
+        name if one was queued, else from `goal`, so /session list and resume-by-name are useful
+        immediately. Best-effort: a store hiccup leaves session_id None."""
+        if self.sessions is None or self.session_id is not None:
             return
         try:
-            if self.session_id is None:
-                self.session_id = self.sessions.create(
-                    token_budget=self._max_tokens, owner_id=self.owner)["id"]
-                # Name the fresh session: an explicit /session name if one was queued, else auto from
-                # this first message — so /session list and resume-by-name are useful immediately.
-                name = self._pending_name or _derive_session_name(goal)
-                if name:
-                    self.sessions.set_name_owned(self.session_id, self.owner, name)
-                self._pending_name = None
-            from bob_loop import _estimate_tokens
-            used = _estimate_tokens(goal) + _estimate_tokens(result or "")
-            self.sessions.append_turn(self.session_id, goal, result, tokens_used=used)
+            self.session_id = self.sessions.create(
+                token_budget=self._max_tokens, owner_id=self.owner)["id"]
+            name = self._pending_name or _derive_session_name(goal)
+            if name:
+                self.sessions.set_name_owned(self.session_id, self.owner, name)
+            self._pending_name = None
+        except Exception as e:
+            self.console.print(f"[{self.theme.warn}]session not created: {e}[/]")
+
+    def _persist_turn(self, goal: str, result: str) -> None:
+        """Append the turn to the owner-scoped SessionStore through bob_session.record_turn (the same
+        write the agent server makes), charging the run's reported token usage, and creating the
+        session lazily on the first turn. Best-effort: a store hiccup must not break the turn's UX."""
+        if self.sessions is None:
+            return
+        self._ensure_session(goal)
+        if self.session_id is None:
+            return
+        try:
+            from bob_session import record_turn
+            record_turn(self.sessions, self.session_id, goal, result, self._last_usage)
         except Exception as e:
             self.console.print(f"[{self.theme.warn}]session not saved: {e}[/]")
 
@@ -1511,6 +1536,7 @@ class BobShell:
         result = None
         cancelled = False
         self._exit_requested = False   # set from the final event; /voice reads it to leave voice mode
+        self._last_usage = None
         # Poll with a short timeout rather than block forever on get(): on Windows a Ctrl-C can't
         # interrupt a lock held in C, so a bare get() would swallow the signal — the timeout returns
         # control to Python bytecode ~10×/s so a pending KeyboardInterrupt is delivered promptly.
@@ -1532,6 +1558,7 @@ class BobShell:
                         if ev.get("type") == "final":
                             result = ev.get("result")
                             self._exit_requested = bool(ev.get("exit_requested"))
+                            self._last_usage = ev.get("usage")
                         renderer.handle(ev)
                 except KeyboardInterrupt:  # Ctrl-C: trip the run's cancel, release any pending approval
                     cancel.cancel()
@@ -1548,11 +1575,25 @@ class BobShell:
 
     # -- approval -------------------------------------------------------------
 
+    @staticmethod
+    def _call_key(action: dict) -> tuple:
+        """(tool, normalized arguments): what an 'always' approval covers. Key order and whitespace in
+        the arguments JSON don't matter; any other difference is a different call."""
+        import json
+        raw = action.get("arguments") or ""
+        try:
+            args = json.dumps(json.loads(raw), sort_keys=True, separators=(",", ":"))
+        except (TypeError, ValueError):
+            args = str(raw).strip()
+        return action.get("tool", "?"), args
+
     def _approve(self, action: dict) -> bool:
-        """Prompt the user to approve one gated tool call (main thread; the turn is quiesced). Honours
-        a session-scoped 'always' set so a repeated tool isn't re-asked."""
+        """Prompt the user to approve one gated tool call (main thread; the turn is quiesced). 'always'
+        approves this exact call (tool + arguments) for the rest of the session; 'tool' approves the
+        tool for any arguments, an explicit, separately labeled choice."""
         tool = action.get("tool", "?")
-        if tool in self._always:
+        key = self._call_key(action)
+        if key in self._always or tool in self._always_tools:
             return True
         args = _compact_args(action.get("arguments"))
         risk = action.get("risk", "confirm")
@@ -1566,12 +1607,16 @@ class BobShell:
         try:
             from prompt_toolkit import prompt as ptk_prompt
             from prompt_toolkit.formatted_text import HTML
-            ans = ptk_prompt(HTML("  <ansigreen>y</ansigreen>es / "
-                                  "<b>N</b>o / <ansicyan>a</ansicyan>lways › ")).strip().lower()
+            ans = ptk_prompt(HTML("  <ansigreen>y</ansigreen>es / <b>N</b>o / "
+                                  "<ansicyan>a</ansicyan>lways (this exact call) / "
+                                  f"<ansicyan>t</ansicyan> always {tool} (any arguments) › ")).strip().lower()
         except (EOFError, KeyboardInterrupt):
             raise KeyboardInterrupt
         if ans in ("a", "always"):
-            self._always.add(tool)
+            self._always.add(key)
+            return True
+        if ans in ("t", "tool"):
+            self._always_tools.add(tool)
             return True
         return ans in ("y", "yes")
 
@@ -1650,8 +1695,9 @@ class BobShell:
         """End-of-session consolidation: extract durable facts from this session's turns and
         store them (deduped) + one episodic recap. Gated on memory.enabled && memory.autoConsolidate;
         skipped for a session with no turns. Synchronous but best-effort (the core swallows failures)."""
+        from bob_core import _mem
         mem = self.config.get("memory", {})
-        if not (mem.get("enabled", False) and mem.get("autoConsolidate", True)):
+        if not (mem.get("enabled", False) and _mem(mem, "autoConsolidate")):
             return
         if not self.history:
             return

@@ -1,6 +1,7 @@
 """Agent loop event generator: tool step, final, streaming, history."""
 import json
 import unittest
+from unittest import mock
 from types import SimpleNamespace
 
 import _common
@@ -545,10 +546,22 @@ class TestAgentLoop(unittest.TestCase):
                     delta=SimpleNamespace(content="ok", tool_calls=None))])])
 
         bob_core.get_llm_client = lambda config=None: Recorder()
-        list(bob_loop.run_agent_events(
-            "hi", self.cfg, role="chat", agency="silent", registry=_common.FakeRegistry(),
-            images=["data:image/png;base64,AA=="], no_tools=True))
-        self.assertEqual(captured["model"], "chat")
+        # The pinned role is kept when its model reads images (here chat carries an mmproj, as on 24gb+).
+        view = ({"defaults": {}, "peers": {}}, "24gb",
+                {"chat": {"ctx": 40960, "mmproj": "mm.gguf"}, "vision": {"ctx": 40960, "supportsVision": True},
+                 "coder": {"ctx": 40960}})
+        with mock.patch.object(bob_core, "_models_view", return_value=view):
+            list(bob_loop.run_agent_events(
+                "hi", self.cfg, role="chat", agency="silent", registry=_common.FakeRegistry(),
+                images=["data:image/png;base64,AA=="], no_tools=True))
+            self.assertEqual(captured["model"], "chat")
+            # A pinned text-only role is refused rather than sent an image its model can't read.
+            captured.clear()
+            evs = list(bob_loop.run_agent_events(
+                "hi", self.cfg, role="coder", agency="silent", registry=_common.FakeRegistry(),
+                images=["data:image/png;base64,AA=="], no_tools=True))
+        self.assertEqual(evs[-1]["kind"], "vision_unavailable")
+        self.assertEqual(captured, {})
 
     def test_tool_returned_image_threads_into_next_turn_and_routes_vision(self):
         # a tool returning {"__images__":[...], "text":...} feeds the image into the next

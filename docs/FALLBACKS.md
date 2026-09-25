@@ -12,7 +12,7 @@ bob diagnose    # system + model health check
 | Layer | Primary | Fallback 1 | Fallback 2 (no build required) |
 |---|---|---|---|
 | Inference engine | Bob prebuilt llama-server (driver-only, CUDA libs bundled) | Source build (`bob build --from-source`, CUDA 12.8) | Ollama |
-| Proxy / model router | llama-swap (Go build) | llama-swap release binary | Ollama's built-in model swapping |
+| Proxy / model router | llama-swap (pinned, SHA-verified release binary) | llama-swap Go build (`--from-source`) | Ollama's built-in model swapping |
 | Chat and RAG UI | Open WebUI (Python 3.12, port 3000) | AnythingLLM desktop installer | LM Studio |
 | IDE autocomplete | Continue.dev | twinny | LM Studio + Continue |
 | Plan and edit separately | aider architect mode | Cline Plan/Act | Cline single-model |
@@ -39,6 +39,8 @@ bob build --cpu
 ```
 
 This is auto-selected when no GPU is detected. It produces a `-DGGML_CUDA=OFF` engine, and `bob profile auto` switches to the tiny `cpu` profile (`bob profile cpu` to force it). It's for correctness/wiring and CI, not performance. See [PORTABILITY.md](PORTABILITY.md).
+
+The `cpu` profile's `chat` has a 4096-token window, too small for the full tool set. The agent compacts the tool schemas, then leaves out non-core tools, largest first, and says which in one notice; list the ones you never use in `agent.disabledTools` to pick the set yourself. If even a 256-token reply cannot fit, the run stops with a `context_overflow` error that says what to trim.
 
 **Prebuilt llama.cpp binary:** Download `*-bin-win-cuda-12.4-x64.zip` (Windows) or the matching Linux CUDA build from the [llama.cpp releases page](https://github.com/ggml-org/llama.cpp/releases). Extract the binaries to `bin/` and also copy the matching CUDA runtime libraries into `bin/` (`bob build` copies these automatically, but the prebuilt zip does not include them). This works on all supported GPU generations. On Blackwell it's slightly slower than a CUDA 12.8 source build; on Ada and Ampere the difference is negligible.
 
@@ -67,9 +69,9 @@ This is auto-selected when no GPU is detected. It produces a `-DGGML_CUDA=OFF` e
 
   Give the peer its real limits when you know them: `maxOutputTokens` is the output cap every `*-pro` route defaults to (without it the provider's own default applies, which is often short enough to cut off a long answer), and `contextWindow` (input tokens) is what agent harnesses such as DeepSeek Harness budget against. Set `supportsVision: true` on any role whose model takes images. Without these, dsh assumes 262144 in and 32768 out, and a `vision` role is left out of its route.
 
-## No Go compiler for llama-swap
+## llama-swap without Go
 
-`bob build` builds llama-swap from the Go submodule. If Go isn't installed, download the release binary for your OS from the [llama-swap releases page](https://github.com/mostlygeek/llama-swap/releases) (`llama-swap.exe` on Windows, the Linux binary as `llama-swap`) and place it in `bin/`. `bob build` and `bob serve` will use it as-is and skip the Go build.
+Setup installs llama-swap as the release binary pinned in `versions.lock` for your OS and CPU (x86_64 and arm64 Linux, Windows), SHA-256 verified before it lands in `bin/`, so no Go is needed. Go builds it from the submodule only with `--from-source`, on a platform with no pinned asset, or when the pinned release no longer matches the submodule commit. If the download fails (offline, a proxy), re-run `python -m bob.kernel build-swap` with network access, or download the matching release from the [llama-swap releases page](https://github.com/mostlygeek/llama-swap/releases) yourself and place it in `bin/` (`llama-swap.exe` on Windows); `bob serve` uses whatever is there.
 
 ## Open WebUI won't install
 

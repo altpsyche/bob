@@ -1,3 +1,4 @@
 # aider — its own venv (tools/venv-aider). Conflicts with open-webui's pins, so kept separate.
-# Lock after a good install: tools\venv-aider\Scripts\pip freeze > tools\aider-requirements.lock
+# Lock after a good install: tools\venv-aider\Scripts\pip freeze > tools\aider-requirements.lock, then mark
+# Windows-only rows (pywin32, win32_setctime) with ' ; sys_platform == "win32"': the lock installs on every OS.
 aider-chat

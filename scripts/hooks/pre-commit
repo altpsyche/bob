@@ -1,5 +1,6 @@
 #!/bin/sh
-# Bob pre-commit hook (N8) — blocks the commit if py_compile / verbs+lock sync / exec-bits / tests fail.
+# Bob pre-commit hook: blocks the commit if scripts/check.py fails (py_compile, versions.lock sync, exec bits,
+# release metadata, n8n portability, the unittest suite + its skip guard).
 # Installed into .git/hooks by scripts/install_hooks.py (that dir isn't version-controlled).
 root=$(git rev-parse --show-toplevel)
 if [ -n "$BOB_PYTHON" ]; then PY="$BOB_PYTHON"

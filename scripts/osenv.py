@@ -8,9 +8,11 @@ One place that knows about the OS, so the rest of the Python core stays OS-neutr
 
 Per-OS branches key off platform.system() so tests can monkeypatch it.
 """
+import contextlib
 import json
 import os
 import platform
+import re
 import shutil
 import signal
 import subprocess
@@ -68,13 +70,6 @@ def is_wayland() -> bool:
     if os.environ.get("WAYLAND_DISPLAY"):
         return True
     return os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland"
-
-
-def is_x11() -> bool:
-    """True on an X11 session (xdotool drives it directly)."""
-    if os.environ.get("XDG_SESSION_TYPE", "").lower() == "x11":
-        return True
-    return bool(os.environ.get("DISPLAY")) and not is_wayland()
 
 
 def _input_backend():
@@ -287,13 +282,127 @@ def secret(name: str, default=None, config: dict = None):
     sf = secrets_file()
     if sf.exists():
         try:
-            data = json.loads(sf.read_text(encoding="utf-8"))
+            data = json.loads(_read_secrets_text(sf))
             if isinstance(data, dict) and data.get(name):
                 return data[name]
         except (json.JSONDecodeError, OSError):
-            pass  # a malformed secrets file must not leak or crash — treat as absent
+            pass  # a malformed secrets file must not leak or crash a read; ensure_secret refuses to write over it
     # 4. default (may be a config-carried reference/value on Windows)
     return default
+
+
+@contextlib.contextmanager
+def file_lock(path: Path):
+    """Hold an exclusive inter-process lock on `path` (created 0600 if absent) for the block: fcntl.flock
+    on POSIX, msvcrt.locking on Windows. Blocks until the lock is free. The lock file is never removed,
+    since unlinking a lock file another process has open would let a third one lock a new inode."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        if os.name == "nt":
+            import msvcrt
+            while True:
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_LOCK, 1)   # retries for ~10 s, then raises
+                    break
+                except OSError:
+                    continue
+            try:
+                yield
+            finally:
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+class SecretsFileCorrupt(RuntimeError):
+    """secrets.json exists but is not a JSON object; it was moved aside instead of being overwritten."""
+
+
+def _read_secrets_text(sf: Path, attempts: int = 20) -> str:
+    """secrets.json's text. On Windows a read that lands while ensure_secret's os.replace swaps the file
+    in fails with PermissionError, so it is retried briefly; elsewhere the replace is atomic."""
+    for attempt in range(attempts):
+        try:
+            return sf.read_text(encoding="utf-8")
+        except PermissionError:
+            if not is_windows() or attempt == attempts - 1:
+                raise
+            import time
+            time.sleep(0.05)
+    raise PermissionError(str(sf))   # unreachable: the last attempt re-raises
+
+
+def _read_secrets_file(sf: Path) -> dict:
+    """The secrets.json mapping, or {} when it is absent. A file that exists but does not parse to a JSON
+    object is moved aside to secrets.json.corrupt-<timestamp> (0600) and SecretsFileCorrupt is raised:
+    treating it as empty would rewrite it with only the new name, wiping the other secrets (a regenerated
+    n8n key leaves n8n's stored credentials undecryptable)."""
+    try:
+        text = _read_secrets_text(sf)
+    except FileNotFoundError:
+        return {}
+    try:
+        loaded = json.loads(text)
+    except ValueError:
+        loaded = None
+    if isinstance(loaded, dict):
+        return loaded
+    import time
+    aside = sf.with_name(f"{sf.name}.corrupt-{time.strftime('%Y%m%d-%H%M%S')}")
+    os.replace(sf, aside)
+    try:
+        os.chmod(aside, 0o600)
+    except OSError:
+        pass
+    raise SecretsFileCorrupt(
+        f"{sf} is not valid JSON, so Bob's generated secrets (LiteLLM, n8n, Open WebUI, Langfuse) could not "
+        f"be read. It was moved to {aside}. Repair that file and move it back to {sf.name} before running "
+        "Bob again: starting without it generates new secrets, and a new n8n key cannot decrypt n8n's "
+        "stored credentials.")
+
+
+def ensure_secret(name: str, nbytes: int = 32, prefix: str = "", legacy: str = None) -> str:
+    """The secret `name`, generated and persisted on first use when no source (env / keychain /
+    secrets.json) has it. The new value is `prefix` + a random hex token of `nbytes` bytes, or `legacy`
+    when given: a caller passes the value an existing install was already built with (for example a
+    service data dir encrypted under the old fixed key), so adopting the generated-secret scheme never
+    locks a user out of their own data. Persisted to <data_dir>/secrets.json (mode 0600 on POSIX).
+
+    Concurrent first uses across processes agree on one value: the read-modify-write runs under
+    file_lock(secrets.json.lock), and the file is re-read once the lock is held, so a value another
+    process stored meanwhile is returned rather than overwritten. The temp file is created 0600, so the
+    secret is never on disk at a wider mode, then renamed over secrets.json. A secrets.json that does not
+    parse is never overwritten: it is moved aside and SecretsFileCorrupt is raised (_read_secrets_file)."""
+    val = secret(name)
+    if val:
+        return val
+    import secrets as _secrets
+    sf = secrets_file()
+    with file_lock(sf.with_name(sf.name + ".lock")):
+        data = _read_secrets_file(sf)
+        if data.get(name):
+            return data[name]
+        val = legacy or (prefix + _secrets.token_hex(nbytes))
+        data[name] = val
+        tmp = sf.with_name(f"{sf.name}.{os.getpid()}.{_secrets.token_hex(4)}.tmp")
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(data, indent=2) + "\n")
+            os.replace(tmp, sf)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+    return val
 
 
 # --- notifications -------------------------------------------------------------------------------
@@ -545,56 +654,188 @@ def _fmt_uptime(seconds: float) -> str:
     return f"{h}:{m:02d}:{s:02d}"
 
 
-def stop_process_tree(pid: int) -> None:
-    """Terminate a process and its children (uvicorn workers, piper's native child, …).
-    Windows reaps children via psutil/taskkill; POSIX prefers a process-GROUP kill
-    (works when start_detached made the PID a group leader) then belt-and-suspenders pkill -P + kill.
-    Best-effort — a dead PID never raises."""
+def stop_process_tree(pid: int, timeout: float = 10.0) -> bool:
+    """Terminate a process and its children (uvicorn workers, piper's native child, llama-swap's
+    llama-server children) and WAIT for it to exit: a graceful terminate first, then a hard kill once
+    `timeout` seconds pass, so a caller that restarts the service never races a still-dying server for its
+    port or its VRAM. Windows reaps children via psutil (taskkill /T /F without it); POSIX signals the
+    process GROUP (start_detached makes the PID a group leader), its direct children, and the PID itself.
+    Returns True once the process is gone. Best-effort: a dead PID never raises."""
     if not pid or pid <= 0:
-        return
+        return True
     if os_name() == "windows":  # pragma: no cover — exercised only on Windows
         try:
             import psutil  # type: ignore
 
             proc = psutil.Process(pid)
-            for child in proc.children(recursive=True):
-                child.terminate()
-            proc.terminate()
-            return
+            procs = proc.children(recursive=True) + [proc]
+            for p in procs:
+                try:
+                    p.terminate()
+                except psutil.Error:
+                    pass
+            _gone, alive = psutil.wait_procs(procs, timeout=timeout)
+            for p in alive:
+                try:
+                    p.kill()
+                except psutil.Error:
+                    pass
+            psutil.wait_procs(alive, timeout=5)
         except ImportError:
-            subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
-                           check=False, capture_output=True)
-            return
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], check=False, capture_output=True)
         except Exception:
-            return
-    # POSIX: group kill first, then children by parent, then the parent itself.
+            pass
+        return _wait_gone(pid, 5)
     try:
-        os.killpg(os.getpgid(pid), signal.SIGTERM)
+        pgid = os.getpgid(pid)
     except (ProcessLookupError, PermissionError, OSError):
-        pass
+        pgid = None
+    _signal_tree(pid, pgid, signal.SIGTERM)
+    if _wait_gone(pid, timeout):
+        return True
+    _signal_tree(pid, pgid, signal.SIGKILL)
+    return _wait_gone(pid, 5)
+
+
+def _signal_tree(pid: int, pgid, sig) -> None:
+    """POSIX: send `sig` to the process group (when the PID leads one), its direct children, and the PID."""
+    if pgid is not None and pgid == pid:
+        try:
+            os.killpg(pgid, sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
     if shutil.which("pkill"):
-        subprocess.run(["pkill", "-P", str(pid)], check=False, capture_output=True)
+        subprocess.run(["pkill", f"-{int(sig)}", "-P", str(pid)], check=False, capture_output=True)
     try:
-        os.kill(pid, signal.SIGTERM)
+        os.kill(pid, sig)
     except (ProcessLookupError, PermissionError):
         pass
 
 
-def stop_processes_by_name(names) -> list:
-    """Kill processes by executable name — the way to reap C++ daemons (llama-swap/llama-server/
-    whisper-server/open-webui) that survive a stale pidfile. Windows: taskkill /IM <name>.exe /F;
-    POSIX: pkill -f <name>. Returns the names for which a live process was actually killed."""
+def _wait_gone(pid: int, timeout: float) -> bool:
+    """Poll until `pid` has exited (reaping it when it is our own child), up to `timeout` seconds."""
+    import time
+
+    deadline = time.monotonic() + timeout
+    while True:
+        if os_name() != "windows":
+            try:
+                os.waitpid(pid, os.WNOHANG)   # reap our own child so it does not linger as a zombie
+            except (ChildProcessError, OSError):
+                pass
+        if not pid_alive(pid):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.1)
+
+
+def _managed_roots() -> list:
+    """The directories whose executables Bob owns: repo bin/ (native engines) and tools/ (venvs, n8n)."""
+    roots = []
+    for base in (REPO / "bin", REPO / "tools"):
+        for form in (os.path.abspath(base), os.path.realpath(base)):
+            if form not in roots:
+                roots.append(form)
+    return roots
+
+
+def _under(path: str, roots: list) -> bool:
+    p = os.path.normcase(os.path.abspath(path))
+    return any(p == os.path.normcase(r) or p.startswith(os.path.normcase(r) + os.sep) for r in roots)
+
+
+def _stem(path: str) -> str:
+    base = os.path.basename(path)
+    return base[:-4] if base.lower().endswith(".exe") else base
+
+
+def _process_table() -> list:
+    """[(pid, exe_path_or_'', argv)] for every visible process. psutil when installed; else /proc on
+    Linux; else `ps` on macOS (whose `comm` column is the full executable path)."""
+    rows = []
+    try:
+        import psutil  # type: ignore
+
+        for p in psutil.process_iter(["pid", "exe", "cmdline"]):
+            info = p.info
+            rows.append((info["pid"], info.get("exe") or "", info.get("cmdline") or []))
+        return rows
+    except ImportError:
+        pass
+    if os_name() == "linux":
+        for d in os.listdir("/proc"):
+            if not d.isdigit():
+                continue
+            try:
+                exe = os.readlink(f"/proc/{d}/exe")
+            except OSError:
+                exe = ""
+            try:
+                with open(f"/proc/{d}/cmdline", "rb") as f:
+                    argv = [a.decode("utf-8", "replace") for a in f.read().split(b"\0") if a]
+            except OSError:
+                argv = []
+            rows.append((int(d), exe, argv))
+        return rows
+    if os_name() == "windows":  # pragma: no cover — exercised only on Windows
+        ps = ("Get-CimInstance Win32_Process | Select-Object ProcessId,ExecutablePath,CommandLine "
+              "| ConvertTo-Json -Compress")
+        out = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True,
+                             check=False).stdout
+        try:
+            items = json.loads(out or "[]")
+        except ValueError:
+            items = []
+        for it in items if isinstance(items, list) else [items]:
+            cmd = it.get("CommandLine") or ""
+            try:
+                import shlex
+                argv = [a.strip('"') for a in shlex.split(cmd, posix=False)]
+            except ValueError:
+                argv = cmd.split()
+            rows.append((int(it.get("ProcessId") or 0), it.get("ExecutablePath") or "", argv))
+        return rows
+    if os_name() == "macos":  # pragma: no cover — exercised only on macOS
+        out = subprocess.run(["ps", "-axo", "pid=,comm=,args="], capture_output=True, text=True,
+                             check=False).stdout
+        for line in out.splitlines():
+            parts = line.split(None, 2)
+            if len(parts) >= 2 and parts[0].isdigit():
+                rows.append((int(parts[0]), parts[1], parts[2].split() if len(parts) > 2 else []))
+    return rows
+
+
+def find_managed_processes(names) -> list:
+    """[(pid, name)] for live processes that are one of Bob's OWN executables named in `names`: the
+    running binary (or, for a script, its interpreter's first two argv entries: `python open-webui`,
+    `node n8n`) must be a file under the repo's bin/ or tools/ whose name is in `names`. An editor, a
+    `tail -f logs/llama-swap.log`, or a system llama-server elsewhere never matches."""
     if isinstance(names, str):
         names = [names]
+    wanted = set(names)
+    roots = _managed_roots()
+    me = os.getpid()
+    found = []
+    for pid, exe, argv in _process_table():
+        if pid == me:
+            continue
+        for cand in [exe] + list(argv[:2]):
+            if cand and _stem(cand) in wanted and _under(cand, roots):
+                found.append((pid, _stem(cand)))
+                break
+    return found
+
+
+def stop_processes_by_name(names) -> list:
+    """Stop Bob's own daemons by executable name (llama-swap/llama-server/open-webui/n8n), the way to
+    reap one that survived a stale or missing pidfile. Matching is exact and repo-scoped (see
+    find_managed_processes), never a substring match over every command line. Returns the names for which
+    a live process was actually stopped."""
     killed = []
-    win = os_name() == "windows"
-    for name in names:
-        if win:  # pragma: no cover — exercised only on Windows
-            proc = subprocess.run(["taskkill", "/IM", exe_name(name), "/F"],
-                                  check=False, capture_output=True)
-        else:
-            proc = subprocess.run(["pkill", "-f", name], check=False, capture_output=True)
-        if proc.returncode == 0:  # pkill/taskkill exit 0 only when a match was terminated
+    for pid, name in find_managed_processes(names):
+        stop_process_tree(pid)
+        if name not in killed:
             killed.append(name)
     return killed
 
@@ -630,6 +871,42 @@ def start_detached(argv: list, pidfile=None, log_path=None, env: dict = None, ap
     if pidfile is not None:
         Path(pidfile).write_text(str(proc.pid), encoding="utf-8")
     return proc.pid
+
+
+# --- downloads -------------------------------------------------------------------------------
+# The ONE stdlib download primitive for the pre-venv paths (engine archives, piper, voice models, cmake,
+# llama-swap). Multi-GB GGUFs go through curl in tools/provision.py instead, for resume support.
+
+def download(url: str, dest, sha256: str = None, timeout: float = 60, require_sha: bool = False) -> Path:
+    """Fetch `url` to `dest` atomically: stream into <dest>.part (hashing as it goes), verify, then
+    os.replace onto `dest`, so an interrupted or corrupt download never leaves a file that looks
+    present. `timeout` bounds each socket read, so a stalled server raises instead of hanging forever.
+    `sha256` (hex) is checked when given; `require_sha=True` refuses an empty one, for artifacts that
+    get executed (engine binaries). Raises RuntimeError on a hash mismatch or a refused download and
+    OSError/urllib errors on transport failure; the .part is removed in every failure case."""
+    import hashlib
+    import urllib.request
+
+    want = (sha256 or "").strip().lower()
+    if require_sha and not want:
+        raise RuntimeError(f"refusing to download {url}: no sha256 pinned for it")
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    part = dest.with_name(dest.name + ".part")
+    h = hashlib.sha256()
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r, open(part, "wb") as f:  # noqa: S310
+            for block in iter(lambda: r.read(1 << 20), b""):
+                h.update(block)
+                f.write(block)
+        got = h.hexdigest()
+        if want and got != want:
+            raise RuntimeError(f"SHA256 mismatch for {url} (got {got[:12]}..., want {want[:12]}...)")
+        os.replace(part, dest)
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
+    return dest
 
 
 # --- executable + path resolvers -----------------------------------------------------
@@ -681,7 +958,7 @@ def home_config_dir(app: str) -> Path:
 
 
 def docker_present() -> bool:
-    """True if a `docker` CLI is on PATH. The compose services (SearXNG / n8n / langfuse) need it."""
+    """True if a `docker` CLI is on PATH. The compose services (SearXNG / Langfuse) need it."""
     return bool(shutil.which("docker"))
 
 
@@ -748,17 +1025,25 @@ def agent_task_spec(python_exe: str, script_path: str, task_name: str = "BobAgen
 
 
 def _crontab_lines() -> list:
-    """Current crontab entries as a list of lines ([] if none / no crontab installed)."""
+    """Current crontab entries, verbatim (blank lines and comments included); [] when the user has no
+    crontab yet. Any other `crontab -l` failure raises RuntimeError: treating it as "empty" would make the
+    rewrite below replace the user's real crontab with only Bob's line."""
     proc = subprocess.run(["crontab", "-l"], capture_output=True, text=True, check=False)
-    if proc.returncode != 0:
+    if proc.returncode == 0:
+        return proc.stdout.splitlines()
+    if "no crontab" in ((proc.stderr or "") + (proc.stdout or "")).lower():
         return []
-    return [ln for ln in proc.stdout.splitlines()]
+    raise RuntimeError(f"could not read the current crontab (crontab -l exit {proc.returncode}: "
+                       f"{(proc.stderr or '').strip()}); leaving it untouched.")
 
 
 def _crontab_write(lines: list) -> None:
-    """Replace the crontab with `lines` (piped to `crontab -`)."""
-    payload = "\n".join(ln for ln in lines if ln != "")
-    subprocess.run(["crontab", "-"], input=(payload + "\n") if payload else "", text=True, check=False)
+    """Replace the crontab with `lines` exactly as given (piped to `crontab -`). Raises on failure."""
+    payload = "\n".join(lines)
+    proc = subprocess.run(["crontab", "-"], input=(payload + "\n") if payload else "", text=True,
+                          capture_output=True, check=False)
+    if proc.returncode != 0:
+        raise RuntimeError(f"crontab install failed (exit {proc.returncode}): {(proc.stderr or '').strip()}")
 
 
 def register_agent_task(python_exe: str, script_path: str, task_name: str = "BobAgent") -> None:
@@ -814,7 +1099,11 @@ def agent_task_status(task_name: str = "BobAgent") -> dict:
         return {"registered": True, "state": state or "Ready", "next_run": next_run}
     if not crontab_available():
         return {"registered": False, "state": None, "next_run": None}
-    line = next((ln for ln in _crontab_lines() if ln.rstrip().endswith(f"# {task_name}")), None)
+    try:
+        current = _crontab_lines()
+    except RuntimeError:
+        return {"registered": False, "state": "unknown (crontab -l failed)", "next_run": None}
+    line = next((ln for ln in current if ln.rstrip().endswith(f"# {task_name}")), None)
     return {"registered": bool(line), "state": "Ready" if line else None, "next_run": None}
 
 
@@ -1033,42 +1322,152 @@ def linux_os_family(os_release_path: str = "/etc/os-release"):
     return kv.get("ID") or None
 
 
-# --- build-output rollback (used by update) -----------------------------------------------
-# Cross-platform snapshot/restore of a build-output dir (bin/), used by `update` to roll back a failed
-# rebuild. Operate on any path — no .exe assumptions.
+# --- staging binaries into bin/ + build-output rollback (used by build, prebuilt install, update) ---
+# Files land in bin/ by os.replace from a staging dir on the same filesystem, so every install gets a NEW
+# inode: a running llama-server keeps executing (and keeps its mmapped libs) from the old one instead of
+# failing with ETXTBSY or crashing on a library rewritten underneath it. Windows cannot replace a file
+# that is in use, but it can rename it, so there the old file is moved aside first.
+
+_VERSIONED_LIB = (re.compile(r"^(lib.+?)\.so(?:\.\d+)*$"), re.compile(r"^(lib.+?)(?:\.\d+)*\.dylib$"))
+
+
+def _lib_base(name: str):
+    """'libggml-base' for libggml-base.so.0.9.4 / libggml-base.so / libggml-base.0.dylib; None otherwise."""
+    for pat in _VERSIONED_LIB:
+        m = pat.match(name)
+        if m:
+            return m.group(1)
+    return None
+
+
+def copy_entry(src, dst) -> None:
+    """Copy one file into place, keeping a symlink a symlink (a SONAME link such as libcublas.so.12 ->
+    libcublas.so.12.8.4.1 would otherwise dereference into a second full copy of a lib that can be half a
+    gigabyte). Falls back to copying the target where the OS refuses symlinks (Windows without the
+    privilege)."""
+    src, dst = Path(src), Path(dst)
+    if dst.is_symlink() or dst.exists():
+        dst.unlink()
+    if src.is_symlink():
+        try:
+            os.symlink(os.readlink(src), dst)
+            return
+        except (OSError, NotImplementedError):
+            pass
+    shutil.copy2(src, dst)
+
+
+def replace_file(src, dest) -> None:
+    """os.replace `src` onto `dest` (same filesystem). On Windows an in-use `dest` is renamed aside first
+    (a running .exe or a loaded .dll can be renamed but not overwritten); the aside copy is swept by the next
+    install_files."""
+    src, dest = Path(src), Path(dest)
+    try:
+        os.replace(src, dest)
+    except PermissionError:
+        if os_name() != "windows" or not dest.exists():
+            raise
+        n = 0
+        while True:
+            aside = dest.with_name(f"{dest.name}.old-{n}")
+            if not aside.exists():
+                break
+            n += 1
+        os.replace(dest, aside)
+        os.replace(src, dest)
+
+
+def install_files(entries: dict, dest_dir, prune_libs: bool = True) -> list:
+    """Install {name: source_path} into `dest_dir`: copy every entry into a staging dir inside `dest_dir`,
+    then replace_file each one into place, so nothing in `dest_dir` is ever rewritten in place. With
+    `prune_libs`, a versioned shared lib in `dest_dir` whose base name the new set also ships (for example
+    an older libggml-base.so.0.9.3 next to a new libggml-base.so.0.9.4) is removed, so bin/ does not grow
+    by a full set of libs on every update. Returns the installed names."""
+    dest_dir = Path(dest_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    stage = dest_dir / f".staging-{os.getpid()}"
+    if stage.exists():
+        _rm_rf(stage)
+    stage.mkdir()
+    try:
+        for name, src in entries.items():
+            copy_entry(src, stage / name)
+        for name in entries:
+            replace_file(stage / name, dest_dir / name)
+    finally:
+        _rm_rf(stage)
+    if prune_libs:
+        bases = {b for b in (_lib_base(n) for n in entries) if b}
+        for p in dest_dir.iterdir():
+            if p.name in entries or _lib_base(p.name) not in bases:
+                continue
+            try:
+                p.unlink()
+            except OSError:
+                pass
+    for p in dest_dir.glob("*.old-*"):
+        try:
+            p.unlink()
+        except OSError:
+            pass   # still in use (Windows); the next install sweeps it
+    return list(entries)
+
 
 def backup_build_output(path):
-    """Snapshot <path> to <path>.bak (clearing any stale .bak first). Returns the .bak Path, or None if
-    <path> doesn't exist (a fresh build — nothing to protect)."""
+    """Snapshot <path> to <path>.bak (clearing any stale .bak first), keeping symlinks as symlinks. Returns
+    the .bak Path, or None if <path> doesn't exist (a fresh build — nothing to protect)."""
     src = Path(path)
     bak = Path(f"{src}.bak")
-    if bak.exists():
+    if bak.exists() or bak.is_symlink():
         _rm_rf(bak)
     if not src.exists():
         return None
     if src.is_dir():
-        shutil.copytree(src, bak)
+        shutil.copytree(src, bak, symlinks=True)
     else:
-        shutil.copy2(src, bak)
+        shutil.copy2(src, bak, follow_symlinks=False)
     return bak
 
 
 def restore_build_output(path, bak_path=None) -> bool:
-    """Roll <path> back to the snapshot from backup_build_output. Returns True if a restore happened."""
+    """Roll <path> back to the snapshot from backup_build_output. Returns True only when the restore is
+    verified (every snapshot entry is back in place), and removes the snapshot then.
+
+    A directory is restored entry by entry through install_files rather than delete-then-move: on Windows a
+    locked file survives a delete, and moving the snapshot onto a directory that still exists nests it
+    (bin/bin.bak). Entries the failed update added are removed where possible."""
     src = Path(path)
     bak = Path(bak_path) if bak_path else Path(f"{src}.bak")
-    if not bak.exists():
+    if not (bak.exists() or bak.is_symlink()):
         return False
-    if src.exists():
-        _rm_rf(src)
-    shutil.move(str(bak), str(src))
-    return True
+    if not bak.is_dir():
+        if src.exists() or src.is_symlink():
+            _rm_rf(src)
+        shutil.move(str(bak), str(src))
+        return src.exists()
+    src.mkdir(parents=True, exist_ok=True)
+    files = {p.name: p for p in bak.iterdir() if p.is_file() or p.is_symlink()}
+    install_files(files, src, prune_libs=False)
+    for d in (p for p in bak.iterdir() if p.is_dir() and not p.is_symlink()):
+        target = src / d.name
+        if target.exists() or target.is_symlink():
+            _rm_rf(target)
+        if not target.exists():
+            shutil.copytree(d, target, symlinks=True)
+    keep = {p.name for p in bak.iterdir()}
+    for p in src.iterdir():
+        if p.name not in keep:
+            _rm_rf(p)
+    ok = all((src / name).exists() or (src / name).is_symlink() for name in keep)
+    if ok:
+        _rm_rf(bak)
+    return ok
 
 
 def remove_build_output_backup(path, bak_path=None) -> None:
-    """Discard the snapshot after a verified-successful update. Port of Remove-BuildOutputBackup."""
+    """Discard the snapshot after a verified-successful update."""
     bak = Path(bak_path) if bak_path else Path(f"{path}.bak")
-    if bak.exists():
+    if bak.exists() or bak.is_symlink():
         _rm_rf(bak)
 
 
@@ -1403,25 +1802,43 @@ def ensure_msvc_env() -> bool:
         return False
 
 
-def linux_cmake3(repo, pinned_version: str = "3.31.7") -> str:
-    """A cmake in [3.18, 4.0) (llama.cpp needs >= 3.18, and rejects 4.x's policy changes). System cmake when
-    it is in range, else download + cache the pinned Kitware build into tools/ (old LTS distros ship 3.16,
-    rolling distros ship 4.x, neither works). urllib, not requests, so it works pre-venv in the kernel.
-    Raises on download failure."""
-    import re
-    import tempfile
-    import urllib.request
+# The ONE cmake requirement: llama.cpp's CUDA backend needs >= 3.18 (CMAKE_CUDA_ARCHITECTURES) and the
+# tree rejects 4.x's policy changes. CMAKE_PIN is the in-range release fetched when the system cmake is out of
+# range (Linux: the Kitware tarball below; Windows: winget), with the Kitware-published SHA-256 per arch.
+CMAKE_RANGE = ((3, 18), (4, 0))
+CMAKE_PIN = "3.31.7"
+CMAKE_PIN_SHA256 = {
+    "x86_64": "14e15d0b445dbeac686acc13fe13b3135e8307f69ccf4c5c91403996ce5aa2d4",
+    "aarch64": "e5b2dc2aefdca10afe09c8fa4ee2bbb4e732665943a94322f99c118781910c3c",
+}
 
+
+def cmake_in_range(version_text: str) -> bool:
+    """True when a `cmake --version` string names a version inside CMAKE_RANGE."""
+    m = re.search(r"(\d+)\.(\d+)", version_text or "")
+    if not m:
+        return False
+    lo, hi = CMAKE_RANGE
+    return lo <= (int(m.group(1)), int(m.group(2))) < hi
+
+
+def linux_cmake3(repo, pinned_version: str = CMAKE_PIN) -> str:
+    """A cmake inside CMAKE_RANGE. System cmake when it is in range, else download (SHA-256 verified) and
+    cache the pinned Kitware build into tools/ (old LTS distros ship 3.16, rolling distros ship 4.x, neither
+    works). Stdlib download, so it works pre-venv in the kernel. Raises on download or verification failure."""
+    import tempfile
+
+    lo, hi = CMAKE_RANGE
     sys_cmake = shutil.which("cmake")
     if sys_cmake:
         try:
             out = subprocess.run(["cmake", "--version"], capture_output=True, text=True, timeout=10)
-            m = re.search(r"(\d+)\.(\d+)\.(\d+)", out.stdout)
-            if m and (3, 18) <= (int(m.group(1)), int(m.group(2))) < (4, 0):
+            if cmake_in_range(out.stdout):
                 return sys_cmake
+            m = re.search(r"(\d+)\.(\d+)\.(\d+)", out.stdout or "")
             if m:
-                print(f"  system cmake is {m.group(0)} — llama.cpp needs >= 3.18 and < 4.0; provisioning a "
-                      "pinned build.", file=sys.stderr)
+                print(f"  system cmake is {m.group(0)}; llama.cpp needs >= {lo[0]}.{lo[1]} and < {hi[0]}.{hi[1]}, "
+                      "so provisioning a pinned build.", file=sys.stderr)
         except (OSError, subprocess.SubprocessError):
             pass
     machine = platform.machine() or "x86_64"
@@ -1430,12 +1847,15 @@ def linux_cmake3(repo, pinned_version: str = "3.31.7") -> str:
     exe = tools / stem / "bin" / "cmake"
     if not exe.exists():
         url = f"https://github.com/Kitware/CMake/releases/download/v{pinned_version}/{stem}.tar.gz"
-        tmp = Path(tempfile.gettempdir()) / f"{stem}.tar.gz"
-        print(f"  fetching pinned cmake {pinned_version} ({machine}) from Kitware...", file=sys.stderr)
-        urllib.request.urlretrieve(url, tmp)  # noqa: S310 — fixed Kitware https URL
-        tools.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["tar", "-xzf", str(tmp), "-C", str(tools)], check=True)
-        tmp.unlink(missing_ok=True)
+        sha = CMAKE_PIN_SHA256.get(machine) if pinned_version == CMAKE_PIN else None
+        tmpdir = Path(tempfile.mkdtemp(prefix="bob-cmake-"))
+        try:
+            print(f"  fetching pinned cmake {pinned_version} ({machine}) from Kitware...", file=sys.stderr)
+            archive = download(url, tmpdir / f"{stem}.tar.gz", sha256=sha, timeout=60, require_sha=True)
+            tools.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["tar", "-xzf", str(archive), "-C", str(tools)], check=True)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
     if not exe.exists():
         raise RuntimeError(f"failed to provision cmake {pinned_version} (expected {exe}). "
                            "Install a cmake 3.x manually and re-run.")
@@ -1788,8 +2208,9 @@ def new_bob_venv(name: str, requirements_base: str = None, extra_packages=(), py
                  force: bool = False, quiet: bool = False) -> str:
     """Create (or self-heal) a Bob venv under tools/<name> and install its requirements. THE single
     venv-build path (the kernel bootstrap loop + `update`/`eval` all call it). Idempotent: reuses an
-    in-range venv, recreates one built with an out-of-range interpreter. Requirements from
-    tools/<base>.lock on Windows (pinned) else tools/<base>.txt. Returns the venv python path (str).
+    in-range venv, recreates one built with an out-of-range interpreter. Requirements from the pinned
+    tools/<base>.lock on every OS (platform-only rows carry environment markers), falling back to the
+    unpinned tools/<base>.txt only when no lock exists. Returns the venv python path (str).
     Raises RuntimeError on any failure."""
     python = python or bob_venv_python()
     if not python:
@@ -1816,15 +2237,18 @@ def new_bob_venv(name: str, requirements_base: str = None, extra_packages=(), py
     if subprocess.run([str(venv_py), "-m", "pip", "install", "--upgrade", "pip", *quiet_arg]).returncode != 0:
         raise RuntimeError(f"pip upgrade failed for {name}.")
 
+    constraint = []
     if requirements_base:
         lock = REPO / "tools" / f"{requirements_base}.lock"
         txt = REPO / "tools" / f"{requirements_base}.txt"
-        req = lock if (os_name() == "windows" and lock.exists()) else txt
+        req = lock if lock.exists() else txt
+        if lock.exists():
+            constraint = ["-c", str(lock)]   # extras below resolve against the same pins
         print(f"  installing {name} from {req.name}", file=sys.stderr)
         if subprocess.run([str(venv_py), "-m", "pip", "install", "-r", str(req), *quiet_arg]).returncode != 0:
             raise RuntimeError(f"pip install failed for {name} — re-run to retry.")
     for pkg in extra_packages:
         print(f"  installing {pkg} into {name}", file=sys.stderr)
-        if subprocess.run([str(venv_py), "-m", "pip", "install", pkg, *quiet_arg]).returncode != 0:
+        if subprocess.run([str(venv_py), "-m", "pip", "install", pkg, *constraint, *quiet_arg]).returncode != 0:
             raise RuntimeError(f"pip install {pkg} failed for {name}.")
     return str(venv_py)

@@ -121,7 +121,8 @@ class TestNewBobVenv(unittest.TestCase):
 # --- install_prereqs (Tier 0) --------------------------------------------------------------------
 
 class TestInstallPrereqsLinux(unittest.TestCase):
-    def _run(self, cpu, mgr="apt", batch_side_effect=None):
+    def _run(self, cpu, mgr="apt", batch_side_effect=None, build=True, go=True, with_node=False,
+             have=lambda name: True, from_source=False):
         batched = []   # toolchain, installed in ONE call via install_packages
         singles = []   # cuda/cron/docker, individual install_package
 
@@ -142,8 +143,11 @@ class TestInstallPrereqsLinux(unittest.TestCase):
              mock.patch.object(osenv, "bob_python", return_value="/usr/bin/python3"), \
              mock.patch.object(osenv, "linux_cmake3", return_value="/usr/bin/cmake"), \
              mock.patch.object(install_prereqs, "_prime_sudo"), \
+             mock.patch.object(install_prereqs, "needs_build_toolchain", return_value=build), \
+             mock.patch.object(install_prereqs, "needs_go", return_value=go), \
+             mock.patch.object(install_prereqs, "_present", side_effect=lambda lg: have(lg)), \
              mock.patch.object(install_prereqs, "_have", return_value=True):
-            rc = install_prereqs.install_prereqs(cpu=cpu)
+            rc = install_prereqs.install_prereqs(cpu=cpu, from_source=from_source, with_node=with_node)
         return rc, batched, singles
 
     def test_cpu_installs_toolchain_in_one_batch_skips_cuda(self):
@@ -162,13 +166,93 @@ class TestInstallPrereqsLinux(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self._run(cpu=True, batch_side_effect=boom)
 
+    def test_prebuilt_path_skips_compiler_cmake_go_and_node(self):
+        # The default driver-only install compiles nothing: no compiler, cmake, ninja, Go or Node.
+        rc, batched, _ = self._run(cpu=False, build=False, go=False)
+        self.assertEqual(rc, 0)
+        for pkg in ("build-essential", "cmake", "ninja-build", "golang-go", "nodejs", "npm"):
+            self.assertNotIn(pkg, batched)
+        for pkg in ("git", "curl", "python3", "python3-venv"):
+            self.assertIn(pkg, batched)
+
+    def test_prebuilt_path_never_provisions_cmake(self):
+        with mock.patch.object(osenv, "linux_cmake3") as cm:
+            with mock.patch.dict(os.environ, {"BOB_FORCE_OS": "linux"}), \
+                 mock.patch.object(install_prereqs.subprocess, "run", return_value=mock.Mock(returncode=0)), \
+                 mock.patch.object(osenv, "linux_package_manager", return_value="apt"), \
+                 mock.patch.object(osenv, "install_packages"), \
+                 mock.patch.object(osenv, "install_package"), \
+                 mock.patch.object(osenv, "bob_python", return_value="/usr/bin/python3"), \
+                 mock.patch.object(install_prereqs, "_prime_sudo"), \
+                 mock.patch.object(install_prereqs, "needs_build_toolchain", return_value=False), \
+                 mock.patch.object(install_prereqs, "needs_go", return_value=False), \
+                 mock.patch.object(install_prereqs, "_have", return_value=True):
+                install_prereqs.install_prereqs(cpu=True)
+        cm.assert_not_called()
+
+    def test_with_node_adds_node_and_npm(self):
+        _, batched, _ = self._run(cpu=True, build=False, go=False, with_node=True)
+        self.assertIn("nodejs", batched)
+        self.assertIn("npm", batched)
+
+    def test_logical_package_sets(self):
+        base = install_prereqs.linux_logical_packages(build=False, go=False, node=False)
+        self.assertEqual(base, ["git", "curl", "python", "python-pip", "python-venv"])
+        full = install_prereqs.linux_logical_packages(build=True, go=True, node=True)
+        for lg in ("toolchain-cc", "make", "cmake", "ninja", "go", "node", "npm"):
+            self.assertIn(lg, full)
+
     def test_atomic_host_layers_and_returns_with_reboot_note(self):
-        # rpm-ostree host: toolchain layers in one transaction, CUDA is NOT layered (distrobox steer).
-        rc, batched, singles = self._run(cpu=False, mgr="rpm-ostree")
+        # rpm-ostree host, source build: toolchain layers in one transaction, CUDA is NOT layered.
+        rc, batched, singles = self._run(cpu=False, mgr="rpm-ostree", have=lambda lg: False)
         self.assertEqual(rc, 0)
         self.assertIn("gcc-c++", batched)      # dnf/rpm-ostree name for toolchain-cc
-        self.assertIn("nodejs", batched)
+        self.assertNotIn("nodejs", batched)    # Node only with --with-node
         self.assertEqual(singles, [])          # no per-pkg cuda/cron/docker on the atomic path
+
+    def test_atomic_host_skips_what_the_image_has_and_needs_no_reboot(self):
+        # Everything already present on the image: nothing is layered, so no new deployment / reboot.
+        with mock.patch.object(install_prereqs, "_layer_atomic", wraps=install_prereqs._layer_atomic) as la:
+            rc, batched, _ = self._run(cpu=False, mgr="rpm-ostree", build=False, go=False)
+        self.assertEqual(rc, 0)
+        self.assertEqual(batched, [])
+        self.assertEqual(la.call_args[0][0], [])
+
+    def test_atomic_host_layers_only_the_missing(self):
+        rc, batched, _ = self._run(cpu=False, mgr="rpm-ostree", build=True, go=False,
+                                   have=lambda lg: lg not in ("cmake", "ninja"))
+        self.assertEqual(sorted(batched), ["cmake", "ninja-build"])
+
+
+class TestPrereqNeeds(unittest.TestCase):
+    def test_from_source_always_needs_toolchain_and_go(self):
+        self.assertTrue(install_prereqs.needs_build_toolchain(from_source=True))
+        self.assertTrue(install_prereqs.needs_go(from_source=True))
+
+    def test_toolchain_follows_prebuilt_availability(self):
+        from bob import lifecycle
+        with mock.patch.object(lifecycle, "prebuilt_available", return_value=True):
+            self.assertFalse(install_prereqs.needs_build_toolchain(cpu=False))
+        with mock.patch.object(lifecycle, "prebuilt_available", return_value=False):
+            self.assertTrue(install_prereqs.needs_build_toolchain(cpu=False))
+
+    def test_go_follows_the_llama_swap_pin(self):
+        from bob import versions
+        with mock.patch.object(versions, "pinned_binary", return_value={"sha256": "ab" * 32, "url": "u"}):
+            self.assertFalse(install_prereqs.needs_go())
+        with mock.patch.object(versions, "pinned_binary", return_value=None):
+            self.assertTrue(install_prereqs.needs_go())
+        with mock.patch.object(versions, "pinned_binary", return_value={"sha256": "", "url": "u"}):
+            self.assertTrue(install_prereqs.needs_go())   # an unverifiable pin is no pin
+
+    def test_arm64_linux_has_a_llama_swap_pin_but_no_prebuilt_engine(self):
+        # arm64 Linux: llama-swap ships a pinned release (no Go), the engine compiles (toolchain needed).
+        from bob import lifecycle, versions
+        self.assertIsNotNone(versions.pinned_binary("llama-swap", "linux-arm64"))
+        self.assertNotIn("arm64", lifecycle._PREBUILT_ARCHES)
+        with mock.patch.object(osenv, "os_name", return_value="linux"), \
+             mock.patch.object(osenv, "normalized_cpu_arch", return_value="arm64"):
+            self.assertFalse(install_prereqs.needs_go())
 
     def test_no_manager_raises(self):
         with mock.patch.dict(os.environ, {"BOB_FORCE_OS": "linux"}), \
@@ -227,11 +311,12 @@ class TestOfferOnboard(unittest.TestCase):
 
     def test_declined_marker_round_trips_in_user_json(self):
         with tempfile.TemporaryDirectory() as d:
-            with mock.patch.object(kernel, "REPO", Path(d)):
-                (Path(d) / "config").mkdir()
+            cfg = Path(d) / "config" / "user.json"
+            with mock.patch.dict(os.environ, {"BOB_USER_CONFIG": str(cfg)}):
                 self.assertFalse(kernel._onboard_declined())
                 kernel._record_onboard_declined()
                 self.assertTrue(kernel._onboard_declined())
+            self.assertTrue(cfg.exists())
 
 
 class TestKernelDispatch(unittest.TestCase):
@@ -248,12 +333,33 @@ class TestKernelDispatch(unittest.TestCase):
     def test_prereqs_subcommand_delegates(self):
         with mock.patch.object(install_prereqs, "install_prereqs", return_value=0) as ip:
             self.assertEqual(kernel.main(["prereqs", "--cpu"]), 0)
-            ip.assert_called_once_with(cpu=True, from_source=False)
+            ip.assert_called_once_with(cpu=True, from_source=False, with_node=False)
 
     def test_prereqs_from_source_delegates(self):
         with mock.patch.object(install_prereqs, "install_prereqs", return_value=0) as ip:
             self.assertEqual(kernel.main(["prereqs", "--from-source"]), 0)
-            ip.assert_called_once_with(cpu=False, from_source=True)
+            ip.assert_called_once_with(cpu=False, from_source=True, with_node=False)
+
+    def test_prereqs_with_node_delegates(self):
+        with mock.patch.object(install_prereqs, "install_prereqs", return_value=0) as ip:
+            self.assertEqual(kernel.main(["prereqs", "--with-node"]), 0)
+            ip.assert_called_once_with(cpu=False, from_source=False, with_node=True)
+
+    def test_aider_setup_subcommand(self):
+        with mock.patch.object(kernel, "setup_aider", return_value="ok") as sa:
+            self.assertEqual(kernel.main(["aider-setup", "--force"]), 0)
+            sa.assert_called_once_with(force=True)
+
+    def test_build_swap_from_source_flag(self):
+        with mock.patch.object(kernel, "build_swap", return_value="built") as bs:
+            self.assertEqual(kernel.main(["build-swap", "--from-source"]), 0)
+            bs.assert_called_once_with(from_source=True)
+
+    def test_setup_flags_parse(self):
+        with mock.patch.object(kernel, "setup", return_value=0) as st:
+            self.assertEqual(kernel.main(["setup", "--with-aider", "--with-fabric", "--skip-models"]), 0)
+        kw = st.call_args.kwargs
+        self.assertTrue(kw["with_aider"] and kw["with_fabric"] and kw["skip_models"])
 
     def test_make_venv_unknown_name_raises(self):
         with self.assertRaises(RuntimeError):
@@ -282,7 +388,7 @@ class TestKernelWiring(unittest.TestCase):
         # the real signal is a durable profile row, not just the config `bob` marker (onboard()
         # writes that marker even when the profile save failed — the "Bob doesn't know me" bug).
         with tempfile.TemporaryDirectory() as d, \
-             mock.patch.object(kernel, "REPO", Path(d)), \
+             mock.patch.dict(os.environ, {"BOB_USER_CONFIG": str(Path(d) / "config" / "user.json")}), \
              mock.patch.object(kernel, "_has_profile_rows", return_value=True) as hpr:
             (Path(d) / "config").mkdir()
             self.assertTrue(kernel._needs_onboard())                       # user.json missing

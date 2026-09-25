@@ -1,10 +1,12 @@
 # The one CI workflow. Jobs:
 #   lint           — shellcheck (bootstrap .sh/shim). Every PR (GATES).
-#   core-suite     — Python core + check.py gate on Linux + Windows, no GPU. Every PR.
+#   lint-windows   — PowerShell parse + PSScriptAnalyzer over the Windows entry scripts. NON-GATING.
+#   core-suite     — Python core + check.py gate on Linux + Windows, no GPU. Every PR. Includes the
+#                    agent-capability eval (tests/test_eval.py holds it at 100%) and the skip guard.
 #   prereqs-distro — install_prereqs.sh + diagnose across fedora/arch/opensuse containers. NON-GATING
 #                    first (proves the dnf/pacman/zypper package-map cells resolve on real distros).
-#   eval           — agent-capability eval (records-based, no live model), both OSes. NON-GATING.
 #   acceptance-cpu — fresh-install + e2e smoke on the CPU tier, both OSes. Every PR (GATES).
+#   default-engine — the prebuilt CPU engine the default install downloads runs in a clean container.
 #   manifest-contract-live — fetch the published engines.json and assert the resolver selects every row.
 #                    Schedule + manual (the drift guard behind the hermetic contract test). NON-GATING.
 #
@@ -25,11 +27,10 @@ on:
   schedule:
     - cron: '17 6 * * 1'   # Mondays 06:17 UTC — the live engine-manifest drift guard (manifest-contract-live)
   workflow_dispatch:
-    inputs:
-      eval_gate:
-        description: 'Fail the eval job if the capability score is below this fraction (0..1); blank = report only'
-        required: false
-        default: ''
+
+# Least privilege: every job reads only, and the release jobs below grant themselves what they write.
+permissions:
+  contents: read
 
 # Cancel a superseded run only on PRs (a new push kills the stale one). NEVER on main/tags/schedule, so a
 # release publish in flight is never interrupted.
@@ -41,11 +42,14 @@ jobs:
   # Smart-CI change detection: which tiers a given change actually needs. Uses the GitHub API (via gh) rather
   # than a git diff or a marketplace action, so it is self-contained and robust to shallow clones / base-ref
   # quirks. FAIL-SAFE: any ambiguity (first push, missing base, API error, schedule/dispatch) => run everything.
-  #   code    = anything outside docs/markdown/images changed  -> run the heavy acceptance-cpu + eval tiers
+  #   code    = anything outside docs/markdown/images changed  -> run the heavy acceptance-cpu tier
   #   prereqs = the install/package surface changed             -> run the prereqs-distro container matrix
   changes:
     name: changes (what to run)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read      # the PR files API
     outputs:
       code: ${{ steps.classify.outputs.code }}
       prereqs: ${{ steps.classify.outputs.prereqs }}
@@ -54,21 +58,24 @@ jobs:
         id: classify
         env:
           GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
         shell: bash
         # NOTE: NOT `set -e`. This job must never exit non-zero: a failed `changes` job would make every
-        # dependent (acceptance-cpu/eval/prereqs-distro) skip, silently disabling the gate. On any error we
+        # dependent (acceptance-cpu/default-engine/prereqs-distro) skip, silently disabling the gate. On any error we
         # fall back to "__ALL__" (run everything) and still exit 0.
         run: |
           set -uo pipefail
-          ev="${{ github.event_name }}"
           files="__ALL__"
-          if [ "$ev" = "pull_request" ]; then
-            files=$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" \
+          if [ "$EVENT" = "pull_request" ]; then
+            files=$(gh api "repos/$REPO/pulls/$PR/files" \
                       --paginate -q '.[].filename' 2>/dev/null) || files="__ALL__"
-          elif [ "$ev" = "push" ]; then
-            before="${{ github.event.before }}"
-            if [ -n "$before" ] && [ "$before" != "0000000000000000000000000000000000000000" ]; then
-              files=$(gh api "repos/${{ github.repository }}/compare/${before}...${{ github.sha }}" \
+          elif [ "$EVENT" = "push" ]; then
+            if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+              files=$(gh api "repos/$REPO/compare/${BEFORE}...${SHA}" \
                         -q '.files[].filename' 2>/dev/null) || files="__ALL__"
             fi
           fi
@@ -83,7 +90,7 @@ jobs:
               *) code=true ;;
             esac
             case "$f" in
-              install_prereqs*|scripts/osenv.py|setup*|install/*|.github/workflows/ci.yml) prereqs=true ;;
+              install_prereqs*|scripts/osenv.py|scripts/bob/install_prereqs.py|scripts/bob/kernel.py|setup*|install/*|.github/workflows/ci.yml) prereqs=true ;;
             esac
           done <<< "$files"
           echo "code=$code"       >> "$GITHUB_OUTPUT"
@@ -96,11 +103,35 @@ jobs:
     name: lint (shellcheck)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
       - name: shellcheck the bootstrap shims
         run: |
           sudo apt-get update -y && sudo apt-get install -y shellcheck
           shellcheck install_prereqs.sh setup.sh bob install/install.sh
+
+  # The Windows entry scripts have no Linux-side lint: parse install.ps1 with the PowerShell parser (a syntax
+  # error fails here, not on a user's first install) and run PSScriptAnalyzer at Error severity. The .bat
+  # shims have no analyzer; a missing file still fails. NON-GATING until the analyzer baseline is known clean.
+  lint-windows:
+    name: lint (windows scripts)
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - name: Parse + PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($f in 'install/install.ps1', 'setup.bat', 'install_prereqs.bat') {
+            if (-not (Test-Path $f)) { throw "missing: $f" }
+          }
+          $tokens = $null; $errs = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'install/install.ps1'), [ref]$tokens, [ref]$errs) | Out-Null
+          if ($errs) { $errs | ForEach-Object { Write-Error "install.ps1: $($_.Extent.StartLineNumber): $($_.Message)" -ErrorAction Continue }; exit 1 }
+          if (-not (Get-Module -ListAvailable PSScriptAnalyzer)) { Install-Module PSScriptAnalyzer -Force -Scope CurrentUser }
+          $found = Invoke-ScriptAnalyzer -Path install/install.ps1 -Severity Error
+          $found | Format-Table -AutoSize | Out-String | Write-Host
+          if ($found) { exit 1 }
 
   core-suite:
     name: core (${{ matrix.os }})
@@ -110,67 +141,35 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: '3.12'
 
-      # Core-suite deps only (no GPU, no inference stack). The agent runtime imports openai/mcp
-      # lazily; tests inject fakes, so the heavy providers aren't needed to run the suite.
-      # sqlite-utils + requests are real deps of bob_memory (test_memory imports it), which
-      # sys.exit(1)s at import if they're missing — omitting them fails the whole suite, not one test.
+      # Core-suite deps (no GPU, no inference stack): every optional dep a test area skips without, since
+      # check.py's skip guard fails the job on any skip it does not expect. sqlite-utils + requests are
+      # bob_memory's deps; rich/prompt_toolkit/pyfiglet the shell UI; PyYAML the skills manifests;
+      # python-multipart the STT server's multipart routes; mcp + starlette the MCP Streamable HTTP
+      # transport; numpy the mic-capture path.
       - name: Install core-suite deps
         shell: bash
-        # rich/prompt_toolkit/pyfiglet (shell UI) + PyYAML (skills manifests) + python-multipart
-        # (FastAPI multipart routes, e.g. the faster-whisper STT server) are lightweight pure-python
-        # runtime deps — installed so those tests run for real (the tests also skip cleanly if these
-        # are ever absent, so the suite still passes minimally).
-        run: python -m pip install --upgrade pip fastapi uvicorn pydantic httpx requests openai sqlite-utils rich prompt_toolkit pyfiglet pyyaml python-multipart
+        run: python -m pip install --upgrade pip fastapi uvicorn pydantic httpx requests openai sqlite-utils rich prompt_toolkit pyfiglet pyyaml python-multipart mcp starlette numpy
 
-      # One gate, both OSes: py_compile + lock sync + exec-bits + the unittest core suite. Runs on
-      # the CI interpreter (there is no venv-litellm here); check.py is stdlib-only.
-      - name: check.py (py_compile + verbs/lock sync + unittest core suite)
-        run: python scripts/check.py
-
-  # Agent-capability eval on the Win+Linux matrix, EVERY PR but NON-GATING (continue-on-error): it
-  # reports a deterministic capability score from a records-based run (scripted client + FakeRegistry,
-  # NO live model — CPU-safe, mirrors the smoke's CPU-tier tolerance). A maintainer can enforce a
-  # threshold on demand via the workflow_dispatch `eval_gate` input (run_eval.py --gate); PR runs stay
-  # report-only until baselines stabilize.
-  eval:
-    name: eval (${{ matrix.os }})
-    # Same skip as acceptance-cpu: off on tags and docs-only changes (the eval imports the agent runtime).
-    needs: [changes]
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') && needs.changes.outputs.code == 'true' }}
-    runs-on: ${{ matrix.os }}
-    continue-on-error: true           # non-gating on PRs — reports the score, never reds a PR
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      # Same lightweight core deps as core-suite — the eval imports the agent runtime (bob_core/bob_loop)
-      # and injects fakes, so no GPU / inference stack is needed.
-      - name: Install core deps
-        shell: bash
-        run: python -m pip install --upgrade pip fastapi uvicorn pydantic httpx requests openai sqlite-utils
-
-      - name: Agent-capability eval (records-based)
+      # bubblewrap backs the Linux sandbox's real-confinement tests. Ubuntu 24.04 blocks unprivileged user
+      # namespaces through AppArmor by default, which bwrap needs, so lift that on the throwaway runner.
+      - name: Install bubblewrap (Linux)
+        if: runner.os == 'Linux'
         shell: bash
         run: |
-          gate="${{ github.event.inputs.eval_gate }}"
-          if [ -n "$gate" ]; then
-            python tests/eval/run_eval.py --json --gate "$gate"
-          else
-            python tests/eval/run_eval.py --json
-          fi
+          sudo apt-get update -y && sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      # One gate, both OSes: py_compile + lock sync + exec-bits + release metadata + n8n portability + the
+      # unittest core suite and its skip guard. Runs on the CI interpreter (there is no venv-litellm here);
+      # check.py is stdlib-only. On a release tag it also asserts the tag is v$(cat VERSION).
+      - name: check.py (py_compile + lock sync + exec bits + release metadata + unittest suite + skip guard)
+        run: python scripts/check.py
 
   # Fresh-install acceptance on the CPU tier, both OSes, EVERY PR (gates). Provisions a clean runner per
   # the documented one-command entry, builds the CPU llama.cpp, serves the tiny CPU GGUF, and runs the
@@ -191,17 +190,18 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           submodules: recursive     # the CPU build needs external/llama.cpp checked out (not just the gitlink)
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: '3.12'
 
       # Building llama.cpp (even CPU) is minutes-scale. Two SEPARATE caches keyed on their actual inputs, so a
       # release/version-only lock change (only the `release` field moves) reuses BOTH fully warm:
-      #   build cache  <- submodule commits + toolchain floor (what the compile depends on)
+      #   build cache  <- submodule commits + toolchain floor + the build/lifecycle code (what the compile
+      #                   and the build-skip decision depend on)
       #   model cache  <- the model manifest (what `bob fetch` downloads)
       - name: Compute cache keys (from versions.lock)
         id: keys
@@ -215,19 +215,20 @@ jobs:
           print("model=" + h(d.get("models")))
           PY
       # Build cache: EXACT key only (no restore-keys). A partial restore could bring back a prior submodule
-      # commit's bin/llama-server; if `bob build` skips on binary-present, CI would test a stale engine. A real
-      # submodule bump therefore does a clean rebuild; release/model-only changes hit the exact key (warm).
+      # commit's bin/llama-server; `bob build` skips on binary-present, so CI would test a stale engine. A real
+      # submodule bump or a build/lifecycle code change therefore does a clean rebuild; release/model-only
+      # changes hit the exact key (warm).
       - name: Cache the engine build
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
         with:
           path: |
             bin
             external/llama.cpp/build
-          key: ${{ runner.os }}-bob-build-${{ steps.keys.outputs.build }}
+          key: ${{ runner.os }}-bob-build-${{ steps.keys.outputs.build }}-${{ hashFiles('scripts/tools/build.py', 'scripts/osenv.py', 'scripts/bob/lifecycle.py') }}
       # Model cache: restore-keys is safe here because `bob fetch` reconciles + sha-verifies against the lock,
       # so a partial restore is always corrected.
       - name: Cache the fetched models
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
         with:
           path: models
           key: ${{ runner.os }}-bob-model-${{ steps.keys.outputs.model }}
@@ -251,8 +252,8 @@ jobs:
         shell: bash
         run: python -m bob.kernel venv litellm
 
-      # CPU tier: select the profile, build CPU-only llama.cpp + the llama-swap proxy (Go, from the
-      # submodule), fetch the tiny GGUF (verified against versions.lock). llama-swap is what `bob up`
+      # CPU tier: select the profile, build CPU-only llama.cpp, install the llama-swap proxy (the
+      # pinned, sha-verified release binary), fetch the tiny GGUF (verified against versions.lock). llama-swap is what `bob up`
       # launches as the endpoint, so it must be built before the stack comes up. All via the Python
       # front door / kernel.
       - name: Select CPU profile + build + fetch (from versions.lock)
@@ -299,6 +300,34 @@ jobs:
           echo "===== bin/ ====="
           ls -l bin 2>/dev/null || true
 
+  # The default install path is prebuilt-first (lifecycle.ensure_engine), but acceptance-cpu compiles from
+  # source, so the binary most users actually receive never executes in the per-PR gate. This job resolves
+  # the engine exactly as a fresh install would (newest ready release, commit-match guard), stages it, and
+  # runs `llama-server --version` in a bare ubuntu:20.04 container with nothing but the bundle. When the
+  # checkout pins a llama.cpp commit no release has shipped, there is no prebuilt to test and it says so.
+  default-engine:
+    name: default-engine (prebuilt cpu, linux)
+    needs: [changes]
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') && needs.changes.outputs.code == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          fetch-depth: 0      # the release tags the resolver walks
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: '3.12'
+      - name: Resolve + stage the default prebuilt CPU engine
+        id: fetch
+        shell: bash
+        run: PYTHONPATH=scripts python .github/scripts/fetch_default_engine.py engine --tier cpu
+      - name: Run it in a clean container
+        if: steps.fetch.outputs.found == 'true'
+        shell: bash
+        run: |
+          ls -la engine
+          docker run --rm -v "$PWD/engine":/e ubuntu:20.04 /e/llama-server --version
+
   # Fresh-install prereq matrix across the non-apt distro families, so the
   # dnf/pacman/zypper columns of osenv.PACKAGE_MAP (and install_prereqs.sh -> the kernel's per-distro
   # install) actually EXECUTE in CI instead of rotting untested (core-suite/acceptance-cpu only exercise
@@ -306,7 +335,7 @@ jobs:
   # exits non-zero on any real problem — the honest health gate). Checkout stays on the host (the distro
   # images lack the Node the checkout action needs); the workspace is bind-mounted into the container.
   #
-  # NON-GATING for now (continue-on-error) — like `eval` started: distro package-name drift (esp. the
+  # NON-GATING for now (continue-on-error): distro package-name drift (esp. the
   # opensuse nodejs-default/npm-default guesses) surfaces here in the log without blocking merges. Flip
   # to gating (remove continue-on-error) once the names are proven green across all three images.
   prereqs-distro:
@@ -322,7 +351,7 @@ jobs:
       matrix:
         image: ['fedora:latest', 'archlinux:latest', 'opensuse/tumbleweed:latest']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
       - name: install_prereqs.sh + diagnose (in ${{ matrix.image }})
         run: |
           docker run --rm -v "$GITHUB_WORKSPACE":/bob -w /bob "${{ matrix.image }}" bash -c '
@@ -352,7 +381,7 @@ jobs:
       reuse: ${{ steps.plan.outputs.reuse }}
       prev: ${{ steps.plan.outputs.prev }}
     steps:
-      - uses: actions/checkout@v4      # default (shallow, no submodules): the gitlink is enough
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4 (shallow, no submodules: the gitlink is enough)
       - name: Decide reuse vs rebuild
         id: plan
         env:
@@ -389,7 +418,7 @@ jobs:
   # the one fat multi-arch CUDA binary.
   publish-engines-linux:
     name: publish-engines (linux ${{ matrix.tier }}, release tags)
-    needs: [engine-plan]
+    needs: [engine-plan, core-suite]     # core-suite also asserts the tag is v$(cat VERSION)
     if: ${{ startsWith(github.ref, 'refs/tags/v') && needs.engine-plan.outputs.reuse != 'true' }}
     runs-on: ubuntu-latest
     permissions:
@@ -401,7 +430,7 @@ jobs:
       matrix:
         tier: [cuda, cpu]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           submodules: recursive
 
@@ -414,11 +443,14 @@ jobs:
       # only (main is the producer): a tag-scoped save would be evicted on the next re-cut and just waste the
       # cache budget. Falls back through restore-keys to the newest prior cache for this tier.
       - name: Restore ccache (warmed on main)
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
         with:
           path: .ccache
           key: ccache-linux-${{ matrix.tier }}-${{ steps.llama.outputs.sha }}
+          # warm-engine-cache saves under <sha>-<run_id>, so the exact key never hits: take the newest save
+          # for this commit first, then the newest for any commit.
           restore-keys: |
+            ccache-linux-${{ matrix.tier }}-${{ steps.llama.outputs.sha }}-
             ccache-linux-${{ matrix.tier }}-
 
       - name: Build + package the ${{ matrix.tier }} engine in an old-glibc container (portable, no GPU needed)
@@ -501,11 +533,14 @@ jobs:
           # Unpack on the runner (which has xz) and mount the result: the bare ubuntu:20.04 image has
           # neither xz-utils nor python3, and installing them would defeat the point of a clean container.
           rm -rf verify && mkdir -p verify && tar -C verify -xf "dist/$name.tar.xz"
-          docker run --rm -e NAME="$name" -v "$PWD/verify":/v ubuntu:20.04 bash -c '
+          docker run --rm -e NAME="$name" -e TIER="${{ matrix.tier }}" -v "$PWD/verify":/v ubuntu:20.04 bash -c '
             set -e
             miss=$(ldd "/v/$NAME/llama-server" 2>/dev/null | grep -i "not found" | grep -v "libcuda.so.1" || true)
             if [ -n "$miss" ]; then echo "FAIL: unresolved in a clean environment:"; echo "$miss"; exit 1; fi
             echo "clean-container link check ok for $NAME"
+            # The CPU engine needs nothing outside the bundle, so it must actually start here. (The CUDA one
+            # cannot: libcuda.so.1 is the driver, absent without a GPU.)
+            if [ "$TIER" = "cpu" ]; then "/v/$NAME/llama-server" --version; fi
           '
 
       - name: Checksum + emit the engines.json row
@@ -513,20 +548,12 @@ jobs:
         shell: bash
         run: |
           set -e
-          tier="${{ matrix.tier }}"; name="llama-server-linux-x86_64-$tier"
+          name="llama-server-linux-x86_64-${{ matrix.tier }}"
           asset="dist/$name.tar.xz"
-          sha=$(sha256sum "$asset" | cut -d' ' -f1)
-          bytes=$(stat -c%s "$asset")
-          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/$name.tar.xz"
-          commit=$(git rev-parse "HEAD:external/llama.cpp")
-          archs="75;80;89;120"; cmaj="12"
-          [ "$tier" = "cpu" ] && archs="" && cmaj="null"
-          mkdir -p rows
-          cat > "rows/$name.json" <<JSON
-          {"$name": {"component": "llama-server", "os": "linux", "cpuArch": "x86_64", "tier": "$tier",
-            "url": "$url", "sha256": "$sha", "bytes": $bytes, "builtFromCommit": "$commit",
-            "cudaArchs": "$archs", "cudaMajor": $cmaj}}
-          JSON
+          # One row emitter (pack_engine.py engine_row) for both OSes and the manifest contract test.
+          python3 .github/scripts/pack_engine.py row --os linux --tier "${{ matrix.tier }}" --asset "$asset" \
+            --repo "$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME" \
+            --commit "$(git rev-parse HEAD:external/llama.cpp)" --out "rows/$name.json"
           echo "asset=$asset" >> "$GITHUB_OUTPUT"
 
       - name: Upload the asset to the release
@@ -546,12 +573,12 @@ jobs:
           echo "::error::release upload failed after 3 attempts"; exit 1
 
       - name: Attest build provenance (tamper-evident, verify with `gh attestation verify`)
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018  # v1
         with:
           subject-path: ${{ steps.pkg.outputs.asset }}
 
       - name: Stash the engines.json row for the manifest job
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: engine-row-linux-${{ matrix.tier }}
           path: rows/*.json
@@ -562,7 +589,7 @@ jobs:
   # to shake out the CUDA-toolkit install + VS build here, like the GPU acceptance tier.
   publish-engines-windows:
     name: publish-engines (windows ${{ matrix.tier }}, release tags)
-    needs: [engine-plan]
+    needs: [engine-plan, core-suite]     # core-suite also asserts the tag is v$(cat VERSION)
     if: ${{ startsWith(github.ref, 'refs/tags/v') && needs.engine-plan.outputs.reuse != 'true' }}
     # windows-2022 = VS 2022 (MSVC 14.4x), which CUDA 12.8's nvcc supports. windows-latest moved to VS 2026
     # (MSVC 14.51), where nvcc's cudafe++ crashes — so the CUDA engine must build on the pinned 2022 image.
@@ -578,10 +605,10 @@ jobs:
       matrix:
         tier: [cuda, cpu]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           submodules: recursive
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: '3.12'
       # cl.exe + Ninja come from osenv.ensure_msvc_env() at build time (no msvc-dev-cmd needed — this also
@@ -599,15 +626,18 @@ jobs:
       # Restore the ccache warmed on main by warm-engine-cache.yml (tag runs read default-branch caches).
       # Restore only — main is the producer, so a tag-scoped save would just waste the budget.
       - name: Restore ccache (warmed on main)
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
         with:
           path: .ccache
           key: ccache-windows-${{ matrix.tier }}-${{ steps.llama.outputs.sha }}
+          # warm-engine-cache saves under <sha>-<run_id>, so the exact key never hits: take the newest save
+          # for this commit first, then the newest for any commit.
           restore-keys: |
+            ccache-windows-${{ matrix.tier }}-${{ steps.llama.outputs.sha }}-
             ccache-windows-${{ matrix.tier }}-
       - name: Install CUDA toolkit (cuda tier only)
         if: matrix.tier == 'cuda'
-        uses: Jimver/cuda-toolkit@v0.2.35   # 12.8.0 is available from this release onward
+        uses: Jimver/cuda-toolkit@3d45d157f327c09c04b50ee6ccdea2d9d017ec76  # v0.2.35 (12.8.0 is available from this release onward)
         with:
           cuda: '12.8.0'
           method: network
@@ -635,20 +665,12 @@ jobs:
         shell: bash
         run: |
           set -e
-          tier="${{ matrix.tier }}"; name="llama-server-windows-x86_64-$tier"
+          name="llama-server-windows-x86_64-${{ matrix.tier }}"
           asset="dist/$name.tar.xz"
-          sha=$(sha256sum "$asset" | cut -d' ' -f1)
-          bytes=$(stat -c%s "$asset")
-          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/$name.tar.xz"
-          commit=$(git rev-parse "HEAD:external/llama.cpp")
-          archs="75;80;89;120"; cmaj="12"
-          [ "$tier" = "cpu" ] && archs="" && cmaj="null"
-          mkdir -p rows
-          cat > "rows/$name.json" <<JSON
-          {"$name": {"component": "llama-server", "os": "windows", "cpuArch": "x86_64", "tier": "$tier",
-            "url": "$url", "sha256": "$sha", "bytes": $bytes, "builtFromCommit": "$commit",
-            "cudaArchs": "$archs", "cudaMajor": $cmaj}}
-          JSON
+          # One row emitter (pack_engine.py engine_row) for both OSes and the manifest contract test.
+          python .github/scripts/pack_engine.py row --os windows --tier "${{ matrix.tier }}" --asset "$asset" \
+            --repo "$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME" \
+            --commit "$(git rev-parse HEAD:external/llama.cpp)" --out "rows/$name.json"
           echo "asset=$asset" >> "$GITHUB_OUTPUT"
       - name: Upload the asset to the release
         shell: bash
@@ -664,11 +686,11 @@ jobs:
           done
           echo "::error::release upload failed after 3 attempts"; exit 1
       - name: Attest build provenance (tamper-evident, verify with `gh attestation verify`)
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018  # v1
         with:
           subject-path: ${{ steps.pkg.outputs.asset }}
       - name: Stash the engines.json row for the manifest job
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: engine-row-windows-${{ matrix.tier }}
           path: rows/*.json
@@ -680,7 +702,7 @@ jobs:
   # needed; there is no pull-request permission and nothing to merge to activate a release.
   publish-manifest:
     name: publish-manifest (engines.json release asset)
-    needs: [engine-plan, publish-engines-linux, publish-engines-windows]
+    needs: [engine-plan, core-suite, publish-engines-linux, publish-engines-windows]
     # Runs even when the build jobs SKIP (reuse path): skipped deps are not failures. Blocks only if a build
     # actually failed or engine-plan errored.
     if: ${{ !cancelled() && !failure() && startsWith(github.ref, 'refs/tags/v') }}
@@ -700,7 +722,7 @@ jobs:
           gh release download "${{ needs.engine-plan.outputs.prev }}" -p engines.json --repo "${GITHUB_REPOSITORY}"
           echo "reused engines.json from ${{ needs.engine-plan.outputs.prev }}:"; cat engines.json
       # BUILD: assemble from the freshly built engine-row-* artifacts.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         if: ${{ needs.engine-plan.outputs.reuse != 'true' }}
         with:
           pattern: engine-row-*
@@ -745,10 +767,10 @@ jobs:
       PYTHONPATH: scripts
       BOB_LIVE_MANIFEST_TEST: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           fetch-depth: 0   # need all tags for _latest_release_tag + `git rev-parse <tag>:<submodule>`
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: '3.12'
       - name: Resolve + verify the published manifest (stdlib only)

@@ -6,20 +6,46 @@ REPO = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 sys.path.insert(0, str(REPO))
 
-from plugins.search.invoke import run_rg, synthesise
+import bob_fsguard  # noqa: E402
+from plugins.search.invoke import run_rg, synthesise  # noqa: E402
 
 _cfg: dict = {}
+_allowed_read: list = []
+
+
+def _home() -> Path:
+    """User home dir, overridable in tests so ~/.ssh denial can be exercised in a temp tree."""
+    return Path.home()
 
 
 def configure(config: dict) -> None:
-    global _cfg
+    global _cfg, _allowed_read
     _cfg = config
+    raw = (config or {}).get("agent", {}).get("allowedReadPaths", [])
+    if isinstance(raw, str):
+        raw = [raw]
+    _allowed_read = [Path(p) for p in raw if p]
+
+
+def _denied(p: Path) -> bool:
+    """A file the agent must not see: outside allowedReadPaths or on the secrets denylist."""
+    return (not bob_fsguard.is_allowed(p, _allowed_read)
+            or bob_fsguard.is_denied_secret(p, home=_home()))
 
 
 def _search_code(query: str, path: str = ".", ext: str = None) -> str:
-    search_path = str(Path(path).resolve())
-    matches = run_rg(query, search_path, ext)
-    if matches.startswith("(no matches") or matches.startswith("(search"):
+    """Search under `path`, which goes through the same allowlist + secrets denylist as file_read;
+    matches inside denied files are dropped from the result."""
+    if not _allowed_read:
+        return "search_code: no allowedReadPaths configured"
+    target = bob_fsguard.abs_path(path or ".", _allowed_read)
+    if not bob_fsguard.is_allowed(target, _allowed_read):
+        allowed_str = ", ".join(str(a) for a in _allowed_read)
+        return f"Access denied: {path}\nAllowed paths: {allowed_str}"
+    if bob_fsguard.is_denied_secret(target, home=_home()):
+        return f"Access denied (sensitive path): {path}"
+    matches = run_rg(query, str(target.resolve()), ext, deny=_denied)
+    if matches.startswith("("):
         return matches
     from bob_core import check_litellm
     if not check_litellm(_cfg):
@@ -29,8 +55,8 @@ def _search_code(query: str, path: str = ".", ext: str = None) -> str:
 
 def test() -> str:
     import shutil
-    rg_available = "ripgrep available" if shutil.which("rg") else "ripgrep not found (findstr fallback active)"
-    return f"search_code: OK — {rg_available}"
+    rg_available = "ripgrep available" if shutil.which("rg") else "ripgrep not found (findstr/grep fallback active)"
+    return f"search_code: OK, {rg_available} (CLI: bob search \"<query>\" --raw)"
 
 
 TOOL_DEFS = [
@@ -52,7 +78,7 @@ TOOL_DEFS = [
                     },
                     "path": {
                         "type": "string",
-                        "description": "Directory to search. Defaults to current working directory.",
+                        "description": "Directory to search (relative paths resolve against the workspace root). Only paths within allowedReadPaths are searchable.",
                     },
                     "ext": {
                         "type": "string",

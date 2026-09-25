@@ -151,6 +151,16 @@ class TestHealthCheckWiredRows(unittest.TestCase):
              mock.patch("bob.versions.check_reproducibility", return_value=(drift or [])):
             return health_mod.health_check(CFG, doctor=doctor)
 
+    def test_generated_configs_key_row(self):
+        import generate
+        with mock.patch.object(generate, "stale_key_files", return_value=["config/continue/config.yaml"]):
+            out = self._run(doctor=True)
+        self.assertIn("Generated configs carry the current LiteLLM key  →  config/continue/config.yaml", out)
+        self.assertIn("bob gen", out)
+        with mock.patch.object(generate, "stale_key_files", return_value=[]):
+            out = self._run(doctor=True)
+        self.assertNotIn("config/continue/config.yaml carry", out)
+
     def test_setup_check_scheduler_row_not_registered(self):
         out = self._run(doctor=False)
         self.assertIn("Bob agent setup check", out)
@@ -207,6 +217,62 @@ class TestHealthCheckWiredRows(unittest.TestCase):
              mock.patch("bob.versions.load_lock", return_value={"release": "1", "submodules": {}, "models": {}}), \
              mock.patch("bob.versions.check_reproducibility", return_value=[]):
             return health_mod.health_check(CFG, doctor=True)
+
+
+class TestRerankBatch(unittest.TestCase):
+    """A reranker whose -ub/-b is below its ctx rejects any input longer than the batch (llama.cpp's rerank
+    must fit query+document in one ubatch); doctor flags it with the fix."""
+
+    def test_small_ubatch_is_flagged(self):
+        roles = {"rerank": {"reranking": True, "ctx": 2048, "flags": ["-ub", "128"]}}
+        issues = health_mod.rerank_batch_issues(roles, {})
+        self.assertEqual(len(issues), 1)
+        self.assertIn("-ub 128", issues[0])
+        self.assertIn("2048", issues[0])
+
+    def test_batch_covering_ctx_is_clean(self):
+        roles = {"rerank": {"reranking": True, "ctx": 2048, "flags": ["-ub", "128", "-ub", "2048", "-b", "2048"]},
+                 "chat": {"ctx": 40960, "flags": ["-ub", "128"]}}   # non-rerankers are not this check's concern
+        self.assertEqual(health_mod.rerank_batch_issues(roles, {}), [])
+
+    def test_profile_default_ubatch_applies(self):
+        roles = {"rerank": {"reranking": True, "ctx": 1024}}
+        self.assertEqual(health_mod.rerank_batch_issues(roles, {"ubatch": 512}).__len__(), 1)
+        self.assertEqual(health_mod.rerank_batch_issues(roles, {"ubatch": 1024, "batch": 2048}), [])
+
+
+class TestDoctorMemoryRows(unittest.TestCase):
+    def _run(self, semantic=True, stale_code=0, roles=None):
+        import requests
+        import bob_memory
+        roles = roles or {"agent": {"gguf": "x.gguf"}}
+        with mock.patch.object(health_mod, "_has_module", return_value=True), \
+             mock.patch.object(health_mod, "_tool_load_errors", return_value=[]), \
+             mock.patch("osenv.is_port_in_use", return_value=False), \
+             mock.patch("osenv.agent_task_status", return_value={"registered": False}), \
+             mock.patch("requests.get", side_effect=requests.RequestException("down")), \
+             mock.patch("bob_models.profile_roles", return_value=roles), \
+             mock.patch.object(bob_memory, "semantic_available", return_value=semantic, create=True), \
+             mock.patch.object(bob_memory, "stale_vector_count",
+                               side_effect=lambda p: stale_code if str(p).endswith("code.db") else 0):
+            return health_mod.health_check({"port": 8080, "memory": {"enabled": True}}, doctor=False)
+
+    def test_no_embed_role_is_flagged(self):
+        out = self._run(semantic=False)
+        self.assertIn("✗  Semantic memory has an embed model", out)
+
+    def test_embed_role_present_passes(self):
+        self.assertIn("✓  Semantic memory has an embed model", self._run(semantic=True))
+
+    def test_stale_code_index_hint_is_runnable(self):
+        out = self._run(stale_code=3)
+        self.assertIn("bob code index --rebuild", out)
+        self.assertNotIn("in code index; run: bob memory migrate", out)
+
+    def test_small_rerank_batch_flagged_in_doctor(self):
+        out = self._run(roles={"agent": {"gguf": "x.gguf"},
+                               "rerank": {"reranking": True, "ctx": 2048, "flags": ["-ub", "128"]}})
+        self.assertIn("✗  Reranker batch covers its context", out)
 
 
 class TestDiagnoseDeep(unittest.TestCase):

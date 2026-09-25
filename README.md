@@ -38,9 +38,9 @@ Core inference (the `:8081` API and the `bob` CLI) works out of the box. Everyth
 | Web search | built in | `ddgs` metasearch (in-process, no Docker); Brave/Tavily optional via key |
 | Continue.dev | client | VS Code autocomplete, chat, `@web`, `@codebase`, `@filesystem` |
 | Cline | client | VS Code agent: reads and writes files, runs commands |
-| aider | client | terminal coding agent: review the plan before any file is touched |
+| aider | opt-in client (`--with-aider`, `bob aider-setup`) | terminal coding agent: review the plan before any file is touched |
 | DeepSeek Harness | client | browser and headless coding agent; Bob serves it models and, over MCP, its tools |
-| fabric | client | 254 named LLM patterns, pipe any text through them |
+| fabric | opt-in client (`--with-fabric`, `bob fabric-setup`) | 254 named LLM patterns, pipe any text through them |
 | Open WebUI `:3000` | opt-in at setup (`--with-webui`) | browser chat, RAG, image input, voice |
 | n8n `:5678` | opt-in, native (`bob services n8n start`) | visual workflow automation |
 | SearXNG `:8888` | opt-in, Docker (`bob services searxng start`) | private self-hosted meta-search |
@@ -54,30 +54,33 @@ Linux or Windows 11 with an NVIDIA RTX 3000-series card or newer (through Blackw
 
 | Profile | Target cards | Model download |
 |---|---|---|
-| `16gb` (default) | RTX 5080, 4090, 4080 | ~38 GB |
-| `12gb` | RTX 4070 Ti, 3080 Ti, 4070 | ~21 GB |
-| `8gb` | RTX 3070, 4060 (unvalidated) | ~12 GB |
-| `24gb` | RTX 3090, 4090, 4080 (near-lossless quants) | ~42 GB |
-| `32gb` | RTX 5090, A6000, 3090 Ti | ~54 GB |
+| `16gb` (default) | RTX 5080, 4090, 4080 | ~18 GB |
+| `12gb` | RTX 4070 Ti, 3080 Ti, 4070 | ~44 GB |
+| `8gb` | RTX 3070, 4060 (unvalidated) | ~19 GB |
+| `24gb` | RTX 3090, 4090, 4080 (near-lossless quants) | ~18 GB |
+| `32gb` | RTX 5090, A6000, 3090 Ti | ~18 GB |
+| `cpu` | no GPU (tiny model, wiring only) | ~1 GB |
+
+Sizes are the sum of each profile's GGUF files in `config/models.json`, counting a file shared by several roles once, plus the vision projector where the profile has one. On 16gb, 24gb and 32gb one 27B model serves chat, coder, ponder, writer and agent, so those profiles download less than 12gb, which carries separate coder and reasoning models. `bob profiles` prints the GGUF totals per profile.
 
 Setup detects your GPU and picks the best-fit profile. One engine covers every supported NVIDIA generation. On an RTX 5080 with the default profile: pp512 ~4600 t/s, tg128 ~89 t/s.
 
 ## Supported matrix
 
-What CI proves, versus what ships but is not gated. **gated**: proven every PR on hosted runners. **supported**: shipped and used, exercised by the release-tag GPU tier. **not yet**: unsupported.
+What CI proves, versus what ships but is not gated. **gated**: proven every PR on hosted runners. **supported**: shipped and used, verified on real hardware by the maintainer at release time ([GPU-ACCEPTANCE](docs/GPU-ACCEPTANCE.md)), not in CI. **not yet**: unsupported.
 
 | OS | CPU tier (no GPU, tiny model) | NVIDIA GPU |
 |---|---|---|
-| **Windows 11** | gated (`acceptance-cpu`, every PR) | supported; driver-only prebuilt engine, source build available, proven in the release-tag `acceptance-gpu` tier |
-| **Linux** (glibc; apt/dnf/pacman/zypper/rpm-ostree) | gated (`acceptance-cpu`, every PR) | supported; driver-only prebuilt engine, source build available, proven in the release-tag `acceptance-gpu` tier |
+| **Windows 11** | gated (`acceptance-cpu`, every PR) | supported; driver-only prebuilt engine, source build available; the CUDA build has not yet run on Windows GPU hardware |
+| **Linux** (glibc; apt/dnf/pacman/zypper/rpm-ostree) | gated (`acceptance-cpu`, every PR) | supported; driver-only prebuilt engine, source build available |
 | **macOS** | not yet | not yet |
 | **AMD / ROCm** | not yet | not yet |
 
-The per-PR gate runs the CPU/portable tier (`bob profile cpu`), so a fragile GPU build cannot block a merge; the GPU path is verified at release tags. See [`versions.lock`](versions.lock) for the pinned, checksum-verified engines, submodules, and models each release ships.
+The per-PR gate runs the CPU/portable tier (`bob profile cpu`), so a fragile GPU build cannot block a merge. CI has no GPU runner; the GPU path is checked by hand on an NVIDIA box before a release. See [`versions.lock`](versions.lock) for the pinned, checksum-verified engines, submodules, and models each release ships.
 
 ## Quick start
 
-One command clones Bob, installs a **prebuilt inference engine that needs only your NVIDIA driver** (no CUDA toolkit, nothing to compile), sets up the supporting tools (Python 3.12, Go, Node.js), downloads models, wires clients, and verifies everything against `versions.lock`. It is idempotent and needs only Git up front (it installs Git too). Add `--cpu` on a GPU-less box, or `--from-source` to build the engine from source instead of downloading it. macOS arrives in 2.0.
+One command clones Bob, installs a **prebuilt inference engine that needs only your NVIDIA driver** (no CUDA toolkit, nothing to compile), installs Python 3.12 and a pinned, SHA-verified llama-swap binary, downloads models, wires clients, and verifies everything against `versions.lock`. It is idempotent and needs only Git up front (it installs Git too). A compiler, cmake and Go are installed only for a source build (or on a platform with no prebuilt, such as arm64 Linux, which compiles the engine automatically); Node.js only with `--with-node` (n8n, Continue's npx MCP servers). Add `--cpu` on a GPU-less box, or `--from-source` to build the engine from source instead of downloading it. aider and fabric are opt-in: `--with-aider`, `--with-fabric`. macOS is not supported yet.
 
 Linux:
 ```bash
@@ -99,7 +102,7 @@ On Linux you are asked for `sudo` once (system packages). The driver-only engine
 ```bash
 git clone --recurse-submodules https://github.com/altpsyche/bob.git bob
 cd bob
-./install_prereqs.sh    # --cpu for a GPU-less box; --from-source to also install the CUDA toolkit
+./install_prereqs.sh    # --cpu for a GPU-less box; --from-source adds the build toolchain (+ CUDA toolkit on a GPU box)
 ./setup.sh              # GPU-less: --cpu   |   source engine: --from-source
 ```
 
@@ -116,7 +119,7 @@ bob agent "summarise README.md" # agentic task
 
 `bob up` optionally pre-warms the endpoint (`:8080`) and LiteLLM proxy (`:8081`); `--with-webui` at setup adds Open WebUI (`:3000`). Any OpenAI client works by pointing its base URL at `http://localhost:8081/v1`.
 
-`setup` flags: `--profile 12gb`, `--skip-models`, `--skip-voice`, `--cpu`, `--from-source`, `--launch`. Installs default to the **stable** channel (the latest release, with prebuilt engines); pass `--dev` to track the latest `main` and build from source. Run `bob agent install` once to register the background scheduler (Linux cron / Windows Scheduled Task).
+`setup` flags: `--profile 12gb`, `--skip-models`, `--skip-voice`, `--cpu`, `--from-source`, `--launch`, `--with-webui`, `--with-aider`, `--with-fabric`. Setup suggests a profile for your GPU but never overrides one you chose. The one-command installer defaults to the **stable** channel (the latest release, with prebuilt engines); pass `--dev` (or `--channel latest`) to the installer to track the latest `main`, which builds the engine from source whenever `main` pins a llama.cpp commit no release has shipped. `--dev` and `--channel` are installer flags, not setup flags; after install, `bob update --channel` switches channels. Run `bob agent install` once to register the background scheduler (Linux cron / Windows Scheduled Task).
 
 ## Docs
 

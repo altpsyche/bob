@@ -9,6 +9,7 @@ Lifecycle:
   Phase 3  Configure — call configure(config) with full runtime config
 
 Usage:
+    registry = ToolRegistry.from_config(config)       # honors agent.disabledTools
     registry = ToolRegistry.build(config, disabled_names={"play"})
     # pass to run_agent(goal, config, registry=registry)
     result = registry.dispatch_call("memory_recall", '{"query": "todo list"}')
@@ -61,7 +62,7 @@ class ToolRegistry:
         # name -> affects(args:dict) -> [paths]. A mutating tool (module sets AFFECTS = {name: fn})
         # declares which files a call will touch, so the loop can snapshot them before the step (Q4).
         self.affects: dict = {}
-        # (tool_name, phase, message) — phase: "import" | "contract" | "configure"
+        # (tool_name, phase, message); phase: "import" | "contract" | "configure" | "collision"
         self.errors: list[tuple[str, str, str]] = []
         self._loaded_names: set = set()
         # Per-result cap (chars). Derived from agent.maxToolResultTokens in build().
@@ -95,6 +96,20 @@ class ToolRegistry:
     # Factory
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def disabled_from_config(config: dict) -> set:
+        """The tool directory/stem names agent.disabledTools switches off. Accepts a list or a
+        comma-separated string (the two shapes user.json carries)."""
+        raw = (config or {}).get("agent", {}).get("disabledTools", []) or []
+        if isinstance(raw, str):
+            return {t.strip() for t in raw.split(",") if t.strip()}
+        return {str(t).strip() for t in raw if str(t).strip()}
+
+    @classmethod
+    def from_config(cls, config: dict, quiet: bool = False) -> "ToolRegistry":
+        """The single builder every entry point uses: build() with agent.disabledTools applied."""
+        return cls.build(config, cls.disabled_from_config(config), quiet=quiet)
+
     @classmethod
     def build(cls, config: dict, disabled_names: set = None, quiet: bool = False) -> "ToolRegistry":
         """Discover all tools, validate the contract, configure them.
@@ -108,7 +123,8 @@ class ToolRegistry:
         agent_cfg = config.get("agent", {})
         # Token-aware per-result cap (approx 4 chars/token) so one large tool output
         # can't blow the context budget. maxToolResultTokens defaults to keep the prior 4000-char cap.
-        registry.max_result_chars = int(agent_cfg.get("maxToolResultTokens", 1000)) * 4
+        from bob_core import tokens_to_chars
+        registry.max_result_chars = tokens_to_chars(agent_cfg.get("maxToolResultTokens", 1000))
         # When context-editing (clearToolResults) is on, a cleared message must stay re-fetchable,
         # so retain enough handles to cover the whole history window (default 8 keeps memory flat but
         # would evict the OLD results clearing targets). With it off the store stays at 8.
@@ -219,18 +235,35 @@ class ToolRegistry:
             print(f"[warn] tool '{tool_name}' configure() failed: {e}", file=sys.stderr)
             return
 
+        # Name collisions: a tool function name already registered (system tools load before plugins)
+        # keeps its first owner. The later module's duplicate is refused, never allowed to shadow it,
+        # and the refusal is recorded as a load error so the startup summary reports it.
+        taken = set(mod_dispatch) & set(self.dispatch)
+        if taken:
+            owners = ", ".join(sorted(taken))
+            self.errors.append((tool_name, "collision",
+                                f"tool name(s) {owners} already registered; duplicate refused"))
+            print(f"[warn] tool '{tool_name}': {owners} already registered by another tool; "
+                  f"the duplicate is refused", file=sys.stderr)
+        own = set(mod_dispatch) - taken
+        tool_defs = [td for td in tool_defs if td.get("function", {}).get("name") not in taken]
+        if not own:
+            return
+
         # All phases passed — register.
         self._loaded_names.add(tool_name)
         self.tool_schemas.extend(tool_defs)
-        self.dispatch.update(mod_dispatch)
+        self.dispatch.update({n: f for n, f in mod_dispatch.items() if n in own})
 
+        # Every per-name marker below applies only to names this module registered, so a module can
+        # never retag (or re-preview) another module's tool.
         exit_voice = getattr(mod, "EXIT_VOICE", False)
         if exit_voice:
             # EXIT_VOICE may be True (every tool in the module leaves voice mode) OR a collection of
             # specific tool names (only those do) — so a module can mix exit and non-exit tools.
             named = (exit_voice if isinstance(exit_voice, (set, list, tuple))
                      else [td.get("function", {}).get("name") for td in tool_defs])
-            self.exit_voice_tools.update(n for n in named if n)
+            self.exit_voice_tools.update(n for n in named if n in own)
 
         if getattr(mod, "REQUIRES_APPROVAL", False):
             for td in tool_defs:
@@ -239,10 +272,11 @@ class ToolRegistry:
                     self.approval_required_tools.add(fn_name)
 
         for fn_name in getattr(mod, "MUTATING_TOOLS", ()) or ():
-            self.mutating_tools.add(fn_name)
+            if fn_name in own:
+                self.mutating_tools.add(fn_name)
 
         for fn_name, render in (getattr(mod, "PREVIEW", {}) or {}).items():
-            if callable(render):
+            if callable(render) and fn_name in own:
                 self.previews[fn_name] = render
 
         for event, fns in (getattr(mod, "HOOKS", {}) or {}).items():
@@ -250,7 +284,7 @@ class ToolRegistry:
                 self.hooks[event].extend(f for f in (fns or []) if callable(f))
 
         for fn_name, affects in (getattr(mod, "AFFECTS", {}) or {}).items():
-            if callable(affects):
+            if callable(affects) and fn_name in own:
                 self.affects[fn_name] = affects
 
     def _print_startup_summary(self) -> None:

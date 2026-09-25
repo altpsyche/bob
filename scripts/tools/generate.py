@@ -6,11 +6,14 @@
   gen_litellm     -> config/litellm.yaml      (local models via llama-swap + pro models via peers)
   gen_continue    -> config/continue/config.yaml
   gen_dsh         -> config/dsh/{settings.yaml,cordis.patch.yml} (DeepSeek Harness route + MCP entry)
+  gen_aider       -> config/aider/{.aider.conf.yml,model-metadata.json} (`bob aider` passes --config)
   gen_webui       -> tools/webui-data/webui.db (model system prompts; skips if the db is absent)
 
 `gen` also installs the dsh drop-ins into $DSH_HOME, skipping when dsh is not installed.
 
 Deterministic + idempotent."""
+import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -21,8 +24,9 @@ SCRIPTS = REPO / "scripts"
 
 MUTATING_TOOLS = {"gen"}
 
-# Canonical role order: ponder,coder,chat,fim,embed first, then the rest sorted.
-_ROLE_ORDER = ["ponder", "coder", "chat", "writer", "fim", "embed"]
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+
 
 
 def configure(config: dict) -> None:
@@ -55,9 +59,8 @@ def _ordered_models(mcfg: dict, profile: str = None):
 
     name = bob_models.resolve_profile_name(profile, mcfg)
     roles = bob_models.profile_roles(name, mcfg)
-    ordered = [r for r in _ROLE_ORDER if r in roles] + sorted(r for r in roles if r not in _ROLE_ORDER)
     models = []
-    for role in ordered:
+    for role in bob_models.ordered_roles(roles):
         spec = dict(roles[role])
         spec["role"] = role
         models.append(spec)
@@ -77,8 +80,31 @@ def enabled_peers(mcfg: dict):
     return out
 
 
+# Generated client configs that embed Bob's LiteLLM key or wire a client to it. The list lives in
+# bob_fsguard (which refuses them to the file tools); on POSIX they are written 0600 so other local users
+# cannot read them, and every other generated file keeps the umask default.
+from bob_fsguard import KEY_BEARING as _KEY_BEARING  # noqa: E402
+
+
+def _is_key_bearing(path: Path) -> bool:
+    try:
+        return path.resolve().relative_to(REPO.resolve()).as_posix() in _KEY_BEARING
+    except ValueError:
+        return False
+
+
 def _write(path: Path, text: str) -> Path:
+    """Write a generated file. A key-bearing one (_KEY_BEARING) is created, or re-moded before any byte is
+    written, as 0600 on POSIX."""
+    import osenv
+
     path.parent.mkdir(parents=True, exist_ok=True)
+    if osenv.os_name() != "windows" and _is_key_bearing(path):
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            os.fchmod(fh.fileno(), 0o600)   # an existing file keeps its old mode through O_CREAT
+            fh.write(text)
+        return path
     path.write_text(text, encoding="utf-8")
     return path
 
@@ -88,6 +114,24 @@ def _bob_cfg() -> dict:
 
 
 # --- gen-llama-swap -------------------------------------------------------------------------------
+
+# llama-server sampling flags. In `flags` they are only a server default that any client overrides, and on
+# an aliased server they apply to every alias alike, so per-role sampling belongs in setParams instead.
+_SAMPLING_FLAGS = ("--temp", "--top-p", "--top-k", "--min-p")
+
+
+def sampling_flag_warnings(models: list) -> list:
+    """One warning per sampling flag found in a (non-alias) model's `flags`."""
+    out = []
+    for m in models:
+        if m.get("_aliasOf"):
+            continue   # an alias carries its target's flags; the target is reported once
+        for f in (m.get("flags") or []):
+            if str(f) in _SAMPLING_FLAGS:
+                out.append(f"[{m['role']}] sampling flag {f} in flags is a client-overridable server "
+                           "default; put per-role sampling in setParams instead")
+    return out
+
 
 def gen_llama_swap(profile: str = None) -> str:
     """Generate config/llama-swap.yaml from the registry."""
@@ -133,6 +177,8 @@ def gen_llama_swap(profile: str = None) -> str:
     global_mlock_big = d.get("mlockBig") is True
     global_no_mmap = d.get("noMmap") is True
     aliases: dict = {}
+    for w in sampling_flag_warnings(models):
+        print(w, file=sys.stderr)
 
     for m in models:
         _assert_no_quote(m.get("gguf", ""), f"model '{m['role']}' gguf")
@@ -290,29 +336,46 @@ def gen_llama_swap(profile: str = None) -> str:
 
 # --- gen-litellm ----------------------------------------------------------------------------------
 
+# llama-swap takes no key, so the local upstreams carry a fixed placeholder rather than a copy of the
+# proxy's master key.
+_UPSTREAM_KEY = "none"
+
+
+def _runtime(bobcfg: dict, key: str):
+    """A top-level runtime key (bindHost, langfuseEnabled, n8nTimezone, ...): the resolved config's value,
+    else its single default in config/defaults.json runtime."""
+    if key in bobcfg:
+        return bobcfg[key]
+    from bob_core import load_defaults
+    return load_defaults().get("runtime", {}).get(key)
+
+
 def gen_litellm(profile: str = None) -> str:
     """Generate config/litellm.yaml."""
     import bob_models
-    import osenv
-    from bob_core import _port
+    from bob_core import LITELLM_KEY_ENV, _port
 
     mcfg = bob_models.load_models_config()
     _, models = _ordered_models(mcfg, profile)
     peers = enabled_peers(mcfg)
     bobcfg = _bob_cfg()
-    port = mcfg.get("defaults", {}).get("port") or _port(bobcfg, "port")
-    litellm_key = osenv.secret("litellmKey", default=bobcfg.get("litellmKey", "sk-local"), config=bobcfg)
+    port = _port(bobcfg, "port")
 
     out = ["# GENERATED - DO NOT EDIT.  Source: config/models.json",
-           "# Regenerate: bob gen  (also runs on `bob serve`)", "", "model_list:"]
+           "# Regenerate: bob gen  (also runs on `bob serve`)",
+           "#",
+           f"# SECURITY: the proxy's master key comes from {LITELLM_KEY_ENV} in its environment. `bob up`",
+           "# always sets it. Run by hand (`litellm --config config/litellm.yaml`) without it and LiteLLM",
+           "# only logs a warning and serves every request UNAUTHENTICATED. Start it with `bob up`, or export",
+           f"# {LITELLM_KEY_ENV} first.", "", "model_list:"]
     for m in models:
         # Rerankers aren't OpenAI chat/embedding models — LiteLLM's /rerank expects a cohere/jina/infinity
         # provider, not openai/. The rerank call goes straight to llama-swap's native /v1/rerank instead.
         if m.get("reranking"):
             continue
         out += [f"  - model_name: {m['role']}", "    litellm_params:",
-                f"      model: openai/{m['role']}", f"      api_base: http://localhost:{port}/v1",
-                f"      api_key: {litellm_key}"]
+                f"      model: openai/{m['role']}", f"      api_base: http://127.0.0.1:{port}/v1",
+                f"      api_key: {_UPSTREAM_KEY}"]
         if m.get("supportsVision"):
             out.append("      supports_vision: true")
 
@@ -346,29 +409,63 @@ def gen_litellm(profile: str = None) -> str:
     req_timeout = bobcfg.get("agent", {}).get("requestTimeout", 600)
     out.append(f"  request_timeout: {req_timeout}")
 
-    budget_peer = next((p for p in peers if p.get("budget") and p["budget"] > 0), None)
-    if budget_peer:
-        period = budget_peer.get("budgetPeriod") or "1d"
-        out.append(f"  max_budget: {budget_peer['budget']}")
-        out.append(f'  budget_duration: "{period}"')
-
-    if mcfg.get("defaults", {}).get("langfuseEnabled"):
-        lf_port = mcfg["defaults"].get("langfusePort") or _port(bobcfg, "langfusePort")
-        out += ['  success_callback: ["langfuse"]', '  failure_callback: ["langfuse"]',
-                f"  langfuse_host: http://localhost:{lf_port}",
-                "  # langfuse_public_key and langfuse_secret_key: set as LANGFUSE_PUBLIC_KEY / "
-                "LANGFUSE_SECRET_KEY env vars"]
+    langfuse = bool(_runtime(bobcfg, "langfuseEnabled"))
+    if langfuse:
+        out += ['  success_callback: ["langfuse"]', '  failure_callback: ["langfuse"]']
     else:
-        out += ["  # Enable Langfuse tracing: set langfuseEnabled = $true in config/user.json, then bob "
-                "gen + bob litellm",
-                "  # Set LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY as environment variables (Settings → "
-                "API Keys in Langfuse UI)"]
+        out += ['  # Langfuse tracing is off. Set "langfuseEnabled": true at the top level of config/user.json,',
+                "  # then `bob gen` and `bob restart`; the keys are generated and exported for you."]
     out += ["", "general_settings:",
             "  drop_params: true      # silently drop unsupported params from clients (avoids 400s)",
-            f"  master_key: {litellm_key}   # from the litellmKey seam; default sk-local — local-only proxy"]
+            "  # The master key is read from the proxy's environment: every Bob start passes LITELLM_MASTER_KEY",
+            "  # from the litellmKey secret seam (generated on first use), so it is never written here. The",
+            "  # proxy listens on bindHost, loopback (127.0.0.1) unless config/user.json opens it to the LAN.",
+            f"  master_key: os.environ/{LITELLM_KEY_ENV}"]
+    if langfuse:
+        lf_port = _port(bobcfg, "langfusePort")
+        out += ["", "# Langfuse credentials, read from the proxy's environment. `bob up` exports all three: the",
+                "# generated project key pair, and LANGFUSE_HOST (http://127.0.0.1:" + str(lf_port) + " unless",
+                "# LANGFUSE_HOST is already set, which is how a hosted Langfuse is used).",
+                "environment_variables:",
+                "  LANGFUSE_PUBLIC_KEY: os.environ/LANGFUSE_PUBLIC_KEY",
+                "  LANGFUSE_SECRET_KEY: os.environ/LANGFUSE_SECRET_KEY",
+                "  LANGFUSE_HOST: os.environ/LANGFUSE_HOST"]
 
     dest = _write(REPO / "config" / "litellm.yaml", "\n".join(out) + "\n")
     return f"Generated {dest}"
+
+
+def routing_warnings(mcfg: dict, profile: str = None, bobcfg: dict = None) -> list:
+    """One warning per roleTable route (routing.* / vision.*) whose role the active profile does not
+    serve: a local role missing from the profile, or a `-pro` role no enabled peer offers. The runtime
+    falls back to chat for coder/ponder/writer/agent and refuses a vision request it cannot serve."""
+    from bob_core import load_defaults
+
+    bobcfg = bobcfg if bobcfg is not None else _bob_cfg()
+    name, models = _ordered_models(mcfg, profile)
+    local = {m["role"] for m in models}
+    pro = {f"{r}-pro" for p in enabled_peers(mcfg) for r in (p.get("pro") or {})}
+    out, seen = [], set()
+    for task, entry in load_defaults()["roleTable"].items():
+        section_name = entry.get("section", "routing")
+        section = bobcfg.get(section_name) or {}
+        for key, fallback in ((entry["base"], entry["fallback"]), (entry["pro"], entry["proFallback"])):
+            if (section_name, key) in seen:
+                continue
+            seen.add((section_name, key))
+            role = section.get(key) or fallback
+            if role in local or role in pro:
+                continue
+            if role.endswith("-pro"):
+                why = "no enabled peer serves it"
+            elif task == "vision" or role == "vision":
+                why = f"profile '{name}' has no such role, so vision requests are refused"
+            elif role == "chat":
+                why = f"profile '{name}' has no chat role to fall back to"
+            else:
+                why = f"profile '{name}' has no such role, so Bob falls back to chat"
+            out.append(f"routing: {section_name}.{key} = '{role}': {why}")
+    return out
 
 
 # --- gen-continue ---------------------------------------------------------------------------------
@@ -388,19 +485,40 @@ def _yaml_str(s: str) -> str:
     return f'"{e}"'
 
 
+def _role_prompt(prompts: dict, role: str, rv=None) -> str:
+    """The system prompt for `role`: one per role in the registry's `prompts`, which a pro role
+    inherits unless its peer entry sets its own systemPrompt."""
+    if isinstance(rv, dict) and rv.get("systemPrompt"):
+        return str(rv["systemPrompt"])
+    return str((prompts or {}).get(role, ""))
+
+
+def _bob_shim() -> str:
+    """The command a client spawns to run Bob: the Windows cmd shim, else the repo's `bob` script."""
+    import osenv
+
+    return "bob.cmd" if osenv.os_name() == "windows" else str(REPO / "bob")
+
+
+def _have_npx() -> bool:
+    """Whether Node's `npx` is on PATH (npx.cmd on Windows, which shutil.which resolves via PATHEXT)."""
+    return shutil.which("npx") is not None
+
+
 def gen_continue(profile: str = None) -> str:
     """Generate config/continue/config.yaml."""
     import bob_models
-    import osenv
-    from bob_core import _port
+    from bob_core import _litellm_key, _port
 
     mcfg = bob_models.load_models_config()
     _, models = _ordered_models(mcfg, profile)
+    defaults = mcfg.get("defaults") or {}
     peers = enabled_peers(mcfg)
     bobcfg = _bob_cfg()
+    agent = bobcfg.get("agent", {}) or {}
     litellm_port = _port(bobcfg, "litellmPort")
     searxng_port = _port(bobcfg, "searxngPort")
-    litellm_key = osenv.secret("litellmKey", default=bobcfg.get("litellmKey", "sk-local"), config=bobcfg)
+    litellm_key = _litellm_key(bobcfg)
     api_base = f"http://localhost:{litellm_port}/v1"
     home_dev = str(Path.home() / "dev")
     prompts = mcfg.get("prompts", {})
@@ -424,13 +542,14 @@ def gen_continue(profile: str = None) -> str:
             out.append(f"    systemMessage: {_yaml_str(prompt)}")
 
     for m in models:
-        if m["role"] == "agent" or m.get("reranking"):
+        # fim and embed fill Continue's own autocomplete and embed slots; every other non-chat or internal
+        # role is left out.
+        if m["role"] not in _NAME_FOR and not bob_models.is_chat_role(m["role"], m):
             continue
         name = _NAME_FOR.get(m["role"], m["role"])
-        ctx = 0 if m.get("embedding") else int(m.get("ctx") or 0)
-        prompt = str(prompts.get(m["role"], "")) if prompts else ""
+        ctx = 0 if m.get("embedding") else _slot_ctx(m, defaults)
         roles = _ROLE_ASSIGN.get(m["role"], ["chat"])
-        add_model(name, m["role"], ctx, prompt, roles)
+        add_model(name, m["role"], ctx, _role_prompt(prompts, m["role"]), roles)
         out.append("")
 
     for peer in peers:
@@ -438,31 +557,52 @@ def gen_continue(profile: str = None) -> str:
         if not pro:
             continue
         for role in sorted(pro):
-            rv = pro[role]
-            prompt = str(rv["systemPrompt"]) if isinstance(rv, dict) and rv.get("systemPrompt") else ""
+            if not bob_models.is_chat_role(role):
+                continue
             roles = _PRO_ASSIGN.get(role, ["chat"])
-            add_model(f"{role}-pro", f"{role}-pro", 0, prompt, roles)
+            add_model(f"{role}-pro", f"{role}-pro", 0, _role_prompt(prompts, role, pro[role]), roles)
             out.append("")
 
-    out += ["mcpServers:", "  - name: filesystem", "    command: npx", "    args:",
-            '      - "-y"', '      - "@modelcontextprotocol/server-filesystem"',
-            f"      - {_yaml_str(home_dev)}", f"      - {_yaml_str(str(REPO))}",
-            "  - name: fetch", "    command: uvx", "    args:", '      - "mcp-server-fetch"',
-            "  - name: github", "    command: npx", "    args:",
-            '      - "-y"', '      - "@modelcontextprotocol/server-github"', "    env:",
-            '      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"',
-            "  - name: searxng-search", "    command: npx", "    args:",
-            '      - "-y"', '      - "mcp-searxng"', "    env:",
-            f'      SEARXNG_URL: "http://localhost:{searxng_port}"']
+    # The npx-launched servers need Node.js; without npx on PATH Continue would fail to spawn them, so they
+    # are left out (and named in the returned notice) until Node is installed and `bob gen` runs again.
+    has_npx = _have_npx()
+    skipped = []
+    out.append("mcpServers:")
+    if has_npx:
+        out += ["  - name: filesystem", "    command: npx", "    args:",
+                '      - "-y"', '      - "@modelcontextprotocol/server-filesystem"',
+                f"      - {_yaml_str(home_dev)}", f"      - {_yaml_str(str(REPO))}"]
+    else:
+        skipped.append("filesystem")
+    out += ["  - name: fetch", "    command: uvx", "    args:", '      - "mcp-server-fetch"']
+    if has_npx:
+        out += ["  - name: github", "    command: npx", "    args:",
+                '      - "-y"', '      - "@modelcontextprotocol/server-github"', "    env:",
+                '      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"']
+    else:
+        skipped.append("github")
+    if (agent.get("searchProvider") or "").lower() == "searxng":
+        if has_npx:
+            out += ["  - name: searxng-search", "    command: npx", "    args:",
+                    '      - "-y"', '      - "mcp-searxng"', "    env:",
+                    f'      SEARXNG_URL: "http://localhost:{searxng_port}"']
+        else:
+            skipped.append("searxng-search")
+    if agent.get("mcpEnabled"):
+        # Bob's own tool registry over stdio. No cwd: Continue starts the server in the open workspace,
+        # so Bob's file and git tools act on that project rather than on Bob's repo.
+        out += ["  - name: bob", f"    command: {_yaml_str(_bob_shim())}", "    args:",
+                '      - "agent"', '      - "mcp"']
 
     dest = _write(REPO / "config" / "continue" / "config.yaml", "\n".join(out) + "\n")
+    if skipped:
+        return (f"Generated {dest}\n  notice: npx not found (Node.js), so Continue's {', '.join(skipped)} MCP "
+                "server(s) were left out. Install Node.js, then `bob gen`.")
     return f"Generated {dest}"
 
 
 # --- gen-dsh --------------------------------------------------------------------------------------
 
-# 'agent' is Bob's own loop model; fim/embed/rerank are not chat models, so dsh has no use for them.
-_DSH_SKIP_ROLES = {"agent", "fim", "embed", "rerank"}
 _DSH_MCP_ID = "bob-tools"
 _DSH_KEY_REF = "BOB_LITELLM_KEY"   # the credential name the route and the MCP header resolve
 # Smallest per-request window worth offering a coding agent: pi-ai keeps 4096 tokens back as margin,
@@ -483,16 +623,10 @@ def _slot_ctx(m: dict, defaults: dict) -> int:
     """The window ONE request gets from a llama-server: -c split across its slots unless the KV cache
     is unified. Slots come from the model's own --parallel (appended last, so it wins) or the
     defaults' `parallel`; a split is assumed unless --kv-unified is explicit, since overstating the
-    window is the failure (dsh then overruns the slot before it compacts) and understating it is not."""
-    flags = [str(f) for f in (m.get("flags") or [])]
-    slots = int(defaults.get("parallel") or 1)
-    for i, f in enumerate(flags[:-1]):
-        if f in ("--parallel", "-np"):
-            slots = int(flags[i + 1])
-    ctx = int(m.get("ctx") or 0)
-    if slots > 1 and not {"--kv-unified", "-kvu"} & set(flags):
-        return ctx // slots
-    return ctx
+    window is the failure (dsh then overruns the slot before it compacts) and understating it is not.
+    One implementation, shared with the agent's budget: bob_core.slot_ctx."""
+    from bob_core import slot_ctx
+    return slot_ctx(m, defaults)
 
 
 def _dsh_models(mcfg: dict, profile: str = None):
@@ -504,11 +638,13 @@ def _dsh_models(mcfg: dict, profile: str = None):
     clamped to a single token. A pro role takes contextWindow / maxOutputTokens from the role, else
     the peer; left unset, pi-ai's defaults stand. A pro role is image
     capable only when it says supportsVision, and a 'vision' pro role that is not is left out."""
+    import bob_models
+
     _, models = _ordered_models(mcfg, profile)
     defaults = mcfg.get("defaults") or {}
     out, skipped, seen = [], [], set()
     for m in models:
-        if m["role"] in _DSH_SKIP_ROLES or m.get("embedding") or m.get("reranking"):
+        if not bob_models.is_chat_role(m["role"], m):
             continue
         ctx = _slot_ctx(m, defaults)
         if ctx < _DSH_MIN_CTX:
@@ -518,7 +654,7 @@ def _dsh_models(mcfg: dict, profile: str = None):
         seen.add(m["role"])
     for peer in enabled_peers(mcfg):
         for role in sorted(peer.get("pro") or {}):
-            if role in _DSH_SKIP_ROLES:
+            if not bob_models.is_chat_role(role):
                 continue
             mid = f"{role}-pro"
             if mid in seen:
@@ -543,7 +679,6 @@ def _dsh_mcp_lines(bobcfg: dict) -> list:
     machine as Bob. http: dsh connects to an already-running `bob agent mcp --http`, which is what
     lets a harness on another machine borrow a home Bob's tools. One generator for both, so the
     transport is chosen in config rather than by hand-editing the harness."""
-    import osenv
     from bob_core import _port
 
     agent = bobcfg.get("agent", {}) or {}
@@ -554,17 +689,22 @@ def _dsh_mcp_lines(bobcfg: dict) -> list:
         if host in ("0.0.0.0", "::"):  # noqa: S104 — comparison, not a bind
             host = "127.0.0.1"
         url = agent.get("mcpUrl") or f"http://{host}:{_port(agent, 'mcpPort')}/mcp"
+        # The bearer is read from dsh's environment, never written here: this file is a plain config
+        # file, not dsh's owner-only credential store, and a `!!js` expression cannot read that store.
+        # With BOB_LITELLM_KEY unset the header is empty and Bob answers 401, so a missing key fails
+        # closed instead of falling back to a guessable one.
         return [
-            "# Bob's tool registry as a dsh MCP server (Streamable HTTP). Appended to",
+            "# Bob's tool registry as a dsh MCP server (Streamable HTTP). Written into",
             "# $DSH_HOME/cordis.patch.yml by `bob gen` when agent.mcpEnabled is on. Bob must be serving",
-            "# it: `bob agent mcp --http`. Set agent.mcpUrl when dsh runs on another machine.",
+            "# it: `bob agent mcp --http`. Set agent.mcpUrl when dsh runs on another machine, and export",
+            "# BOB_LITELLM_KEY (Bob's LiteLLM key) in the environment dsh starts from.",
             "- insert:", f"    - id: {_DSH_MCP_ID}", "      name: '@deepseek-ai/dsh-mcp-client'",
             "      config:", "        serverName: bob", "        transport: http",
             f"        url: {_yaml_str(url)}", "        headers:",
-            "          Authorization: !!js `Bearer ${process.env.BOB_LITELLM_KEY || 'sk-local'}`"]
-    shim = "bob.cmd" if osenv.os_name() == "windows" else str(REPO / "bob")
+            "          Authorization: !!js `Bearer ${process.env.BOB_LITELLM_KEY ?? ''}`"]
+    shim = _bob_shim()
     return [
-        "# Bob's tool registry as a dsh MCP server (stdio). Appended to $DSH_HOME/cordis.patch.yml by",
+        "# Bob's tool registry as a dsh MCP server (stdio). Written into $DSH_HOME/cordis.patch.yml by",
         "# `bob gen` when agent.mcpEnabled is on. cwd is the harness's own, so Bob's file and git tools",
         "# act on the project dsh is open in, not on Bob's repo.",
         "- insert:", f"    - id: {_DSH_MCP_ID}", "      name: '@deepseek-ai/dsh-mcp-client'",
@@ -578,7 +718,6 @@ def gen_dsh(profile: str = None) -> str:
     pointing at Bob's LiteLLM proxy) and config/dsh/cordis.patch.yml (Bob's MCP server as a dsh plugin
     instance, so dsh gets Bob's tools). `install_dsh` merges them into $DSH_HOME."""
     import bob_models
-    import osenv
     from bob_core import _port
 
     mcfg = bob_models.load_models_config()
@@ -725,21 +864,50 @@ def _install_dsh_credential(home: Path) -> str:
     return f"  key: {verb} {_DSH_KEY_REF} in {dest}"
 
 
+def _top_level_items(lines: list) -> list:
+    """(start, end) line spans of each top-level `- ` item of a YAML sequence document. An item ends
+    where the next one begins, less any comment or blank lines that lead into that next item."""
+    starts = [i for i, ln in enumerate(lines) if ln.startswith("- ")]
+    spans = []
+    for n, i in enumerate(starts):
+        end = starts[n + 1] if n + 1 < len(starts) else len(lines)
+        while end > i + 1 and (not lines[end - 1].strip() or lines[end - 1].lstrip().startswith("#")):
+            end -= 1
+        spans.append((i, end))
+    return spans
+
+
 def _install_dsh_mcp(home: Path) -> str:
-    """Append Bob's MCP entry to $DSH_HOME/cordis.patch.yml unless it is already there. Textual, so
-    a hand-written patch file keeps its comments and any `!!js` expressions."""
+    """Put Bob's MCP entry into $DSH_HOME/cordis.patch.yml: written when the file is new, replaced in
+    place when a `bob-tools` entry is already there (so a changed agent.mcpTransport reaches dsh), else
+    appended. Textual, so a hand-written patch file keeps its comments, its other entries and any `!!js`
+    expressions."""
+    import re
+
     src = REPO / "config" / "dsh" / "cordis.patch.yml"
     dest = home / "cordis.patch.yml"
     block = src.read_text(encoding="utf-8")
     if not dest.exists():
         dest.write_text(block, encoding="utf-8")
         return f"  mcp: wrote {dest}"
-    current = dest.read_text(encoding="utf-8")
-    if f"id: {_DSH_MCP_ID}" in current:
-        return f"  mcp: {dest} already carries the '{_DSH_MCP_ID}' entry"
-    entry = block[block.index("- insert:"):]
+    entry = block[block.index("- insert:"):].rstrip("\n").split("\n")
+    lines = dest.read_text(encoding="utf-8").split("\n")
+    id_line = re.compile(rf"\s*-\s+id:\s*['\"]?{re.escape(_DSH_MCP_ID)}['\"]?\s*(#.*)?$")
+    for start, end in _top_level_items(lines):
+        item = lines[start:end]
+        if not any(id_line.match(ln) for ln in item):
+            continue
+        if sum(1 for ln in item if re.match(r"\s*-\s+id:", ln)) > 1:
+            return (f"  mcp: {dest} holds the '{_DSH_MCP_ID}' entry inside an insert with other entries; "
+                    f"update it by hand from {src}")
+        if item == entry:
+            return f"  mcp: {dest} already carries the current '{_DSH_MCP_ID}' entry"
+        lines[start:end] = entry
+        dest.write_text("\n".join(lines), encoding="utf-8")
+        return f"  mcp: replaced the '{_DSH_MCP_ID}' entry in {dest}"
+    current = "\n".join(lines)
     sep = "" if current.endswith("\n") else "\n"
-    dest.write_text(current + sep + "\n" + entry, encoding="utf-8")
+    dest.write_text(current + sep + "\n" + "\n".join(entry) + "\n", encoding="utf-8")
     return f"  mcp: appended the '{_DSH_MCP_ID}' entry to {dest}"
 
 
@@ -761,24 +929,108 @@ def gen_webui(profile: str = None) -> str:
 
     entries = []
     for m in models:
-        if m.get("embedding") or m.get("reranking") or m["role"] in ("fim", "embed"):
+        if not bob_models.is_chat_role(m["role"], m):
             continue
-        entries.append({"id": m["role"], "prompt": str(prompts.get(m["role"], "")) if prompts else ""})
+        entries.append({"id": m["role"], "prompt": _role_prompt(prompts, m["role"])})
     for peer in peers:
         pro = peer.get("pro")
         if not pro:
             continue
         for role in sorted(pro):
-            rv = pro[role]
-            prompt = str(rv["systemPrompt"]) if isinstance(rv, dict) and rv.get("systemPrompt") else ""
-            entries.append({"id": f"{role}-pro", "prompt": prompt})
+            if bob_models.is_chat_role(role):
+                entries.append({"id": f"{role}-pro", "prompt": _role_prompt(prompts, role, pro[role])})
 
-    return _webui_write(str(db_path), entries)
+    lines = [_webui_write(str(db_path), entries)]
+    key_line = webui_sync_key(db_path)
+    if key_line:
+        lines.append(key_line)
+    return "\n".join(lines)
+
+
+# The Open WebUI config rows that hold Bob's LiteLLM connection: the chat connections (parallel lists of
+# base URLs and keys) and the embedding connection.
+_WEBUI_KEY_ROWS = ("openai.api_base_urls", "openai.api_keys", "rag.openai.api_base_url", "rag.openai.api_key")
+
+
+def webui_sync_key(db_path, config: dict = None) -> str:
+    """Point the connections Open WebUI stored for Bob's LiteLLM at the current key. With persistent config
+    (its default) WebUI keeps these in its own db, where they win over the OPENAI_API_KEY / RAG_OPENAI_API_KEY
+    Bob starts it with, so a changed key would otherwise never reach it. Only a connection whose base URL is
+    Bob's proxy (localhost / 127.0.0.1 on litellmPort) is touched; any other connection the user added keeps
+    its key. Returns a status line, or "" when the db is absent or already current. A locked db (WebUI
+    running) is skipped with a warning after a short busy wait."""
+    import json
+    import sqlite3
+    import time
+
+    from bob_core import _litellm_key, _port
+
+    path = Path(db_path)
+    if not path.exists():
+        return ""
+    cfg = config if config is not None else _bob_cfg()
+    key = _litellm_key(cfg)
+    port = _port(cfg, "litellmPort")
+    bob_urls = {f"http://{host}:{port}/v1" for host in ("localhost", "127.0.0.1")}
+
+    def ours(url) -> bool:
+        return isinstance(url, str) and url.rstrip("/") in bob_urls
+
+    def load(raw):
+        try:
+            return json.loads(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    try:
+        db = sqlite3.connect(str(path), timeout=2)
+        try:
+            marks = ",".join("?" * len(_WEBUI_KEY_ROWS))
+            rows = {k: load(v) for k, v in
+                    db.execute(f"SELECT key, value FROM config WHERE key IN ({marks})", _WEBUI_KEY_ROWS)}
+            updates = {}
+            urls, keys = rows.get("openai.api_base_urls"), rows.get("openai.api_keys")
+            if isinstance(urls, list) and isinstance(keys, list):
+                new = list(keys)
+                for i, url in enumerate(urls):
+                    if ours(url):
+                        new += [""] * (i + 1 - len(new))
+                        new[i] = key
+                if new != keys:
+                    updates["openai.api_keys"] = new
+            if ours(rows.get("rag.openai.api_base_url")) and rows.get("rag.openai.api_key") != key:
+                updates["rag.openai.api_key"] = key
+            if updates:
+                now = int(time.time())
+                with db:
+                    for k, v in updates.items():
+                        db.execute("UPDATE config SET value=?, updated_at=? WHERE key=?", (json.dumps(v), now, k))
+        finally:
+            db.close()
+    except sqlite3.OperationalError as ex:
+        msg = str(ex).lower()
+        if "no such table" in msg:
+            return ""
+        if "locked" in msg or "busy" in msg:
+            return ("warning: Open WebUI's db is locked, so its stored LiteLLM key was not checked; it is "
+                    "updated on the next start (or `bob gen` with WebUI stopped).")
+        return f"warning: could not update Open WebUI's stored LiteLLM key ({ex})"
+    if not updates:
+        return ""
+    line = f"Open WebUI: updated the stored LiteLLM key ({', '.join(sorted(updates))})"
+    import osenv
+    if osenv.is_port_in_use(_port(cfg, "webuiPort")):
+        # A running WebUI read these rows at start and keeps using the old key until it restarts.
+        line += ("; Open WebUI is running and keeps the old key until it restarts "
+                 "(run `bob stop`, then `bob up`)")
+    return line
 
 
 def _webui_write(db_path: str, entries: list) -> str:
-    """Write the prompt entries to webui.db. Short busy timeout so a running WebUI (holding the lock)
-    makes us skip with a clear message rather than block. Preserves created_at on update."""
+    """Write the prompt entries to webui.db. Bob owns only params.system: an existing model row keeps
+    its name, meta, other params and active flag, and gets just that key set or removed; a missing row
+    is created. Short busy timeout so a running WebUI (holding the lock) makes us skip with a clear
+    message rather than block."""
     import json
     import sqlite3
     import time
@@ -797,12 +1049,27 @@ def _webui_write(db_path: str, entries: list) -> str:
         for e in entries:
             eid = e["id"]
             prompt = (e.get("prompt") or "").strip()
-            params = json.dumps({"system": prompt}) if prompt else "{}"
-            cur.execute(
-                """INSERT OR REPLACE INTO model
-                   (id, user_id, base_model_id, name, params, meta, updated_at, created_at, is_active)
-                   VALUES (?,?,?,?,?,?,?,COALESCE((SELECT created_at FROM model WHERE id=?),?),1)""",
-                (eid, admin_id, eid, eid, params, "{}", now_ms, eid, now_ms))
+            cur.execute("SELECT params FROM model WHERE id=?", (eid,))
+            existing = cur.fetchone()
+            if existing is None:
+                params = json.dumps({"system": prompt}) if prompt else "{}"
+                cur.execute(
+                    """INSERT INTO model
+                       (id, user_id, base_model_id, name, params, meta, updated_at, created_at, is_active)
+                       VALUES (?,?,?,?,?,?,?,?,1)""",
+                    (eid, admin_id, eid, eid, params, "{}", now_ms, now_ms))
+            else:
+                try:
+                    params = json.loads(existing[0] or "{}")
+                except (TypeError, ValueError):
+                    params = {}
+                params = params if isinstance(params, dict) else {}
+                if prompt:
+                    params["system"] = prompt
+                else:
+                    params.pop("system", None)
+                cur.execute("UPDATE model SET params=?, updated_at=? WHERE id=?",
+                            (json.dumps(params), now_ms, eid))
             lines.append(f"  {eid}: system prompt {'set' if prompt else 'cleared'}")
         db.commit()
         db.close()
@@ -814,12 +1081,193 @@ def _webui_write(db_path: str, entries: list) -> str:
     return "Generated Open WebUI model system prompts\n" + "\n".join(lines)
 
 
-# --- gen (all four) -------------------------------------------------------------------------------
+# --- gen-aider ------------------------------------------------------------------------------------
+
+def _aider_map_tokens(window: int) -> int:
+    """aider's repo-map budget for a `window`-token model: a sixteenth of it in 256-token steps,
+    between 512 and 4096, so the map never crowds out the conversation on a small window."""
+    return max(512, min(4096, (window // 16) // 256 * 256))
+
+
+def gen_aider(profile: str = None) -> str:
+    """Generate config/aider/.aider.conf.yml (architect mode: ponder plans, coder edits, both falling
+    back to chat when the profile lacks them) and config/aider/model-metadata.json (the per-request
+    context windows aider cannot know for Bob's role names). `bob aider` passes --config."""
+    import json
+
+    import bob_models
+    from bob_core import _litellm_key, _port
+
+    mcfg = bob_models.load_models_config()
+    name, models = _ordered_models(mcfg, profile)
+    defaults = mcfg.get("defaults") or {}
+    by_role = {m["role"]: m for m in models}
+    bobcfg = _bob_cfg()
+    if "chat" not in by_role:
+        raise RuntimeError(f"profile '{name}' has no chat role, which aider needs as its fallback model")
+    architect = "ponder" if "ponder" in by_role else "chat"
+    editor = "coder" if "coder" in by_role else "chat"
+    windows = {r: _slot_ctx(by_role[r], defaults) for r in {architect, editor}}
+    aider_dir = REPO / "config" / "aider"
+    metadata_file = aider_dir / "model-metadata.json"
+
+    out = ["# GENERATED - DO NOT EDIT.  Source: config/models.json  (+ config/user.json)",
+           "# Regenerate: bob gen.  Used by `bob aider`, which passes --config with this file.",
+           f"# Active profile: {name}",
+           "# Local OpenAI-compatible models are prefixed openai/ (case-sensitive).", ""]
+    if architect != editor:
+        out += ["architect: true", f"model: openai/{architect}               # plans the change",
+                f"editor-model: openai/{editor}          # writes the edits", "editor-edit-format: diff",
+                "auto-accept-architect: false        # review the plan before edits are applied"]
+    else:
+        out += ["architect: false", f"model: openai/{architect}", "edit-format: diff"]
+    out += [f"openai-api-base: http://127.0.0.1:{_port(bobcfg, 'litellmPort')}/v1",
+            f"openai-api-key: {_yaml_str(_litellm_key(bobcfg))}",
+            f"model-metadata-file: {_yaml_str(str(metadata_file))}",
+            f"map-tokens: {_aider_map_tokens(min(windows.values()))}"
+            "                    # sized to the smaller per-request window"]
+    conf = _write(aider_dir / ".aider.conf.yml", "\n".join(out) + "\n")
+
+    meta = {f"openai/{r}": {"max_input_tokens": w, "max_tokens": w, "input_cost_per_token": 0,
+                            "output_cost_per_token": 0, "litellm_provider": "openai", "mode": "chat"}
+            for r, w in sorted(windows.items())}
+    meta_dest = _write(metadata_file, json.dumps(meta, indent=2) + "\n")
+    return f"Generated {conf}\nGenerated {meta_dest}"
+
+
+# --- LiteLLM key drift ----------------------------------------------------------------------------
+
+# The key-bearing configs that carry the LiteLLM key on a line of their own, and the generator that writes
+# each. master_key (litellm.yaml) must hold the environment reference the proxy reads the key from; apiKey
+# (Continue) and openai-api-key (aider) must hold the resolved key itself.
+_KEY_FILE_GENERATORS = {"config/litellm.yaml": "gen_litellm", "config/continue/config.yaml": "gen_continue",
+                        "config/aider/.aider.conf.yml": "gen_aider"}
+
+
+def stale_key_files(config: dict = None) -> list:
+    """Repo-relative key-bearing configs (of those that exist) whose embedded LiteLLM key is not the one
+    bob_core._litellm_key resolves now, or whose litellm.yaml writes a literal master key instead of the
+    environment reference. A text check only: no network, nothing written."""
+    import re
+
+    from bob_core import LITELLM_KEY_ENV, _litellm_key
+
+    key = _litellm_key(config if config is not None else _bob_cfg())
+    line = re.compile(r"^\s*(master_key|apiKey|openai-api-key):\s*(.*?)\s*$", re.M)
+    stale = []
+    for rel in _KEY_FILE_GENERATORS:
+        try:
+            text = (REPO / rel).read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for field, value in line.findall(text):
+            want = f"os.environ/{LITELLM_KEY_ENV}" if field == "master_key" else key
+            if value.strip("'\"") != want:
+                stale.append(rel)
+                break
+    return stale
+
+
+def refresh_stale_key_files(config: dict = None) -> list:
+    """Regenerate every stale_key_files entry with its own generator, so clients stop sending a key the
+    proxy no longer accepts (an upgrade from the fixed key, or a rotated secret). One line per file
+    regenerated; [] when all are current. A generator that raises is reported, never propagated."""
+    if config is not None:
+        configure(config)
+    lines = []
+    for rel in stale_key_files():
+        try:
+            globals()[_KEY_FILE_GENERATORS[rel]]()
+            lines.append(f"Regenerated {rel} (it carried an outdated LiteLLM key)")
+        except Exception as e:  # noqa: BLE001 (best-effort: the stack still starts)
+            lines.append(f"warning: could not regenerate {rel} ({e}); run: bob gen")
+    return lines
+
+
+def refresh_dsh_credential(config: dict = None) -> str:
+    """Bring the LiteLLM key in dsh's credential store ($DSH_HOME/.credentials.yaml) to the current one,
+    the way `bob gen` stores it (_install_dsh_credential, line-edited). Runs on every stack start, so a
+    rotated key reaches dsh without a `bob gen`. Nothing is created: returns "" when dsh has no home or no
+    credential store yet, or the stored value is already current; else the status line."""
+    if config is not None:
+        configure(config)
+    home = _dsh_home()
+    if not home.is_dir() or not (home / ".credentials.yaml").exists():
+        return ""
+    line = _install_dsh_credential(home).strip()
+    return "" if "already carries" in line else f"dsh: {line.removeprefix('key: ')}"
+
+
+def refresh_fabric_env() -> str:
+    """Re-point fabric at the current LiteLLM key when its .env already routes the LiteLLM vendor to Bob
+    but holds another key, and migrate a .env that still holds the OPENAI_* pair an earlier setup wrote
+    (sk-local at a localhost proxy), which fabric_run's `--vendor LiteLLM` cannot use. fabric-setup writes
+    that .env; this keeps it current on `bob gen`. Returns a status line, or "" when there is no fabric
+    .env, it is not Bob's route, or it is already current."""
+    import osenv
+    from bob_core import _litellm_key, _port
+
+    import build
+
+    path = osenv.home_config_dir("fabric") / ".env"
+    if not path.exists():
+        return ""
+    current = {}
+    for ln in build._read_env_file(path):
+        k, sep, v = ln.partition("=")
+        if sep and not ln.lstrip().startswith("#"):
+            current[k.strip()] = v.strip()
+    port = _port(_bob_cfg(), "litellmPort")
+    key = _litellm_key(_bob_cfg())
+    if build.fabric_env_is_legacy(current):
+        build.merge_fabric_env(path, port, key)
+        return f"Migrated fabric's .env to the LiteLLM vendor in {path}"
+    if current.get("LITELLM_API_BASE_URL") != f"http://localhost:{port}/v1":
+        return ""
+    if current.get("LITELLM_API_KEY") == key:
+        return ""
+    build.merge_fabric_env(path, port, key)
+    return f"Updated fabric's LiteLLM key in {path}"
+
+
+# --- gen (all) ------------------------------------------------------------------------------------
+
+# The generators that write files only (no install step, no Open WebUI db), in the order `gen` runs them.
+_FILE_GENERATORS = ("gen_llama_swap", "gen_litellm", "gen_continue", "gen_dsh", "gen_aider")
+
 
 def gen_all(profile: str = None) -> str:
-    """Regenerate every runtime config from the registry. Port of the `gen` verb."""
-    return "\n".join([gen_llama_swap(profile), gen_litellm(profile), gen_webui(profile),
-                      gen_continue(profile), gen_dsh(profile), install_dsh()])
+    """Regenerate every runtime config from the registry, install the dsh drop-ins, and report any
+    route the profile cannot serve. Port of the `gen` verb."""
+    import bob_models
+
+    lines = [gen_llama_swap(profile), gen_litellm(profile), gen_webui(profile),
+             gen_continue(profile), gen_dsh(profile), gen_aider(profile), install_dsh()]
+    fabric = refresh_fabric_env()
+    if fabric:
+        lines.append(fabric)
+    lines += routing_warnings(bob_models.load_models_config(), profile)
+    return "\n".join(lines)
+
+
+def render_all(profile: str = None) -> dict:
+    """{repo-relative path: text} for every file the generators would write, rendered in memory: nothing
+    under config/ is touched, Open WebUI's db is not opened and $DSH_HOME is not read or written."""
+    global _write
+    captured = {}
+
+    def _capture(path: Path, text: str) -> Path:
+        captured[str(path.relative_to(REPO)).replace("\\", "/")] = text
+        return path
+
+    real = _write
+    _write = _capture
+    try:
+        for fn in _FILE_GENERATORS:
+            globals()[fn](profile)
+    finally:
+        _write = real
+    return captured
 
 
 # --- agent tool adapter ---------------------------------------------------------------------------
@@ -829,15 +1277,27 @@ def _gen() -> str:
 
 
 def test() -> str:
-    return gen_all()
+    """Render every generated file in memory and check the YAML ones parse; writes nothing."""
+    import bob_models
+
+    files = render_all()
+    try:
+        import yaml
+    except ModuleNotFoundError:
+        yaml = None
+    for rel, text in files.items():
+        if yaml is not None and rel.endswith((".yaml", ".yml")) and "!!js" not in text:
+            yaml.safe_load(text)
+    notes = routing_warnings(bob_models.load_models_config())
+    return "\n".join([f"rendered {len(files)} files in memory: {', '.join(sorted(files))}"] + notes)
 
 
 TOOL_DEFS = [
     {"type": "function", "function": {
         "name": "gen",
         "description": ("Regenerate all runtime configs (llama-swap.yaml, litellm.yaml, Continue config, "
-                        "DeepSeek Harness route, Open WebUI prompts) from config/models.json. Run after "
-                        "changing the model registry or profile. Mutating (writes config files)."),
+                        "DeepSeek Harness route, aider config, Open WebUI prompts) from config/models.json. "
+                        "Run after changing the model registry or profile. Mutating (writes config files)."),
         "parameters": {"type": "object", "properties": {}}}},
 ]
 

@@ -36,8 +36,17 @@ def _run_ctx_attr(name):
         return None
 
 
-def _memory_recall(query: str, k: int = 5) -> str:
+def _default_k() -> int:
+    """memory.recallK (the same default autoRecall uses), 5 when unset."""
+    try:
+        return int((_cfg.get("memory") or {}).get("recallK") or 5)
+    except (TypeError, ValueError):
+        return 5
+
+
+def _memory_recall(query: str, k: int = None) -> str:
     from bob_core import MEMORY_CONTEXT_FRAME, memory_recall
+    k = int(k) if k else _default_k()
     out = memory_recall(query, k=k, config=_cfg, owner=_run_ctx_attr("owner"),
                         scope=_run_ctx_attr("scope"))
     if not out or out.strip() in ("", "(no results)"):
@@ -69,7 +78,8 @@ TOOL_DEFS = [
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Search query"},
-                    "k": {"type": "integer", "description": "Number of results (default 5)"},
+                    "k": {"type": "integer",
+                          "description": "Number of results (default: the configured recallK)"},
                 },
                 "required": ["query"],
             },

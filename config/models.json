@@ -1,19 +1,16 @@
 {
-  "_doc": "THE single source of truth for model selection — read by Python (bob_models.py). Converted from the retired config/models.psd1; full field prose is in that file's git history. Per-model schema: repo/path=HuggingFace repo+file -> download URL; gguf=local filename in models/ (also the -m runtime path); ctx=context window (-c). ALWAYS set it, embedders and rerankers included: with no -c llama-server reserves the model's full trained window, which measured 4.8 GB for the 0.6B embedder and 5.7 GB for the 0.6B reranker versus 1.4 GB each at -c 2048; sizeGB=approx on-disk size; kv=true applies the KV-cache quant macro; flags=extra llama-server flags (appended last, so they override srv-macro defaults); ngl=\"auto\" drops -ngl so llama.cpp fits the offload to free VRAM itself (needed for a DENSE model bigger than the card, where --n-cpu-moe does not apply); setParams=server-side sampling enforcement; kvQuantK/kvQuantV override the profile-wide KV quant for one model (a long-context model held entirely in VRAM can only afford q4_0); aliasOf=\"<role>\" makes this role a second NAME for that model rather than a second model — it inherits the target's whole spec, downloads once, loads once, and is emitted under llama-swap `aliases:` with its own setParams routed through setParamsByID; ttl=0 never auto-unloads; pinned=true keeps resident (excluded from the swap group); embedding adds --embedding. Keys starting with '_' are METADATA (e.g. _targetVRAM, _notes, _cpuTier), not models — skipped by the generator and downloader. activeProfile here is the shipped DEFAULT; the writable override lives in data/active-profile.json (bob profile) and env BOB_PROFILE wins for one invocation. Tunable knobs (defaults block) are overridable per-machine in config/user.json (deep-merged). Re-run `bob gen` after editing.",
+  "_doc": "THE single source of truth for model selection — read by Python (bob_models.py). Converted from the retired config/models.psd1; full field prose is in that file's git history. Per-model schema: repo/path=HuggingFace repo+file -> download URL; gguf=local filename in models/ (also the -m runtime path); ctx=context window (-c). ALWAYS set it, embedders and rerankers included: with no -c llama-server reserves the model's full trained window, which measured 4.8 GB for the 0.6B embedder and 5.7 GB for the 0.6B reranker versus 1.4 GB each at -c 2048; sizeGB=approx on-disk size; kv=true applies the KV-cache quant macro; flags=extra llama-server flags (appended last, so they override srv-macro defaults); ngl=\"auto\" drops -ngl so llama.cpp fits the offload to free VRAM itself (needed for a DENSE model bigger than the card, where --n-cpu-moe does not apply); setParams=server-side sampling enforcement, the ONLY place per-role sampling goes (temperature/top_p/top_k/min_p inside flags would be a client-overridable server default, and `bob gen` warns on one); kvQuantK/kvQuantV override the profile-wide KV quant for one model (a long-context model held entirely in VRAM can only afford q4_0); aliasOf=\"<role>\" makes this role a second NAME for that model rather than a second model — it inherits the target's whole spec, downloads once, loads once, and is emitted under llama-swap `aliases:` with its own setParams routed through setParamsByID; ttl=0 never auto-unloads; pinned=true keeps resident (excluded from the swap group); embedding adds --embedding. Keys starting with '_' are METADATA (e.g. _targetVRAM, _notes, _cpuTier), not models — skipped by the generator and downloader. activeProfile here is the shipped DEFAULT; the writable override lives in data/active-profile.json (bob profile) and env BOB_PROFILE wins for one invocation. Tunable knobs (defaults block) are overridable per-machine in config/user.json (deep-merged). Re-run `bob gen` after editing.",
   "activeProfile": "16gb",
   "defaults": {
     "mlockBig": false,
     "kvQuantK": "q8_0",
     "ubatch": 512,
     "flashAttn": true,
-    "langfuseEnabled": false,
     "parallel": 1,
     "noMmap": false,
     "kvQuantV": "q8_0",
     "numa": "",
     "ngl": 99,
-    "n8nTimezone": "UTC",
-    "webuiSecret": "bob-dev",
     "threads": -1,
     "kvQuant": "",
     "batch": 512
@@ -21,6 +18,7 @@
   "prompts": {
     "chat": "Be concise.",
     "coder": "You are a skilled software engineer. Be direct. No preambles.",
+    "ponder": "Think the problem through before answering: state your assumptions, weigh the alternatives, then give a clear conclusion.",
     "vision": "You are a vision assistant. Describe images concisely and answer questions about them directly.",
     "writer": "You are a careful writer. Plan the structure before drafting, then produce clear, well-organized prose. No preambles."
   },
@@ -44,23 +42,17 @@
     "deepseek": {
       "pro": {
         "coder": {
-          "model": "deepseek-v4-flash",
-          "systemPrompt": "You are an expert software engineer. Be direct. No preambles."
+          "model": "deepseek-v4-flash"
         },
         "chat": {
-          "model": "deepseek-v4-flash",
-          "systemPrompt": "Be helpful and concise."
+          "model": "deepseek-v4-flash"
         },
         "ponder": {
           "model": "deepseek-v4-pro",
           "maxOutputTokens": 65536
         },
-        "vision": {
-          "model": "deepseek-v4-flash"
-        },
         "writer": {
-          "model": "deepseek-v4-pro",
-          "systemPrompt": "You are a careful writer. Produce clear, well-organized prose. No preambles."
+          "model": "deepseek-v4-pro"
         }
       },
       "enabled": true,
@@ -74,19 +66,16 @@
     "zhipu": {
       "pro": {
         "coder": {
-          "model": "glm-5.3",
-          "systemPrompt": "You are an expert software engineer. Be direct. No preambles."
+          "model": "glm-5.3"
         },
         "chat": {
-          "model": "glm-5.3",
-          "systemPrompt": "Be helpful and concise."
+          "model": "glm-5.3"
         },
         "ponder": {
           "model": "glm-5.3"
         },
         "writer": {
-          "model": "glm-5.3",
-          "systemPrompt": "You are a careful writer. Produce clear, well-organized prose. No preambles."
+          "model": "glm-5.3"
         }
       },
       "enabled": false,
@@ -100,8 +89,7 @@
     "kimi": {
       "pro": {
         "coder": {
-          "model": "kimi-k3",
-          "systemPrompt": "You are an expert software engineer. Be direct. No preambles."
+          "model": "kimi-k3"
         }
       },
       "enabled": false,
@@ -114,7 +102,13 @@
   "profiles": {
     "16gb": {
       "coder": {
-        "aliasOf": "chat"
+        "aliasOf": "chat",
+        "setParams": {
+          "temperature": 1.0,
+          "top_p": 0.95,
+          "top_k": 20,
+          "min_p": 0.0
+        }
       },
       "embed": {
         "ttl": 0,
@@ -138,10 +132,12 @@
         "reranking": true,
         "sizeGB": 0.64,
         "gguf": "qwen3-reranker-0.6b-q8_0.gguf",
-        "ctx": 2048,
+        "ctx": 1024,
         "flags": [
           "-ub",
-          "128"
+          "1024",
+          "-b",
+          "1024"
         ]
       },
       "chat": {
@@ -155,16 +151,14 @@
         "kvQuantK": "q4_0",
         "kvQuantV": "q4_0",
         "flags": [
-          "--temp",
-          "1.0",
-          "--top-p",
-          "0.95",
-          "--top-k",
-          "20",
-          "--min-p",
-          "0.0",
           "--jinja"
-        ]
+        ],
+        "setParams": {
+          "temperature": 1.0,
+          "top_p": 0.95,
+          "top_k": 20,
+          "min_p": 0.0
+        }
       },
       "fim": {
         "repo": "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
@@ -207,13 +201,19 @@
           "top_p": 0.95
         }
       },
-      "_notes": "One Qwen3.8-27B GSQ-RCO IQ3_XXS (10.09 GB) serves chat/coder/ponder/writer/agent, fully on the card: no expert offload, no dense spill. MEASURED on a 16 GB RTX 5080 with a running desktop — chat 10950 MiB at 40960 ctx / q4_0 KV, embed 1198, rerank 1198, so Bob holds 13.3 GB and leaves ~0.9 GB beside a ~2 GB compositor. Three things buy that: -c on the 0.6B helpers (with none they reserve their full 32K window — 4.8 GB and 5.7 GB), -ub 128 on the same two (~226 MiB each), and -np 1 (llama-server defaults to four slots, each with its own KV and, on this hybrid attention/SSM model, its own recurrent-state cache). fim joins the swap group here: a resident FIM model does not fit next to a 10 GB chat model, so IDE autocomplete and chat take turns. The -mtp build of the same model is the speed profile (+40% tok/s) but costs ~900 MiB more, which this tier does not have."
+      "_notes": "One Qwen3.8-27B GSQ-RCO IQ3_XXS (10.09 GB) serves chat/coder/ponder/writer/agent, fully on the card: no expert offload, no dense spill. MEASURED on a 16 GB RTX 5080 with a running desktop — chat 10950 MiB at 40960 ctx / q4_0 KV, embed 1198, rerank 1198 (a -c 2048 -ub 128 measurement; the current rerank settings are unmeasured), so Bob holds 13.3 GB and leaves ~0.9 GB beside a ~2 GB compositor. Three things buy that: -c on the 0.6B helpers (with none they reserve their full 32K window — 4.8 GB and 5.7 GB), -ub 128 on the embedder (~226 MiB), and -np 1 (llama-server defaults to four slots, each with its own KV and, on this hybrid attention/SSM model, its own recurrent-state cache). fim joins the swap group here: a resident FIM model does not fit next to a 10 GB chat model, so IDE autocomplete and chat take turns. The -mtp build of the same model is the speed profile (+40% tok/s) but costs ~900 MiB more, which this tier does not have. rerank runs at -c 1024 with -ub 1024 -b 1024, since a rank-pooling reranker rejects any query+document pair longer than its ubatch. A smaller KV partly offsets the larger compute buffer; the net VRAM needs on-card measurement. Sampling is enforced per role with setParams (same values on every tier): ponder 0.3, writer 0.6/0.95, agent 0.1, and coder takes the Qwen3.8 chat setting (1.0/0.95/top_k 20/min_p 0), since the registry records no coder-specific guidance. chat itself uses the Qwen3.8 thinking setting."
     },
     "24gb": {
       "coder": {
-        "aliasOf": "chat"
+        "aliasOf": "chat",
+        "setParams": {
+          "temperature": 1.0,
+          "top_p": 0.95,
+          "top_k": 20,
+          "min_p": 0.0
+        }
       },
-      "_notes": "Qwen3.8-27B GSQ-RCO IQ3_S-mtp (12.12 GB, task-lossless vs BF16) plus its 0.93 GB vision projector serves chat/coder/ponder/writer/agent/vision at 98304 ctx with q8_0 KV. ~22.5 GB of the ~23.9 GB free, pinned fim 3B + embed included.",
+      "_notes": "Qwen3.8-27B GSQ-RCO IQ3_S-mtp (12.12 GB, task-lossless vs BF16) plus its 0.93 GB vision projector serves chat/coder/ponder/writer/agent/vision at 98304 ctx with q8_0 KV. ~22.5 GB of the ~23.9 GB free, pinned fim 3B + embed included. rerank runs at -c 1024 with -ub 1024 -b 1024, since a rank-pooling reranker rejects any query+document pair longer than its ubatch. A smaller KV partly offsets the larger compute buffer; the net VRAM needs on-card measurement. Sampling is enforced per role with setParams (same values on every tier): ponder 0.3, writer 0.6/0.95, agent 0.1, and coder takes the Qwen3.8 chat setting (1.0/0.95/top_k 20/min_p 0), since the registry records no coder-specific guidance. chat itself uses the Qwen3.8 thinking setting.",
       "vision": {
         "aliasOf": "chat"
       },
@@ -240,18 +240,16 @@
           "draft-mtp",
           "--spec-draft-n-max",
           "2",
-          "--temp",
-          "1.0",
-          "--top-p",
-          "0.95",
-          "--top-k",
-          "20",
-          "--min-p",
-          "0.0",
           "--jinja"
         ],
         "mmproj": "mmproj-Qwen3.8-27B-BF16.gguf",
-        "supportsVision": true
+        "supportsVision": true,
+        "setParams": {
+          "temperature": 1.0,
+          "top_p": 0.95,
+          "top_k": 20,
+          "min_p": 0.0
+        }
       },
       "_targetVRAM": "~24GB (RTX 3090 / 4090 / 4080 Super) — one resident model for every chat role",
       "agent": {
@@ -282,10 +280,12 @@
         "reranking": true,
         "sizeGB": 0.64,
         "gguf": "qwen3-reranker-0.6b-q8_0.gguf",
-        "ctx": 2048,
+        "ctx": 1024,
         "flags": [
           "-ub",
-          "128"
+          "1024",
+          "-b",
+          "1024"
         ]
       },
       "ponder": {
@@ -311,7 +311,13 @@
         "draftRole": "fim",
         "ctx": 4096,
         "sizeGB": 4.7,
-        "gguf": "qwen-coder-7b-q4_k_m.gguf"
+        "gguf": "qwen-coder-7b-q4_k_m.gguf",
+        "setParams": {
+          "temperature": 1.0,
+          "top_p": 0.95,
+          "top_k": 20,
+          "min_p": 0.0
+        }
       },
       "embed": {
         "ttl": 0,
@@ -335,10 +341,12 @@
         "reranking": true,
         "sizeGB": 0.64,
         "gguf": "qwen3-reranker-0.6b-q8_0.gguf",
-        "ctx": 2048,
+        "ctx": 1024,
         "flags": [
           "-ub",
-          "128"
+          "1024",
+          "-b",
+          "1024"
         ]
       },
       "chat": {
@@ -364,7 +372,7 @@
         "sizeGB": 1.9,
         "gguf": "qwen-coder-1.5b-q8_0.gguf"
       },
-      "_targetVRAM": "~8GB (ctx 4096, smaller quants) — NEEDS on-card validation",
+      "_targetVRAM": "~8GB (ctx 4096, agent 8192, smaller quants): NEEDS on-card validation",
       "agent": {
         "kv": true,
         "repo": "unsloth/Qwen3.5-4B-GGUF",
@@ -372,12 +380,13 @@
         "tokenizer": "Qwen/Qwen3.5-4B",
         "ctx": 8192,
         "flags": [
-          "--temp",
-          "0.1",
           "--jinja"
         ],
         "sizeGB": 3.14,
-        "gguf": "qwen3.5-4b-q5_k_m.gguf"
+        "gguf": "qwen3.5-4b-q5_k_m.gguf",
+        "setParams": {
+          "temperature": 0.1
+        }
       },
       "ponder": {
         "kv": true,
@@ -385,12 +394,11 @@
         "path": "Qwen3.5-9B-Q4_K_M.gguf",
         "tokenizer": "Qwen/Qwen3.5-9B",
         "ctx": 4096,
-        "flags": [
-          "--temp",
-          "0.3"
-        ],
         "sizeGB": 5.68,
-        "gguf": "qwen3.5-9b-q4_k_m.gguf"
+        "gguf": "qwen3.5-9b-q4_k_m.gguf",
+        "setParams": {
+          "temperature": 0.3
+        }
       },
       "writer": {
         "aliasOf": "ponder",
@@ -399,13 +407,19 @@
           "top_p": 0.95
         }
       },
-      "_notes": "A 27B build does not fit: the 8.4 GB IQ2_XS weights leave no room for context. writer rides ponder (same 9B gguf) rather than loading it twice."
+      "_notes": "A 27B build does not fit: the 8.4 GB IQ2_XS weights leave no room for context. writer rides ponder (same 9B gguf) rather than loading it twice. rerank runs at -c 1024 with -ub 1024 -b 1024, since a rank-pooling reranker rejects any query+document pair longer than its ubatch. A smaller KV partly offsets the larger compute buffer; the net VRAM needs on-card measurement. Sampling is enforced per role with setParams (same values on every tier): ponder 0.3, writer 0.6/0.95, agent 0.1, and coder takes the Qwen3.8 chat setting (1.0/0.95/top_k 20/min_p 0), since the registry records no coder-specific guidance. chat samples at 0.7/0.9, the setting this tier's Qwen3.5 chat model ships with, rather than the Qwen3.8 thinking setting the 27B tiers use."
     },
     "32gb": {
       "coder": {
-        "aliasOf": "chat"
+        "aliasOf": "chat",
+        "setParams": {
+          "temperature": 1.0,
+          "top_p": 0.95,
+          "top_k": 20,
+          "min_p": 0.0
+        }
       },
-      "_notes": "Same task-lossless IQ3_S-mtp build as 24gb, but --parallel 2 --no-kv-unified splits 393216 ctx into two private 192K slots, so a second agent session costs a KV slot instead of a second card. q4_0 KV to pay for the range.",
+      "_notes": "Same task-lossless IQ3_S-mtp build as 24gb, but --parallel 2 --no-kv-unified splits 393216 ctx into two private 192K slots, so a second agent session costs a KV slot instead of a second card. q4_0 KV to pay for the range. rerank runs at -c 1024 with -ub 1024 -b 1024, since a rank-pooling reranker rejects any query+document pair longer than its ubatch. A smaller KV partly offsets the larger compute buffer; the net VRAM needs on-card measurement. Sampling is enforced per role with setParams (same values on every tier): ponder 0.3, writer 0.6/0.95, agent 0.1, and coder takes the Qwen3.8 chat setting (1.0/0.95/top_k 20/min_p 0), since the registry records no coder-specific guidance. chat itself uses the Qwen3.8 thinking setting.",
       "vision": {
         "aliasOf": "chat"
       },
@@ -434,21 +448,19 @@
           "draft-mtp",
           "--spec-draft-n-max",
           "2",
-          "--temp",
-          "1.0",
-          "--top-p",
-          "0.95",
-          "--top-k",
-          "20",
-          "--min-p",
-          "0.0",
           "--jinja",
           "--parallel",
           "2",
           "--no-kv-unified"
         ],
         "mmproj": "mmproj-Qwen3.8-27B-BF16.gguf",
-        "supportsVision": true
+        "supportsVision": true,
+        "setParams": {
+          "temperature": 1.0,
+          "top_p": 0.95,
+          "top_k": 20,
+          "min_p": 0.0
+        }
       },
       "_targetVRAM": "~32GB (RTX 5090 / A6000) — one resident model, two independent agent slots",
       "agent": {
@@ -479,10 +491,12 @@
         "reranking": true,
         "sizeGB": 0.64,
         "gguf": "qwen3-reranker-0.6b-q8_0.gguf",
-        "ctx": 2048,
+        "ctx": 1024,
         "flags": [
           "-ub",
-          "128"
+          "1024",
+          "-b",
+          "1024"
         ]
       },
       "ponder": {
@@ -509,7 +523,13 @@
         "tokenizer": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
         "ctx": 16384,
         "sizeGB": 18.6,
-        "gguf": "qwen3-coder-30b-a3b-q4_k_m.gguf"
+        "gguf": "qwen3-coder-30b-a3b-q4_k_m.gguf",
+        "setParams": {
+          "temperature": 1.0,
+          "top_p": 0.95,
+          "top_k": 20,
+          "min_p": 0.0
+        }
       },
       "embed": {
         "ttl": 0,
@@ -533,10 +553,12 @@
         "reranking": true,
         "sizeGB": 0.64,
         "gguf": "qwen3-reranker-0.6b-q8_0.gguf",
-        "ctx": 2048,
+        "ctx": 1024,
         "flags": [
           "-ub",
-          "128"
+          "1024",
+          "-b",
+          "1024"
         ]
       },
       "chat": {
@@ -562,7 +584,7 @@
         "sizeGB": 1.9,
         "gguf": "qwen-coder-1.5b-q8_0.gguf"
       },
-      "_targetVRAM": "~12GB (smaller quants, ctx 8192/4096) — NEEDS on-card validation",
+      "_targetVRAM": "~12GB (smaller quants; chat and coder ctx 16384, ponder 8192): NEEDS on-card validation",
       "agent": {
         "aliasOf": "chat",
         "setParams": {
@@ -577,12 +599,11 @@
         "path": "Qwen3.6-35B-A3B-UD-Q3_K_XL.gguf",
         "tokenizer": "Qwen/Qwen3.6-35B-A3B",
         "ctx": 8192,
-        "flags": [
-          "--temp",
-          "0.3"
-        ],
         "sizeGB": 16.85,
-        "gguf": "qwen3.6-35b-a3b-q3_k_xl.gguf"
+        "gguf": "qwen3.6-35b-a3b-q3_k_xl.gguf",
+        "setParams": {
+          "temperature": 0.3
+        }
       },
       "writer": {
         "aliasOf": "ponder",
@@ -591,44 +612,39 @@
           "top_p": 0.95
         }
       },
-      "_notes": "Qwen3-Coder-30B-A3B + Qwen3.6-35B-A3B with expert offload; writer rides ponder and agent rides chat, so the tier holds three GGUFs instead of five. A Qwen3.8-27B GSQ-RCO build only fits here at IQ2_XS once the pinned fim/embed are counted, which costs more code quality than the offloaded MoE pair."
+      "_notes": "Qwen3-Coder-30B-A3B + Qwen3.6-35B-A3B with expert offload; writer rides ponder and agent rides chat, so the tier holds three GGUFs instead of five. A Qwen3.8-27B GSQ-RCO build only fits here at IQ2_XS once the pinned fim/embed are counted, which costs more code quality than the offloaded MoE pair. rerank runs at -c 1024 with -ub 1024 -b 1024, since a rank-pooling reranker rejects any query+document pair longer than its ubatch. A smaller KV partly offsets the larger compute buffer; the net VRAM needs on-card measurement. Sampling is enforced per role with setParams (same values on every tier): ponder 0.3, writer 0.6/0.95, agent 0.1, and coder takes the Qwen3.8 chat setting (1.0/0.95/top_k 20/min_p 0), since the registry records no coder-specific guidance. chat samples at 0.7/0.9, the setting this tier's Qwen3.5 chat model ships with, rather than the Qwen3.8 thinking setting the 27B tiers use."
     },
     "cpu": {
       "_cpuTier": true,
       "_targetVRAM": "CPU-only (no GPU) — tiny model, correctness/wiring only, not performance",
       "chat": {
         "setParams": {
-          "temperature": 0.7
+          "temperature": 0.7,
+          "top_p": 0.9
         },
         "repo": "unsloth/Qwen3.5-0.8B-GGUF",
         "path": "Qwen3.5-0.8B-Q8_0.gguf",
         "ctx": 4096,
         "sizeGB": 0.81,
-        "gguf": "qwen3.5-0.8b-q8_0.gguf"
+        "gguf": "qwen3.5-0.8b-q8_0.gguf",
+        "flags": [
+          "--jinja"
+        ]
       },
       "agent": {
-        "repo": "unsloth/Qwen3.5-0.8B-GGUF",
-        "path": "Qwen3.5-0.8B-Q8_0.gguf",
-        "ctx": 4096,
-        "flags": [
-          "--temp",
-          "0.1",
-          "--jinja"
-        ],
-        "sizeGB": 0.81,
-        "gguf": "qwen3.5-0.8b-q8_0.gguf"
+        "aliasOf": "chat",
+        "setParams": {
+          "temperature": 0.1
+        }
       },
       "writer": {
-        "repo": "unsloth/Qwen3.5-0.8B-GGUF",
-        "path": "Qwen3.5-0.8B-Q8_0.gguf",
-        "ctx": 4096,
-        "flags": [
-          "--temp",
-          "0.6"
-        ],
-        "sizeGB": 0.81,
-        "gguf": "qwen3.5-0.8b-q8_0.gguf"
-      }
+        "aliasOf": "chat",
+        "setParams": {
+          "temperature": 0.6,
+          "top_p": 0.95
+        }
+      },
+      "_notes": "One Qwen3.5-0.8B serves chat, writer and agent (writer and agent are aliases, so one server loads). No coder, ponder, vision, fim, embed or rerank: routing falls back to chat for coder/ponder/writer/agent, vision requests are refused, and memory recall runs without embeddings. Sampling is enforced per role with setParams (same values on every tier): ponder 0.3, writer 0.6/0.95, agent 0.1,. chat samples at 0.7/0.9 like the other Qwen3.5 tiers."
     }
   }
 }

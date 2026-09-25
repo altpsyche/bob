@@ -13,8 +13,6 @@ _cfg: dict = {}
 REPO = Path(__file__).resolve().parent.parent.parent
 SCRIPTS = REPO / "scripts"
 
-# Stable role order so output is deterministic regardless of dict enumeration.
-_ROLE_ORDER = ["ponder", "coder", "chat", "fim", "embed"]
 
 
 def configure(config: dict) -> None:
@@ -30,10 +28,10 @@ MUTATING_TOOLS = {"profile_switch"}
 # --- helpers --------------------------------------------------------------------------------------
 
 def _ordered_roles(roles: dict) -> list:
-    """Role names in the canonical order (ponder,coder,chat,fim,embed, then the rest sorted)."""
-    known = [r for r in _ROLE_ORDER if r in roles]
-    rest = sorted(r for r in roles if r not in _ROLE_ORDER)
-    return known + rest
+    """Role names in the canonical order (bob_models.ROLE_ORDER), then the rest sorted, so output is
+    deterministic regardless of dict enumeration. Models and the stack dashboard both order through here."""
+    from bob_models import ordered_roles
+    return ordered_roles(roles)
 
 
 def _model_path(gguf: str) -> Path:
@@ -75,7 +73,7 @@ def suggested_profile(vram_gb=None, config=None):
 # --- capabilities (each takes/uses config, returns a string) --------------------------------------
 
 def models_list(config: dict) -> str:
-    """Active-profile roles + load state (queries the endpoint's /v1/models). Port of the `models` case."""
+    """Active-profile roles + load state (queries the endpoint's /v1/models)."""
     import bob_models
     import requests
     from bob_core import _port
@@ -117,7 +115,7 @@ def models_list(config: dict) -> str:
 
 
 def model_show(role: str, config: dict) -> str:
-    """file/VRAM/repo/path/on-disk/SHA for one role. Port of the `show` case."""
+    """file/VRAM/repo/path/on-disk/SHA for one role."""
     import json
 
     import bob_models
@@ -152,7 +150,7 @@ def model_show(role: str, config: dict) -> str:
 
 
 def profiles_list(config: dict) -> str:
-    """All VRAM profiles with size, on-disk count, target VRAM, and a suggestion. Port of `profiles`."""
+    """All VRAM profiles with size, on-disk count, target VRAM, and a suggestion."""
     import bob_models
 
     mcfg = bob_models.load_models_config()
@@ -178,8 +176,7 @@ def profiles_list(config: dict) -> str:
 
 def profile_switch(name: str, config: dict) -> str:
     """Switch the active profile (name or 'auto' = detect VRAM), persist via bob_models.set_active_profile
-    (data/active-profile.json), regenerate configs best-effort, and report on-disk status. Port of
-    the `profile` case."""
+    (data/active-profile.json), regenerate configs best-effort, and report on-disk status."""
     import bob_models
 
     mcfg = bob_models.load_models_config()
@@ -271,7 +268,7 @@ def verify_urls(profile: str, config: dict) -> str:
 
 
 def bench(role: str, config: dict) -> str:
-    """Run llama-bench on a role's gguf (defaults to coder). Port of the `bench` case. Returns the
+    """Run llama-bench on a role's gguf (defaults to coder). Returns the
     benchmark output; requires the staged llama-bench binary + the model on disk."""
     import subprocess
 

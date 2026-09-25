@@ -18,11 +18,13 @@ three pieces:
 Bob's runtime config is resolved live, per OS, from neutral sources:
 
 - **`config/defaults.json`**: the neutral single source of truth: `ports`, `roleTable`, and
-  the `runtime.*` defaults (persona, memory, vision, voice, agent). Both the Python runtime and the
+  the `runtime.*` defaults (persona, memory, vision, voice, agent, plus the top-level `bindHost`,
+  `voiceBindHost`, `litellmKey`, `langfuseEnabled` and `n8nTimezone`). Both the Python runtime and the
   provisioner read it.
 - **`config/models.json`**: the model registry (roles, files, VRAM, SHA256, profiles).
 - **`config/user.json`**: *your* override, in the runtime-config shape, e.g.
-  `{"agent": {"maxSteps": 8}}` or `{"peers": {"deepseek": {"apiKey": "…"}}}`. This is the documented
+  `{"agent": {"maxSteps": 8}}`, `{"bindHost": "0.0.0.0"}` or `{"peers": {"deepseek": {"apiKey": "…"}}}`.
+  Keys sit at the top level (no `bob` wrapper, no `runtime` prefix). This is the documented
   authoring surface on every OS. (A `config/user.toml` is also accepted on Python 3.11+.)
 
 `bob_core.load_config()` resolves the config the same way on every OS: live from `defaults.json`
@@ -30,7 +32,9 @@ deep-merged with `user.json`. Command dispatch and help both come from
 `scripts/bob/registry.py`, the single source.
 
 Secrets never live in a tracked file. They resolve through the seam `osenv.secret(name)` with
-precedence **env var → OS keychain → `data/secrets.json` → config default**. See
+precedence **env var → OS keychain → `data/secrets.json` → config default**. A secret Bob needs and
+finds nowhere (the LiteLLM key, the Open WebUI, n8n and SearXNG secrets, the Langfuse keys) is generated
+once by `osenv.ensure_secret` and written to `data/secrets.json` (mode 0600 on POSIX). See
 [SECURITY.md](SECURITY.md).
 
 State and data (`sessions.db`, `bob.db`, `schedules.json`, `logs/`) default to the repo-relative
@@ -50,8 +54,10 @@ Drop a `config/user.json`:
 ```
 
 Set the base URL your clients call to `http://localhost:8081/v1` (or wherever your endpoint lives,
-the port is the seam). The master key resolves through the secret seam (`litellmKey`, default
-`sk-local`), so set it via env or keychain rather than a tracked file. At startup Bob **probes** the
+the port is the seam). The master key resolves through the secret seam (`litellmKey`): the environment
+(`BOB_LITELLMKEY`), then an explicit `litellmKey` in `config/user.json`, then the stored or generated
+key. The proxy Bob starts gets it as `LITELLM_MASTER_KEY` in its environment, which the generated
+`litellm.yaml` reads, so the key is never written to that file. For your own endpoint, set it via env or keychain rather than a tracked file. At startup Bob **probes** the
 endpoint (`bob_core.capability_probe`) and degrades with a clear message if it is unreachable,
 rather than assuming a particular provisioner ran.
 
@@ -66,20 +72,24 @@ short version:
 
 | OS | Status | Package managers |
 |----|--------|------------------|
-| **Linux** (glibc) | gated on the CPU tier every PR; NVIDIA CUDA proven in the release-tag GPU tier | `apt`, `dnf`, `pacman`, `zypper`, plus **`rpm-ostree`** for atomic Fedora (Bazzite/Silverblue) |
-| **Windows 11** | gated on the CPU tier every PR; NVIDIA CUDA proven in the release-tag GPU tier | `scoop` shim for the `bob` command; toolchain via `install_prereqs.bat` |
+| **Linux** (glibc) | gated on the CPU tier every PR; NVIDIA CUDA verified by hand at release time | `apt`, `dnf`, `pacman`, `zypper`, plus **`rpm-ostree`** for atomic Fedora (Bazzite/Silverblue) |
+| **Windows 11** | gated on the CPU tier every PR; NVIDIA CUDA built and published, not yet run on Windows GPU hardware | `scoop` shim for the `bob` command; Python 3.12 + uv via `install_prereqs.bat` (VS2022, cmake, Go and CUDA only for `--from-source`) |
 | **macOS** | not yet | n/a |
 | **AMD / ROCm** | not yet | n/a |
-| **arm64 Linux** | runs, but no prebuilt engine is published: it compiles llama.cpp on install | as Linux above |
+| **arm64 Linux** | runs, but no prebuilt engine is published: it compiles llama.cpp automatically on install (the prereq step installs the compiler and cmake for it), while llama-swap comes from its pinned arm64 release | as Linux above |
 
 Bob says both gaps out loud at install time rather than leaving them to be inferred from a long build:
 `lifecycle.unbuilt_target_notice` names an unbuilt CPU architecture and a non-NVIDIA GPU, and
 `bob diagnose` repeats it on the `Target` row.
 
 Package installation goes through `osenv` (`PACKAGE_MAP` / `resolve_package_*` / `install_package`),
-which selects the right manager for the host. The driver-only prebuilt engine runs across distros,
-including atomic Fedora, with no CUDA toolkit; a `--from-source` GPU build on an atomic host uses a
-Fedora **distrobox**.
+which selects the right manager for the host. The default install needs only git, curl and Python:
+the compiler, cmake and ninja only for a source build (or a platform with no prebuilt), Go only when
+llama-swap is built from source, Node only with `--with-node`. The driver-only prebuilt engine runs
+across distros, including atomic Fedora, with no CUDA toolkit. On an atomic host the prereq step layers
+only what the image lacks, which on the prebuilt path is usually nothing (no transaction, no reboot); a
+source build layers the toolchain and needs a reboot, or runs inside a Fedora **distrobox**, which is
+the recommended route for a `--from-source` GPU build.
 
 ## Cold-start provisioner
 
@@ -87,15 +97,18 @@ Fedora **distrobox**.
 venvs exist):
 
 ```
-python -m bob.kernel prereqs [--cpu]     # Tier 0, toolchain + a venv-compatible Python
+python -m bob.kernel prereqs [--cpu] [--from-source] [--with-node]   # Tier 0, packages + a venv-compatible Python
 python -m bob.kernel setup [flags]       # Tier 1, the fresh-machine orchestrator
 python -m bob.kernel bootstrap [flags]   #          submodules -> build -> venvs -> gen -> fetch
 python -m bob.kernel venv <name...>      #          create tools/venv-<name>
-python -m bob.kernel build-swap          #          build the llama-swap proxy (Go)
+python -m bob.kernel build-swap          #          install llama-swap (pinned release; --from-source builds with Go)
+python -m bob.kernel aider-setup         #          opt-in aider venv + config
 ```
 
 Flags (kebab-case, identical on both OSes): `--skip-models`, `--skip-build`, `--skip-voice`,
-`--launch`, `--with-webui`, `--cpu`, `--from-source`, `--profile <name>`. `setup` needs no root; only
+`--launch`, `--with-webui`, `--with-aider`, `--with-fabric`, `--cpu`, `--from-source`, `--profile <name>`.
+Setup never replaces a profile you chose; it only suggests one that fits the detected VRAM. Every venv
+installs from its `.lock` file on every OS. `setup` needs no root; only
 Tier 0 prerequisites use one batched `sudo` (Linux). This page is the "how the pieces fit" reference;
 **[SETUP.md](SETUP.md) is the "how to install" guide, and [MANUAL-INSTALL.md](MANUAL-INSTALL.md) is
 the step-by-step for advanced users.**
@@ -112,7 +125,8 @@ release a checkout is on, SHA-verifies the download, and uses a prebuilt only wh
 pinned submodule commit, so it is never a different version than a source build. CI attaches build
 provenance to each engine (verify with `gh attestation verify`). Keeping binary delivery out of the lock
 means the lock never churns as platforms or engines are added. `bob doctor` reports drift, `bob version`
-reports the release, and `bob update` moves between releases (a fast prebuilt swap where available) and
-rolls the build output back on a failed upgrade.
+reports the release, and `bob update` moves between releases (a fast prebuilt swap where available,
+with the new files swapped in atomically) and rolls the build output back on any error. `bob update`
+never rewrites `versions.lock`; `bob lock` does, deliberately.
 
 macOS/Metal and AMD/ROCm remain non-goals for now; `scripts/osenv.py` is where they slot in.

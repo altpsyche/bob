@@ -110,5 +110,31 @@ class TestFileTool(unittest.TestCase):
         self.assertEqual(file._file_read("normal.txt"), "hello")
 
 
+class TestFileWriteMarkers(unittest.TestCase):
+    """file_write changes the working tree, so it is mutating (permissions, parallel batch) and declares
+    the file it touches (checkpoint/rewind)."""
+
+    def test_file_write_declared_mutating(self):
+        self.assertIn("file_write", file.MUTATING_TOOLS)
+        self.assertNotIn("file_read", file.MUTATING_TOOLS)
+        self.assertNotIn("file_list", file.MUTATING_TOOLS)
+
+    def test_file_write_affects_its_target(self):
+        d = Path(tempfile.mkdtemp(prefix="bob-fw-"))
+        try:
+            file.configure({"agent": {"allowedWritePaths": [str(d)]}})
+            self.assertEqual(file.AFFECTS["file_write"]({"path": "sub/x.txt", "content": ""}),
+                             [d / "sub" / "x.txt"])
+            self.assertEqual(file.AFFECTS["file_write"]({}), [])     # malformed args: nothing to snapshot
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_registry_marks_file_write_mutating(self):
+        from tool_registry import ToolRegistry
+        reg = ToolRegistry.build(_common.fake_config(), set(), quiet=True)
+        self.assertIn("file_write", reg.mutating_tools)
+        self.assertIn("file_write", reg.affects)
+
+
 if __name__ == "__main__":
     unittest.main()

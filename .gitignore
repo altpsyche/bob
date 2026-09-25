@@ -1,4 +1,4 @@
-# Built artifacts (reproduced by scripts/build-*.ps1)
+# Built artifacts (reproduced by `bob build` / setup)
 /bin/
 
 # Bob memory database (personal data, never commit)
@@ -10,21 +10,21 @@
 /tools/venv-litellm/
 /tools/venv-eval/
 
-# Pinned cmake 3.x fetched by Get-LinuxCmake3 when the distro ships only cmake 4.x (Arch/rolling)
+# Pinned cmake fetched by osenv.linux_cmake3 when the distro cmake is outside osenv.CMAKE_RANGE (rolling distros)
 /tools/cmake-*/
 
 # Open WebUI runtime state (db, uploads, secret key)
 /tools/webui-data/
 .webui_secret_key
 
-# Models (multi-GB, reproduced by scripts/fetch-models.ps1 from config/models.psd1)
+# Models (multi-GB, reproduced by `bob fetch` from config/models.json)
 /models/*.gguf
 /models/*.part
 /models/.hf-cache/
 /models/whisper/
 /models/faster-whisper/
 
-# Phase 2 voice assets (reproduced by scripts/setup-voice.ps1)
+# Voice assets (reproduced by `bob setup-voice`)
 /bin/voices/
 /bin/espeak-ng-data/
 
@@ -34,15 +34,16 @@
 /config/litellm.yaml
 /config/continue/config.yaml
 /config/dsh/
+/config/aider/
 
 # llama.cpp build dir (inside submodule; not tracked by parent anyway)
 /external/llama.cpp/build/
 
 # User-local config overrides (gitignored so git pull never clobbers tuning)
-/config/user.psd1
 /config/user.json
+/config/user.toml
 
-# Docker service data volumes and generated env (reproduced by scripts/setup-docker.ps1)
+# Service data volumes and the generated compose env (reproduced by `bob services <name> start`)
 /tools/langfuse-data/
 /tools/n8n-data/
 /tools/searxng-data/

@@ -114,7 +114,7 @@ def plugins_view(theme, plugins_dir: Path = None):
     for sub in sorted(d.iterdir()):
         if not sub.is_dir():
             continue
-        if not ((sub / "invoke.py").exists() or (sub / "invoke.ps1").exists()):
+        if not (sub / "invoke.py").exists():
             continue
         desc_file = sub / "description.txt"
         desc = desc_file.read_text(encoding="utf-8").strip().splitlines()[0] if desc_file.exists() else ""

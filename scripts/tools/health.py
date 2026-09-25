@@ -1,8 +1,7 @@
 """Bob health / diagnostics capabilities — the read-only pre-flight verbs.
 
 Functional grouping: one module, several related tool fns, each reached three ways (agent tool /
-`bob <verb>` / `bob --run`) with no duplicated logic. Ports the former setup(check)/doctor/version/
-diagnose cases + the health-check core.
+`bob <verb>` / `bob --run`) with no duplicated logic.
 
   health_check(config, doctor=False)  <- `bob setup check` (deps/registration) and `bob doctor` (+runtime)
   version_info(config)                <- `bob version`  (Bob release + binary/submodule versions)
@@ -12,10 +11,9 @@ diagnose cases + the health-check core.
 topology, mlock privilege, and the Linux package manager — via the build-time osenv seams
 (osenv.best_cuda_root / system_ram_gb / numa_node_count / mlock_status / linux_package_manager).
 
-Two rows that used to degrade are now wired: the BobAgent scheduled-task check reads
-osenv.agent_task_status() (the scheduler quartet), and doctor's versions.lock reproducibility
-section reads bob.versions.check_reproducibility(). A missing lock or an unregistered task is
-reported as informational (both are opt-in), not a failure."""
+The BobAgent scheduled-task check reads osenv.agent_task_status() (the scheduler quartet), and doctor's
+versions.lock reproducibility section reads bob.versions.check_reproducibility(). A missing lock or an
+unregistered task is reported as informational (both are opt-in), not a failure."""
 import sys
 from pathlib import Path
 
@@ -26,7 +24,6 @@ SCRIPTS = REPO / "scripts"
 
 _OK, _BAD, _PENDING = "✓", "✗", "○"  # check, cross, hollow circle (pending/deferred)
 _SIZE_TOL_PCT = 0.10  # ±10% GGUF size tolerance
-_DIAG_ROLES = ["ponder", "coder", "chat", "fim", "embed"]
 
 
 def configure(config: dict) -> None:
@@ -58,6 +55,44 @@ def _has_module(venv_py: Path, module: str) -> bool:
         return r.stdout.strip() == "ok"
     except (OSError, subprocess.SubprocessError):
         return False
+
+
+def _diag_roles() -> list:
+    """The canonical role order diagnose walks (bob_models.ROLE_ORDER)."""
+    from bob_models import ROLE_ORDER
+    return list(ROLE_ORDER)
+
+
+def _last_flag(flags, names):
+    """The value after the LAST occurrence of any of `names` in a llama-server flag list (later flags win,
+    exactly as llama-server parses them), or None."""
+    flags = [str(f) for f in (flags or [])]
+    val = None
+    for i, f in enumerate(flags[:-1]):
+        if f in names:
+            val = flags[i + 1]
+    return val
+
+
+def rerank_batch_issues(roles: dict, defaults: dict) -> list:
+    """One line per reranking model whose physical (-ub) or logical (-b) batch is smaller than its context.
+    llama.cpp's /v1/rerank must fit the whole query+document pair into a single ubatch, so such a model
+    rejects any input longer than -ub tokens even though -c promises more. Effective values follow the
+    generator: the model's own flags, else the profile defaults (ubatch/batch), else llama.cpp's 512/2048."""
+    out = []
+    for role, spec in sorted((roles or {}).items()):
+        if not spec.get("reranking") or spec.get("_aliasOf"):
+            continue
+        try:
+            ctx = int(spec.get("ctx") or 0)
+            ub = int(_last_flag(spec.get("flags"), ("-ub", "--ubatch-size")) or defaults.get("ubatch") or 512)
+            b = int(_last_flag(spec.get("flags"), ("-b", "--batch-size")) or defaults.get("batch") or 2048)
+        except (TypeError, ValueError):
+            continue
+        if ctx and (ub < ctx or b < ctx):
+            out.append(f"{role}: -ub {ub} / -b {b} < ctx {ctx}, so rerank inputs over {min(ub, b)} tokens fail; "
+                       f"set -ub and -b to at least {ctx} in its flags (config/models.json), then bob gen")
+    return out
 
 
 def _tool_load_errors() -> list:
@@ -200,21 +235,55 @@ def health_check(config: dict, doctor: bool = False) -> str:
         import bob_memory
         from bob_core import _get_db_path
 
-        stale = []
-        for label, path in (("memory", Path(_get_db_path(config))),
-                            ("code index", REPO / "data" / "code.db")):
-            n = bob_memory.stale_vector_count(path)
-            if n:
-                stale.append(f"{n} in {label}")
-        if stale:
+        fixes = []
+        n_mem = bob_memory.stale_vector_count(Path(_get_db_path(config)))
+        if n_mem:
+            fixes.append(f"{n_mem} in memory (run: bob memory migrate --reembed)")
+        n_code = bob_memory.stale_vector_count(REPO / "data" / "code.db")
+        if n_code:
+            fixes.append(f"{n_code} in the code index (run: bob code index --rebuild)")
+        if fixes:
             check("Memory vectors match the active embed model", False,
-                  f"{', '.join(stale)} from an older embed model; run: bob memory migrate --reembed")
+                  f"from an older embed model: {'; '.join(fixes)}")
         else:
             check("Memory vectors match the active embed model", True)
     except Exception as e:  # noqa: BLE001 — advisory: never fail the pre-flight over this
         check("Memory vectors match the active embed model", False, f"check failed: {e}")
 
+    # Semantic memory needs an embed model in the active profile; without one, recall silently degrades to
+    # keyword-only. bob_memory.semantic_available is the memory layer's own answer, read defensively.
+    try:
+        import bob_memory
+        probe = getattr(bob_memory, "semantic_available", None)
+        mem = (config.get("memory") or {}) if isinstance(config, dict) else {}
+        if probe is not None and mem.get("enabled", True):
+            check("Semantic memory has an embed model", bool(probe(config)),
+                  "the active profile has no embed role, so recall is keyword-only; switch to a profile "
+                  "with one (bob profile auto) or add an embed role in config/models.json")
+    except Exception as e:  # noqa: BLE001 — advisory
+        check("Semantic memory has an embed model", False, f"check failed: {e}")
+
+    # Rerankers whose batch is smaller than their context reject long inputs (see rerank_batch_issues).
+    try:
+        import bob_models
+        mcfg = bob_models.load_models_config()
+        issues = rerank_batch_issues(bob_models.profile_roles(config=mcfg), mcfg.get("defaults", {}) or {})
+        check("Reranker batch covers its context", not issues, issues[0] if len(issues) == 1 else
+              "; ".join(issues))
+    except Exception as e:  # noqa: BLE001 — advisory
+        check("Reranker batch covers its context", False, f"check failed: {e}")
+
     check("config/litellm.yaml exists", (REPO / "config" / "litellm.yaml").exists(), "bob gen")
+
+    # Generated client configs carry the LiteLLM key; one written for another key (an upgrade from the
+    # fixed key, a rotated secret) makes that client 401. Every stack start regenerates them; this names it.
+    try:
+        import generate
+        stale = generate.stale_key_files(config)
+        check("Generated configs carry the current LiteLLM key", not stale,
+              f"{', '.join(stale)} carry an outdated key; run: bob gen (then bob restart)")
+    except Exception as e:  # noqa: BLE001 (advisory)
+        check("Generated configs carry the current LiteLLM key", False, f"check failed: {e}")
 
     if doctor:
         lines.append("  ── runtime ──")
@@ -282,8 +351,8 @@ def _pid() -> int:
 # --- version --------------------------------------------------------------------------------------
 
 def version_info(config: dict) -> str:
-    """Bob release (VERSION + versions.lock release) + binary versions + submodule commits. Port of the
-    `version` case. Binary paths via the osenv seam (.exe only on Windows)."""
+    """Bob release (VERSION + versions.lock release) + binary versions + submodule commits. Binary paths
+    via the osenv seam (.exe only on Windows)."""
     import subprocess
 
     import osenv
@@ -498,7 +567,8 @@ def diagnose(config: dict) -> str:
     mdir = REPO / "models"
     present = total = 0
     bad = []
-    for role in _DIAG_ROLES:
+    diag_roles = _diag_roles()
+    for role in diag_roles:
         spec = roles.get(role)
         if not spec:
             continue
@@ -534,7 +604,7 @@ def diagnose(config: dict) -> str:
         except (OSError, ValueError):
             manifest = {}
     m_covered = m_total = 0
-    for role in _DIAG_ROLES:
+    for role in diag_roles:
         spec = roles.get(role)
         if not spec or not (mdir / spec.get("gguf", "")).exists():
             continue

@@ -1,26 +1,25 @@
 {
-  "_doc": "Copy this file to config/user.json (gitignored) to override defaults per-machine. Deep-merged over config/models.json (defaults/profiles/prompts/peers) and over config/defaults.json.runtime. Re-run `bob gen` after editing; changes take effect on next `bob serve`. See config/models.json's defaults block for every tunable knob (ngl, kvQuantK/V, batch, ubatch, parallel, noMmap, mlockBig, numa, ...).",
+  "_doc": "Copy this file to config/user.json (gitignored) to override settings on this machine. Every key is real and every value here is the shipped default, so a verbatim copy changes nothing: edit the ones you want and delete the rest. Overrides sit at the TOP LEVEL, deep-merged over two sources. Runtime knobs (agent, memory, vision, voice, persona, bindHost, voiceBindHost, langfuseEnabled, n8nTimezone, litellmKey) come from config/defaults.json 'runtime', named here without the 'runtime' prefix. Model knobs (defaults, profiles, prompts, peers) come from config/models.json; its 'defaults' block lists every server knob (ngl, kvQuantK/V, batch, ubatch, parallel, noMmap, mlockBig, numa, threads). Run `bob gen` after editing, then `bob restart`. bindHost 0.0.0.0 opens the LiteLLM proxy, Open WebUI, n8n and the Docker services to the LAN: the proxy checks the LiteLLM key, the others rely on their own logins. The voice servers (speech-to-text, text-to-speech) have no authentication, so they stay on loopback unless voiceBindHost is set as well; llama-swap is always loopback-only.",
 
-  "defaults": {
-    "_example_ngl": 80,
-    "_example_kvQuantK": "q5_1",
-    "_example_kvQuantV": "q4_0",
-    "_example_langfuseEnabled": true
-  },
+  "bindHost": "127.0.0.1",
+  "voiceBindHost": "127.0.0.1",
+  "langfuseEnabled": false,
+  "n8nTimezone": "UTC",
+
+  "agent": { "maxSteps": 10, "defaultOwner": "local", "mcpEnabled": false, "mcpTransport": "stdio" },
+  "memory": { "recallK": 5 },
+
+  "defaults": { "ngl": 99, "kvQuantK": "q8_0", "kvQuantV": "q8_0" },
 
   "profiles": {
-    "_example_16gb": { "ponder": { "ctx": 8192 } }
+    "16gb": { "fim": { "ctx": 8192 } }
   },
 
   "prompts": {
-    "_example_chat": "Be concise."
+    "chat": "Be concise."
   },
 
   "peers": {
-    "_example_deepseek": { "pro": { "coder": { "model": "deepseek-v4-flash", "maxOutputTokens": 65536 } } }
-  },
-
-  "bob": {
-    "_example_agent": { "defaultOwner": "you" }
+    "zhipu": { "enabled": false }
   }
 }

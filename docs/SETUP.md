@@ -23,7 +23,8 @@ One command per OS. Only **git** is needed up front (the installer installs it t
 downloads a **prebuilt, driver-only inference engine** (no CUDA toolkit, nothing to compile) and verifies
 it against [`versions.lock`](../versions.lock). Add `--cpu` on a GPU-less box, or `--from-source` to build
 the engine from source instead. Fresh installs track the **stable** channel (the latest release); pass
-`--dev` to track the latest `main`.
+`--dev` (or `--channel latest`) to the installer to track the latest `main`. Those two are installer
+flags; every other flag passes through to setup.
 
 <table>
 <tr><th>Linux (glibc; apt/dnf/pacman/zypper; atomic Fedora via rpm-ostree)</th><th>Windows 11 (NVIDIA)</th></tr>
@@ -50,7 +51,7 @@ The command ensures git, clones with submodules into `~/bob` (Windows `%USERPROF
 fast-forwards an existing clone, runs the prereq step, runs setup, then runs
 `python -m bob.kernel verify-install` (checks installed submodules + model SHAs against
 [`versions.lock`](../versions.lock)). It is **idempotent**: re-run it any time and completed steps are
-skipped. macOS is out of scope until 2.0.
+skipped. macOS is not supported yet.
 
 (`https://get.bob.sh/install.sh` and `https://get.bob.sh/install.ps1` are the planned short URLs once
 the domain fronts these files; use the `raw.githubusercontent.com` URLs above today.)
@@ -71,7 +72,7 @@ package manager.)
 ```bash
 git clone --recurse-submodules https://github.com/altpsyche/bob.git ~/bob
 cd ~/bob
-./install_prereqs.sh       # python3, go, node, cmake (add --from-source to also install the CUDA toolkit)
+./install_prereqs.sh       # git, curl, python3 (+ --from-source: compiler, cmake, ninja, Go, CUDA toolkit; + --with-node: Node.js)
 ./setup.sh                 # engine, venvs, models, wire clients
 bob                        # inference auto-starts; or `bob chat "hi"`
 ```
@@ -84,7 +85,7 @@ Provide first: **Git** and **Python 3.12** (`winget install Python.Python.3.12`)
 ```bat
 git clone --recurse-submodules https://github.com/altpsyche/bob.git C:\bob
 cd C:\bob
-install_prereqs.bat        :: Node, uv, Go, CUDA, cmake
+install_prereqs.bat        :: uv + Python 3.12 (+ --from-source: cmake, Go, CUDA; + --with-node: Node.js)
 setup.bat                  :: build, venvs, models, wire clients
 bob                        :: inference auto-starts
 ```
@@ -98,11 +99,14 @@ fails partway, fix it and re-run; completed steps are skipped. Common flags (sam
 
 - `--skip-models`: set up + configure but skip the model downloads
 - `--skip-build`: skip provisioning the engine (use an existing `bin/`)
-- `--skip-voice`: skip the voice + vision step (whisper + model downloads)
+- `--skip-voice`: skip the voice step (faster-whisper model, piper voice, audio deps)
 - `--profile 12gb` / `--profile cpu`: pick a model profile before downloading anything
 - `--cpu`: the CPU tier (no GPU engine)
-- `--from-source`: build the engine from source (installs the CUDA toolkit) instead of using the prebuilt. Also the way to get NCCL back: the published prebuilt is built without it, since it only speeds up multi-GPU boxes and costs every downloader ~350 MB
+- `--from-source`: build the engine and llama-swap from source instead of using the prebuilts (the prereq step then installs the compiler, cmake, Go and, on a GPU box, the CUDA toolkit). Also the way to get NCCL back: the published prebuilt is built without it, since it only speeds up multi-GPU boxes and costs every downloader ~350 MB
 - `--with-webui`: also build the Open WebUI venv (opt-in; multi-GB torch/transformers)
+- `--with-aider`: also install aider and generate its config (opt-in; later: `bob aider-setup`)
+- `--with-fabric`: also build fabric and point it at the local endpoint (opt-in, needs Go; later: `bob fabric-setup`)
+- `--with-node` (prereq step and one-command installer only): also install Node.js, which n8n and Continue's npx MCP servers need
 - `--launch`: start the stack when setup finishes
 
 `setup` needs **no root**: only `install_prereqs` (system packages) uses sudo. After setup, open a new
@@ -115,23 +119,32 @@ the `cpu` tier automatically. Verify with `bob doctor` (see [Verifying the insta
 `setup` runs `python -m bob.kernel setup`, which imports the same capability functions the agent and
 `bob --run` use (one code path), running these steps in order:
 
-0. **Diagnose**: a machine summary (GPU, VRAM, RAM, CUDA, NUMA topology, mlock privilege, active profile, model files) before anything is installed. Run `bob diagnose` at any time to see the same report.
-1. `git submodule update --init --recursive` fetches the llama.cpp and llama-swap source trees.
-2. **Provision the engine** (`lifecycle.ensure_engine`), the single decision point shared by setup, `bob build`, and `bob update`: it downloads the prebuilt, driver-only engine (a `.tar.xz` whose size it announces before the download starts) and SHA256-verifies it against the release manifest, or builds from source on the CPU tier / with `--from-source` / when no matching prebuilt exists, writing the binaries to `bin/`. It also says up front what this machine will *not* get: arm64 Linux has no prebuilt and compiles instead, and an AMD or Intel GPU gets no acceleration, because the GPU tier is NVIDIA CUDA only. If a downloaded engine cannot run on the host it falls back to a source build automatically, so a machine is never left without a working engine. Skips if the binary already exists (`bob build --force` to re-provision). `bob update` snapshots `bin/` before a change and rolls back automatically if the new engine fails to verify.
-3. **Build llama-swap**: the model-swap proxy (Go).
-4. **Python venvs**: `tools/venv-aider` and `tools/venv-litellm` (plus `tools/venv-webui` with `--with-webui`) are created via `osenv.new_bob_venv` and their deps installed. Kept separate on purpose, their pins conflict. (`venv-eval` is provisioned lazily by `bob eval`.)
-5. **Generate configs** (`generate.gen_all`), writes `config/llama-swap.yaml` + `config/litellm.yaml` from `config/models.json`. Never edit them by hand; both are regenerated on every `bob up`/`serve`.
-6. **Fetch models** (`provision.fetch_models`), downloads the active profile's GGUFs (resume + SHA256-verify vs `versions.lock`).
-7. **Wire clients**: symlinks `config/continue/config.yaml` to `~/.continue/config.yaml` and checks VS Code extension status.
-8. **fabric**: builds the fabric CLI (Go) and points it at the local endpoint.
+1. **System check**: a machine summary (GPU, VRAM, RAM, CUDA, NUMA topology, mlock privilege, active profile, model files) before anything is installed. Run `bob diagnose` at any time to see the same report.
+2. **Core tooling**: checks git (and, on Windows, scoop for the `bob` shim).
+3. **Prerequisite check**: Python 3.12 (Windows: uv). Node.js and Go are reported when missing but never stop setup; each only gates a feature.
+4. **C++ toolchain**: required only when this run compiles llama.cpp (`--from-source`, or no prebuilt fits the host). A driver-only prebuilt needs no compiler.
+5. **cmake**: provisions a cmake inside the range llama.cpp accepts, again only for a source build.
+6. **Bootstrap**:
+   - **Profile**: `--profile` wins. Otherwise setup auto-selects from detected VRAM only on a machine where no profile was ever chosen; once one was, a re-run prints the suggestion and keeps yours.
+   - `git submodule update --init --recursive` fetches the llama.cpp and llama-swap source trees.
+   - **Provision the engine** (`lifecycle.ensure_engine`), the single decision point shared by setup, `bob build`, and `bob update`: it downloads the prebuilt, driver-only engine (a `.tar.xz` whose size it announces before the download starts) and SHA256-verifies it against the release manifest, or builds from source on the CPU tier / with `--from-source` / when no matching prebuilt exists, writing the binaries to `bin/`. It also says up front what this machine will *not* get: arm64 Linux has no prebuilt and compiles instead, and an AMD or Intel GPU gets no acceleration, because the GPU tier is NVIDIA CUDA only. If a downloaded engine cannot run on the host it falls back to a source build automatically, so a machine is never left without a working engine. Skips if the binary already exists (`bob build --force` to re-provision). `bob update` snapshots `bin/` before a change and rolls back automatically if the new engine fails to verify.
+   - **llama-swap**: installs the pinned, SHA-verified release binary for this OS and CPU (x86_64 and arm64). Go builds it only with `--from-source` or when no release is pinned for the platform.
+   - **Python venvs**: `tools/venv-litellm` (plus `tools/venv-webui` with `--with-webui` and `tools/venv-aider` with `--with-aider`) are created via `osenv.new_bob_venv` and installed from their `.lock` files on every OS. Kept separate on purpose, their pins conflict. (`venv-eval` is provisioned lazily by `bob eval`.)
+   - **LiteLLM key**: generated once (`sk-bob-...`) into `data/secrets.json` before any client config is written, so every generated file carries the same key.
+   - **Generate configs** (`generate.gen_all`): writes `config/llama-swap.yaml`, `config/litellm.yaml` and the client configs from `config/models.json`. Never edit them by hand; they are regenerated on every `bob up`/`serve`.
+   - **Fetch models** (`provision.fetch_models`): downloads the active profile's GGUFs (resume + SHA256-verify vs `versions.lock`).
+7. **Wire clients**: symlinks `config/continue/config.yaml` to `~/.continue/config.yaml`, merges the DeepSeek Harness drop-ins when dsh is installed, and (with `--with-aider`) installs aider. aider runs with `--config config/aider/.aider.conf.yml`, so nothing is written to `~/.aider.conf.yml`.
+8. **fabric** (opt-in, `--with-fabric`): builds the fabric CLI (Go) and points it at the local endpoint. Skipped otherwise.
 9. **Install the `bob` CLI**: symlinks `./bob` into `~/.local/bin` (POSIX) or a `bob.cmd` shim into scoop\shims (Windows).
-10. **Memory lock:** reports the mlock privilege status. On Linux it prints the `ulimit`/`limits.conf` guidance (mlock is an rlimit, not a grantable privilege); on Windows, if `mlockBig` is enabled in `config/user.json` it grants `SeLockMemoryPrivilege` (UAC). Open a new terminal afterward for it to take effect.
-11. **Optional services:** prints the opt-in service info (n8n, SearXNG, Langfuse) and installs nothing. A default install is 100% Docker-free; services start on demand, not at setup. See [Optional services](#optional-services).
-12. **Onboarding**: a first-run profile prompt (name / work / optional DeepSeek key) when `config/user.json` has no `bob` section; skipped on a non-interactive run.
+10. **Voice**: the faster-whisper STT model, the piper binary and voice, and the audio Python deps (plus the CUDA-12 cuBLAS/cuDNN wheels on an NVIDIA box, so STT runs on the GPU; it falls back to CPU int8 without them).
+11. **Memory lock:** reports the mlock privilege status. On Linux it prints the `ulimit`/`limits.conf` guidance (mlock is an rlimit, not a grantable privilege); on Windows, `bob mlock --grant` grants `SeLockMemoryPrivilege` (UAC) if you enable `mlockBig`.
+12. **Optional services:** prints the opt-in service and tool info (n8n, SearXNG, Langfuse, `bob aider-setup`, `bob fabric-setup`) and installs nothing. A default install is 100% Docker-free; services start on demand, not at setup. See [Optional services](#optional-services).
+
+Setup then runs **onboarding**, a first-run profile prompt (name / work / optional DeepSeek key), when memory holds no profile yet; it is skipped on a non-interactive run.
 
 After setup, run `bob agent install` once to register the recurring background-agent runner (Linux cron / Windows Scheduled Task); it is separate from setup because it references the final install location. `bob agent status` confirms it.
 
-To pin llama.cpp to a specific commit or bump to a newer version, see [MANUAL-INSTALL.md § 4](MANUAL-INSTALL.md#4-build-llamacpp) and [TUNING.md](TUNING.md#bumping-the-llamacpp-submodule).
+To pin llama.cpp to a specific commit or bump to a newer version, see [MANUAL-INSTALL.md § 4](MANUAL-INSTALL.md#4-build-llamacpp) and [TUNING.md](TUNING.md#updating-the-llamacpp-engine).
 
 ## Optional services
 
@@ -145,7 +158,7 @@ up.
 |---|---|---|---|---|
 | **n8n** | 5678 | Native (Node) | Visual workflow automation (like Zapier, local): chains bob calls, webhooks, and APIs | Automate tasks without scripts: summarize PRs on open, generate commit messages, run daily digests |
 | **SearXNG** | 8888 | Docker | Self-hosted meta-search (queries Google/Bing without sending your searches to the cloud) | Backs the `searxng-search` MCP so Continue.dev `@web` gets self-hosted search results |
-| **Langfuse** | 3001 | Docker | bob observability: every prompt, completion, latency, and token count in a dashboard (plus its own Postgres) | Debug unexpected model output; compare quant levels; trace exactly what aider/Cline sends |
+| **Langfuse** | 3001 | Docker | bob observability: every prompt, completion, latency, and token count in a dashboard (Langfuse v3: web + worker, with Postgres, ClickHouse, Redis and MinIO) | Debug unexpected model output; compare quant levels; trace exactly what aider/Cline sends |
 
 Web search for the agent and CLI needs **none** of these: the default in-process `ddgs` metasearch
 provider (pure Python, no service, no daemon, no Docker) works identically on every OS out of the box.
@@ -165,7 +178,8 @@ bob services searxng start    # Docker; guided Docker install if missing
 bob services langfuse start   # Docker; guided Docker install if missing
 ```
 
-> **If you opt into a Docker service on Windows:** if Docker Desktop was just installed, log out and back
+> **If you opt into a Docker service on Windows:** Docker Desktop is not part of the prereq step; the
+> first `bob services searxng|langfuse start` installs it. If Docker Desktop was just installed, log out and back
 > in first. Then in Docker Desktop → Settings → General → uncheck **"Use containerd for pulling and
 > storing images"** → Apply & Restart. Left on, SearXNG fails with `exec /bin/sh: exec format error`.
 > Only needs changing once.
@@ -178,17 +192,17 @@ bob services status
 URLs once a service is up:
 - n8n: http://localhost:5678
 - SearXNG: http://localhost:8888
-- Langfuse: http://localhost:3001 (login: `admin@local.dev` / `admin123`)
+- Langfuse: http://localhost:3001 (login: `admin@local.dev`; the password is the generated `langfuseAdminPassword` entry in `data/secrets.json`, and `bob services langfuse start` prints where to find it)
 
 Day-to-day management: `bob services status|start|stop|logs`, or per-service `bob services <name> start`.
 
-For a detailed walkthrough of what the Docker-backed services do internally, plus troubleshooting, see [MANUAL-INSTALL.md § Docker services](MANUAL-INSTALL.md#12-docker-services).
+For a detailed walkthrough of what the Docker-backed services do internally, plus troubleshooting, see [MANUAL-INSTALL.md § Optional add-on services](MANUAL-INSTALL.md#13-optional-add-on-services-langfuse-searxng-n8n).
 
 ## Verifying the install
 
 ```bash
 bob up                    # starts llama-swap (:8080) + LiteLLM proxy (:8081)  (+ Open WebUI :3000 if set up with --with-webui)
-bob models                # should list: ponder, coder, chat, fim, embed, vision, agent
+bob models                # should list the active profile's roles (16gb: chat, coder, ponder, writer, agent, vision, fim, embed, rerank)
 bob bench                 # performance check (see expected numbers below)
 bob chat coder "hi"       # end-to-end sanity check (routes via :8081 LiteLLM proxy)
 bob diagnose              # re-run hardware summary at any time; flags any unresolved issues
@@ -197,13 +211,13 @@ bob version          # the installed release + component versions (llama-swap, l
 bob plugins list     # should show: summarise, draft, search, play (built-in plugins)
 ```
 
-**Agent system:** `bob doctor` (superset of `bob setup check`) validates all agent dependencies (the Hermes 3 model file, tool loading, scheduled task registration) plus a runtime pre-flight (endpoint, GPU/VRAM, writable `logs/`+`data/`, `config.json` parses) and a **reproducibility** block (installed submodule commits + present-model checksums vs [`versions.lock`](../versions.lock)). On any failure it prints the exact fix command. Run `bob setup check` (or `bob doctor --quick`) for just the dependency subset.
+**Agent system:** `bob doctor` (superset of `bob setup check`) validates all agent dependencies (the active profile's agent model file, tool loading, scheduled task registration, memory vectors against the embed model, the reranker batch size) plus a runtime pre-flight (endpoint, GPU/VRAM, writable `logs/`+`data/`, config resolves from `config/defaults.json` + `config/user.json`) and a **reproducibility** block (installed submodule commits + present-model checksums vs [`versions.lock`](../versions.lock)). On any failure it prints the exact fix command. Run `bob setup check` (or `bob doctor --quick`) for just the dependency subset.
 
-**Pro models** (optional): set `DEEPSEEK_API_KEY`, then run `bob gen`. The pro models (`chat-pro`, `ponder-pro`, `coder-pro`) become available via the LiteLLM proxy at `:8081`. GLM-5.2 (`ZHIPU_API_KEY`, z.ai) and Kimi K2.7 Code (`MOONSHOT_API_KEY`) are opt-in coding-peer alternatives (enable one in `config/models.json`, set its key, `bob gen`). See [USAGE.md § Pro models](USAGE.md#pro-models-api-backed-no-platform-fee).
+**Pro models** (optional): set `DEEPSEEK_API_KEY`, then run `bob gen`. The pro models (`chat-pro`, `ponder-pro`, `coder-pro`) become available via the LiteLLM proxy at `:8081`. GLM-5.3 (`ZHIPU_API_KEY`, z.ai) and Kimi K3 (`MOONSHOT_API_KEY`) are opt-in coding-peer alternatives (enable one in `config/models.json`, set its key, `bob gen`). See [USAGE.md § Pro models](USAGE.md#pro-models-api-backed-no-platform-fee).
 
-**Voice and Vision (Phase 2):** included in `setup` automatically (builds whisper, downloads the STT model, piper TTS, and vision mmproj). To skip: `./setup.sh --skip-voice`. See [USAGE.md § Voice](USAGE.md#voice-phase-2) and [USAGE.md § Vision](USAGE.md#vision-phase-2).
+**Voice and Vision:** voice is included in `setup` automatically (the faster-whisper STT model, piper TTS, audio deps); the vision model and its projector download with the profile's models. To skip voice: `./setup.sh --skip-voice`. See [USAGE.md § Voice](USAGE.md#voice) and [USAGE.md § Vision](USAGE.md#vision).
 
-**Memory lock** is handled automatically during setup (step 10). If you enable `mlockBig: true` in `config/user.json` after setup, run `bob mlock` to grant `SeLockMemoryPrivilege` and restart your terminal.
+**Memory lock** status is reported during setup (step 11). If you enable `mlockBig: true` in `config/user.json`, run `bob mlock --grant` (Windows: grants `SeLockMemoryPrivilege`; Linux: prints the memlock guidance) and restart your terminal. `bob mlock` alone only reports the status.
 
 On an RTX 5080 with the default coder model, expect **pp512 ≈ 4600 t/s, tg128 ≈ 89 t/s**, confirming the engine is on the fast Blackwell hardware path. Ada and Ampere cards show lower numbers; what matters is that prefill is not disproportionately slow relative to generation (see [TUNING.md](TUNING.md#verifying-the-fast-path)).
 

@@ -61,9 +61,13 @@ the cross OS CI acceptance gate runs on every PR.
 - A full tool using agent loop: memory, web, git, file, shell, and fabric tools plus drop-in plugins.
 - Sub agents and delegation, parallel tool execution, context compaction (summarize, don't drop), and
   planning, reflection, and self repair.
-- Safety by construction: an OS level sandbox (Linux namespaces and seccomp, Windows job objects),
-  granular per tool and per owner permissions (`allow`, `ask`, `deny`, audited), owner scoped sessions, an
-  auth token store with RBAC, and OpenTelemetry tracing into Langfuse.
+- Safety by construction: an OS level sandbox (Linux: bubblewrap, else nsjail, else `unshare`; Windows
+  job objects), granular per tool and per owner permissions (`allow`, `ask`, `deny`, audited), owner scoped
+  sessions, an auth token store with RBAC, and OpenTelemetry tracing into Langfuse.
+- Private by default: every service binds `bindHost` (loopback unless you change it), and every secret
+  (the LiteLLM key, the Open WebUI, n8n and SearXNG secrets, the Langfuse keys) is generated on first use
+  and kept in `data/secrets.json` (mode 0600), never in a tracked file. A value already in the environment
+  or the OS keychain wins. One approval gate covers the agent loop, skills, `bob --run` and MCP clients.
 - Speaks MCP both ways. It mounts external MCP servers' tools, and exposes its own over stdio or
   Streamable HTTP, so a client on another machine can borrow them.
 
@@ -78,7 +82,8 @@ the cross OS CI acceptance gate runs on every PR.
 - Detached background tasks (`bob task start|status|logs|resume|cancel|rewind`) that keep running after
   you disconnect.
 - Computer use (opt in, off by default): screenshot plus mouse and keyboard, every action approval gated,
-  running against a virtual display, with a kill switch and an append only audit. It is never available to
+  running against a virtual display on Linux (`display: "host"` on Windows), with a kill switch and an
+  append only audit. It is never available to
   an unattended task without an explicit opt in.
 
 ### Sees and speaks
@@ -96,8 +101,8 @@ the cross OS CI acceptance gate runs on every PR.
 - Context engineering: reranking, self editing memory blocks, and conversation paging.
 
 ### Fits your existing tools
-- Open WebUI, Continue.dev, Cline, aider, DeepSeek Harness, fabric (254 patterns), n8n, SearXNG,
-  Langfuse, and Qdrant, all wired to the local endpoint by setup. The harness gets Bob's tools as well
+- Open WebUI, Continue.dev, Cline, aider, DeepSeek Harness, fabric (254 patterns), n8n, SearXNG and
+  Langfuse, all wired to the local endpoint (aider and fabric are opt-in at setup). The harness gets Bob's tools as well
   as its models, over MCP.
 
 ### Runs where you run
@@ -107,7 +112,8 @@ the cross OS CI acceptance gate runs on every PR.
   `irm <url>/install.ps1 | iex` on Windows): it clones with submodules, provisions, and verifies against
   `versions.lock`, and is idempotent on re run.
 - Docker-free by default: nothing in the core needs it. Add-on services (SearXNG, n8n, Langfuse) are
-  opt-in and lazy, and only Langfuse still needs Docker, with a guided install when you choose it.
+  opt-in and lazy. SearXNG and Langfuse run in Docker, with a guided Docker install the first time you
+  start one; n8n runs natively.
 - One engine, zero PowerShell: a pure Python runtime, provisioning, and CI.
 - Reproducible installs and a `bob update` that rolls back on failure, `bob doctor` for health, and a
   fresh install CI acceptance matrix on both operating systems every PR.

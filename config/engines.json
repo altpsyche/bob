@@ -1,15 +1,15 @@
 {
-  "_comment": "OPTIONAL LOCAL OVERRIDE for prebuilt engine resolution. In production the manifest is published as an `engines.json` release asset (per release tag) and fetched by lifecycle.ensure_engine; it is NOT committed here. Add real rows to this file only to pin engines locally for development, testing, or an air-gapped mirror: lifecycle._load_engine_manifest reads real rows here first, before the release-hosted manifest. Keys starting with '_' are ignored. Each real row is keyed '<component>-<os>-<cpuArch>-<tier>' and carries: component (llama-server|whisper-server), os (linux|windows), cpuArch (x86_64), tier (gpu|cpu), url, sha256 (of the downloadable archive), builtFromCommit (the pinned submodule commit the asset was built from), cudaArchs (embedded SM archs), cudaMajor, and libs (bundled runtime-lib filenames staged alongside the binary).",
+  "_comment": "OPTIONAL LOCAL OVERRIDE for prebuilt engine resolution. In production the manifest is published as an `engines.json` release asset (per release tag) and fetched by lifecycle.ensure_engine; it is NOT committed here. Add real rows to this file only to pin engines locally for development, testing, or an air-gapped mirror: lifecycle._load_engine_manifest reads real rows here first, before the release-hosted manifest. Keys starting with '_' are ignored. Each real row is keyed '<component>-<os>-<cpuArch>-<tier>' and carries: component (llama-server), os (linux|windows), cpuArch (x86_64), tier (cuda|cpu; the resolver also accepts gpu for cuda), url (a .tar.xz archive), sha256 (of the downloadable archive; required, a row with an empty sha256 is refused and the engine is built from source), bytes (archive size), builtFromCommit (the pinned submodule commit the asset was built from), cudaArchs (embedded SM archs, empty on cpu) and cudaMajor (12, null on cpu). The archive bundles its runtime libs next to the binary. The publish jobs emit these rows with `.github/scripts/pack_engine.py row`.",
   "_example": {
     "component": "llama-server",
     "os": "linux",
     "cpuArch": "x86_64",
-    "tier": "gpu",
-    "url": "https://github.com/altpsyche/bob/releases/download/vX.Y.Z/llama-server-linux-x86_64-cuda.tar.gz",
+    "tier": "cuda",
+    "url": "https://github.com/altpsyche/bob/releases/download/vX.Y.Z/llama-server-linux-x86_64-cuda.tar.xz",
     "sha256": "",
+    "bytes": 0,
     "builtFromCommit": "",
     "cudaArchs": "75;80;89;120",
-    "cudaMajor": "12",
-    "libs": ["libcudart.so.12", "libcublas.so.12", "libcublasLt.so.12"]
+    "cudaMajor": 12
   }
 }

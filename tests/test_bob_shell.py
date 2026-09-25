@@ -669,11 +669,27 @@ class TestApprovalHandshake(unittest.TestCase):
         self.assertEqual(result, "ok")
         self.assertFalse(decision)
 
-    def test_always_set_skips_prompt(self):
+    def test_always_covers_only_the_exact_call(self):
+        from unittest import mock
         sh, _ = _make_shell()
-        sh._always.add("shell_run")
-        # _approve returns True from the always-set WITHOUT importing/using prompt_toolkit.
-        self.assertTrue(sh._approve({"tool": "shell_run", "arguments": "{}"}))
+        first = {"tool": "shell_run", "arguments": '{"cmd": "ls", "cwd": "."}'}
+        with mock.patch("prompt_toolkit.prompt", return_value="a"):
+            self.assertTrue(sh._approve(first))
+        # Same call (key order / whitespace aside) is not re-asked ...
+        with mock.patch("prompt_toolkit.prompt", side_effect=AssertionError("re-asked")):
+            self.assertTrue(sh._approve({"tool": "shell_run", "arguments": '{"cwd":".","cmd":"ls"}'}))
+        # ... but a different command is.
+        with mock.patch("prompt_toolkit.prompt", return_value="n") as ask:
+            self.assertFalse(sh._approve({"tool": "shell_run", "arguments": '{"cmd": "rm -rf /"}'}))
+        ask.assert_called_once()
+
+    def test_tool_wide_always_is_explicit(self):
+        from unittest import mock
+        sh, _ = _make_shell()
+        with mock.patch("prompt_toolkit.prompt", return_value="t"):
+            self.assertTrue(sh._approve({"tool": "shell_run", "arguments": '{"cmd": "ls"}'}))
+        with mock.patch("prompt_toolkit.prompt", side_effect=AssertionError("re-asked")):
+            self.assertTrue(sh._approve({"tool": "shell_run", "arguments": '{"cmd": "pwd"}'}))
 
 
 class TestDiffTranscript(unittest.TestCase):

@@ -18,10 +18,13 @@ class TestEnsureEndpoint(unittest.TestCase):
 
     def setUp(self):
         self._orig_check = bob_core.check_litellm
+        self._orig_rejected = bob_core.litellm_key_rejected
         self._orig_stack = cli._stack
+        bob_core.litellm_key_rejected = lambda config=None: False
 
     def tearDown(self):
         bob_core.check_litellm = self._orig_check
+        bob_core.litellm_key_rejected = self._orig_rejected
         cli._stack = self._orig_stack
 
     def _fake_stack(self, counter):
@@ -38,6 +41,16 @@ class TestEnsureEndpoint(unittest.TestCase):
         cli._stack = self._fake_stack(counter)
         cli._ensure_endpoint(fake_config())
         self.assertEqual(counter["up"], 0)
+
+    def test_up_but_rejecting_the_key_goes_through_ensure_deps(self):
+        # A proxy started before the key changed answers 401 to Bob's key: ensure_deps regenerates the
+        # stale configs and restarts it, instead of every turn failing on 401.
+        bob_core.check_litellm = lambda config=None: True
+        bob_core.litellm_key_rejected = lambda config=None: True
+        counter = {"up": 0}
+        cli._stack = self._fake_stack(counter)
+        cli._ensure_endpoint(fake_config())
+        self.assertEqual(counter["up"], 1)
 
     def test_starts_core_inference_when_down(self):
         bob_core.check_litellm = lambda config=None: False

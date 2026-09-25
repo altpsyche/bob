@@ -37,7 +37,7 @@ prebuilt (on `main`, ahead of the tag, it correctly falls back to source):
 ```
 git fetch --tags && git checkout v1.2.2
 bob build                      # prebuilt-first: download + SHA-verify + stage; writes the tier marker
-bob up -NoOpen
+bob up --no-open
 python scripts/smoke.py --up --require-gpu --expect-source prebuilt
 ```
 Green means the exact binary users download serves tokens on the GPU. **If it fails, the release is
@@ -46,7 +46,7 @@ broken-on-arrival**: delete the tag, fix, and re-cut. Never mutate a shipped-goo
 **Optional pre-cut sanity check** (before step 1; proves your GPU and the assertion work without publishing,
 but it recompiles CUDA — tens of minutes — and replaces your current engine):
 ```
-bob build --from-source && bob up -NoOpen
+bob build --from-source && bob up --no-open
 python scripts/smoke.py --up --require-gpu --expect-source source
 ```
 

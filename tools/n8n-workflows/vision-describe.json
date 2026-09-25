@@ -20,22 +20,24 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [-100, 0],
+      "credentials": {
+        "httpHeaderAuth": { "id": "bob-litellm", "name": "Bob LiteLLM" }
+      },
       "parameters": {
         "method": "POST",
-        "url": "http://host.docker.internal:8081/v1/chat/completions",
+        "url": "http://127.0.0.1:8081/v1/chat/completions",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "Content-Type", "value": "application/json" },
-            { "name": "Authorization", "value": "Bearer sk-local" }
+            { "name": "Content-Type", "value": "application/json" }
           ]
         },
         "sendBody": true,
         "contentType": "raw",
         "rawContentType": "application/json",
-        "body": "={\n  \"model\": \"vision\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"image_url\",\n          \"image_url\": { \"url\": \"data:image/png;base64,{{ $json.image }}\" }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"{{ $json.prompt ?? 'Describe this image.' }}\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 512\n}",
+        "body": "={\n  \"model\": \"vision\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"image_url\",\n          \"image_url\": { \"url\": \"data:image/png;base64,{{ $json.body.image }}\" }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"{{ $json.body.prompt ?? 'Describe this image.' }}\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 512\n}",
         "options": { "timeout": 60000 }
       }
     },
@@ -60,7 +62,7 @@
         "width": 720,
         "height": 160,
         "color": 3,
-        "content": "## Vision: Describe Image\n\nPOST a base64-encoded image + optional prompt. Routed to Qwen3-VL-8B via LiteLLM.\n\n```powershell\n$img = [Convert]::ToBase64String([IO.File]::ReadAllBytes('screenshot.png'))\nInvoke-RestMethod http://localhost:5678/webhook/vision-describe `\n  -Method POST -ContentType 'application/json' `\n  -Body (ConvertTo-Json @{image=$img; prompt='Describe this image.'})\n```\n\nReturns: `{ \"description\": \"...\" }`"
+        "content": "## Vision: Describe Image\n\nPOST a base64-encoded image + optional prompt. Routed to the `vision` role via LiteLLM on 127.0.0.1:8081, authenticated with the `Bob LiteLLM` credential that `bob services n8n start` keeps in sync with Bob's key.\n\n```bash\ncurl -X POST http://localhost:5678/webhook/vision-describe \\\n  -H 'Content-Type: application/json' \\\n  -d \"{\\\"image\\\": \\\"$(base64 -w0 screenshot.png)\\\", \\\"prompt\\\": \\\"Describe this image.\\\"}\"\n```\n\nReturns: `{ \"description\": \"...\" }`"
       }
     }
   ],

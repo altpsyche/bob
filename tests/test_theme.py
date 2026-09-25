@@ -1,7 +1,9 @@
 """The theme abstraction (bob.theme): merge precedence, gradient math, unicode glyph fallback,
 Theme.load field mapping, and safe header rendering."""
 import io
+import os
 import unittest
+from unittest import mock
 
 import _common  # noqa: F401 — puts scripts/ on sys.path
 from _common import fake_config
@@ -74,6 +76,13 @@ class TestGlyphsAndColor(unittest.TestCase):
 
 
 class TestThemeLoad(unittest.TestCase):
+    def setUp(self):
+        # These assert the coloured palette; NO_COLOR swaps in the monochrome one.
+        p = mock.patch.dict(os.environ)
+        p.start()
+        self.addCleanup(p.stop)
+        os.environ.pop("NO_COLOR", None)
+
     def test_fields_and_override(self):
         t = Theme.load({"ui": {"colors": {"accent": "#123456"}, "prompt": "hey"}}, _console())
         self.assertEqual(t.accent, "#123456")

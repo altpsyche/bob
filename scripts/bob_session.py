@@ -216,3 +216,20 @@ class SessionStore:
             )
             .fetchall()
         ]
+
+
+def open_session_store(config: dict) -> SessionStore:
+    """THE SessionStore for a config: agent.sessionDbPath (resolved by bob_core.session_db_path) with
+    agent.defaultOwner. The agent server and the shell open the same store through this, so a session
+    persists across restarts and is resumable from either surface."""
+    from bob_core import session_db_path
+    return SessionStore(session_db_path(config),
+                        default_owner=(config or {}).get("agent", {}).get("defaultOwner", "local"))
+
+
+def record_turn(store: SessionStore, sid: str, goal: str, result, usage=None) -> None:
+    """THE turn write shared by the agent server and the shell: append goal + answer to session `sid`,
+    charging the run's token usage (prompt + completion summed over its LLM calls, from the final
+    event's `usage`), or an estimate of goal + answer when the run reported none."""
+    from bob_loop import usage_tokens
+    store.append_turn(sid, goal, result, tokens_used=usage_tokens(usage, goal, result or ""))

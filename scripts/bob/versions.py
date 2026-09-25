@@ -1,10 +1,10 @@
 """The versions.lock reader/validator for the Python side.
 
 versions.lock is a GENERATED neutral JSON lock (`bob lock`, scripts/bob/versions.py) pinning submodule
-commits, per-venv requirements, minimum toolchain versions, and the model manifest (repo -> revision
--> sha256, incl. the CPU-tier GGUF). It is generated from existing single sources (git gitlinks +
-config/models.json + manifest.json + pip freeze); the lock is READ to verify model checksums on fetch
-and to report reproducibility.
+commits, the pinned upstream binaries Bob can download instead of compiling (llama-swap), and the model
+manifest (repo -> revision -> sha256, incl. the CPU-tier GGUF). It is generated from existing single sources
+(git gitlinks + LOCK_BINARIES + config/models.json + the committed shas); the lock is READ to verify model
+checksums on fetch, to resolve the llama-swap release download, and to report reproducibility.
 
 Mirrors bob_core.load_defaults(): fail loud with a clear message if the lock is missing rather than
 resolving to None.
@@ -24,15 +24,38 @@ MANIFEST_FILE = REPO / "models" / "manifest.json"
 CHANGELOG_FILE = REPO / "CHANGELOG.md"
 _SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 
-# The submodules ND pins (all four in .gitmodules).
-LOCK_SUBMODULES = ["external/llama.cpp", "external/llama-swap", "external/whisper.cpp", "external/fabric"]
-# Minimum toolchain floors (not the live installed versions).
-LOCK_TOOLCHAIN = {"python": "3.12", "cmake": "3.24", "cuda": "12.0"}
-# Per-venv requirements lock.
-LOCK_REQUIREMENTS = {"venv-litellm": "tools/litellm-requirements.lock"}
-# Pinned opt-in tools installed outside the venvs: the native n8n npm package and the ddgs search lib
-# (also a venv-litellm requirement; pinned here too so `bob lock --check` covers the search default).
-LOCK_TOOLS = {"n8n": "2.29.10", "ddgs": "ddgs>=9.0.0"}
+# The submodules Bob pins (all three in .gitmodules).
+LOCK_SUBMODULES = ["external/llama.cpp", "external/llama-swap", "external/fabric"]
+
+# Upstream release binaries Bob downloads (sha256-verified) so a default install needs no Go toolchain. Each
+# entry names the submodule it mirrors and the commit the release was cut from: the download is used only while
+# the checkout pins that same commit, so a submodule bump falls back to a source build rather than silently
+# running a binary from a different revision. Asset keys are '<os>-<cpuArch>' (osenv.os_name /
+# osenv.normalized_cpu_arch).
+LOCK_BINARIES = {
+    "llama-swap": {
+        "version": "v255",
+        "submodule": "external/llama-swap",
+        "builtFromCommit": "7761aa13360ea379cb89366d07c2d08aa9f1ed10",
+        "assets": {
+            "linux-x86_64": {
+                "url": "https://github.com/mostlygeek/llama-swap/releases/download/v255/llama-swap_255_linux_amd64.tar.gz",
+                "sha256": "84aa0df0cf3e302a8591e39de347f64c0c7dce1c3a948df68723a82e1fb4f1d4"},
+            "linux-arm64": {
+                "url": "https://github.com/mostlygeek/llama-swap/releases/download/v255/llama-swap_255_linux_arm64.tar.gz",
+                "sha256": "98686bc626e2d3df3b340b963fd4e4f4d3dd02dcd1bf31f0c777fb09e3053288"},
+            "macos-x86_64": {
+                "url": "https://github.com/mostlygeek/llama-swap/releases/download/v255/llama-swap_255_darwin_amd64.tar.gz",
+                "sha256": "98383f95298919cd6a73fcb11dadc78d53754bfe5d3de519fdead112f336f707"},
+            "macos-arm64": {
+                "url": "https://github.com/mostlygeek/llama-swap/releases/download/v255/llama-swap_255_darwin_arm64.tar.gz",
+                "sha256": "d11b4c733da1c64ffd1b955f64b6af92a8c66a443aeeafeef2e84d3bf1fbf531"},
+            "windows-x86_64": {
+                "url": "https://github.com/mostlygeek/llama-swap/releases/download/v255/llama-swap_255_windows_amd64.zip",
+                "sha256": "14b40b2e11479af9a83dec3ac2bf7f82864e62099f012b171591b871b9f88aae"},
+        },
+    },
+}
 
 
 def load_lock(path: Optional[Path] = None) -> dict:
@@ -43,6 +66,20 @@ def load_lock(path: Optional[Path] = None) -> dict:
             f"versions.lock not found at {path} — it is generated; run: bob lock"
         )
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def pinned_binary(name: str, platform_key: str, lock: Optional[dict] = None) -> Optional[dict]:
+    """The locked release asset for binary `name` on `platform_key` ('<os>-<cpuArch>'), merged with the entry's
+    version/submodule/builtFromCommit, or None when the lock has no such asset (or no lock exists)."""
+    try:
+        lock = lock if lock is not None else load_lock()
+    except (RuntimeError, OSError, ValueError):
+        return None
+    entry = (lock.get("binaries") or {}).get(name) or {}
+    asset = (entry.get("assets") or {}).get(platform_key)
+    if not asset:
+        return None
+    return {**{k: v for k, v in entry.items() if k != "assets"}, **asset}
 
 
 def sha256_file(path, _chunk: int = 1 << 20) -> str:
@@ -106,7 +143,7 @@ def check_reproducibility(repo: Optional[Path] = None, lock: Optional[dict] = No
 
 # --- writer + sync-gate --------------------------------------------------------------------------
 # GENERATED, NEVER HAND-EDITED: every field derives from an existing single source (git gitlinks +
-# config/models.json + models/manifest.json + the toolchain/requirements constants), so the lock never
+# config/models.json + models/manifest.json + LOCK_BINARIES), so the lock never
 # drifts by hand. Regenerate with `bob lock`; `bob lock --check` (wired into the Python gate + CI) fails if the
 # on-disk file drifts from those sources.
 
@@ -132,10 +169,18 @@ def submodule_commits(repo: Optional[Path] = None) -> dict:
     return out
 
 
+def _tracked_models_config(repo: Path) -> dict:
+    """config/models.json exactly as committed. The lock is a tracked file, so it is built from tracked
+    sources only: the per-machine config/user.json overlay (a local profile or model override) must never
+    make `bob lock --check` report STALE or leak into the committed lock."""
+    return json.loads((Path(repo) / "config" / "models.json").read_text(encoding="utf-8"))
+
+
 def lock_model_manifest(models_config: Optional[dict] = None, repo: Optional[Path] = None,
                         use_manifest: bool = True) -> dict:
     """Union of every gguf across all profiles, keyed by local filename, in (profile-sorted, role-sorted)
-    order with the first occurrence winning. repo/path/revision/sizeGB come from config/models.json; sha256
+    order with the first occurrence winning. repo/path/revision/sizeGB come from the committed
+    config/models.json (no user overlay); sha256
     from models/manifest.json when fetched, else the sha already in versions.lock (TOFU-then-lock — the lock
     is a committed source; the manifest is a gitignored per-fetch capture, absent in CI), else null.
 
@@ -143,14 +188,8 @@ def lock_model_manifest(models_config: Optional[dict] = None, repo: Optional[Pat
     making the result deterministic across machines (a clean checkout, a dev box that has fetched models, and
     CI all compute the same thing). The sync gate uses this so a real on-disk sha for a lock-null model can no
     longer report a false STALE; sha integrity is still enforced at fetch time by verify_model."""
-    import sys as _sys
-    scripts = str(REPO / "scripts")
-    if scripts not in _sys.path:
-        _sys.path.insert(0, scripts)
-    import bob_models
-
-    cfg = models_config if models_config is not None else bob_models.load_models_config()
     repo = repo or REPO
+    cfg = models_config if models_config is not None else _tracked_models_config(repo)
     manifest = {}
     mf = (repo / "models" / "manifest.json")
     if use_manifest and mf.exists():
@@ -200,9 +239,7 @@ def build_lock_object(repo: Optional[Path] = None, models_config: Optional[dict]
         "lockVersion": 1,
         "release": bob_version(),
         "submodules": submodule_commits(repo),
-        "toolchain": dict(LOCK_TOOLCHAIN),
-        "requirements": dict(LOCK_REQUIREMENTS),
-        "tools": dict(LOCK_TOOLS),
+        "binaries": json.loads(json.dumps(LOCK_BINARIES)),
         "models": lock_model_manifest(models_config, repo, use_manifest=use_manifest),
     }
 

@@ -308,8 +308,9 @@ class RepoMap:
 
 
 def _est_tokens(text: str) -> int:
-    """Cheap token estimate (~4 chars/token) -- enough to bound the map without a tokenizer dep."""
-    return max(1, len(text) // 4)
+    """Token estimate for bounding the map (bob_core.est_tokens), never below 1 per entry."""
+    from bob_core import est_tokens
+    return max(1, est_tokens(text))
 
 
 # --- Mode B: semantic code index over Module R's retrieval stack ----------------------------------
@@ -333,7 +334,10 @@ def index_semantic(repo: "RepoMap", db_path: Path = None, scope: str = None,
                    embed_optional: bool = False) -> int:
     """Embed one chunk per definition (a window of source starting at the def) into the code db, each
     carrying a situating `context` line. Returns the number of chunks stored. Calls bob_memory.store
-    directly because the bob_core wrapper drops context=/scope."""
+    directly because the bob_core wrapper drops context=/scope. Chunks are stored verbatim (no
+    third-person rewrite) and their context is persisted, so bob_memory.rebuild_vectors against the
+    code db reproduces the same embed input. An unchanged chunk whose vector is stale is re-embedded in
+    place by store(); rebuild_semantic re-indexes from scratch."""
     import bob_memory
     db_path = db_path or CODE_DB
     scope = scope or _project_scope(repo.roots)
@@ -354,6 +358,20 @@ def index_semantic(repo: "RepoMap", db_path: Path = None, scope: str = None,
                              embed_optional=embed_optional)
             stored += 1
     return stored
+
+
+def rebuild_semantic(repo: "RepoMap", db_path: Path = None, scope: str = None,
+                     embed_optional: bool = False) -> int:
+    """Clear this repo's code chunks from the code db and index them afresh, so every chunk is
+    re-embedded by the current embed model (an embed-model swap otherwise leaves index_semantic's
+    exact-dedup keeping the stale vectors). Returns the number of chunks stored."""
+    import bob_memory
+    db_path = db_path or CODE_DB
+    scope = scope or _project_scope(repo.roots)
+    with bob_memory._open(db_path) as db:
+        db.execute("DELETE FROM memories WHERE owner_id=? AND scope=? AND type=?",
+                   [CODE_OWNER, scope, CODE_TYPE])
+    return index_semantic(repo, db_path=db_path, scope=scope, embed_optional=embed_optional)
 
 
 def search_semantic(query: str, roots, db_path: Path = None, scope: str = None, k: int = 8,

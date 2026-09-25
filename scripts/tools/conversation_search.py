@@ -1,5 +1,6 @@
 """Bob tool: conversation_search — page earlier turns back into context. Semantic + keyword search over
-the persisted run transcript (recall storage), the read side of conversation paging. Read-only; the
+the persisted transcript of every run for the acting owner/project (recall storage, not only the
+current conversation), the read side of conversation paging. Read-only; the
 returned turns are a normal tool result, so they are themselves subject to compaction / tool-result
 clearing and can't re-overflow the window. Gated by agent.conversationPaging (off by default)."""
 import sys
@@ -47,9 +48,10 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "conversation_search",
-            "description": ("Search earlier turns of this conversation that have scrolled out of your "
-                            "current context (including past tool results). Use it to recover an earlier "
-                            "decision, value, or detail you no longer see."),
+            "description": ("Search earlier conversation turns that are no longer in your context, "
+                            "including past tool results. Covers this conversation AND earlier sessions "
+                            "with the same user in the same project, so check a hit fits the current "
+                            "task. Use it to recover an earlier decision, value, or detail."),
             "parameters": {
                 "type": "object",
                 "properties": {

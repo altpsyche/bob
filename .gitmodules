@@ -7,6 +7,3 @@
 [submodule "external/fabric"]
 	path = external/fabric
 	url = https://github.com/danielmiessler/fabric
-[submodule "external/whisper.cpp"]
-	path = external/whisper.cpp
-	url = https://github.com/ggerganov/whisper.cpp

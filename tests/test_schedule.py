@@ -129,6 +129,36 @@ class TestRunner(unittest.TestCase):
         self.assertIn("the answer", out)
         self.assertIn("the answer", sched.schedule_list(self.cfg))
 
+    def test_run_now_inside_an_agent_run_inherits_its_allow_set(self):
+        # Called as a tool (MCP lists schedule_run in mcpAllowTools): the scheduled loop gets the calling
+        # run's unattended allow-set and approver, so tools that surface refuses stay refused inside it.
+        import bob_loop
+        import tool_registry
+        from types import SimpleNamespace
+        approve = object()
+        ctx = SimpleNamespace(approve=approve, owner="mcp", allowed_roles={"agent"},
+                              unattended_allow=frozenset({"schedule_run"}))
+        token = tool_registry._RUN_CONTEXT.set(ctx)
+        self.addCleanup(tool_registry._RUN_CONTEXT.reset, token)
+        with mock.patch.object(bob_loop, "run_agent", return_value=("done", False)) as ra:
+            self.assertIn("done", sched.schedule_run(self.cfg, "digest"))
+        kw = ra.call_args.kwargs
+        self.assertEqual(kw["unattended_allow"], frozenset({"schedule_run"}))
+        self.assertIs(kw["approve"], approve)
+        self.assertEqual(kw["allowed_roles"], {"agent"})
+        self.assertTrue(kw["quiet"])
+
+    def test_run_now_from_the_cli_has_no_inherited_context(self):
+        import bob_loop
+        with mock.patch.object(bob_loop, "run_agent", return_value=("done", False)) as ra:
+            sched.schedule_run(self.cfg, "digest")
+        self.assertNotIn("unattended_allow", ra.call_args.kwargs)
+
+    def test_schedule_run_is_gated_on_an_unattended_surface(self):
+        import bob_permissions
+        self.assertIn("schedule_run", bob_permissions.UNATTENDED_GATED)
+        self.assertIsNotNone(bob_permissions.unattended_refusal(object(), "schedule_run", ()))
+
     def test_run_due_fires_only_when_due(self):
         with mock.patch.object(sched, "cron_due", return_value=True), \
              mock.patch.object(sched, "_run_goal", return_value="out"):

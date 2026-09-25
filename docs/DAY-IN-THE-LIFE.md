@@ -83,9 +83,9 @@ Check what's running:
 bob status
 ```
 
-The models are listed: `ponder`, `coder`, `chat`, `fim`, `embed`, `vision`, `agent`. None are loaded into VRAM yet; they load on first use and stay until idle. `fim` (autocomplete) and `embed` (search indexing) are pinned and never unload.
+The active profile's models are listed (16gb: `chat`, `coder`, `ponder`, `writer`, `agent`, `vision`, `fim`, `embed`, `rerank`; the first five are one 27B under five names). None are loaded into VRAM yet; they load on first use and stay until idle. `embed` (search indexing) is pinned and never unloads, and so is `fim` (autocomplete) on every profile but 16gb, where it takes turns with chat.
 
-> **Pro models:** If you've set `DEEPSEEK_API_KEY`, three additional models are available via the LiteLLM proxy at `:8081`: `chat-pro`, `ponder-pro`, `coder-pro`. These route directly to the DeepSeek API, no local GPU required, no platform fee. GLM-5.2 (z.ai) and Kimi K2.7 Code (Moonshot) are opt-in coding-peer alternatives. See [USAGE.md § Pro models](USAGE.md#pro-models-api-backed-no-platform-fee).
+> **Pro models:** If you've set `DEEPSEEK_API_KEY`, four additional models are available via the LiteLLM proxy at `:8081`: `chat-pro`, `ponder-pro`, `coder-pro`, `writer-pro`. These route directly to the DeepSeek API, no local GPU required, no platform fee. GLM-5.3 (z.ai) and Kimi K3 (Moonshot) are opt-in coding-peer alternatives. See [USAGE.md § Pro models](USAGE.md#pro-models-api-backed-no-platform-fee).
 
 > **Tip, start at login:** To bring the background stack up automatically every login, run `bob up --no-open` from a startup entry: on Linux a user systemd unit or a `@reboot` cron line; on Windows a Task Scheduler task set to "At log on".
 
@@ -140,7 +140,7 @@ bob chat --pro "explain CAP theorem with a concrete example"
 
 ```bash
 bob chat            # default: chat (general conversation, Qwen3.8-27B)
-bob think           # ponder: Qwen3-30B, deep reasoning, thinking mode on
+bob think           # chat with thinking on (use /model ponder in the shell for the reasoning role)
 bob code            # coder: the same 27B at a coding temperature
 bob chat --pro      # chat-pro: DeepSeek via API (needs DEEPSEEK_API_KEY)
 bob think --pro     # ponder-pro: strongest reasoning, via API
@@ -151,7 +151,7 @@ With no argument, `bob chat` / `bob think` / `bob code` open a one-role REPL; wi
 
 ### Memory
 
-Bob remembers across sessions, on by default (SQLite + BGE-M3, 0 extra VRAM). Store and query explicitly:
+Bob remembers across sessions, on by default (SQLite + Qwen3-Embedding-0.6B, 0 extra VRAM; keyword-only on the cpu profile). Store and query explicitly:
 
 ```bash
 bob remember "working on an Unreal 5.4 game engine plugin called BobBot"
@@ -226,7 +226,7 @@ Open VS Code. The Continue panel is in the left sidebar (the Continue icon, or p
 
 ### Autocomplete
 
-Open any source file and start typing a function. After a second or two, ghost text suggests how to continue. Press `Tab` to accept, or keep typing to dismiss. This is the `fim` model: small, fast, and pinned in VRAM so it never causes a reload delay.
+Open any source file and start typing a function. After a second or two, ghost text suggests how to continue. Press `Tab` to accept, or keep typing to dismiss. This is the `fim` model: small and fast. It is pinned in VRAM on 8gb, 12gb, 24gb and 32gb; on 16gb it shares the swap group with chat, so the first completion after a chat can take a moment to load.
 
 Try typing in a Python file:
 ```python
@@ -280,9 +280,9 @@ Open the Cline panel (C icon in the sidebar). If you haven't configured it yet:
 - Click the settings gear
 - API Provider: `OpenAI Compatible`
 - Base URL: `http://localhost:8081/v1`
-- API Key: `sk-local` (anything non-empty)
+- API Key: Bob's LiteLLM key, the `litellmKey` entry in `data/secrets.json`
 - Model ID: `coder`
-- Context window: `16384`
+- Context window: the `coder` window on your profile (40960 on 16gb; see [USAGE.md § Continue](USAGE.md#vs-code-continuedev-autocomplete-and-chat))
 
 ### Your first Cline task
 
@@ -316,7 +316,7 @@ With this on, Cline uses `ponder` to work out the approach, then switches to `co
 
 **What it is:** A terminal coding agent with a genuine planning step. `ponder` describes the changes in plain English; `coder` turns that into file edits. You review the plan before any file is touched.
 
-Open a terminal, navigate to a project, and start aider:
+aider is opt-in. Install it once with `bob aider-setup` (or `./setup.sh --with-aider`); `bob aider` then runs it with Bob's generated config. Open a terminal, navigate to a project, and start aider:
 
 Linux:
 ```bash
@@ -368,7 +368,7 @@ aider commits each accepted edit to git automatically. Work on a branch to keep 
 
 **What it is:** Named prompt patterns you pipe text through in the terminal. Instead of writing the same system prompt every time ("summarize this in bullet points, formatted as..."), pipe to `fabric --pattern <name>`.
 
-First-time setup (once):
+fabric is opt-in. First-time setup (once; builds it with Go and adds Bob as its LiteLLM vendor without touching the rest of `~/.config/fabric/.env`):
 ```bash
 bob fabric-setup
 ```
@@ -484,7 +484,7 @@ To learn how n8n works, build one from scratch:
 2. Add a **Webhook** trigger node → Method: `POST` → copy the webhook URL
 3. Add an **HTTP Request** node:
    - Method: `POST`, URL: `http://localhost:8081/v1/chat/completions`
-   - Header: `Authorization: Bearer sk-local`
+   - Authentication: Generic Credential Type → Header Auth → **Bob LiteLLM** (the credential `bob services n8n start` keeps in sync with Bob's key)
    - Body (raw JSON): `{{ JSON.stringify({model: "coder", messages: [{role: "system", content: "Write a concise git commit message for this diff. Output only the message."}, {role: "user", content: $json.body.diff}]}) }}`
 4. Add a **Set** node → extract `message` = `{{ $json.choices[0].message.content }}`
 5. Add a **Respond to Webhook** node → click **Save** → **Activate**
@@ -521,34 +521,17 @@ Start Langfuse when you want the dashboard:
 bob services langfuse start
 ```
 
-If Docker isn't installed, this runs a guided install first (Langfuse runs in Docker). Default login: `admin@local.dev` / `admin123`
+If Docker isn't installed, this runs a guided install first (Langfuse v3 runs in Docker: web and worker, with Postgres, ClickHouse, Redis and MinIO). Log in as `admin@local.dev` with the generated password, the `langfuseAdminPassword` entry in `data/secrets.json` (the start command prints the path).
 
 ### Enabling Langfuse tracing
 
 Langfuse only captures requests routed through the LiteLLM proxy (port 8081); direct requests to port 8080 are invisible. To wire it up:
 
-**Step 1: Get API keys from Langfuse:**
-1. Open http://localhost:3001
-2. Go to **Settings → API Keys**
-3. Click **Create API Key** and copy both the **Public Key** (`pk-lf-...`) and **Secret Key** (`sk-lf-...`)
+**Step 1: Nothing to copy.** Bob creates the Langfuse project with a generated key pair (`LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` in `data/secrets.json`) and hands the same pair to LiteLLM. An exported `LANGFUSE_*` pair (for a hosted Langfuse) wins.
 
-**Step 2: Set API keys as environment variables:**
+**Step 2: Enable Langfuse callbacks and regenerate config:**
 
-Linux (add to your shell profile so they persist):
-```bash
-export LANGFUSE_PUBLIC_KEY='pk-lf-...'   # paste your public key
-export LANGFUSE_SECRET_KEY='sk-lf-...'   # paste your secret key
-```
-
-Windows (Command Prompt, `setx` persists for new shells):
-```bat
-setx LANGFUSE_PUBLIC_KEY "pk-lf-..."
-setx LANGFUSE_SECRET_KEY "sk-lf-..."
-```
-
-**Step 3: Enable Langfuse callbacks and regenerate config:**
-
-Add one key to `config/user.json` (create the file if it doesn't exist):
+Add one top-level key to `config/user.json` (create the file if it doesn't exist):
 ```json
 { "langfuseEnabled": true }
 ```
@@ -563,13 +546,13 @@ bob litellm status  # confirm it's running
 
 > `config/litellm.yaml` is generated automatically; do not edit it directly. Make persistent changes in `config/user.json` and re-run `bob gen`.
 
-> **Exporting agent-loop traces to Langfuse:** the steps above cover LiteLLM request tracing. To send the agent loop's own spans (the ones that otherwise go to the local file sink) to Langfuse instead, set `agent.tracing: true`, `agent.tracingSink: "otlp"`, and `agent.otlpEndpoint` to your Langfuse OTLP URL in `config/user.json`. Leave `tracingSink` unset to keep the built-in file sink and read traces with `bob traces`.
+> **Exporting agent-loop traces to Langfuse:** the steps above cover LiteLLM request tracing. To send the agent loop's own spans (the ones that otherwise go to the local file sink) to Langfuse instead, set `agent.tracing: true` and `agent.tracingSink: "otlp"` in `config/user.json`. With `agent.otlpEndpoint` empty they go to the local Langfuse (`/api/public/otel/v1/traces`) with Basic auth from the generated key pair. Leave `tracingSink` unset to keep the built-in file sink and read traces with `bob traces`.
 
-**Step 4: Confirm clients use :8081:**
+**Step 3: Confirm clients use :8081:**
 
 All bundled clients (Continue, aider, Cline, fabric, Open WebUI, `bob chat`) are already configured for `:8081`. If you use a custom tool, set its API base to `http://localhost:8081/v1`.
 
-**Step 5: Make a request and check Langfuse:**
+**Step 4: Make a request and check Langfuse:**
 
 ```bash
 bob code "explain what a mutex is"
@@ -592,7 +575,7 @@ This is how you debug "why did the model respond like that?": you see the exact 
 
 ## Feature 10: Voice Loop (STT + TTS)
 
-**Prerequisites:** Run `bob setup-voice` once (downloads whisper + piper + vision mmproj). Voice is enabled by default; if you turned it off, set `{"voice": {"enabled": true}}` in `config/user.json`. The whisper server auto-starts on the first voice turn.
+**Prerequisites:** Run `bob setup-voice` once (downloads the faster-whisper model, piper and its voice, and the audio deps). Voice is enabled by default; with `{"voice": {"enabled": false}}` in `config/user.json`, `bob voice` and `/voice` refuse with a clear message. The STT server auto-starts on the first voice turn.
 
 Voice adds microphone input (faster-whisper STT on port 8082) and speaker output (piper TTS) to the terminal. All processing is local.
 
@@ -621,7 +604,7 @@ bob voice --agent      # routes each voice turn through the full agent tool loop
 From inside the `bob` shell, `/voice` does the same thing. Bob listens for speech, transcribes it, sends the text to the chat model, then reads the response aloud. The energy gate in `scripts/bob-voice-capture.py` swallows silent moments so near-silence doesn't produce empty transcripts.
 
 
-The voice loop uses a dedicated system prompt that tells the model to reply in plain spoken sentences: no asterisks, no bullet points, no markdown. Bob's `format_for_speech` sanitiser also strips any remaining markdown symbols before the text reaches piper, so Bob never reads `**bold**` or `- item` aloud.
+The voice loop has no system prompt of its own: it reuses Bob's persona and the same agent turn as text chat. Bob's `format_for_speech` sanitiser strips markdown symbols before the text reaches piper, so Bob never reads `**bold**` or `- item` aloud.
 
 **Tips:**
 - Use headphones to stop the mic from picking up the speaker.
@@ -632,9 +615,9 @@ The voice loop uses a dedicated system prompt that tells the model to reply in p
 
 ## Feature 11: Vision (Describe and Screenshot)
 
-**Prerequisites:** The vision GGUF is downloaded by `bob fetch` (it's part of the 16gb profile). The mmproj is downloaded by `bob setup-voice`. Vision is enabled by default; toggle it with `{"vision": {"enabled": true}}` in `config/user.json`.
+**Prerequisites:** The vision GGUF and its mmproj download with the profile's models (`bob fetch`). Vision is enabled by default; with `{"vision": {"enabled": false}}` in `config/user.json` every image input is refused.
 
-Vision uses Qwen3-VL-8B to describe images and answer visual questions. The model loads on demand from the swap group and unloads after 30 s idle.
+On 16gb, vision uses Qwen3-VL-8B to describe images and answer visual questions; it loads on demand and unloads after 30 s idle. On 24gb and 32gb the 27B chat model reads images itself. 8gb, 12gb and cpu serve no vision model, and image input there is refused with a message that says so.
 
 ### Try it: describe an image file
 
@@ -642,17 +625,15 @@ Linux:
 ```bash
 bob describe ~/Pictures/photo.jpg
 bob describe ~/Pictures/diagram.png "What does this diagram show?"
-bob describe ~/Pictures/diagram.png --pro "Analyse this architecture diagram in detail"
 ```
 
 Windows:
 ```bat
 bob describe %USERPROFILE%\Pictures\photo.jpg
 bob describe %USERPROFILE%\Pictures\diagram.png "What does this diagram show?"
-bob describe %USERPROFILE%\Pictures\diagram.png --pro "Analyse this architecture diagram in detail"
 ```
 
-The `--pro` flag routes to DeepSeek (which supports vision input natively) using your existing `DEEPSEEK_API_KEY`. Use it when you need stronger OCR, complex diagrams, or longer analysis than the local model produces.
+DeepSeek V4 takes no images, so `--pro` on `describe` and `screenshot` uses `vision.visionProRole`, which defaults to the local `vision` model. Point `visionProRole` at a pro role whose peer is marked `supportsVision` to send images to a cloud model.
 
 ### Try it: describe your screen
 
@@ -660,16 +641,13 @@ The `--pro` flag routes to DeepSeek (which supports vision input natively) using
 bob screenshot
 bob screenshot "What error is showing on screen?"
 bob screenshot "Summarise the code visible in the editor"
-bob screenshot --pro "Explain the code on screen in detail"
 ```
 
-`bob screenshot` captures the primary display, resizes it to max 1024 px (so it fits in the 4096-token context), and sends it to the vision model. The temp PNG is deleted when the response finishes. `--pro` passes the same screenshot to DeepSeek cloud vision.
+`bob screenshot` captures the primary display, resizes it to max 1024 px (so it fits in the 4096-token context), and sends it to the vision model. The temp PNG is deleted when the response finishes.
 
 ### How it works
 
 Images are sent as `image_url` data URIs in the OpenAI chat completions format. They route through LiteLLM → llama-swap → a dedicated llama-server instance with `--mmproj` for the vision encoder. Flash attention is disabled for the vision model (flash-attn is incompatible with multimodal projection in the current llama.cpp build; the config generator handles this transparently).
-
-`--pro` skips llama-swap entirely and routes directly to the DeepSeek API via the `vision-pro` LiteLLM entry. No separate key needed; it uses `DEEPSEEK_API_KEY`.
 
 ---
 
@@ -755,18 +733,18 @@ Fetches the page, strips HTML, summarises in 3 to 5 sentences, prints the summar
 bob agent serve     # starts FastAPI on 127.0.0.1:8084; keep this terminal open
 ```
 
-Exposes the agent loop as REST + SSE. Every endpoint except `/health` requires a Bearer token: the litellm key (`sk-local` by default) or any entry in `agent.apiTokens`:
+Exposes the agent loop as REST + SSE. Every endpoint except `/health` requires a Bearer token: the litellm key (generated per machine, the `litellmKey` entry in `data/secrets.json`) or any entry in `agent.apiTokens`:
 
 ```
 POST http://localhost:8084/v1/agent/completions
-Header: Authorization: Bearer sk-local
+Header: Authorization: Bearer <your litellm key>
 Body:   {"goal": "what is the git status?"}
 Returns: {"result": "...", "session_id": null, "error": null}
 ```
 
 For token-by-token streaming, POST the same body to `/v1/agent/completions/stream` (Server-Sent Events; the run cancels within ~1s if you disconnect). For a multi-turn conversation, create a session with `POST /v1/sessions` and pass its `session_id` on each call. Each token maps to an owner, and **sessions are owner-scoped**: a token can only see sessions its own owner created (another owner's `session_id` returns 404). Give distinct callers distinct `{ "token": "...", "owner": "..." }` entries in `agent.apiTokens`. Full endpoint contract + event schema: [AGENT-SERVER.md](AGENT-SERVER.md); security model + `0.0.0.0` checklist: [SECURITY.md](SECURITY.md).
 
-Wire into n8n with an HTTP Request node: URL `http://localhost:8084/v1/agent/completions` (native n8n; use `http://host.docker.internal:8084/...` only if you run n8n in Docker yourself), method POST, header `Authorization: Bearer sk-local`, body `{"goal": "{{ $json.goal }}"}`. Bind address and port are `agent.serveHost` / `agent.agentPort` in `config/user.json` (loopback by default; set `serveHost` to `0.0.0.0` to expose on the LAN; keep `allowPrivateFetch` false).
+Wire into n8n with an HTTP Request node: URL `http://localhost:8084/v1/agent/completions` (native n8n; use `http://host.docker.internal:8084/...` only if you run n8n in Docker yourself), method POST, authentication the **Bob LiteLLM** Header Auth credential (the agent API accepts the litellm key), body `{"goal": "{{ $json.goal }}"}`. Bind address and port are `agent.serveHost` / `agent.agentPort` in `config/user.json` (loopback by default; set `serveHost` to `0.0.0.0` to expose on the LAN; keep `allowPrivateFetch` false).
 
 > **Note:** Selecting the `agent` model directly in Open WebUI runs raw inference without tool injection; `<tool_call>` blocks appear as plain text. Use `bob agent serve` for full tool use from WebUI via a custom function or n8n workflow.
 
@@ -1040,7 +1018,7 @@ For a first read-through, here's a short sequence that touches every feature:
 11. In a terminal: `git diff --staged | fabric --pattern write_git_commit`
 12. `bob services searxng start` then open http://localhost:8888: do a search, set it as a browser shortcut
 13. `bob services n8n start` then open http://localhost:5678: create a webhook workflow that calls the LLM
-14. Traces: set `{"agent": {"tracing": true}}` in `config/user.json`, run an agent goal, then `bob traces list` (built-in file sink, no Docker). For the Langfuse dashboard, `bob services langfuse start`, wire keys + `{"langfuseEnabled": true}` + `bob gen && bob litellm`, then open http://localhost:3001
+14. Traces: set `{"agent": {"tracing": true}}` in `config/user.json`, run an agent goal, then `bob traces list` (built-in file sink, no Docker). For the Langfuse dashboard, `bob services langfuse start`, add the top-level `{"langfuseEnabled": true}` to `config/user.json` (the keys are generated, nothing to copy), `bob gen`, restart LiteLLM (`bob litellm stop && bob litellm`), then open http://localhost:3001
 15. `bob setup-voice` then `bob speak "Hello"`: test TTS; you should hear a response
 16. `bob listen`: say a few words into the mic; the transcript should print
 17. `bob voice`: run one full loop (speak a question, hear the answer back), then Ctrl+C
@@ -1057,5 +1035,3 @@ For a first read-through, here's a short sequence that touches every feature:
 28. `bob stop`: shut down cleanly
 
 For more detail on any feature: [USAGE.md](USAGE.md). For troubleshooting the Docker services: [USAGE.md § Docker troubleshooting](USAGE.md#troubleshooting-docker).
-</content>
-</invoke>

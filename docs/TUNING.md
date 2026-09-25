@@ -16,7 +16,7 @@ The generated `llama-swap.yaml` has this structure:
 - `macros:` reusable strings, mainly the shared `llama-server` command (`srv`) and KV cache flags (`kv`), referenced as `${name}` in model entries
 - `models:` one named entry per model; `cmd` is the only required field; `${PORT}` is assigned automatically by the proxy
 - `ttl: 0` on pinned models like `fim` and `embed`, which disables automatic unloading
-- `filters.setParams` enforces sampling settings (temperature, top_p) server-side regardless of what the client sends
+- `filters.setParams` (and `setParamsByID` for aliases) enforces each role's sampling (temperature, top_p, top_k, min_p) server-side on every profile, so a client cannot override it. `config/models.json` sets sampling only in `setParams`; a `--temp`-style flag in a model's `flags` would be a client-overridable default, and `bob gen` warns on one
 - `groups:` with `swap: true`, models in the same group evict each other, so only one large model is resident at a time
 
 ## Tunable defaults and personal overrides
@@ -37,9 +37,20 @@ The `defaults` block in `config/models.json` controls the server launch flags an
 | `noMmap` | `false` | Load model into heap RAM at startup (`--no-mmap`). Eliminates page faults on CPU-offloaded layers. Startup is slower; inference is smoother. Also supported per-model. |
 | `mlockBig` | `false` | Apply `--mlock` to swap-group models (ponder/coder/chat). Pins CPU-resident pages in RAM. Windows: needs `SeLockMemoryPrivilege`. |
 | `numa` | `""` | NUMA strategy (`--numa`). Options: `""` (off), `"isolate"`, `"distribute"`, `"numactl"`. On 7950X3D: try `"isolate"` first. |
-| `webuiSecret` | `"bob-dev"` | Open WebUI session key. Change before exposing on a LAN. |
 
-Ports are **not** in this block; they live once in [config/defaults.json](../config/defaults.json) under `ports` (llama-swap `8080`, LiteLLM proxy `8081`, whisper `8082`, piper `8083`, agent server `8084`, Open WebUI `3000`).
+Ports are **not** in this block; they live once in [config/defaults.json](../config/defaults.json) under `ports` (llama-swap `8080`, LiteLLM proxy `8081`, faster-whisper STT `8082`, piper `8083`, agent server `8084`, Open WebUI `3000`). Override a port with a top-level key of the same name in `config/user.json` (for example `"litellmPort": 8091`); `agentPort` and `mcpPort` go under `agent`.
+
+Four runtime keys sit at the **top level** of `config/user.json` rather than in this block:
+
+| Key | Default | Effect |
+|-----|---------|--------|
+| `bindHost` | `"127.0.0.1"` | Address every service binds: LiteLLM, Open WebUI, n8n, and the Docker services' published ports. llama-swap always stays on loopback (LiteLLM fronts it), and the voice servers bind `voiceBindHost`. Set `"0.0.0.0"` for LAN access; the LiteLLM key is then the only guard on the proxy. |
+| `voiceBindHost` | `"127.0.0.1"` | Address faster-whisper (STT) and piper (TTS) bind. They have no authentication, so they stay on loopback even when `bindHost` opens the rest; set `"0.0.0.0"` only when another machine needs speech and the network is trusted. |
+| `litellmKey` | `""` | Empty means generated: a random `sk-bob-...` key created on first use and kept in `data/secrets.json` (the environment or the OS keychain win if they hold one). Set it only to pin a key of your own. Run `bob gen` after a change so every client config carries it. |
+| `langfuseEnabled` | `false` | Send LiteLLM traces to a local Langfuse (`bob services langfuse start`). |
+| `n8nTimezone` | `"UTC"` | Timezone for n8n schedules. |
+
+Every other service secret (Open WebUI, n8n encryption key, SearXNG, all Langfuse keys and passwords) is generated on first use the same way and has no config key.
 
 **KV cache type options** (valid for both `kvQuantK` and `kvQuantV`): `f16`, `bf16`, `q8_0`, `q5_1`, `q5_0`, `q4_1`, `q4_0`, `iq4_nl`.
 
@@ -72,21 +83,25 @@ registration step. To exclude a tool without deleting it, add its name to `agent
 
 | Key | Default | Effect |
 |-----|---------|--------|
-| `agent.toolFormat` | `"hermes"` | Tool calling protocol. `"hermes"` = inject tool schemas in system prompt, parse `<tool_call>` XML from content (Hermes 3 native format). `"openai"` = use OpenAI `tools` parameter (Qwen3 and other OpenAI-compatible models). |
+| `agent.toolFormat` | `"hermes"` | Tool calling protocol. `"hermes"` = inject tool schemas in the system prompt and parse `<tool_call>` XML from the content (the Hermes-style format the Qwen chat templates use). `"openai"` = use the OpenAI `tools` parameter. |
 | `agent.agency` | `"show"` | `"silent"` = run without output. `"show"` = print tool calls and results to stderr. `"confirm"` = prompt before each tool execution. |
 | `agent.maxSteps` | `10` | Maximum tool-call iterations before stopping. |
 | `agent.maxHistoryMsgs` | `40` | Sliding window by **message count**, the first-pass overflow guard. |
-| `agent.maxContextTokens` | `6000` | Token budget for the message history. Drops the oldest non-system turns first; always keeps the system message. `0` = fall back to count-only. Keep it below the agent model's context window. |
+| `agent.maxContextTokens` | `0` | Token budget for one request. `0` = auto: the per-slot context window of the role being served (a local role's `ctx` divided across its slots, or a peer's `contextWindow`). An explicit value is capped at that window. The history gets what is left after the output reservation and the tool schemas; the oldest non-system turns drop first. The same bound applies to summaries, plan and verify turns, and plugin calls (`bob_core.complete`). When the window is small (4096 on cpu `chat` and 16gb `vision`), the tool schemas are compacted first, then non-core tools are left out largest first (core is `file_*`, `shell_*`, `memory_*`, `web_*`, `todo_*`) with one notice naming them; `max_tokens` shrinks to fit, and when fewer than 256 output tokens fit the run stops with a `context_overflow` error that says what to trim. |
+| `agent.outputReserveTokens` | `1024` | Tokens reserved for a local role's reply and always sent as `max_tokens`, capped at half the window. A pro role requests its peer's `maxOutputTokens` instead (the role's override, else the peer's), with the same half-window cap. A reply cut off at this limit is marked as truncated, and a tool call in a truncated reply is never run. `--max` overrides it for one call. |
+| `agent.maxDuplicateToolCalls` | `2` | How many times the loop runs the same tool call with the same arguments before it stops the model from repeating it. |
 | `agent.maxToolResultTokens` | `1000` | Per-tool-result cap (~4 chars/token) applied before a result is appended to history, so one huge tool output can't blow the budget. |
 | `agent.conversationPaging` | `false` | Persist the full transcript (incl. tool turns + one-shot CLI runs) to an owner-scoped store and offer the `conversation_search` tool to page dropped turns back. Grows `data/bob.db`. See [MEMORY.md](MEMORY.md#conversation-paging-recall-over-dropped-turns). |
 | `agent.compactSchemasAfter` | `12` | Once more than this many tools are loaded, inject **compact** tool schemas (param descriptions dropped) so the fixed per-turn prompt doesn't grow unbounded with tool count. |
-| `agent.requestTimeout` | `600` | Client-side LLM call timeout (s). Must be **≥** the litellm proxy's `request_timeout` (600) so thinking models (ponder/R1) aren't cut off mid-response. |
+| `agent.requestTimeout` | `600` | Client-side LLM call timeout (s). Must be **≥** the litellm proxy's `request_timeout` (600) so thinking models (ponder) aren't cut off mid-response. |
 | `agent.llmRetries` | `2` | Retries for a transient LLM error (5xx/timeout/conn) per step: total tries = this + 1. Covers the llama-swap model-swap race (a 500 "upstream command exited prematurely" on the first request after an idle-unload). Retried only before the first token surfaces. |
 | `agent.llmRetryBackoffSec` | `2.0` | Base backoff (s) before a retry; escalates per attempt (2s, 4s, …) to give a restarting backend time to come up. |
 | `agent.allowPrivateFetch` | `false` | When `false`, `web_fetch` blocks `file://`/non-http schemes and loopback/RFC-1918/link-local hosts (SSRF guard). Set `true` only if you deliberately need the agent to reach private hosts. |
 | `agent.disabledTools` | `[]` | Tool names (stem/dir) to **exclude** from discovery. Denylist, not allowlist. |
 | `agent.allowedReadPaths` | (repo root) | Paths `file_read` may access. Defaults to the repo root at runtime. Add more in `config/user.json`. **Secrets denylist:** `config.json`, `*.psd1`, `*.db`, `logs/`, `.env*` are refused even inside an allowed root. |
 | `agent.allowedWritePaths` | `[]` | Paths `file_write` may access. Empty = write disabled. Opt in via `config/user.json`. The secrets denylist applies here too. |
+| `agent.subAgentAllowPro` | `false` | Let `spawn_agent` send a sub-run to a cloud (`*-pro`) role. Off, a sub-agent can only use local roles. |
+| `agent.computerUse.display` | `"virtual"` | Where computer use acts. `"virtual"` is enforced and Linux only: it needs `BOB_VIRTUAL_DISPLAY` pointing at a virtual X display, plus `xdotool` and `scrot` or ImageMagick. On Windows and macOS set `"host"`. See [SECURITY.md](SECURITY.md#computer-use-scriptstoolscomputerpy). |
 
 Override any of these in `config/user.json` under the top-level `agent` key:
 
@@ -111,24 +126,26 @@ endpoint requires `Authorization: Bearer <token>`.
 | `agent.agentPort` | `8084` | Server port. |
 | `agent.apiTokens` | `[]` | Per-client Bearer tokens, each `{"token": "sk-…", "owner": "alice"}`. Sessions are owner-scoped: a token only sees sessions its owner created (others 404). Bare strings still work (token = owner). |
 | `agent.defaultOwner` | `"local"` | Owner id the `litellmKey` (and any unlabelled session) maps to. |
+| `agent.acceptLitellmKey` | `true` | Accept the LiteLLM key as a bearer token on the agent API and the MCP HTTP transport. Set `false` so only `agent.apiTokens` entries and store-issued tokens open them. With it on, anyone holding the key (every generated client config, n8n, fabric, Open WebUI) gets an unscoped `agent.defaultOwner` identity; the hardened setup is scoped `agent.apiTokens` with this set to `false`. |
 | `agent.sessionDbPath` | `"data/sessions.db"` | SQLite store for multi-turn sessions (WAL, created on first server start). |
 | `agent.maxSessionTokens` | `0` | Per-session token budget; `0` = unlimited. Once reached, that session's completions return HTTP 402. |
 | `agent.gitAllowedRoots` | `[]` | Extra repos `git_*` may read; the Bob repo root is always allowed. |
 | `agent.logMaxBytes` / `logBackupCount` | `5000000` / `3` | Rotation for `logs/bob-agent.log`. |
 | `agent.mcpEnabled` | `false` | Enable `bob agent mcp` (expose tools over MCP). Gates both transports. |
+| `agent.mcpAllowTools` | `[]` | An MCP client has no one to approve a call, so approval-required and state-changing tools (`shell_run`, `file_write`, `music_play`, ...) are refused over MCP unless listed here. `spawn_agent` must be listed too, and a sub-run it starts is held to the same list. |
 | `agent.mcpTransport` | `"stdio"` | `stdio` (the client spawns Bob) or `http` (Streamable HTTP, so a client on another machine can reach a running Bob). `bob agent mcp --http` overrides it for one run. |
-| `agent.mcpPort` / `agent.mcpHost` | `8085` / `"127.0.0.1"` | Where the HTTP transport binds. `0.0.0.0` exposes it to the LAN: give remote clients a dedicated `agent.apiTokens` entry rather than the litellm key. |
+| `agent.mcpPort` / `agent.mcpHost` | `8085` / `"127.0.0.1"` | Where the HTTP transport binds. It uses the agent API's token auth (scopes, rate limit, revocable store tokens). `0.0.0.0` exposes it to the LAN: give remote clients a dedicated `agent.apiTokens` entry rather than the litellm key. |
 | `agent.mcpAllowedHosts` | `[]` | Extra `Host` header values the HTTP transport answers to (DNS-rebinding protection). Loopback and the bind host are always allowed; add the LAN address or DNS name a remote client dials. |
 | `agent.mcpAllowedOrigins` | `[]` | Browser `Origin` values allowed against the HTTP transport. |
 | `agent.mcpUrl` | `""` | The URL `bob gen` writes into the dsh drop-in, when the harness reaches Bob at something other than the local bind address. |
 
 See [AGENT-SERVER.md](AGENT-SERVER.md) for the endpoint contract.
 
-**Switching the agent model:** the agent role defaults to the `agent` model (Hermes 3 8B). If you switch to a model that uses OpenAI-format tool calling (like Qwen3), set `agent.toolFormat = "openai"` in `config/user.json` and run `bob gen`.
+**Switching the agent model:** the `agent` role is an alias of the profile's chat model on 16gb, 24gb, 32gb, 12gb and cpu (with its own low temperature), and a Qwen3.5-4B on 8gb. If you point it at a model that expects OpenAI-format tool calling, set `agent.toolFormat = "openai"` in `config/user.json` and run `bob gen`.
 
 ### Memory (`memory.*`)
 
-Bob's typed, owner/project-scoped memory store (SQLite + BGE-M3). On by default. Keys live in
+Bob's typed, owner/project-scoped memory store (SQLite + Qwen3-Embedding-0.6B). On by default. Keys live in
 `config/defaults.json` under `runtime.memory`; override in `config/user.json` under the top-level
 `memory` key. Full engine reference: [MEMORY.md](MEMORY.md).
 
@@ -140,13 +157,14 @@ Bob's typed, owner/project-scoped memory store (SQLite + BGE-M3). On by default.
 | `memory.profileMaxTokens` | `200` | Cap on the profile block. |
 | `memory.maxInjectedTokens` | `1200` | Total budget for injected memory (profile + autoRecall + `BOB.md`); over budget trims autoRecall → profile → `BOB.md`. |
 | `memory.dbPath` | `data/bob.db` | Memory database (gitignored). |
-| `memory.embedModel` | `embed` | Embedding role (BGE-M3 at `:8081`). |
+| `memory.embedModel` | `embed` | Embedding role (Qwen3-Embedding-0.6B at `:8081`). A profile with no embed role (cpu) runs keyword-only memory. |
 | `memory.recallK` | `5` | Max results per recall. |
-| `memory.recallThreshold` | `0.35` | Minimum blended score to return. |
+| `memory.recallThreshold` | `0.35` | The recall gate: a memory is returned only with a raw cosine at or above this (in hybrid or rerank mode, a strong keyword match or a passing reranker score also counts). The blended rank only orders what passes. |
 | `memory.dedupThreshold` | `0.92` | Cosine at/above which a store is a duplicate. |
 | `memory.retrieval` | `"dense"` | `"dense"` (cosine) or `"hybrid"` (fuse BM25/FTS5 via RRF). |
 | `memory.rrfK` | `60` | Reciprocal Rank Fusion constant (hybrid). |
 | `memory.rerank` | `false` | Cross-encoder rerank of the fused candidates; needs a `reranking` model in the stack, loud-fails to hybrid if absent. |
+| `memory.rerankThreshold` | (unset) | Optional gate on the cross-encoder score; unset, the reranker gates at `recallThreshold`. |
 | `memory.rerankTopN` | `20` | Fused candidates re-scored by the reranker. |
 | `memory.rerankBaseUrl` | `""` | Reranker endpoint override; empty = the local llama-swap `/v1/rerank`. |
 | `memory.coreBlocks` | `{}` | `name → char cap` for agent-editable, always-injected core-memory blocks (the `memory_block` tool). Empty = off. |
@@ -155,11 +173,11 @@ Bob's typed, owner/project-scoped memory store (SQLite + BGE-M3). On by default.
 | `memory.typeWeights` | `{profile 1.0 … episodic 0.5}` | Per-type rank weights. |
 | `memory.maxSummaryTokens` | `512` | Token budget for the consolidation LLM call: must clear a reasoning model's hidden-reasoning budget (a tight cap yields an empty completion). |
 | `memory.autoConsolidate` | `true` | Consolidate durable facts when a session ends. |
-| `memory.autoSummarize` | `true` | Legacy `bob chat` REPL: summarise on exit. |
 | `memory.consolidateTimeout` | `30` | Seconds bounding the end-of-session consolidation call. |
 | `memory.reconcileTopK` | `20` | Existing facts shown to the extractor for supersede decisions. |
 | `memory.maxRows` | `2000` | Per-owner soft cap; excess lowest-salience/oldest rows pruned. |
 | `memory.forgetAfterDays` | `{episodic: 180}` | Per-type TTL (profile/preference exempt). |
+| `memory.transcriptMaxRows` / `transcriptMaxDays` | `20000` / `90` | Retention for the conversation-paging transcript: oldest rows past either limit are pruned. |
 | `memory.scopeByProject` | `true` | Scope `project`-type facts per repo; `false` = one global pool. |
 | `memory.projectFiles` | `true` | Read `BOB.md`/`AGENTS.md` project files at session start. |
 | `memory.bobMdMaxTokens` | `4000` | Cap on the concatenated project files. |
@@ -170,16 +188,16 @@ Recall and injection are best-effort: a memory-server error is logged and skippe
 
 Plugins live in `plugins/<name>/` as an `invoke.py` (CLI + core logic) plus an optional `tool.py`
 (agent-facing wrapper). They are discovered and dispatched automatically, with nothing to register.
-A plugin can be written in any language that reads arguments and writes stdout; the bundled examples
-are Python.
+Plugins are written in Python.
 
 Python plugins read config through `bob_core.load_config()` (which resolves `config/defaults.json` +
 `config/user.json` live on every OS) and can use any routing
 role. To override the model a plugin uses for a specific invocation, most accept a `--role` flag (check
 `--help` on each plugin, or run one directly with `bob --run <name> '{json}'`).
 
-To disable a plugin without deleting it, rename its `invoke.py` to `invoke.py.disabled`, or add its
-directory/stem name to `agent.disabledTools` in `config/user.json`.
+To disable a plugin without deleting it, add its directory name (for example `play`) to
+`agent.disabledTools` in `config/user.json`. That is the only switch; renaming `invoke.py` does not
+disable it. Plugins are Python only, and `bob <plugin> ...` runs `main(argv)` in its `invoke.py`.
 
 ## Per-model launch flags (Blackwell / 16GB)
 
@@ -203,7 +221,7 @@ Weight memory is approximately the parameter count multiplied by the bytes per w
 
 KV cache adds roughly 1 to 2 GB at a 4k context window, or 3 to 5 GB at 32k. The default q8_0/q8_0 quantization cuts these figures by roughly 50% versus unquantized f16. On pre-Blackwell GPUs, q5_1 keys and q4_0 values cut by ~75% at the cost of minor quality loss.
 
-For the models in this repo on 16 GB VRAM: the 14B Q4_K_M coder is about 9 to 10 GB for weights plus 1 to 2 GB for context, which fits comfortably. The 30B-A3B Q4 ponder is about 18 GB for the full weight matrix, so it uses a small amount of RAM offload; but because only 3B parameters are active per token (it's a mixture-of-experts model), generation is still fast.
+For the models in this repo on 16 GB VRAM: the Qwen3.8-27B IQ3_XXS that serves chat, coder, ponder, writer and agent is 10.09 GB of weights, measured at 10950 MiB with its 40960-token q4_0 KV cache, so it sits entirely on the card. On 12 GB the MoE coder and ponder (Qwen3-Coder-30B-A3B, Qwen3.6-35B-A3B) exceed the card and keep some experts in system RAM (see [MoE expert offloading](#moe-expert-offloading-ncpumoe)); because only 3B parameters are active per token, generation is still fast.
 
 For mixture-of-experts models generally, VRAM requirements are based on the total parameter count, not the active count. Active parameters affect compute speed but not the memory needed to load the model. An 80B model with 3B active parameters at Q4 still needs roughly 45 GB for the weight matrix.
 
@@ -244,7 +262,7 @@ bob eval coder humaneval         # ~3 hr
 
 The syntax is `bob eval <role> [task] [--shots N] [--limit N]`. Results land in `results/eval-<role>-<task>-<timestamp>/`. Look for `exact_match,flexible-extract` (0.0 to 1.0); the flexible extractor finds the final number in the response, the right metric for generative math tasks.
 
-**Baseline scores for 14B Q4_K_M (16gb profile):**
+**Reference scores for a 14B-class Q4_K_M coder** (a yardstick for spotting a regression, not a measurement of the current profiles):
 
 | Task | What it measures | 5-shot | 0-shot |
 |------|-----------------|--------|--------|
@@ -269,7 +287,7 @@ The syntax is `bob eval <role> [task] [--shots N] [--limit N]`. Results land in 
 
 New llama.cpp versions can add model support, fix bugs, or improve performance. Blackwell MMQ support can regress between commits, so always re-run the benchmark after a bump to confirm performance before committing the new pin.
 
-The easiest path is the built-in update command, which fast-forwards the current branch, syncs submodules, reinstalls the venv, rebuilds **only if llama.cpp actually moved** (with a `bin/` snapshot + binary verify + automatic rollback on failure), relocks `versions.lock`, and finishes with `bob doctor`:
+The easiest path is the built-in update command, which fast-forwards the current branch, syncs submodules, reinstalls the venvs from their locks, updates the engine **only if llama.cpp actually moved** (a `bin/` snapshot, an atomic file swap, a binary verify, and a rollback on any error), and finishes with `bob doctor`. It does not rewrite `versions.lock`; run `bob lock` yourself after a deliberate bump:
 
 ```
 bob update
@@ -397,9 +415,9 @@ The remaining two surfaces are separate:
 }
 ```
 
-`bob gen` calls `gen_webui`, which writes these into the Open WebUI SQLite database. Override in `config/user.json` using the same key names.
+`bob gen` calls `gen_webui`, which merges these into the Open WebUI SQLite database: it sets each Bob model's system prompt and leaves every other field and model you edited in WebUI alone. Override in `config/user.json` using the same key names. `ponder` has its own prompt (think it through, state assumptions, weigh alternatives, conclude).
 
-Pro (cloud) model prompts live inside the peer config as a `systemPrompt` field in the object form:
+A pro (cloud) role uses the same `prompts[role]` as its local role, so `coder-pro` gets the `coder` prompt. To give one pro role a different prompt, set `systemPrompt` on it in the object form:
 
 ```json
 {
@@ -407,7 +425,6 @@ Pro (cloud) model prompts live inside the peer config as a `systemPrompt` field 
     "deepseek": {
       "pro": {
         "coder":  { "model": "deepseek-v4-flash", "systemPrompt": "You are an expert software engineer. Be direct. No preambles." },
-        "chat":   { "model": "deepseek-v4-flash", "systemPrompt": "Be helpful and concise." },
         "ponder": { "model": "deepseek-v4-pro", "maxOutputTokens": 65536 }
       }
     }
@@ -415,7 +432,7 @@ Pro (cloud) model prompts live inside the peer config as a `systemPrompt` field 
 }
 ```
 
-The peer's `maxOutputTokens` (32768 for DeepSeek) is the output cap each `*-pro` route defaults to in `litellm.yaml`, and a role can override it, as `ponder` does above. It stops a runaway generation without cutting off a long answer or a large tool call, and a client that sends its own `max_tokens` still wins. Local roles have no cap: they stop when the model finishes or the window fills. A role can also be a bare model string; only the object form takes `systemPrompt` or an override.
+The peer's `maxOutputTokens` (32768 for DeepSeek) is the output cap each `*-pro` route defaults to in `litellm.yaml`, and a role can override it, as `ponder` does above. It stops a runaway generation without cutting off a long answer or a large tool call, and a client that sends its own `max_tokens` still wins. Local roles have no cap in `litellm.yaml`: they stop when the model finishes or the window fills. Bob's own agent loop always sends `max_tokens`: a pro role asks for this same `maxOutputTokens`, a local role for `agent.outputReserveTokens`, and both are capped at half the window. A role can also be a bare model string; only the object form takes `systemPrompt` or an override.
 
 **Continue.dev**: `config/continue/config.yaml` is **generated** by `gen_continue` from the same `prompts` in `config/models.json`, then linked into `~/.continue/` by setup. Change the role prompts in `config/models.json` (or `config/user.json`) and run `bob gen` rather than editing the generated file, which is overwritten on the next regenerate.
 
@@ -452,11 +469,11 @@ Pre-Blackwell users (RTX 20/30/40, sm_75 to 89) can override for more VRAM savin
 
 `noMmap: true` on a model entry (or in `defaults` to apply globally) forces llama.cpp to read the full model file into heap memory at startup instead of using memory-mapped I/O (the default).
 
-Under mmap, CPU-offloaded layer weights are read from disk on demand (page faults). For the 30B-A3B ponder, which overflows VRAM by ~1.3 GB, every access to those offloaded layers is a potential disk seek during inference. With `--no-mmap`, all weights sit in heap RAM after startup: zero disk I/O during inference.
+Under mmap, CPU-offloaded layer weights are read from disk on demand (page faults). For the 12gb tier's MoE coder and ponder, whose offloaded experts live in system RAM, every access to those layers is a potential disk seek during inference. With `--no-mmap`, all weights sit in heap RAM after startup: zero disk I/O during inference.
 
-**Trade-off:** startup takes roughly 1 s per GB of model size (a 17 GB ponder = ~17 s on first load after a cold start). After that, the heap pages can be retained in RAM across swaps if `--mlock` is also set.
+**Trade-off:** startup takes roughly 1 s per GB of model size (the 17 GB 12gb ponder = ~17 s on first load after a cold start). After that, the heap pages can be retained in RAM across swaps if `--mlock` is also set.
 
-Set per-model in `config/models.json` (already done for the 16 GB ponder, which has `"noMmap": true`), or globally in `config/user.json`:
+Set per-model in `config/models.json` (already done for the 12gb coder and ponder, which have `"noMmap": true`), or globally in `config/user.json`:
 
 ```json
 {
@@ -468,7 +485,7 @@ Verified: `--no-mmap` is fully supported on Windows (via `SetFilePointerEx` + `R
 
 ## Memory locking (--mlock)
 
-`--mlock` is already applied to `fim` and `embed` (always-resident models). Setting `mlockBig: true` in defaults extends locking to swap-group models (ponder, coder, chat).
+`--mlock` is already applied to the always-resident models: `embed` on every GPU profile, and `fim` where it is pinned (8gb, 12gb, 24gb, 32gb; on 16gb `fim` joins the swap group and is not locked). Setting `mlockBig: true` in defaults extends locking to swap-group models (ponder, coder, chat).
 
 Combined with `--no-mmap`, mlock fully pins model weights in physical RAM: no disk seeks, no OS eviction to the pagefile. Inference latency for CPU-offloaded layers becomes consistent rather than occasionally spiky.
 
@@ -490,7 +507,7 @@ Enable in `config/user.json`:
 }
 ```
 
-**RAM budget:** locking the 17 GB ponder on a 64 GB system leaves ~45 GB free (safe). Do not enable on systems with 16 GB RAM.
+**RAM budget:** locking the 17 GB 12gb ponder on a 64 GB system leaves ~45 GB free (safe). Do not enable on systems with 16 GB RAM.
 
 ## NUMA strategy (7950X3D and multi-CCD CPUs)
 
@@ -525,12 +542,14 @@ explicitly by the generator. Measured on a 16 GB RTX 5080:
 | `-ub 512` | compute buffer sized for a 512-token micro-batch | **~226 MiB** per 0.6B helper |
 
 So every model in `config/models.json` sets `ctx`, embedders and rerankers included; the `srv` macro
-always emits `-np 1`; and the two 0.6B helpers pass `-ub 128`. Together that is about 8 GB of VRAM on a
-16 GB card that used to be reserved and never used.
+always emits `-np 1`; and the embedder passes `-ub 128`. The reranker runs at `-c 1024 -ub 1024 -b 1024`
+instead, because a rank-pooling reranker rejects any query plus document pair longer than its ubatch.
+Its smaller KV partly offsets the larger compute buffer, but that net figure has not been measured on a
+card yet; the 1198 MiB in the profile notes is from the older `-c 2048 -ub 128` setting.
 
 The other trap is llama-swap's grouping. Any model Bob does not list as a swap member lands in
 llama-swap's implicit default group, which defaults to `exclusive: true` — so a single embedding call
-for a memory lookup would unload the chat model. Bob now emits a named `resident` group
+for a memory lookup would unload the chat model. Bob emits a named `resident` group
 (`swap: false, exclusive: false, persistent: true`) for `embed` and `rerank` so they coexist instead.
 
 ## MoE expert offloading (`nCpuMoe`)
@@ -574,13 +593,13 @@ The 7950X3D's V-Cache (96 MB L3) reduces main-memory pressure for CPU-resident l
 
 ## Speculative decoding
 
-`draftRole: "fim"` on the `coder` model (enabled by default in all profiles) uses the always-resident `fim` model as a draft: `fim` proposes N tokens, and `coder` verifies them in a single forward pass. When the draft is correct (roughly 70 to 80% of the time on coding tasks), the large model accepts all N tokens without spending compute on each one, effectively multiplying generation throughput.
+Two kinds ship. On **24gb and 32gb** the 27B chat model runs its own multi-token-prediction head as the draft (`--spec-type draft-mtp --spec-draft-n-max 2` in its `flags`), which needs no second model. On **8gb**, `draftRole: "fim"` on the `coder` model uses the always-resident `fim` model as a draft (16gb, 12gb and cpu use no draft): `fim` proposes N tokens, and `coder` verifies them in a single forward pass. When the draft is correct (roughly 70 to 80% of the time on coding tasks), the large model accepts all N tokens without spending compute on each one, effectively multiplying generation throughput.
 
 Expected speedup: **20 to 40% on generation-heavy tasks** (autocomplete, inline edits, code generation). No quality change: the large model rejects incorrect draft tokens and falls back to its own output.
 
-**Tokenizer constraint:** only the `coder` → `fim` pairing is safe. Qwen3 (used by `chat` and `ponder`) has a different tokenizer vocabulary from Qwen2.5 (used by `coder` and `fim`). Mismatched vocabularies cause the large model to reject nearly all draft tokens, eliminating the speedup and potentially producing garbled output. Do not add `draftRole` to `chat` or `ponder`.
+**Tokenizer constraint:** only the `coder` → `fim` pairing is safe for a draft model. The Qwen3.5 `chat` and `ponder` models have a different tokenizer vocabulary from Qwen2.5 (used by the 8gb `coder` and `fim`). Mismatched vocabularies cause the large model to reject nearly all draft tokens, eliminating the speedup and potentially producing garbled output. Do not add `draftRole` to `chat` or `ponder`.
 
-**Disable:** Remove `draftRole` from the `coder` entry in `config/models.json`, then run `bob gen`.
+**Disable:** Remove `draftRole` from the 8gb `coder` entry (or the `--spec-type` flags from a 24gb/32gb `chat`) in `config/models.json`, then run `bob gen`.
 
 **Verify it's active:** run `bob gen`, then grep the generated config for the draft-model flag.
 
@@ -594,4 +613,4 @@ Windows:
 findstr "-md " config\llama-swap.yaml
 ```
 
-The `coder` cmd should contain `-md ${env.LLAMA_LOCAL_ROOT}/models/qwen-coder-3b-q8_0.gguf -ngld 99`. The `ponder` and `chat` cmds must not contain `-md`.
+On 8gb the `coder` cmd should contain `-md ${env.LLAMA_LOCAL_ROOT}/models/qwen-coder-1.5b-q8_0.gguf -ngld 99`. The `ponder` and `chat` cmds must not contain `-md`.

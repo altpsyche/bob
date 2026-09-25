@@ -3,15 +3,28 @@
 Pure and stateless — callers pass the allow-list (and, for secret checks, the home dir), so this module
 holds no config globals and is safe to import from any tool. The secrets denylist refuses sensitive files
 (the litellm key / api tokens in config.json / secrets.json, *.psd1 config, *.db session/memory stores,
-logs, .env files, and the usual home credential dirs) even when they fall inside an allowed root, which
-by default is the repo root and would otherwise expose them.
+logs, .env files, the generated client configs that embed Bob's LiteLLM key, n8n's config (its credential
+encryption key), Open WebUI's secret key file, and the usual home credential dirs) even when they fall
+inside an allowed root, which by default is the repo root and would otherwise expose them.
 """
 from pathlib import Path
 
 import osenv
 
-DENY_BASENAMES = {"config.json", "secrets.json"}  # carry litellmKey / apiTokens / provider keys
+REPO = Path(__file__).resolve().parent.parent
+
+# Generated client configs (repo-relative) that embed Bob's LiteLLM key (Continue, aider; litellm.yaml on an
+# install generated before the key moved to the proxy's environment) or wire a client to it (dsh, aider's
+# metadata beside its conf). The ONE list: the generators write these 0600 and the guard refuses them.
+KEY_BEARING = frozenset({
+    "config/litellm.yaml", "config/continue/config.yaml", "config/aider/.aider.conf.yml",
+    "config/aider/model-metadata.json", "config/dsh/settings.yaml", "config/dsh/cordis.patch.yml"})
+
+# config.json / secrets.json carry litellmKey / apiTokens / provider keys; .webui_secret_key is the file
+# Open WebUI keeps its session-signing key in; .credentials.yaml is the DeepSeek Harness credential store.
+DENY_BASENAMES = {"config.json", "secrets.json", ".webui_secret_key", ".credentials.yaml"}
 DENY_SUFFIXES = (".psd1", ".db")   # .psd1 config files; *.db session/memory stores
+_N8N_DATA = ("tools", "n8n-data")   # n8n's user folder; any `config` under it holds the encryption key
 
 
 def default_home() -> Path:
@@ -75,4 +88,27 @@ def is_denied_secret(target: Path, home: Path = None) -> bool:
         return True
     if "logs" in (seg.lower() for seg in rp.parts):
         return True
+    if _is_generated_secret(rp):
+        return True
     return in_secret_dir(rp, home)
+
+
+_KEY_BEARING_FOLDED = frozenset(k.casefold() for k in KEY_BEARING)
+
+
+def _is_generated_secret(rp: Path) -> bool:
+    """True for a key-bearing file Bob generates inside the repo (KEY_BEARING) and n8n's config files.
+    Compared casefolded: on a case-insensitive filesystem (APFS, NTFS) `CONFIG/Continue/config.yaml`
+    opens the same file, so a case-sensitive match would let it past the denylist."""
+    try:
+        repo = REPO.resolve()
+    except OSError:
+        return False
+    parts = tuple(seg.casefold() for seg in rp.parts)
+    root = tuple(seg.casefold() for seg in repo.parts)
+    if parts[:len(root)] != root:
+        return False
+    rel = parts[len(root):]
+    if "/".join(rel) in _KEY_BEARING_FOLDED:
+        return True
+    return rel[:2] == _N8N_DATA and rp.name.casefold() == "config"

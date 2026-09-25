@@ -16,6 +16,11 @@ Security invariants:
 
 Config tokens (`agent.apiTokens` + the litellm key) remain a **static fallback** — the store is
 additive and only consulted when `agent.authStore` is on, so with it off the behavior is unchanged.
+The litellm key is the one bob_core._litellm_key resolves (a generated secret unless the user set one);
+`agent.acceptLitellmKey = false` drops it from the accepted set so only issued tokens open the API.
+
+`authenticate` + `rate_allowed` are the ONE bearer check: the agent API and the MCP HTTP transport both
+resolve a caller to an `Identity` (owner, scopes, rate) through them.
 
 Admin CLI (the `bob agent token` verb front-door is deferred; this stays a CLI-only admin surface):
     python scripts/bob_authstore.py issue  --owner alice --scopes "file_*,web_fetch" --rate 60
@@ -39,22 +44,119 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _accepted_litellm_key(config: dict):
+    """The litellm key as a bearer, or None when agent.acceptLitellmKey is false."""
+    if not config.get("agent", {}).get("acceptLitellmKey", True):
+        return None
+    from bob_core import _litellm_key
+    return _litellm_key(config)
+
+
 def config_token_owners(config: dict) -> dict:
-    """Map each accepted STATIC bearer token to an owner id. The litellm key maps to
-    agent.defaultOwner; agent.apiTokens entries may be {token, owner} records or bare strings
-    (legacy: token maps to itself as the owner).
+    """Map each accepted STATIC bearer token to an owner id. The litellm key (unless
+    agent.acceptLitellmKey is false) maps to agent.defaultOwner; agent.apiTokens entries may be
+    {token, owner} records or bare strings (legacy: token maps to itself as the owner).
 
     One source for every HTTP surface Bob exposes (the agent API and the MCP Streamable HTTP
     transport), so a token issued in config is accepted identically by both."""
     agent = config.get("agent", {})
     default_owner = agent.get("defaultOwner", "local")
-    owners = {config.get("litellmKey", "sk-local"): default_owner}
+    owners = {}
+    key = _accepted_litellm_key(config)
+    if key:
+        owners[key] = default_owner
     for entry in agent.get("apiTokens", []):
         if isinstance(entry, dict) and entry.get("token"):
             owners[entry["token"]] = entry.get("owner") or default_owner
         elif isinstance(entry, str) and entry:
             owners[entry] = entry  # legacy flat-string token -> token-as-owner
     return owners
+
+
+def config_token_meta(config: dict) -> dict:
+    """Per-config-token scopes + rate, parallel to config_token_owners. A dict apiTokens entry may
+    carry optional `scopes` (tool globs / role:<name>) and `rate` (per-min); everything else defaults to
+    unrestricted scopes + agent.defaultRatePerMin (scopes None + rate 0 => no filtering, no limit)."""
+    agent = config.get("agent", {})
+    default_rate = int(agent.get("defaultRatePerMin", 0) or 0)
+    meta = {}
+    key = _accepted_litellm_key(config)
+    if key:
+        meta[key] = {"scopes": None, "rate": default_rate}
+    for entry in agent.get("apiTokens", []):
+        if isinstance(entry, dict) and entry.get("token"):
+            meta[entry["token"]] = {"scopes": entry.get("scopes"),
+                                    "rate": int(entry.get("rate", default_rate) or 0)}
+        elif isinstance(entry, str) and entry:
+            meta[entry] = {"scopes": None, "rate": default_rate}
+    return meta
+
+
+class Identity:
+    """A resolved caller: owner id + optional RBAC scopes + per-minute rate. `scopes=None` means
+    unrestricted; a list restricts tools (globs) and model roles (`role:<name>` entries)."""
+    __slots__ = ("owner", "scopes", "rate")
+
+    def __init__(self, owner: str, scopes=None, rate: int = 0):
+        self.owner = owner
+        self.scopes = scopes
+        self.rate = int(rate or 0)
+
+    def allowed_roles(self):
+        """The `role:<name>` scopes as a set, or None when the identity carries none (unrestricted)."""
+        roles = {s[5:] for s in (self.scopes or []) if isinstance(s, str) and s.startswith("role:")}
+        return roles or None
+
+    def tool_globs(self) -> list:
+        """The tool-glob scopes (everything that isn't a role scope); [] means every tool."""
+        return [s for s in (self.scopes or []) if isinstance(s, str) and not s.startswith("role:")]
+
+
+def bearer_token(authorization: str) -> str:
+    """The token of an `Authorization: Bearer <token>` header, '' for anything else."""
+    header = authorization or ""
+    return header[7:].strip() if header.startswith("Bearer ") else ""
+
+
+def authenticate(authorization: str, token_owner: dict, token_meta: dict = None, store=None):
+    """Resolve a bearer header to an Identity, or None when it is missing or unknown. The static config
+    map is checked first, then (only when a store is given) the DB-backed tokens, hashed and looked up
+    per call so a revoked token stops working on the next request."""
+    token = bearer_token(authorization)
+    if not token:
+        return None
+    owner = (token_owner or {}).get(token)
+    if owner is not None:
+        meta = (token_meta or {}).get(token) or {}
+        return Identity(owner, meta.get("scopes"), meta.get("rate", 0))
+    if store is not None:
+        rec = store.lookup(token)   # None if absent or revoked
+        if rec is not None:
+            return Identity(rec["owner"], rec.get("scopes"), rec.get("rate_per_min", 0))
+    return None
+
+
+def rate_allowed(buckets: dict, identity, now: float) -> bool:
+    """Per-owner token-bucket rate limit: False when the owner has spent its allowance. rate<=0 means
+    unlimited. The bucket refills at `rate` tokens/min; `buckets` is the caller's owner -> state map."""
+    rate = identity.rate
+    if rate <= 0:
+        return True
+    tokens, last = buckets.get(identity.owner, (float(rate), now))
+    tokens = min(float(rate), tokens + (now - last) * rate / 60.0)
+    if tokens < 1.0:
+        buckets[identity.owner] = (tokens, now)
+        return False
+    buckets[identity.owner] = (tokens - 1.0, now)
+    return True
+
+
+def open_store(config: dict):
+    """The DB-backed token store beside the session DB when agent.authStore is on, else None."""
+    if not config.get("agent", {}).get("authStore", False):
+        return None
+    from bob_core import session_db_path
+    return AuthStore(session_db_path(config))
 
 
 class AuthStore:
@@ -186,13 +288,12 @@ class AuthStore:
 # --------------------------------------------------------------------------- admin CLI
 
 def _open_default() -> AuthStore:
-    rel = "data/sessions.db"
+    from bob_core import load_config, session_db_path
     try:
-        from bob_core import load_config
-        rel = load_config().get("agent", {}).get("sessionDbPath", rel)
+        config = load_config()
     except Exception:
-        pass
-    return AuthStore(REPO / rel.replace("\\", "/"))
+        config = {}
+    return AuthStore(session_db_path(config))
 
 
 def main(argv=None) -> int:

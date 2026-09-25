@@ -36,8 +36,7 @@ def configure(config: dict) -> None:
     _edit_format = config.get("agent", {}).get("editFormat", "search-replace")
 
 
-# file_edit mutates the working tree. Marking it declares the `ask` default + batch serialization; note
-# file_write is not registered, so file_edit is the safer edit surface.
+# file_edit mutates the working tree. Marking it declares the `ask` default + batch serialization.
 MUTATING_TOOLS = {"file_edit"}
 
 

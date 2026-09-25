@@ -135,7 +135,7 @@ class TestScreenshotTool(unittest.TestCase):
         self.assertTrue(computer.enabled({"agent": {"computerUse": {"enabled": True}}}))
 
     def test_screenshot_returns_image_contract_and_records_scale(self):
-        computer.configure({"agent": {"computerUse": {"enabled": True, "maxLongEdge": 1280}}})
+        computer.configure({"agent": {"computerUse": {"enabled": True, "display": "host", "maxLongEdge": 1280}}})
         with mock.patch("bob_vision.capture_screen", return_value="/tmp/x.png"), \
              mock.patch("bob_vision.resize_for_control", return_value=("/tmp/x-scaled.png", 0.5, (1280, 720))):
             out = computer.DISPATCH["computer_screenshot"]()
@@ -145,7 +145,7 @@ class TestScreenshotTool(unittest.TestCase):
         self.assertEqual(computer._last_scale, 0.5)
 
     def test_screenshot_degrades_when_no_capture_backend(self):
-        computer.configure({"agent": {"computerUse": {"enabled": True}}})
+        computer.configure({"agent": {"computerUse": {"enabled": True, "display": "host"}}})
         with mock.patch("bob_vision.capture_screen", side_effect=RuntimeError("no screenshot tool")):
             out = computer.DISPATCH["computer_screenshot"]()
         self.assertIn("unavailable", out.lower())
@@ -156,7 +156,7 @@ class TestScreenshotTool(unittest.TestCase):
 
 class TestInputActions(unittest.TestCase):
     def setUp(self):
-        computer.configure({"agent": {"computerUse": {"enabled": True}}})
+        computer.configure({"agent": {"computerUse": {"enabled": True, "display": "host"}}})
         computer._last_scale = 1.0
         computer._screenshotted = False
 
@@ -219,7 +219,7 @@ class TestKillSwitchAndRateLimit(unittest.TestCase):
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def test_halt_sentinel_blocks_action(self):
-        computer.configure({"agent": {"computerUse": {"enabled": True}}})
+        computer.configure({"agent": {"computerUse": {"enabled": True, "display": "host"}}})
         computer.set_halt(True)
         called = []
         with mock.patch("osenv.input_click", side_effect=lambda *a: called.append(a)):
@@ -228,7 +228,7 @@ class TestKillSwitchAndRateLimit(unittest.TestCase):
         self.assertEqual(called, [])   # backend never reached
 
     def test_rate_limit_refuses_past_budget(self):
-        computer.configure({"agent": {"computerUse": {"enabled": True, "maxActionsPerMinute": 2}}})
+        computer.configure({"agent": {"computerUse": {"enabled": True, "display": "host", "maxActionsPerMinute": 2}}})
         with mock.patch("osenv.input_click", return_value=None):
             r1 = computer.DISPATCH["computer_click"](coordinate=[1, 1])
             r2 = computer.DISPATCH["computer_click"](coordinate=[2, 2])
@@ -238,7 +238,7 @@ class TestKillSwitchAndRateLimit(unittest.TestCase):
         self.assertIn("rate limit", r3.lower())
 
     def test_notify_called_on_action(self):
-        computer.configure({"agent": {"computerUse": {"enabled": True}}})
+        computer.configure({"agent": {"computerUse": {"enabled": True, "display": "host"}}})
         fired = []
         with mock.patch("osenv.notify", side_effect=lambda t, b: fired.append((t, b))), \
              mock.patch("osenv.input_key", return_value=None):
@@ -251,6 +251,114 @@ class TestKillSwitchAndRateLimit(unittest.TestCase):
         self.assertTrue(computer.is_halted())
         computer.set_halt(False)
         self.assertFalse(computer.is_halted())
+
+
+class TestDisplayTarget(unittest.TestCase):
+    """agent.computerUse.display is enforced: 'virtual' (the default) never reaches the host session."""
+
+    def setUp(self):
+        self._env = dict(os.environ)
+        self.dir = tempfile.mkdtemp(prefix="bob-cu-disp-")
+        self._halt = mock.patch("computer.halt_path", return_value=Path(self.dir) / "halt")
+        self._halt.start()
+        self._linux = mock.patch("osenv.os_name", return_value="linux")
+        self._linux.start()
+        computer._action_times = []
+        computer._screenshotted = True
+        computer._last_scale = 1.0
+
+    def tearDown(self):
+        self._linux.stop()
+        self._halt.stop()
+        os.environ.clear()
+        os.environ.update(self._env)
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _host_seams_forbidden(self):
+        boom = AssertionError("host seam reached")
+        return (mock.patch("osenv.input_click", side_effect=boom),
+                mock.patch("osenv.input_type", side_effect=boom),
+                mock.patch("bob_vision.capture_screen", side_effect=boom))
+
+    def test_default_is_virtual_and_refuses_without_virtual_display(self):
+        os.environ.pop("BOB_VIRTUAL_DISPLAY", None)
+        computer.configure({"agent": {"computerUse": {"enabled": True}}})   # no display key
+        a, b, c = self._host_seams_forbidden()
+        with a, b, c, mock.patch("subprocess.run", side_effect=AssertionError("no command may run")):
+            click = computer.DISPATCH["computer_click"](coordinate=[1, 2])
+            typed = computer.DISPATCH["computer_type"](text="x")
+            shot = computer.DISPATCH["computer_screenshot"]()
+        for out in (click, typed, shot):
+            self.assertIn("BOB_VIRTUAL_DISPLAY", out)
+
+    def test_virtual_display_drives_only_that_display_via_xdotool(self):
+        os.environ["BOB_VIRTUAL_DISPLAY"] = ":99"
+        os.environ["DISPLAY"] = ":0"
+        os.environ["WAYLAND_DISPLAY"] = "wayland-0"
+        computer.configure({"agent": {"computerUse": {"enabled": True, "display": "virtual"}}})
+        calls = []
+        a, b, c = self._host_seams_forbidden()
+        with a, b, c, mock.patch("computer.shutil.which", return_value="/usr/bin/xdotool"), \
+             mock.patch("computer.subprocess.run",
+                        side_effect=lambda argv, **kw: calls.append((argv, kw["env"]))):
+            out = computer.DISPATCH["computer_click"](coordinate=[5, 6])
+        self.assertIn("clicked", out)
+        self.assertTrue(calls)
+        for argv, env in calls:
+            self.assertEqual(argv[0], "xdotool")
+            self.assertEqual(env["DISPLAY"], ":99")
+            self.assertNotIn("WAYLAND_DISPLAY", env)
+
+    def test_virtual_display_without_xdotool_refuses(self):
+        # ydotool/wtype inject into the host session regardless of DISPLAY, so they are never used.
+        os.environ["BOB_VIRTUAL_DISPLAY"] = ":99"
+        computer.configure({"agent": {"computerUse": {"enabled": True, "display": "virtual"}}})
+        a, b, c = self._host_seams_forbidden()
+        with a, b, c, mock.patch("computer.shutil.which",
+                                 side_effect=lambda t: "/usr/bin/ydotool" if t == "ydotool" else None), \
+             mock.patch("computer.subprocess.run", side_effect=AssertionError("must not run")):
+            out = computer.DISPATCH["computer_key"](keys="Return")
+        self.assertIn("xdotool", out)
+
+    def test_virtual_screenshot_captures_virtual_display(self):
+        os.environ["BOB_VIRTUAL_DISPLAY"] = ":99"
+        computer.configure({"agent": {"computerUse": {"enabled": True}}})
+        seen = {}
+
+        def fake_run(argv, **kw):
+            seen.update(argv=argv, env=kw["env"])
+            Path(argv[-1]).write_bytes(b"png")
+
+        with mock.patch("bob_vision.capture_screen", side_effect=AssertionError("host capture")), \
+             mock.patch("computer.shutil.which", side_effect=lambda t: "/usr/bin/scrot" if t == "scrot" else None), \
+             mock.patch("computer.subprocess.run", side_effect=fake_run), \
+             mock.patch("bob_vision.resize_for_control", return_value=("/tmp/s.png", 1.0, (10, 10))):
+            out = computer.DISPATCH["computer_screenshot"]()
+        self.assertIn("__images__", out)
+        self.assertEqual(seen["argv"][0], "scrot")
+        self.assertEqual(seen["env"]["DISPLAY"], ":99")
+        Path(seen["argv"][-1]).unlink(missing_ok=True)
+
+    def test_virtual_refused_off_linux(self):
+        os.environ["BOB_VIRTUAL_DISPLAY"] = ":99"
+        computer.configure({"agent": {"computerUse": {"enabled": True, "display": "virtual"}}})
+        with mock.patch("osenv.os_name", return_value="windows"), \
+             mock.patch("osenv.input_click", side_effect=AssertionError("host seam reached")):
+            out = computer.DISPATCH["computer_click"](coordinate=[1, 2])
+        self.assertIn("only on Linux", out)
+
+    def test_unknown_display_mode_refused(self):
+        computer.configure({"agent": {"computerUse": {"enabled": True, "display": "desktop"}}})
+        with mock.patch("osenv.input_click", side_effect=AssertionError("host seam reached")):
+            out = computer.DISPATCH["computer_click"](coordinate=[1, 2])
+        self.assertIn("not recognized", out)
+
+    def test_host_mode_uses_host_seam(self):
+        computer.configure({"agent": {"computerUse": {"enabled": True, "display": "host"}}})
+        with mock.patch("osenv.input_click", return_value=None) as click:
+            out = computer.DISPATCH["computer_click"](coordinate=[3, 4])
+        self.assertIn("clicked", out)
+        click.assert_called_once_with(3, 4, "left")
 
 
 class TestUnattendedInterlock(unittest.TestCase):
@@ -267,16 +375,13 @@ class TestUnattendedInterlock(unittest.TestCase):
 
     def test_task_runner_marks_unattended(self):
         import bob_task_runner
-        import bob_core
-        import bob_loop
         cfg = _common.fake_config()
-        orig = (bob_core.check_litellm, bob_core.get_llm_client)
-        bob_core.check_litellm = lambda config=None: True
-        bob_core.get_llm_client = lambda config=None: _common.scripted_client(["done"])
-        try:
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        cfg["agent"]["checkpointDbPath"] = str(tmp / "checkpoints.db")   # the durable run row lands here
+        with _common.stubbed_llm(factory=lambda: _common.scripted_client(["done"])):
             bob_task_runner.run_task(cfg, "u1", "local", goal="hi")
-        finally:
-            bob_core.check_litellm, bob_core.get_llm_client = orig
+        self.assertTrue((tmp / "checkpoints.db").exists())
         self.assertTrue(cfg["agent"]["unattended"])
         self.assertFalse(cfg["agent"].get("computerUse", {}).get("allowUnattended", False))
 

@@ -76,20 +76,16 @@ class SkillRegistry:
         for the catalog; steps/body load on run."""
         return [dict(s) for s in self.skills.values()]
 
-    def run(self, name: str, registry, config=None, context=None, args: str = "") -> str:
-        """Blocking wrapper over `run_events` — returns the final synthesized string.
+    def run(self, name: str, registry, config=None, context=None, args: str = "", approve=None) -> str:
+        """Blocking wrapper over `run_events`: returns the final synthesized string (or the error).
 
-        A `steps` skill runs its tool sequence exactly as before (config unused → identical
-        output). A no-`steps` (sub-agent) skill runs as an isolated `run_agent_events` sub-run; it
-        needs `config` and a reachable model (degrades to a clear message otherwise)."""
-        result = ""
-        for ev in self.run_events(name, registry, config=config, context=context, args=args):
-            t = ev.get("type")
-            if t == "final":
-                result = ev.get("result") or ""
-            elif t == "error":
-                result = ev.get("message") or ""
-        return result
+        A `steps` skill runs its tool sequence through the approval gate. A no-`steps` (sub-agent)
+        skill runs as an isolated `run_agent_events` sub-run; it needs `config` and a reachable model
+        (degrades to a clear message otherwise). `approve=None` fails closed for gated tools."""
+        from bob_loop import fold_events
+        out = fold_events(self.run_events(name, registry, config=config, context=context, args=args,
+                                          approve=approve))
+        return (out.error if out.error is not None else out.result) or ""
 
     def run_events(self, name: str, registry, config=None, context=None, args: str = "",
                    cancel=None, approve=None, owner=None, scope=None, role=None):
@@ -102,15 +98,35 @@ class SkillRegistry:
             yield {"type": "final", "result": f"Unknown skill: {name}", "skill": name}
             return
         if s["steps"]:
-            yield from self._run_steps_events(name, s, registry, context)
+            yield from self._run_steps_events(name, s, registry, context, config=config,
+                                              approve=approve, owner=owner)
         else:
             yield from self._run_sub_agent_events(
                 name, s, registry, config, args,
                 cancel=cancel, approve=approve, owner=owner, scope=scope, role=role)
 
-    def _run_steps_events(self, name: str, s: dict, registry, context):
-        """Simple tool-sequence skill: dispatch each step in order. The assembled text in the
-        terminal `final` is identical to the original `run` return value."""
+    def _run_steps_events(self, name: str, s: dict, registry, context, config=None, approve=None,
+                          owner=None):
+        """Simple tool-sequence skill: dispatch each step in order through the shared approval gate
+        (bob_permissions.dispatch_with_approval: policy, PreToolUse hooks, the REQUIRES_APPROVAL floor),
+        surfacing its approval_required / tool_result events. A gated step with no approver is denied."""
+        import logging
+        from types import SimpleNamespace
+
+        from bob_permissions import PermissionPolicy, dispatch_with_approval
+
+        config = config or getattr(context, "config", None) or {}
+        agent_cfg = config.get("agent", {})
+        if context is None:
+            context = SimpleNamespace(config=config, policy=PermissionPolicy(config), agent_depth=0,
+                                      owner=owner or agent_cfg.get("defaultOwner", "local"),
+                                      approve=approve)
+        try:
+            import bob_loop
+            log = bob_loop._agent_logger(config) if config else logging.getLogger("bob.agent")
+        except Exception:
+            log = logging.getLogger("bob.agent")
+        agency = agent_cfg.get("agency", "show")
         yield {"type": "skill_start", "skill": name, "mode": "steps", "steps": len(s["steps"])}
         out = [f"# skill: {name}"]
         for i, step in enumerate(s["steps"], 1):
@@ -120,10 +136,13 @@ class SkillRegistry:
                 yield {"type": "skill_step", "index": i, "tool": None, "result": "no 'tool'"}
                 continue
             args_json = json.dumps(step.get("arguments", {}))
-            yield {"type": "tool_call", "call_id": f"{name}:{i}", "name": tool, "arguments": args_json}
-            result = registry.dispatch_call(tool, args_json, context=context)
+            call_id = f"{name}:{i}"
+            yield {"type": "tool_call", "call_id": call_id, "name": tool, "arguments": args_json}
+            tc = SimpleNamespace(function=SimpleNamespace(name=tool, arguments=args_json))
+            result = yield from dispatch_with_approval(
+                tc, call_id, registry=registry, context=context, agency=agency, approve=approve,
+                log=log, rid=f"skill:{name}")
             out.append(f"[step {i}] {tool}:\n{result}")
-            yield {"type": "tool_result", "call_id": f"{name}:{i}", "name": tool, "result": result}
         yield {"type": "final", "result": "\n\n".join(out), "skill": name}
 
     def _run_sub_agent_events(self, name: str, s: dict, registry, config, args: str, *,

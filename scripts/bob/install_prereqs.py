@@ -6,8 +6,10 @@ python-provisioning logic lives behind the osenv seams (PACKAGE_MAP / resolve_pa
 install_package / bob_python / linux_cmake3 / the CUDA cluster). Stdlib + osenv only — nothing here may
 import a venv-only dependency.
 
-  python3 -m bob.kernel prereqs          # GPU build (installs the CUDA toolkit when an NVIDIA GPU is present)
-  python3 -m bob.kernel prereqs --cpu    # CPU-only tier (skips the CUDA toolkit)
+  python3 -m bob.kernel prereqs                # base tools; the build toolchain only when no prebuilt fits
+  python3 -m bob.kernel prereqs --cpu          # CPU-only tier (never the CUDA toolkit)
+  python3 -m bob.kernel prereqs --from-source  # + compiler/cmake/ninja/Go (+ the CUDA toolkit on a GPU box)
+  python3 -m bob.kernel prereqs --with-node    # + Node.js/npm (optional: n8n, Continue's npx MCP servers)
 """
 import shutil
 import subprocess
@@ -25,6 +27,55 @@ REPO = osenv.REPO
 
 def _have(name: str) -> bool:
     return shutil.which(name) is not None
+
+
+def needs_build_toolchain(cpu: bool = False, from_source: bool = False) -> bool:
+    """True when this install will compile llama.cpp: --from-source, or no driver-only prebuilt engine
+    resolves for this host (an unbuilt platform such as arm64 Linux, or the release is unreachable). The
+    default prebuilt path needs no compiler, cmake or ninja."""
+    if from_source:
+        return True
+    from bob import lifecycle
+    return not lifecycle.prebuilt_available(cpu=cpu)
+
+
+def needs_go(from_source: bool = False) -> bool:
+    """True when llama-swap must be built with Go: --from-source, or versions.lock pins no verified release
+    binary for this OS/arch. (fabric also needs Go, but it is opt-in and says so when Go is missing.)"""
+    if from_source:
+        return True
+    from bob import versions
+    pin = versions.pinned_binary("llama-swap", f"{osenv.os_name()}-{osenv.normalized_cpu_arch()}")
+    return not (pin and (pin.get("sha256") or "").strip())
+
+
+# The command each logical package provides, so an atomic host can skip layering what it already has
+# (every layered package is a new deployment and a reboot, and rpm-ostree refuses a package that is
+# already in the base image).
+_PROBE = {"git": "git", "curl": "curl", "toolchain-cc": "g++", "make": "make", "cmake": "cmake",
+          "ninja": "ninja", "go": "go", "node": "node", "npm": "npm", "python": "python3"}
+
+
+def _present(logical: str) -> bool:
+    """True when what `logical` provides is already usable on this host."""
+    if logical in ("python-pip", "python-venv"):
+        return subprocess.run(["python3", "-c", "import ensurepip, venv"], capture_output=True).returncode == 0 \
+            if _have("python3") else False
+    probe = _PROBE.get(logical)
+    return bool(probe) and _have(probe)
+
+
+def linux_logical_packages(build: bool, go: bool, node: bool) -> list:
+    """The logical PACKAGE_MAP names this install needs: the base set always, the compiler + cmake + ninja
+    only for a source build, Go only when llama-swap is built from source, Node only when asked for."""
+    pkgs = ["git", "curl", "python", "python-pip", "python-venv"]
+    if build:
+        pkgs += ["toolchain-cc", "make", "cmake", "ninja"]
+    if go:
+        pkgs.append("go")
+    if node:
+        pkgs += ["node", "npm"]
+    return pkgs
 
 
 def _sudo() -> list:
@@ -127,12 +178,12 @@ def _install_linux_cuda(manager: str) -> None:
 _ATOMIC_NOTE = """Toolchain layered via rpm-ostree. On an atomic/ostree host (Bazzite / Silverblue /
 Kinoite) layered packages apply on the NEXT BOOT — so reboot, then run setup:
     systemctl reboot
-    ./setup.sh{cpu}
+    ./setup.sh{flags}
 
 RECOMMENDED ALTERNATIVE (no reboot, better isolation, simple GPU) — run Bob in a Fedora distrobox:
     distrobox create --name bob --image fedora:latest{nvidia}
     distrobox enter bob
-    cd {repo} && ./install_prereqs.sh{cpu} && ./setup.sh{cpu}
+    cd {repo} && ./install_prereqs.sh{flags} && ./setup.sh{flags}
 Inside the box it's plain Fedora (dnf) — the native build and CUDA passthrough just work, and nothing
 touches the immutable host."""
 
@@ -141,7 +192,12 @@ def _layer_atomic(pkgs: list, mgr: str, cpu: bool, from_source: bool = False) ->
     """Layer the toolchain on an rpm-ostree host in one transaction. CUDA is intentionally NOT layered on
     the host (it needs NVIDIA's repo + akmods and is fragile on atomic). On the DEFAULT (prebuilt) path the
     driver-only engine runs on the host as-is, so no distrobox is needed; the distrobox note is printed only
-    for a --from-source GPU build, where a Fedora distrobox is the blessed Bazzite/Silverblue path."""
+    for a --from-source GPU build, where a Fedora distrobox is the blessed Bazzite/Silverblue path. With
+    nothing left to layer (the base image already has it all) there is no transaction and no reboot."""
+    if not pkgs:
+        print("  Atomic host: everything needed is already on the image, nothing to layer (no reboot). "
+              f"Run: ./setup.sh{' --cpu' if cpu else ''}", file=sys.stderr)
+        return 0
     print(f"  layering {len(pkgs)} package(s) via rpm-ostree: {' '.join(pkgs)}", file=sys.stderr)
     try:
         osenv.install_packages(pkgs, manager=mgr)
@@ -151,7 +207,7 @@ def _layer_atomic(pkgs: list, mgr: str, cpu: bool, from_source: bool = False) ->
             "distrobox instead:\n    distrobox create --name bob --image fedora:latest --nvidia && "
             "distrobox enter bob\nthen run ./install_prereqs.sh + ./setup.sh inside it.")
     if from_source and not cpu:
-        print("\n" + _ATOMIC_NOTE.format(cpu="", nvidia=" --nvidia", repo=REPO), file=sys.stderr)
+        print("\n" + _ATOMIC_NOTE.format(flags=" --from-source", nvidia=" --nvidia", repo=REPO), file=sys.stderr)
     else:
         print("\n  Atomic host: the driver-only prebuilt engine runs on the host as-is (no distrobox needed). "
               "The toolchain layer applies on the NEXT BOOT — reboot, then run ./setup.sh.", file=sys.stderr)
@@ -183,11 +239,12 @@ def _prime_sudo(mgr: str, pkgs: list, cpu: bool) -> None:
         "  • OR configure passwordless sudo, then re-run ./install_prereqs.sh.")
 
 
-def _install_linux(cpu: bool, from_source: bool = False) -> int:
-    """Port of Install-LinuxPrereqs: toolchain via PACKAGE_MAP (ONE batched install = one sudo prompt), a
-    venv-compatible Python, a build-usable cmake 3.x, optional CUDA + cron + docker. On an atomic/ostree
-    host (rpm-ostree) the toolchain LAYERS and applies on the next boot. Fails non-zero if the toolchain
-    install fails.
+def _install_linux(cpu: bool, from_source: bool = False, with_node: bool = False) -> int:
+    """Linux prerequisites: packages via PACKAGE_MAP (ONE batched install = one sudo prompt), a
+    venv-compatible Python, optional CUDA + cron. The compiler, cmake and ninja are installed only when
+    this install compiles llama.cpp (needs_build_toolchain), Go only when llama-swap is built from source
+    (needs_go), Node only with with_node. On an atomic/ostree host (rpm-ostree) the packages it lacks LAYER
+    and apply on the next boot. Fails non-zero if the package install fails.
 
     The multi-GB CUDA Toolkit is installed ONLY with from_source=True: the default install uses the
     driver-only prebuilt engine (CUDA runtime libs bundled), so it needs the NVIDIA driver but never nvcc."""
@@ -198,15 +255,22 @@ def _install_linux(cpu: bool, from_source: bool = False) -> int:
     atomic = (mgr == "rpm-ostree")
     print(f"=== Linux prerequisites ({mgr}{' — atomic/ostree host' if atomic else ''}) ===", file=sys.stderr)
 
-    toolchain = ["git", "curl", "toolchain-cc", "make", "cmake", "ninja", "go", "node", "npm",
-                 "python", "python-pip", "python-venv"]
+    build = needs_build_toolchain(cpu, from_source)
+    go = needs_go(from_source)
+    print(f"  build toolchain: {'yes (source build)' if build else 'no (driver-only prebuilt engine)'}; "
+          f"Go: {'yes' if go else 'no (pinned llama-swap release)'}; "
+          f"Node.js: {'yes' if with_node else 'no (pass --with-node for n8n / npx MCP servers)'}",
+          file=sys.stderr)
     pkgs = []
-    for logical in toolchain:
+    for logical in linux_logical_packages(build, go, with_node):
+        if atomic and _present(logical):
+            continue  # already on the image: layering it again would only cost a reboot
         name = osenv.resolve_package_name(logical, mgr)
         if name and name not in pkgs:
             pkgs.append(name)  # None => bundled on this manager, skip
 
-    _prime_sudo(mgr, pkgs, cpu)
+    if pkgs:
+        _prime_sudo(mgr, pkgs, cpu)
 
     if atomic:
         return _layer_atomic(pkgs, mgr, cpu, from_source)
@@ -229,12 +293,13 @@ def _install_linux(cpu: bool, from_source: bool = False) -> int:
     except (OSError, subprocess.SubprocessError) as e:
         print(f"  python provisioning failed: {e} (bootstrap will retry)", file=sys.stderr)
 
-    # llama.cpp/whisper.cpp reject cmake >= 4.0; the distro cmake is 4.x on rolling distros. Cache a 3.x.
-    try:
-        cm3 = osenv.linux_cmake3(REPO)
-        print(f"  cmake 3.x ready: {cm3}", file=sys.stderr)
-    except (RuntimeError, OSError) as e:
-        print(f"  couldn't provision cmake 3.x: {e} (setup will retry)", file=sys.stderr)
+    # llama.cpp needs a cmake inside osenv.CMAKE_RANGE; rolling distros ship a newer one. Cache the pin.
+    if build:
+        try:
+            cm3 = osenv.linux_cmake3(REPO)
+            print(f"  cmake ready: {cm3}", file=sys.stderr)
+        except (RuntimeError, OSError) as e:
+            print(f"  couldn't provision cmake: {e} (setup will retry)", file=sys.stderr)
 
     if cpu:
         print("  --cpu: skipping CUDA toolkit (CPU-only tier).", file=sys.stderr)
@@ -271,11 +336,12 @@ def _install_linux(cpu: bool, from_source: bool = False) -> int:
     if _have("docker"):
         print("  docker ok", file=sys.stderr)
     else:
-        print("  docker not found (optional — needed only for the compose services). Install docker + "
-              "add your user to the docker group.", file=sys.stderr)
+        print("  docker not found (optional: only SearXNG / Langfuse use it; `bob services <name> start` "
+              "guides the install the first time).", file=sys.stderr)
 
     # The toolchain install above raises on failure (batched), so reaching here means it succeeded.
-    print(f"\nLinux prerequisites done. Run: ./setup.sh{' --cpu' if cpu else ''}", file=sys.stderr)
+    flags = (" --cpu" if cpu else "") + (" --from-source" if from_source else "")
+    print(f"\nLinux prerequisites done. Run: ./setup.sh{flags}", file=sys.stderr)
     return 0
 
 
@@ -284,40 +350,54 @@ def _install_linux(cpu: bool, from_source: bool = False) -> int:
 _VSWHERE = r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
 
 
-def _install_windows(cpu: bool, from_source: bool = False) -> int:  # pragma: no cover — Windows only (+ CI acceptance)
-    """Windows path: VS2022 C++, Node+uv, Go+Python312 (scoop/winget),
-    CUDA (GPU-aware, only with --from-source), cmake 3.x, Docker Desktop."""
+def _install_windows(cpu: bool, from_source: bool = False, with_node: bool = False) -> int:  # pragma: no cover (Windows only, + CI acceptance)
+    """Windows path: uv + Python 3.12 always; VS2022 C++ and cmake only for a source build
+    (needs_build_toolchain); Go only when llama-swap is built from source (needs_go); Node only with
+    with_node; the CUDA Toolkit only for a --from-source GPU build. Docker Desktop is not installed here:
+    `bob services searxng|langfuse start` runs the guided Docker install the first time one is started, so a
+    default install never forces a logout."""
     if not _have("git"):
         raise RuntimeError("git not found. Install Git from https://git-scm.com, then re-run install_prereqs.bat.")
     have_scoop = _have("scoop")
     print(f"  git ok; scoop {'ok' if have_scoop else 'absent (using winget for go/python)'}", file=sys.stderr)
+    build = needs_build_toolchain(cpu, from_source)
+    go = needs_go(from_source)
 
-    # VS2022 with the Desktop C++ workload.
-    vs_install = ""
-    if Path(_VSWHERE).exists():
-        vs_install = subprocess.run([_VSWHERE, "-latest", "-products", "*", "-requires",
-                                     "Microsoft.VisualStudio.Workload.NativeDesktop", "-property",
-                                     "installationPath"], capture_output=True, text=True).stdout.strip()
-    if vs_install:
-        print("  VS2022 ok", file=sys.stderr)
+    # VS2022 with the Desktop C++ workload: the compiler for a source build only.
+    if build:
+        vs_install = ""
+        if Path(_VSWHERE).exists():
+            vs_install = subprocess.run([_VSWHERE, "-latest", "-products", "*", "-requires",
+                                         "Microsoft.VisualStudio.Workload.NativeDesktop", "-property",
+                                         "installationPath"], capture_output=True, text=True).stdout.strip()
+        if vs_install:
+            print("  VS2022 ok", file=sys.stderr)
+        else:
+            raise RuntimeError("VS2022 'Desktop development with C++' workload not found: a source build of "
+                               "llama.cpp needs it. Install VS2022 (winget install "
+                               "Microsoft.VisualStudio.2022.Community), add the 'Desktop development with C++' "
+                               "workload, then re-run install_prereqs.bat.")
     else:
-        raise RuntimeError("VS2022 'Desktop development with C++' workload not found — required to compile "
-                           "llama.cpp. Install VS2022 (winget install Microsoft.VisualStudio.2022.Community), "
-                           "add the 'Desktop development with C++' workload, then re-run install_prereqs.bat.")
+        print("  VS2022 not required (driver-only prebuilt engine; pass --from-source to build instead)",
+              file=sys.stderr)
 
-    # Node.js + uv.
+    # Node.js (optional) + uv.
     if _have("node"):
         print("  node ok", file=sys.stderr)
-    else:
+    elif with_node:
         _winget("OpenJS.NodeJS")
+    else:
+        print("  node skipped (optional: pass --with-node for n8n / Continue's npx MCP servers)", file=sys.stderr)
     if _have("uvx"):
         print("  uv ok", file=sys.stderr)
     else:
         _winget("astral-sh.uv")
 
-    # Go + Python 3.12.
+    # Go (source build of llama-swap only) + Python 3.12.
     if _have("go"):
         print("  go ok", file=sys.stderr)
+    elif not go:
+        print("  go not required (pinned llama-swap release binary)", file=sys.stderr)
     elif have_scoop:
         subprocess.run(["scoop", "install", "go"])
     else:
@@ -340,7 +420,7 @@ def _install_windows(cpu: bool, from_source: bool = False) -> int:  # pragma: no
     if cpu:
         print("  --cpu: skipping CUDA toolkit (CPU-only tier).", file=sys.stderr)
     elif not from_source:
-        print("  Prebuilt engine is driver-only — skipping the CUDA Toolkit. For a source GPU build, re-run "
+        print("  Prebuilt engine is driver-only: skipping the CUDA Toolkit. For a source GPU build, re-run "
               "with --from-source.", file=sys.stderr)
     else:
         gpu = osenv.gpu_arch()
@@ -354,64 +434,56 @@ def _install_windows(cpu: bool, from_source: bool = False) -> int:  # pragma: no
             print("  Installing CUDA Toolkit 12.8 (large download)...", file=sys.stderr)
             _winget("Nvidia.CUDA", ["--version", "12.8"])
         else:
-            print("  winget not found — install CUDA Toolkit 12.8 manually, then re-run.", file=sys.stderr)
+            print("  winget not found: install CUDA Toolkit 12.8 manually, then re-run.", file=sys.stderr)
 
-    # cmake 3.x (cmake 4.x excluded by llama.cpp).
-    cmake_ok = False
-    if _have("cmake"):
-        out = subprocess.run(["cmake", "--version"], capture_output=True, text=True).stdout
-        import re
-        m = re.search(r"(\d+)\.(\d+)\.(\d+)", out)
-        if m and (int(m.group(1)), int(m.group(2))) < (4, 0):
-            cmake_ok = True
-            print(f"  cmake ok ({m.group(0)})", file=sys.stderr)
-    if not cmake_ok and Path(_VSWHERE).exists():
-        vs_i = subprocess.run([_VSWHERE, "-latest", "-products", "*", "-requires",
-                               "Microsoft.VisualStudio.Component.VC.CMake.Project", "-property",
-                               "installationPath"], capture_output=True, text=True).stdout.strip()
-        bundled = Path(vs_i) / "Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe"
-        if vs_i and bundled.exists():
-            cmake_ok = True
-            print("  cmake ok (VS bundled 3.31.x)", file=sys.stderr)
-    if not cmake_ok:
-        print("  Installing cmake 3.31.7 via winget...", file=sys.stderr)
-        _winget("Kitware.CMake", ["--version", "3.31.7"])
+    # cmake inside osenv.CMAKE_RANGE (llama.cpp rejects 4.x), for a source build only.
+    if build:
+        cmake_ok = False
+        if _have("cmake"):
+            out = subprocess.run(["cmake", "--version"], capture_output=True, text=True).stdout
+            if osenv.cmake_in_range(out):
+                cmake_ok = True
+                print(f"  cmake ok ({out.splitlines()[0] if out else 'cmake'})", file=sys.stderr)
+        if not cmake_ok and Path(_VSWHERE).exists():
+            vs_i = subprocess.run([_VSWHERE, "-latest", "-products", "*", "-requires",
+                                   "Microsoft.VisualStudio.Component.VC.CMake.Project", "-property",
+                                   "installationPath"], capture_output=True, text=True).stdout.strip()
+            bundled = Path(vs_i) / "Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe"
+            if vs_i and bundled.exists():
+                cmake_ok = True
+                print("  cmake ok (VS bundled)", file=sys.stderr)
+        if not cmake_ok:
+            print(f"  Installing cmake {osenv.CMAKE_PIN} via winget...", file=sys.stderr)
+            _winget("Kitware.CMake", ["--version", osenv.CMAKE_PIN])
 
-    # Docker Desktop (optional — only bob up -WithServices needs it; CPU tier skips it).
-    docker_exe = Path(r"C:\Program Files\Docker\Docker\Docker Desktop.exe")
-    already = cpu or _have("docker") or docker_exe.exists()
-    if cpu:
-        print("  --cpu: skipping Docker Desktop.", file=sys.stderr)
-    elif already:
+    # Docker Desktop is optional (SearXNG / Langfuse only) and installed on first use, not here.
+    if _have("docker") or Path(r"C:\Program Files\Docker\Docker\Docker Desktop.exe").exists():
         print("  Docker Desktop ok", file=sys.stderr)
     else:
-        print("  Installing Docker Desktop...", file=sys.stderr)
-        _winget("Docker.DockerDesktop")
+        print("  Docker Desktop not installed (optional: `bob services searxng|langfuse start` guides the "
+              "install the first time).", file=sys.stderr)
 
-    if already:
-        print("\nAll prerequisites verified. Run setup.bat to build and configure the stack.", file=sys.stderr)
-    else:
-        print("\nDocker Desktop installed. ACTION REQUIRED: log out of Windows and back in, then run "
-              "setup.bat (Docker adds your user to the docker-users group; that takes effect at login).",
-              file=sys.stderr)
+    print("\nAll prerequisites verified. Run setup.bat to build and configure the stack.", file=sys.stderr)
     return 0
 
 
-def install_prereqs(cpu: bool = False, from_source: bool = False) -> int:
-    """Install all Bob prerequisites (toolchain + a venv-compatible Python). Dispatches Linux vs Windows.
-    from_source additionally installs the CUDA Toolkit for a source GPU build; the default is driver-only
-    (the prebuilt engine bundles the runtime libs). Returns 0 on success; raises on a fatal toolchain failure."""
+def install_prereqs(cpu: bool = False, from_source: bool = False, with_node: bool = False) -> int:
+    """Install all Bob prerequisites (base tools + a venv-compatible Python, plus whatever this install
+    actually needs). Dispatches Linux vs Windows. from_source adds the build toolchain and, on a GPU box,
+    the CUDA Toolkit for a source build; the default is driver-only (the prebuilt engine bundles the
+    runtime libs). with_node adds Node.js/npm. Returns 0 on success; raises on a fatal toolchain failure."""
     if osenv.os_name() == "windows":
-        return _install_windows(cpu, from_source)
-    return _install_linux(cpu, from_source)
+        return _install_windows(cpu, from_source, with_node)
+    return _install_linux(cpu, from_source, with_node)
 
 
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     cpu = "--cpu" in argv or "-Cpu" in argv
     from_source = "--from-source" in argv or "-FromSource" in argv
+    with_node = "--with-node" in argv or "-WithNode" in argv
     try:
-        return install_prereqs(cpu=cpu, from_source=from_source)
+        return install_prereqs(cpu=cpu, from_source=from_source, with_node=with_node)
     except RuntimeError as e:
         print(str(e), file=sys.stderr)
         return 1

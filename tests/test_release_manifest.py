@@ -3,11 +3,11 @@ publishes, or a shipped engine is silently declined for a slow source build (the
 1.2.2 — the published tier is 'cuda' while the internal decision is 'gpu', and equality matching failed).
 
 Two layers:
-- TestManifestContract (hermetic, runs every gate): a fixture manifest mirroring EXACTLY the row shape the
-  publish-manifest CI job emits (see .github/workflows/ci.yml 'Checksum + emit the engines.json row'). It
-  proves the resolver selects each row, that the internal 'gpu' query matches the published 'cuda' row, and
-  — the non-vacuous part — that a wrong tier value or a renamed key yields no match. Keep the fixture in sync
-  with ci.yml; TestPublishedManifestLive is the backstop if they drift.
+- TestManifestContract (hermetic, runs every gate): a fixture manifest built by the SAME row emitter the
+  publish jobs call (.github/scripts/pack_engine.py engine_row). It proves the resolver selects each row,
+  that the internal 'gpu' query matches the published 'cuda' row, and (the non-vacuous part) that a wrong
+  tier value or a renamed key yields no match. TestPublishedManifestLive is the backstop against the real
+  published asset.
 - TestPublishedManifestLive (network, opt-in via BOB_LIVE_MANIFEST_TEST=1, run by the dedicated CI job): fetches
   the ACTUAL published engines.json for the current/latest release tag and asserts each real row resolves with
   the commit guard passing. Skips cleanly offline / no tag / no manifest so it is never a false red."""
@@ -28,16 +28,24 @@ from bob import lifecycle  # noqa: E402
 _QUERY = {"cuda": "gpu", "cpu": "cpu"}
 
 
+def _load_pack_engine():
+    """The publish jobs' row emitter (.github/scripts/pack_engine.py), loaded by path (not a package)."""
+    import importlib.util
+    path = Path(__file__).resolve().parent.parent / ".github" / "scripts" / "pack_engine.py"
+    spec = importlib.util.spec_from_file_location("pack_engine", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+pack_engine = _load_pack_engine()
+
+
 def _published_row(os_name, arch, tier, commit):
-    """Byte-for-byte the row shape emitted by ci.yml's publish step (linux/windows x cuda/cpu)."""
-    key = f"llama-server-{os_name}-{arch}-{tier}"
-    return key, {
-        "component": "llama-server", "os": os_name, "cpuArch": arch, "tier": tier,
-        "url": f"https://github.com/o/r/releases/download/v9.9.9/{key}.tar.xz",
-        "sha256": "b" * 64, "bytes": 512345678, "builtFromCommit": commit,
-        "cudaArchs": ("75;80;89;120" if tier == "cuda" else ""),
-        "cudaMajor": (12 if tier == "cuda" else None),
-    }
+    """The row the publish jobs emit, produced by the same pack_engine.engine_row they call."""
+    (key, row), = pack_engine.engine_row(os_name, tier, "o/r", "v9.9.9", commit, cpu_arch=arch,
+                                         sha256="b" * 64, nbytes=512345678).items()
+    return key, row
 
 
 class TestManifestContract(unittest.TestCase):
@@ -49,6 +57,24 @@ class TestManifestContract(unittest.TestCase):
                 _published_row("windows", "x86_64", "cuda", self.COMMIT),
                 _published_row("windows", "x86_64", "cpu", self.COMMIT)]
         return dict(rows)
+
+    def test_row_shape_from_the_packed_asset(self):
+        # engine_row reads sha256 + bytes off the archive itself and pins the published tier fields.
+        import hashlib
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            asset = Path(d) / "a.tar.xz"
+            asset.write_bytes(b"engine")
+            (key, row), = pack_engine.engine_row("windows", "cuda", "o/r", "v1.2.3", "c" * 40,
+                                                 asset=asset).items()
+        self.assertEqual(key, "llama-server-windows-x86_64-cuda")
+        self.assertEqual(row["sha256"], hashlib.sha256(b"engine").hexdigest())
+        self.assertEqual(row["bytes"], 6)
+        self.assertEqual(row["url"], "https://github.com/o/r/releases/download/v1.2.3/"
+                                     "llama-server-windows-x86_64-cuda.tar.xz")
+        self.assertEqual((row["cudaArchs"], row["cudaMajor"]), (pack_engine.CUDA_ARCHS, 12))
+        (_, cpu), = pack_engine.engine_row("linux", "cpu", "o/r", "v1", "c", sha256="x", nbytes=1).items()
+        self.assertEqual((cpu["cudaArchs"], cpu["cudaMajor"]), ("", None))
 
     def _patched(self, man, pinned=None):
         return (mock.patch.object(lifecycle, "_load_engine_manifest", return_value=man),

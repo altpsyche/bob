@@ -8,8 +8,17 @@ the same factor maps the model's click coordinates back to real screen pixels (b
 
 Screenshots are treated as untrusted, model-controlled input (an on-screen prompt-injection surface) and
 as an exfiltration surface, so capture is approval-gated even though it is a read. See docs/SECURITY.md.
+
+agent.computerUse.display picks the target: "virtual" (the default) drives only the dedicated X display
+osenv.computer_display resolves ($BOB_VIRTUAL_DISPLAY), through X-only backends (xdotool input, scrot or
+ImageMagick capture) run with that DISPLAY and no Wayland socket, so no action can reach the logged-in
+session; with no virtual display provisioned (or off Linux) every action refuses. "host" drives the real
+desktop through the osenv/bob_vision seams.
 """
 import json
+import os
+import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -68,12 +77,100 @@ def _rate_ok() -> bool:
 
 
 def _blocked():
-    """A refusal message if computer-use must not act right now (kill switch or rate limit), else None."""
+    """A refusal message if computer-use must not act right now (kill switch, a display target that
+    cannot be honored, or the rate limit), else None."""
     if is_halted():
         return "computer-use is halted (kill switch active); run `bob computer status clear` to resume"
+    target = _target_refusal()
+    if target:
+        return target
     if not _rate_ok():
         return "computer-use rate limit reached; raise agent.computerUse.maxActionsPerMinute to allow more"
     return None
+
+
+def _mode() -> str:
+    return str(_cu(_cfg).get("display", "virtual")).strip().lower()
+
+
+def _virtual_env():
+    """(env, None) for running a backend against the virtual display, or (None, refusal) when the
+    virtual target cannot be honored. The env pins DISPLAY and drops the Wayland socket so an X tool can
+    only ever talk to the virtual server."""
+    if osenv.os_name() != "linux":
+        return None, ("computer-use display 'virtual' is supported only on Linux (an Xvfb/nested X "
+                      "display); set agent.computerUse.display to 'host' to drive this desktop")
+    display = osenv.computer_display("virtual")
+    if not display:
+        return None, ("computer-use display 'virtual' has no virtual display: start Xvfb (or a nested X "
+                      "server) and export BOB_VIRTUAL_DISPLAY, or set agent.computerUse.display to 'host'")
+    env = {k: v for k, v in os.environ.items() if k not in ("WAYLAND_DISPLAY", "WAYLAND_SOCKET")}
+    env.update(DISPLAY=display, XDG_SESSION_TYPE="x11")
+    return env, None
+
+
+def _target_refusal():
+    """A refusal if the configured display target cannot be honored right now, else None."""
+    mode = _mode()
+    if mode == "host":
+        return None
+    if mode != "virtual":
+        return f"computer-use display {mode!r} is not recognized; use 'virtual' or 'host'"
+    return _virtual_env()[1]
+
+
+_VIRTUAL_CAPTURE = {
+    "scrot":  lambda out: ["scrot", "--overwrite", out],
+    "import": lambda out: ["import", "-window", "root", out],
+}
+
+
+def _capture():
+    """Capture the configured display to a PNG path. Raises RuntimeError when unavailable."""
+    if _mode() == "host":
+        return bob_vision.capture_screen()
+    env, refusal = _virtual_env()
+    if refusal:
+        raise RuntimeError(refusal)
+    tool = next((t for t in _VIRTUAL_CAPTURE if shutil.which(t)), None)
+    if not tool:
+        raise RuntimeError("capturing the virtual display needs scrot or ImageMagick (import)")
+    import tempfile
+    fd, out = tempfile.mkstemp(suffix=".png")
+    os.close(fd)
+    try:
+        subprocess.run(_VIRTUAL_CAPTURE[tool](out), env=env, check=True, capture_output=True, timeout=15)
+    except (subprocess.SubprocessError, OSError) as e:
+        raise RuntimeError(f"virtual display capture failed: {e}") from e
+    if not os.path.exists(out) or os.path.getsize(out) == 0:
+        raise RuntimeError("virtual display capture produced no image")
+    return out
+
+
+def _input(action: str, **kw) -> None:
+    """Run one input action on the configured display. Host mode goes through the osenv input seam;
+    virtual mode runs xdotool only (ydotool and wtype inject into the host session regardless of
+    DISPLAY, so they are never used for the virtual target). Raises RuntimeError when unavailable."""
+    if _mode() == "host":
+        if action == "click":
+            return osenv.input_click(kw["x"], kw["y"], kw.get("button", "left"))
+        if action == "move":
+            return osenv.input_move(kw["x"], kw["y"])
+        if action == "type":
+            return osenv.input_type(kw["text"])
+        if action == "key":
+            return osenv.input_key(kw["keys"])
+        return osenv.input_scroll(kw.get("dx", 0), kw.get("dy", 0))
+    env, refusal = _virtual_env()
+    if refusal:
+        raise RuntimeError(refusal)
+    if not shutil.which("xdotool"):
+        raise RuntimeError("driving the virtual display needs xdotool")
+    try:
+        for argv in osenv._linux_input_commands("xdotool", action, **kw):
+            subprocess.run(argv, env=env, check=True, capture_output=True, timeout=15)
+    except (subprocess.SubprocessError, OSError) as e:
+        raise RuntimeError(f"virtual display input failed: {e}") from e
 
 
 def _notify(label: str) -> None:
@@ -114,7 +211,7 @@ def _computer_screenshot(**_kw) -> str:
     _notify("screenshot")
     cu = _cu(_cfg)
     try:
-        raw = bob_vision.capture_screen()
+        raw = _capture()
     except RuntimeError as e:
         return f"computer-use screenshot unavailable: {e}"
     path, scale, dims = bob_vision.resize_for_control(
@@ -140,7 +237,7 @@ def _computer_click(**kw) -> str:
     x, y = _to_screen(kw["coordinate"])
     _notify(f"click ({x}, {y})")
     try:
-        osenv.input_click(x, y, kw.get("button", "left"))
+        _input("click", x=x, y=y, button=kw.get("button", "left"))
     except RuntimeError as e:
         return f"computer-use input unavailable: {e}"
     return f"clicked ({x}, {y})"
@@ -155,7 +252,7 @@ def _computer_move(**kw) -> str:
     x, y = _to_screen(kw["coordinate"])
     _notify(f"move ({x}, {y})")
     try:
-        osenv.input_move(x, y)
+        _input("move", x=x, y=y)
     except RuntimeError as e:
         return f"computer-use input unavailable: {e}"
     return f"moved to ({x}, {y})"
@@ -167,7 +264,7 @@ def _computer_type(**kw) -> str:
         return blocked
     _notify("type")
     try:
-        osenv.input_type(str(kw.get("text", "")))
+        _input("type", text=str(kw.get("text", "")))
     except RuntimeError as e:
         return f"computer-use input unavailable: {e}"
     return "typed"
@@ -179,7 +276,7 @@ def _computer_key(**kw) -> str:
         return blocked
     _notify(f"key {kw.get('keys', '')}")
     try:
-        osenv.input_key(str(kw.get("keys", "")))
+        _input("key", keys=str(kw.get("keys", "")))
     except RuntimeError as e:
         return f"computer-use input unavailable: {e}"
     return "sent keys"
@@ -191,7 +288,7 @@ def _computer_scroll(**kw) -> str:
         return blocked
     _notify("scroll")
     try:
-        osenv.input_scroll(int(kw.get("dx", 0)), int(kw.get("dy", 0)))
+        _input("scroll", dx=int(kw.get("dx", 0)), dy=int(kw.get("dy", 0)))
     except RuntimeError as e:
         return f"computer-use input unavailable: {e}"
     return "scrolled"

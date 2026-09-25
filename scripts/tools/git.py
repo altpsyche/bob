@@ -34,6 +34,8 @@ def _is_allowed_repo(path: str) -> bool:
 
 
 def _run_git(args: list, cwd: str) -> str:
+    if not isinstance(cwd, str) or cwd.startswith("-"):
+        return f"Access denied: {cwd!r} (not a repository path)"
     if not _is_allowed_repo(cwd):
         return f"Access denied: {cwd} (not within gitAllowedRoots)"
     try:
@@ -58,12 +60,18 @@ def _git_status(path: str = None) -> str:
 
 def _git_log(path: str = None, n: int = 10) -> str:
     p = path or _default_repo
-    return _run_git(["log", "--oneline", f"-{min(n, 50)}"], p)
+    try:
+        count = max(1, min(int(n), 50))
+    except (TypeError, ValueError):
+        return f"git_log: 'n' must be an integer, got {n!r}"
+    return _run_git(["log", "--oneline", f"-{count}"], p)
 
 
 def _git_diff(path: str = None, file: str = None) -> str:
+    """Diff the working tree, or one pathspec. The file always follows `--`, so a value such as
+    '--output=<path>' is read as a path, never as a git option."""
     p = path or _default_repo
-    cmd = ["diff"] + ([file] if file else [])
+    cmd = ["diff", "--no-ext-diff", "--no-textconv"] + (["--", file] if file else [])
     result = _run_git(cmd, p)
     return result[:3000]
 

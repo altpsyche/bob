@@ -41,10 +41,10 @@ def _run(argv, **kw) -> None:
 # --- cmake resolution (the Windows VS/winget dance vs Linux cmake<4) -------------------------------
 
 def _resolve_cmake(generator: str) -> str:
-    """A cmake < 4.0 (llama.cpp rejects 4.x). Windows: PATH cmake if 3.x, else VS-bundled, else winget the
-    pinned 3.31.7. Linux: osenv.linux_cmake3 (system 3.x or a cached Kitware pin) + require ninja."""
+    """A cmake inside osenv.CMAKE_RANGE (llama.cpp rejects 4.x). Windows: PATH cmake if in range, else
+    VS-bundled, else winget the pinned osenv.CMAKE_PIN. Linux: osenv.linux_cmake3 (system cmake or a cached
+    Kitware pin) + require ninja."""
     import osenv
-    import re
     if osenv.os_name() != "windows":
         cmake = osenv.linux_cmake3(REPO)
         if generator == "Ninja" and not shutil.which("ninja"):
@@ -54,10 +54,9 @@ def _resolve_cmake(generator: str) -> str:
     path_cmake = shutil.which("cmake")
     if path_cmake:
         out = subprocess.run(["cmake", "--version"], capture_output=True, text=True)
-        m = re.search(r"(\d+)\.(\d+)", out.stdout)
-        if m and (int(m.group(1)), int(m.group(2))) < (4, 0):
+        if osenv.cmake_in_range(out.stdout):
             return "cmake"
-        print("PATH cmake is 4.x — incompatible with llama.cpp; looking for VS-bundled cmake...", file=sys.stderr)
+        print("PATH cmake is out of range for llama.cpp; looking for VS-bundled cmake...", file=sys.stderr)
     vswhere = Path(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe")
     if vswhere.exists():
         vs = subprocess.run([str(vswhere), "-latest", "-products", "*", "-requires",
@@ -67,8 +66,8 @@ def _resolve_cmake(generator: str) -> str:
             cand = Path(vs) / "Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe"
             if cand.exists():
                 return str(cand)
-    print("Installing cmake 3.31.7 via winget...", file=sys.stderr)
-    _run(["winget", "install", "Kitware.CMake", "--version", "3.31.7", "--silent",
+    print(f"Installing cmake {osenv.CMAKE_PIN} via winget...", file=sys.stderr)
+    _run(["winget", "install", "Kitware.CMake", "--version", osenv.CMAKE_PIN, "--silent",
           "--accept-package-agreements", "--accept-source-agreements"])
     cmake = shutil.which("cmake")
     if not cmake:
@@ -81,7 +80,7 @@ def _resolve_cmake(generator: str) -> str:
 def build_llama(cpu: bool = False, arch: int = 0, force: bool = False, cuda_root: str = "",
                 cuda_archs: str = "") -> str:
     """(Re)build llama.cpp -> bin/llama-server. Auto-detects arch + CUDA root (osenv) unless given; CPU
-    build with cpu=True. Atomic bin/ swap; Windows stages CUDA runtime DLLs.
+    build with cpu=True. Installed into bin/ by per-file replace; Windows stages CUDA runtime DLLs.
 
     cuda_archs (e.g. '75;80;89;120') builds a FAT distribution binary that runs on every listed NVIDIA gen,
     with NO local GPU required (only the CUDA toolkit) — the mode the CI publish job uses to produce the
@@ -195,34 +194,20 @@ def build_llama(cpu: bool = False, arch: int = 0, force: bool = False, cuda_root
     _run(cfg, cwd=SRC_LLAMA)
     _run([cmake, "--build", "build", "--config", "Release", "-j"], cwd=SRC_LLAMA)
 
-    # Stage -> atomic swap into bin/. Ninja is single-config on both OSes, so binaries land in build/bin.
+    # Stage into bin/. Ninja is single-config on both OSes, so binaries land in build/bin. install_files
+    # os.replace()s each file from a staging dir, so a running llama-server keeps its own (old) inode and
+    # mmapped libs instead of having them rewritten underneath it; SONAME symlinks stay symlinks and an older
+    # version of each shared lib is pruned, so bin/ does not grow on every rebuild.
     out_dir = build_dir / "bin"
-    tmp = BIN / "_build_tmp"
-    if tmp.exists():
-        shutil.rmtree(tmp)
-    tmp.mkdir(parents=True)
-    try:
-        for f in out_dir.glob("*"):
-            shutil.copy2(f, tmp / f.name)
-        if flags["StageDlls"]:  # pragma: no cover — Windows CUDA DLLs
-            for dll in (f"cublas64_{cuda_major}.dll", f"cublasLt64_{cuda_major}.dll", f"cudart64_{cuda_major}.dll"):
-                srcdll = Path(cuda_root) / "bin" / dll
-                if srcdll.exists():
-                    shutil.copy2(srcdll, tmp / dll)
-        if not (tmp / exe).exists():
-            raise RuntimeError(f"{exe} missing from staged output — aborting swap")
-        BIN.mkdir(parents=True, exist_ok=True)
-        svr = BIN / exe
-        bak = BIN / f"{exe}.bak"
-        if svr.exists():
-            svr.replace(bak)
-        for f in tmp.glob("*"):
-            shutil.copy2(f, BIN / f.name)
-        bak.unlink(missing_ok=True)
-    except Exception:
-        shutil.rmtree(tmp, ignore_errors=True)
-        raise
-    shutil.rmtree(tmp, ignore_errors=True)
+    entries = {f.name: f for f in out_dir.glob("*") if f.is_file() or f.is_symlink()}
+    if flags["StageDlls"]:  # pragma: no cover — Windows CUDA DLLs
+        for dll in (f"cublas64_{cuda_major}.dll", f"cublasLt64_{cuda_major}.dll", f"cudart64_{cuda_major}.dll"):
+            srcdll = Path(cuda_root) / "bin" / dll
+            if srcdll.exists():
+                entries[dll] = srcdll
+    if exe not in entries:
+        raise RuntimeError(f"{exe} missing from build output ({out_dir}); aborting the install into bin/")
+    osenv.install_files(entries, BIN)
     # Record the tier bin/ was built at so update/diagnose/status can notice a GPU box on a CPU engine.
     # Marker path derives from BIN (this module's, which tests patch), so the write stays inside that tree.
     osenv.write_build_tier_marker(tier=("gpu" if flags["Cuda"] else "cpu"),
@@ -232,107 +217,175 @@ def build_llama(cpu: bool = False, arch: int = 0, force: bool = False, cuda_root
     return f"Built. llama-server at: {BIN / exe}"
 
 
-SRC_WHISPER = REPO / "external" / "whisper.cpp"
+# --- llama-swap: the pinned release binary, or a Go build from the submodule ------------------------
 
+def _install_llama_swap_release() -> str:
+    """Download the llama-swap release binary pinned in versions.lock (binaries.llama-swap) for this OS/arch,
+    SHA-256 verify it, and install it into bin/. Returns a status line, or '' when no usable pin exists: no
+    asset for this platform, an empty sha256 (never run an unverified binary), or a submodule that has moved
+    past the commit the release was cut from. Raises on a download or verification failure."""
+    import tarfile
+    import tempfile
+    import zipfile
 
-def build_whisper(force: bool = False, cpu_only: bool = False) -> str:
-    """(Re)build whisper.cpp -> bin/whisper-server + whisper-cli (CUDA by default, CPU fallback). Shares the
-    cmake resolution + CUDA seams with build_llama; skips shared libs already in bin/ (whisper + llama share
-    GGML)."""
     import osenv
+    from bob import versions
 
-    win = osenv.os_name() == "windows"
-    server = osenv.bin_exe("whisper-server")
-    cli = osenv.bin_exe("whisper-cli")
-    if not force and server.exists() and cli.exists():
-        return f"{server.name} + {cli.name} already built — skipping (use --force to rebuild)."
-    if not (SRC_WHISPER / "CMakeLists.txt").exists():
-        raise RuntimeError(f"whisper.cpp submodule not found at {SRC_WHISPER}. Run: git submodule update --init --recursive")
-
-    if win and not osenv.ensure_msvc_env():  # pragma: no cover — Windows only; Ninja needs cl.exe on PATH
-        raise RuntimeError("MSVC toolchain not found. Install Visual Studio 2022 with the 'Desktop "
-                           "development with C++' workload (./install_prereqs.bat), then re-run.")
-    gen = "Ninja"
-    gen_args = ["-G", gen, "-DCMAKE_BUILD_TYPE=Release"]
-    cmake = _resolve_cmake(gen)
-
-    cuda_args = []
-    if not cpu_only:
-        gpu = osenv.gpu_arch()
-        arch = gpu["CudaArch"] if gpu else 120
-        root = osenv.best_cuda_root(arch)
-        if root:
-            cuda_args = ["-DWHISPER_CUDA=ON", f"-DCMAKE_CUDA_ARCHITECTURES={arch}", f"-DCUDAToolkit_ROOT={root}"]
-            nvcc = Path(root) / "bin" / osenv.exe_name("nvcc")
-            cuda_args.append(f"-DCMAKE_CUDA_COMPILER={nvcc}")   # Ninja needs it explicitly (both OSes)
-            if not win:
-                host_cxx = osenv.cuda_host_compiler()
-                if host_cxx:
-                    cuda_args.append(f"-DCMAKE_CUDA_HOST_COMPILER={host_cxx}")
-                osenv.assert_cuda_host_compiler_ok(nvcc, host_cxx)
-            else:  # pragma: no cover — nvcc uses cl.exe (from ensure_msvc_env) as its host compiler
-                import os
-                os.environ["CUDA_PATH"] = root
-            print(f"Building whisper.cpp (CUDA sm_{arch})...", file=sys.stderr)
+    key = f"{osenv.os_name()}-{osenv.normalized_cpu_arch()}"
+    pin = versions.pinned_binary("llama-swap", key)
+    if not pin or not (pin.get("sha256") or "").strip():
+        return ""
+    pinned = versions.submodule_commits(REPO).get(pin.get("submodule") or "external/llama-swap")
+    built = pin.get("builtFromCommit")
+    if built and pinned and built != pinned:
+        print(f"llama-swap release {pin.get('version')} was cut from {built[:8]} but this checkout pins "
+              f"{pinned[:8]}; building from source instead.", file=sys.stderr)
+        return ""
+    exe = osenv.exe_name("llama-swap")
+    tmp = Path(tempfile.mkdtemp(prefix="bob-llama-swap-"))
+    try:
+        url = pin["url"]
+        print(f"Downloading llama-swap {pin.get('version')} ({key})...", file=sys.stderr)
+        archive = osenv.download(url, tmp / Path(url).name, sha256=pin["sha256"], timeout=60, require_sha=True)
+        out = tmp / "x"
+        out.mkdir()
+        if zipfile.is_zipfile(archive):
+            with zipfile.ZipFile(archive) as z:
+                z.extractall(out)
         else:
-            print("CUDA toolkit not found — falling back to CPU-only whisper build.", file=sys.stderr)
-    if not cuda_args:
-        cuda_args = ["-DWHISPER_CUDA=OFF"]
-
-    build_dir = SRC_WHISPER / "build"
-    if build_dir.exists():
-        shutil.rmtree(build_dir)
-    _run([cmake, "-B", "build", *gen_args, *cuda_args, "-DWHISPER_BUILD_TESTS=OFF", "-DWHISPER_BUILD_EXAMPLES=ON"],
-         cwd=SRC_WHISPER)
-    _run([cmake, "--build", "build", "--config", "Release", "-j"], cwd=SRC_WHISPER)
-
-    release_bin = build_dir / "bin"   # Ninja is single-config on both OSes
-    if not release_bin.exists():
-        found = next(SRC_WHISPER.glob(f"build/**/{server.name}"), None)
-        if not found:
-            raise RuntimeError(f"{server.name} not found in build output — build may have failed silently")
-        release_bin = found.parent
-    BIN.mkdir(parents=True, exist_ok=True)
-    if not (release_bin / server.name).exists():
-        raise RuntimeError(f"{server.name} missing from staged output — aborting")
-    import re
-    for f in release_bin.iterdir():
-        dest = BIN / f.name
-        is_shared = re.search(r"\.(dll|so)(\.\d+)*$", f.name)
-        if is_shared and dest.exists():
-            continue  # a compatible GGML lib from the llama build is already there (maybe loaded)
-        try:
-            shutil.copy2(f, dest)
-        except OSError:
-            if not is_shared:
-                raise
-    return f"Built. whisper-server at: {server}"
+            with tarfile.open(archive) as t:
+                t.extractall(out, filter="data")
+        found = next((p for p in out.rglob(exe) if p.is_file()), None)
+        if found is None:
+            raise RuntimeError(f"{exe} not found in {Path(url).name}")
+        if osenv.os_name() != "windows":
+            found.chmod(0o755)
+        osenv.install_files({exe: found}, BIN, prune_libs=False)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return f"Installed llama-swap {pin.get('version')} release binary -> {BIN / exe}"
 
 
-# --- build llama-swap (Go) ------------------------------------------------------------------------
-
-def build_llama_swap(force: bool = False) -> str:
-    """Build the llama-swap submodule (Go) -> bin/llama-swap."""
+def build_llama_swap(force: bool = False, from_source: bool = False) -> str:
+    """Put llama-swap in bin/: the sha-verified release binary pinned in versions.lock by default (no Go
+    needed), or a Go build of the external/llama-swap submodule with from_source, when this platform has no
+    pinned asset, or when the pinned release no longer matches the submodule commit."""
     import osenv
-    out = osenv.bin_exe("llama-swap")
+    out = BIN / osenv.exe_name("llama-swap")
     if not force and out.exists():
-        return f"{out.name} already built — skipping (use --force to rebuild)."
+        return f"{out.name} already present — skipping (use --force to reinstall)."
+    if not from_source:
+        try:
+            done = _install_llama_swap_release()
+            if done:
+                return done
+        except (RuntimeError, OSError, ValueError) as e:
+            print(f"llama-swap release download failed ({e}); building from source.", file=sys.stderr)
     if not SRC_SWAP.exists():
         raise RuntimeError(f"llama-swap submodule not found at {SRC_SWAP}. Run: git submodule update --init --recursive")
     if not shutil.which("go"):
-        raise RuntimeError("Go not found. Install Go (pacman -S go / apt install golang-go / dnf install "
-                           "golang; scoop install go on Windows), or drop a llama-swap release binary in bin/.")
+        raise RuntimeError("Go not found, and no pinned llama-swap release applies here. Install Go (pacman -S go "
+                           "/ apt install golang-go / dnf install golang; scoop install go on Windows), or drop a "
+                           "llama-swap release binary in bin/.")
     BIN.mkdir(parents=True, exist_ok=True)
-    _run(["go", "build", "-o", str(out), "."], cwd=SRC_SWAP)
+    tmp = BIN / f".llama-swap-build-{__import__('os').getpid()}"
+    tmp.mkdir(exist_ok=True)
+    try:
+        built = tmp / out.name
+        _run(["go", "build", "-o", str(built), "."], cwd=SRC_SWAP)
+        osenv.install_files({out.name: built}, BIN, prune_libs=False)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
     return f"Built: {out}"
 
 
 # --- fabric setup (Go build + ~/.config/fabric wiring) --------------------------------------------
 
+# fabric's .env keys Bob owns. fabric's built-in "LiteLLM" vendor reads LITELLM_API_KEY/LITELLM_API_BASE_URL,
+# so pointing fabric at Bob never touches the user's own OpenAI (or any other vendor) keys.
+_FABRIC_VENDOR = "LiteLLM"
+_FABRIC_MODEL = "coder"
+
+
+def _read_env_file(path: Path) -> list:
+    """The lines of a dotenv file ([] when absent), kept verbatim so a merge preserves comments/order."""
+    try:
+        return path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return []
+
+
+def fabric_env_is_legacy(current: dict) -> bool:
+    """True when fabric's .env still holds the OPENAI_* pair earlier Bob setups wrote (OPENAI_API_KEY=sk-local
+    pointed at a localhost proxy) instead of the LiteLLM vendor keys."""
+    return current.get("OPENAI_API_KEY") == "sk-local" and \
+        current.get("OPENAI_API_BASE_URL", "").startswith("http://localhost:")
+
+
+def merge_fabric_env(path: Path, port: int, key: str) -> list:
+    """Merge Bob's settings into fabric's .env and return the keys it changed. Only Bob-owned keys are
+    written (LITELLM_API_KEY, LITELLM_API_BASE_URL); DEFAULT_VENDOR/DEFAULT_MODEL are set only when unset or
+    when they still hold what an earlier Bob setup wrote, so a user's chosen default vendor wins. The exact
+    OPENAI_* pair earlier setups wrote (sk-local at localhost:<port>) is removed; any other OPENAI_* value is
+    the user's and is kept. Every other line is preserved as-is. Written atomically, mode 0600 on POSIX."""
+    import os
+    import tempfile
+
+    base = f"http://localhost:{port}/v1"
+    lines = _read_env_file(path)
+    current = {}
+    for ln in lines:
+        k, sep, v = ln.partition("=")
+        if sep and not ln.lstrip().startswith("#"):
+            current[k.strip()] = v.strip()
+
+    legacy_openai = fabric_env_is_legacy(current)
+    ours_default = current.get("DEFAULT_VENDOR") in (None, "", _FABRIC_VENDOR) or \
+        (legacy_openai and current.get("DEFAULT_VENDOR") == "OpenAI")
+    want = {"LITELLM_API_KEY": key, "LITELLM_API_BASE_URL": base}
+    if ours_default:
+        want["DEFAULT_VENDOR"] = _FABRIC_VENDOR
+        if current.get("DEFAULT_MODEL") in (None, "", _FABRIC_MODEL) or legacy_openai:
+            want["DEFAULT_MODEL"] = _FABRIC_MODEL
+    drop = {"OPENAI_API_KEY", "OPENAI_API_BASE_URL"} if legacy_openai else set()
+
+    out, seen, changed = [], set(), []
+    for ln in lines:
+        k = ln.partition("=")[0].strip()
+        if "=" in ln and not ln.lstrip().startswith("#"):
+            if k in drop:
+                changed.append(f"-{k}")
+                continue
+            if k in want:
+                seen.add(k)
+                if current.get(k) != want[k]:
+                    changed.append(k)
+                out.append(f"{k}={want[k]}")
+                continue
+        out.append(ln)
+    for k, v in want.items():
+        if k not in seen:
+            out.append(f"{k}={v}")
+            changed.append(k)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".env-", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(out) + "\n")
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    return changed
+
+
 def setup_fabric(force: bool = False) -> str:
-    """Build fabric (Go) -> bin/fabric and wire ~/.config/fabric (.env + patterns symlink)."""
+    """Opt-in fabric: build it (Go) -> bin/fabric once (again only with force), then point it at Bob by
+    merging Bob's keys into ~/.config/fabric/.env (merge_fabric_env) and linking the patterns dir. The key is
+    the LiteLLM master key (bob_core._litellm_key), the port the configured litellmPort (defaults.json)."""
     import osenv
-    from bob_core import _port
+    from bob_core import _litellm_key, _port
 
     out = osenv.bin_exe("fabric")
     lines = []
@@ -341,25 +394,26 @@ def setup_fabric(force: bool = False) -> str:
         _run(["git", "-C", str(REPO), "submodule", "update", "--init", "--depth=1", "external/fabric"])
     if force or not out.exists():
         if not shutil.which("go"):
-            raise RuntimeError("Go not found — install Go to build fabric.")
+            raise RuntimeError("Go not found: fabric is built from source. Install Go (pacman -S go / apt install "
+                               "golang-go / dnf install golang; scoop install go on Windows), then re-run "
+                               "bob fabric-setup.")
         BIN.mkdir(parents=True, exist_ok=True)
         lines.append("Building fabric...")
         _run(["go", "build", "-o", str(out), "./cmd/fabric/"], cwd=SRC_FABRIC)
         lines.append(f"  -> {out}")
     else:
-        lines.append(f"{out} already built — skipping (pass --force to rebuild).")
+        lines.append(f"{out} already built, skipping (pass --force to rebuild).")
 
     port = _port(_cfg, "litellmPort")
     fabric_dir = osenv.home_config_dir("fabric")
-    fabric_dir.mkdir(parents=True, exist_ok=True)
-    (fabric_dir / ".env").write_text(
-        f"OPENAI_API_KEY=sk-local\nOPENAI_API_BASE_URL=http://localhost:{port}/v1\n"
-        f"DEFAULT_VENDOR=OpenAI\nDEFAULT_MODEL=coder\n", encoding="utf-8")
-    lines.append(f"Configured: coder @ http://localhost:{port}/v1")
+    env_path = fabric_dir / ".env"
+    changed = merge_fabric_env(env_path, port, _litellm_key(_cfg))
+    lines.append(f"Configured: {_FABRIC_VENDOR} vendor @ http://localhost:{port}/v1 in {env_path}"
+                 + (f" (updated: {', '.join(changed)})" if changed else " (already current)"))
 
     link = fabric_dir / "patterns"
     target = SRC_FABRIC / "data" / "patterns"
-    if not link.exists():
+    if not link.exists() and not link.is_symlink():
         try:
             link.symlink_to(target, target_is_directory=True)
             lines.append(f"Linked patterns: {link} -> {target}")
@@ -368,7 +422,7 @@ def setup_fabric(force: bool = False) -> str:
                 shutil.copytree(target, link)
                 lines.append(f"Copied patterns to {link}")
     else:
-        lines.append("patterns link already exists — skipping.")
+        lines.append(f"{link} already exists, left as-is.")
     return "\n".join(lines)
 
 
@@ -404,6 +458,12 @@ def _reinstall_venv() -> None:
         osenv.new_bob_venv("venv-litellm", "litellm-requirements", quiet=True)
     except RuntimeError as e:
         print(f"  (venv reinstall skipped: {e})", file=sys.stderr)
+    # aider is opt-in: keep its venv on the lock only where it was installed (bob aider-setup).
+    if osenv.venv_exe("venv-aider", "python").exists():
+        try:
+            osenv.new_bob_venv("venv-aider", "aider-requirements", quiet=True)
+        except RuntimeError as e:
+            print(f"  (venv-aider reinstall skipped: {e})", file=sys.stderr)
 
 
 def _restart_running_endpoint() -> None:
@@ -436,11 +496,11 @@ def _restart_running_endpoint() -> None:
 
 
 def _prune_orphan_models() -> None:
-    """After relock, offer to delete models/*.gguf that versions.lock no longer references (e.g. a coder a
+    """After an update, offer to delete models/*.gguf that versions.lock no longer references (e.g. a coder a
     release dropped) to reclaim disk. Opt-in and TTY-only: it lists the orphans and asks before deleting;
     in a non-interactive/agent context it lists them and skips (never blocks on stdin, never deletes
     without a yes). Keeps referenced GGUFs and their mmproj sidecars, and only touches top-level *.gguf, so
-    the whisper.cpp fallback binary and the faster-whisper CT2 model dir are left alone. Guarded: skips the
+    the faster-whisper CT2 model dir is left alone. Guarded: skips the
     prune entirely while any current-profile model is still missing (e.g. the new coder failed to
     download), so it can never strip a role down to no model."""
     import json
@@ -500,14 +560,10 @@ def _prune_orphan_models() -> None:
 
 
 def _latest_release_tag() -> str:
-    """The newest v* release tag by version order, or '' if there are none. Powers `--channel stable`."""
-    try:
-        r = subprocess.run(["git", "-C", str(REPO), "tag", "--list", "v*", "--sort=-v:refname"],
-                           capture_output=True, text=True, timeout=10)
-        tags = [t for t in r.stdout.splitlines() if t.strip()]
-        return tags[0].strip() if tags else ""
-    except (OSError, subprocess.SubprocessError):
-        return ""
+    """The newest v* release tag by version order, or '' if there are none. Powers `--channel stable`.
+    The tag listing itself lives in the lifecycle seam (shared with the prebuilt-manifest lookup)."""
+    from bob import lifecycle
+    return lifecycle._latest_release_tag() or ""
 
 
 def _pending_rebuild_path():
@@ -572,12 +628,8 @@ def _head_is_release_tag() -> bool:
     """True when HEAD is exactly a v* release tag (a 'stable' checkout). Lets the channel be INFERRED from the
     git state: a fresh install that checked out a tag tracks stable; a dev on a branch tracks latest. No
     separate persisted setting to drift from the actual checkout."""
-    try:
-        r = subprocess.run(["git", "-C", str(REPO), "describe", "--exact-match", "--tags", "HEAD"],
-                           capture_output=True, text=True, timeout=10)
-        return r.returncode == 0 and r.stdout.strip().startswith("v")
-    except (OSError, subprocess.SubprocessError):
-        return False
+    from bob import lifecycle
+    return lifecycle._current_release_tag() is not None
 
 
 def resolve_update_channel(explicit: str = None) -> str:
@@ -615,7 +667,7 @@ def update_stack(tag: str = None, from_source: bool = False, channel: str = None
     """Release-aware update with rollback: fetch/checkout, submodule sync, venv reinstall, then rebuild EVERY
     compiled submodule that actually moved (the llama-server rebuild goes through the prebuilt-first lifecycle
     seam, so a release update is a fast driver-only binary swap) under one bin/ snapshot with per-binary verify
-    + rollback on failure, relock, fetch newly-added models, offer to prune dropped ones, provision voice, then
+    + rollback on failure, fetch newly-added models, offer to prune dropped ones, provision voice, then
     doctor. Channel (explicit, else inferred from the checkout) selects what to move to when no explicit tag:
     'stable' = the latest v* release tag (which carries the tested prebuilt engines), 'latest' = fast-forward
     the current branch (source-built bleeding edge). from_source forces a source engine build. Finally restarts
@@ -667,12 +719,10 @@ def update_stack(tag: str = None, from_source: bool = False, channel: str = None
     # build`), never re-derived from hardware here. This provisional read is cheap (self_heal=False installs
     # nothing); it's refined with a self-healing, warn-policy decision below only if a CUDA component moved.
     cpu = lifecycle.resolve_build_tier(self_heal=False)["tier"] == "cpu"
-    # Per-component build tier, late-bound (the lambdas read these at call time; they are refined below once we
-    # know which submodules actually moved). llama-server is prebuilt-first: a driver-only GPU prebuilt needs
-    # no toolkit, so llama-server keeps its own flag that a missing toolkit must NOT flip to CPU while a GPU
-    # prebuilt is available. whisper.cpp has no prebuilt, so it follows the source-build tier decision.
+    # llama-server's build tier, late-bound (the lambda reads it at call time; it is refined below once we know
+    # whether llama.cpp actually moved). llama-server is prebuilt-first: a driver-only GPU prebuilt needs no
+    # toolkit, so a missing toolkit must NOT flip it to CPU while a GPU prebuilt is available.
     cpu_llama = cpu
-    cpu_whisper = cpu
     # (name, source dir, produced binary, verify-by-running-`--version`, rebuild fn). Every native
     # component the update can rebuild; a submodule is rebuilt only when its committed commit moved, so a
     # code-only update stays a no-op and a llama-swap/fabric bump no longer leaves a stale binary behind.
@@ -683,10 +733,13 @@ def update_stack(tag: str = None, from_source: bool = False, channel: str = None
         ("llama.cpp",   SRC_LLAMA,   "llama-server",  True,
          lambda: lifecycle.ensure_engine(cpu=cpu_llama, from_source=from_source, force=True, on_block="warn",
                                          self_heal=False, config=_cfg)["detail"]),
-        ("whisper.cpp", SRC_WHISPER, "whisper-server", False, lambda: build_whisper(force=True, cpu_only=cpu_whisper)),
-        ("llama-swap",  SRC_SWAP,    "llama-swap",    True,  lambda: build_llama_swap(force=True)),
+        ("llama-swap",  SRC_SWAP,    "llama-swap",    True,
+         lambda: build_llama_swap(force=True, from_source=from_source)),
         ("fabric",      SRC_FABRIC,  "fabric",        True,  lambda: setup_fabric(force=True)),
     ]
+    # fabric is opt-in: rebuild it on a submodule move only where it was installed (bob fabric-setup).
+    if not osenv.bin_exe("fabric").exists():
+        components = [c for c in components if c[0] != "fabric"]
     before = {name: _git_head(src) for name, src, _, _, _ in components}
 
     if tag:
@@ -723,11 +776,9 @@ def update_stack(tag: str = None, from_source: bool = False, channel: str = None
         # distro. on_block='warn' keeps a running box alive: a GPU box that lost its toolkit (e.g. an atomic
         # host with read-only /usr) does NOT hard-fail the update. It warns loudly, records CPU in the tier
         # marker, and rebuilds CPU so the update completes, while `bob diagnose` keeps flagging the idle GPU.
-        # The rebuild lambdas read cpu_llama / cpu_whisper at call time, so refining them here re-tiers them.
-        if any(n in ("llama.cpp", "whisper.cpp") for n, *_ in moved):
+        # The rebuild lambda reads cpu_llama at call time, so refining it here re-tiers the rebuild.
+        if any(n == "llama.cpp" for n, *_ in moved):
             decision = lifecycle.apply_block_policy(lifecycle.resolve_build_tier(), on_block="warn")
-            # whisper.cpp is source-only, so it follows the (possibly CPU-downgraded) decision directly.
-            cpu_whisper = decision["tier"] == "cpu"
             # llama-server: a GPU prebuilt makes the toolkit unnecessary, so a toolkit-driven CPU downgrade
             # must NOT force llama-server to CPU when a matching GPU prebuilt is available. Only follow the
             # downgrade when there is genuinely no GPU prebuilt to fall back on (then it's a real source build).
@@ -741,38 +792,42 @@ def update_stack(tag: str = None, from_source: bool = False, channel: str = None
         # that the next run honors. Cleared only once every rebuild verifies.
         _write_pending_rebuild(n for n, *_ in moved)
         bak = osenv.backup_build_output(BIN)
-        ok = True
-        for name, _src, binname, use_version, fn in moved:
-            try:
-                print(fn(), file=sys.stderr)
-            except RuntimeError as e:
-                print(f"  {name} build failed: {e}", file=sys.stderr)
-                ok = False
-                break
-            exe = osenv.bin_exe(binname)
-            if not (exe.exists() and (_verify_binary(exe) if use_version else True)):
-                print(f"  {name}: {binname} missing or failed verification.", file=sys.stderr)
-                ok = False
-                break
+        ok = False
+        try:
+            for name, _src, binname, use_version, fn in moved:
+                # Any failure counts, not just RuntimeError: a download can die with OSError / IncompleteRead
+                # / a tarfile error, and every one of them must still reach the rollback below.
+                try:
+                    print(fn(), file=sys.stderr)
+                except Exception as e:  # noqa: BLE001
+                    print(f"  {name} build failed: {e}", file=sys.stderr)
+                    break
+                exe = osenv.bin_exe(binname)
+                if not (exe.exists() and (_verify_binary(exe) if use_version else True)):
+                    print(f"  {name}: {binname} missing or failed verification.", file=sys.stderr)
+                    break
+            else:
+                ok = True
+        finally:
+            if not ok:
+                print("Update verification failed, rolling back the build output.", file=sys.stderr)
+                if osenv.restore_build_output(BIN, bak):
+                    print("Rolled bin/ back to the previous build; the endpoint keeps running on it. The source "
+                          "tree and venv were already advanced to the new revisions; the owed rebuild is "
+                          "recorded, so re-running `bob update` once the build issue is resolved WILL finish the "
+                          "move.", file=sys.stderr)
+                elif bak is not None:
+                    print(f"WARNING: could not fully restore bin/ from {bak}; the snapshot is kept there. Stop "
+                          "the stack (bob stop) and re-run `bob update`.", file=sys.stderr)
         if not ok:
-            print("Update verification failed, rolling back the build output.", file=sys.stderr)
-            if osenv.restore_build_output(BIN, bak):
-                print("Rolled bin/ back to the previous build; the endpoint keeps running on it. The source "
-                      "tree and venv were already advanced to the new revisions; the owed rebuild is recorded, "
-                      "so re-running `bob update` once the build issue is resolved WILL finish the move.",
-                      file=sys.stderr)
             return 1  # pending-rebuild marker intentionally kept so the re-run rebuilds
         osenv.remove_build_output_backup(BIN, bak)
         _clear_pending_rebuild()
         print("Rebuild verified.", file=sys.stderr)
 
-    # Relock to the new revisions. Best-effort: the rebuild already verified, so a lock-write hiccup must not
-    # fail (or crash) an otherwise-successful update — warn and let `bob lock` redo it.
-    try:
-        from bob import versions
-        versions.write_lock()
-    except Exception as e:  # noqa: BLE001 — advisory; never fail a verified update over relocking
-        print(f"relock skipped ({e}); run `bob lock` to refresh versions.lock.", file=sys.stderr)
+    # No relock here: versions.lock is a tracked file that arrived with the checkout above, already pinning
+    # exactly these revisions. Regenerating it on this machine would bake local state into it and dirty the tree,
+    # which blocks the next update's checkout.
 
     # Pull any models a release just added to the active profile (e.g. the rerank model). Resume +
     # SHA256-verify; already-present GGUFs are skipped, so this only downloads what's genuinely new —
@@ -788,7 +843,7 @@ def update_stack(tag: str = None, from_source: bool = False, channel: str = None
         print(f"model fetch skipped ({e}); run `bob fetch` to pull any new models.", file=sys.stderr)
 
     # Reconcile disk to the new lock: offer to reclaim space from models a release dropped (e.g. the old
-    # coder after the 1.2 refresh). Opt-in, guarded, never fatal.
+    # coder a release replaced). Opt-in, guarded, never fatal.
     _prune_orphan_models()
 
     # Provision voice assets for the configured backend (STT model + piper voice + audio deps) so an

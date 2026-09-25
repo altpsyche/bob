@@ -18,13 +18,13 @@
     },
     {
       "id": "whisper-stt-01",
-      "name": "Whisper: Transcribe",
+      "name": "STT: Transcribe",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [-100, 0],
       "parameters": {
         "method": "POST",
-        "url": "http://host.docker.internal:8082/v1/audio/transcriptions",
+        "url": "http://127.0.0.1:8082/v1/audio/transcriptions",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": []
@@ -68,13 +68,13 @@
         "width": 680,
         "height": 180,
         "color": 4,
-        "content": "## Voice: Transcribe Audio\n\nPOST an audio file (WAV/MP3). Transcribed by whisper-server at :8082.\n\n**Prerequisite:** whisper-server must expose `/v1/audio/transcriptions`.\nVerify: `curl -X POST http://localhost:8082/v1/audio/transcriptions -F file=@test.wav -F model=whisper-1`\nStart server: `bob whisper`\n\n```bash\ncurl -X POST http://localhost:5678/webhook/transcribe -F \"file=@recording.wav\"\n```\n\nReturns: `{ \"text\": \"...\" }`"
+        "content": "## Voice: Transcribe Audio\n\nPOST an audio file (WAV/MP3). Transcribed by Bob's faster-whisper STT server on 127.0.0.1:8082 through its OpenAI-compatible `/v1/audio/transcriptions`.\n\nStart it: `bob whisper start`\nVerify: `curl -X POST http://127.0.0.1:8082/v1/audio/transcriptions -F file=@test.wav -F model=whisper-1`\n\n```bash\ncurl -X POST http://localhost:5678/webhook/transcribe -F \"file=@recording.wav\"\n```\n\nReturns: `{ \"text\": \"...\" }`"
       }
     }
   ],
   "connections": {
-    "Webhook": { "main": [[{ "node": "Whisper: Transcribe", "type": "main", "index": 0 }]] },
-    "Whisper: Transcribe": { "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]] }
+    "Webhook": { "main": [[{ "node": "STT: Transcribe", "type": "main", "index": 0 }]] },
+    "STT: Transcribe": { "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]] }
   },
   "active": false,
   "settings": { "executionOrder": "v1" },

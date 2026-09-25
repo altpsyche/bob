@@ -122,8 +122,9 @@ class TestSummaryBlockAppendsNotRegenerates(unittest.TestCase):
         self.assertIn("NOTE-TWO", block2["content"])
 
 
-class TestDefaultOffReproducesToday(unittest.TestCase):
-    """stable_prefix=False must be byte-identical to the non-caching path (both modes)."""
+class TestDefaultPathPinsGoal(unittest.TestCase):
+    """stable_prefix=False keeps the plain layout (no frozen summary block) but still pins the goal:
+    the turn's goal never falls out of the window, in either compaction mode."""
 
     def setUp(self):
         self._orig = bob_loop._compact_span
@@ -131,19 +132,28 @@ class TestDefaultOffReproducesToday(unittest.TestCase):
     def tearDown(self):
         bob_loop._compact_span = self._orig
 
-    def test_truncate_mode_default_off_unchanged(self):
+    def test_truncate_mode_keeps_the_goal(self):
         msgs, goal = _history(10)
         base = truncate_history(list(msgs), max_msgs=5)
-        with_flag_off = truncate_history(list(msgs), max_msgs=5, stable_prefix=False, pin_goal=goal)
-        self.assertEqual(base, with_flag_off)
+        self.assertNotIn(goal, base)                        # unpinned: the goal slides out
+        pinned = truncate_history(list(msgs), max_msgs=5, stable_prefix=False, pin_goal=goal)
+        self.assertEqual(len(pinned), 5)
+        self.assertIs(pinned[1], goal)                      # system, goal, newest tail
+        self.assertEqual(pinned[2:], msgs[-3:])
 
-    def test_summarize_mode_default_off_unchanged(self):
+    def test_summarize_mode_keeps_the_goal(self):
         bob_loop._compact_span = lambda dropped, model, max_tokens: "N"
         msgs, goal = _history(10)
-        base = truncate_history(list(msgs), max_msgs=5, compaction="summarize", keep_last=2)
         off = truncate_history(list(msgs), max_msgs=5, compaction="summarize", keep_last=2,
                                stable_prefix=False, pin_goal=goal)
-        self.assertEqual(base, off)
+        self.assertIn(_COMPACT_FRAME, off[1]["content"])
+        self.assertIn(goal, off)
+        self.assertNotIn(goal, [m for m in off[1:2]])
+
+    def test_goal_survives_a_tight_token_budget(self):
+        msgs, goal = _history(20, big=400)
+        out = truncate_history(list(msgs), max_msgs=100, max_tokens=300, pin_goal=goal)
+        self.assertIn(goal, out)
 
 
 class TestCachePromptNotDisabled(unittest.TestCase):

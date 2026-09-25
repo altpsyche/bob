@@ -1,5 +1,5 @@
 {
-  "_comment": "The single neutral source of truth for shared constants. Read by Python (json.load in scripts/bob_core.py); it exists before the venv so bootstrap can use it. Never re-inline a port number or role literal elsewhere. 'ports' + 'roleTable' are the shared constants; 'runtime' is the neutral runtime-config default layer the Python resolver (scripts/bob_config.py) merges. Per-machine overrides live in config/user.json (deep-merged). This is the sole authoring source, read the same way on every OS.",
+  "_comment": "The single neutral source of truth for shared constants. Read by Python (json.load in scripts/bob_core.py); it exists before the venv so bootstrap can use it. Never re-inline a port number or role literal elsewhere. 'ports' + 'roleTable' are the shared constants; 'runtime' is the neutral runtime-config default layer the Python resolver (scripts/bob_config.py) merges. Per-machine overrides live in config/user.json (deep-merged). This is the sole authoring source, read the same way on every OS. Top-level runtime keys (bindHost, voiceBindHost, langfuseEnabled, n8nTimezone, litellmKey) are overridden at the top level of config/user.json. The voice servers (faster-whisper STT, piper TTS) take no key, so they bind voiceBindHost, loopback unless set, even when bindHost opens the rest to the LAN. litellmKey is empty by default, which means the key is generated on first use and kept in the secret store (data/secrets.json or the OS keychain); set it only to pin a key of your own.",
   "ports": {
     "port": 8080,
     "litellmPort": 8081,
@@ -54,11 +54,15 @@
       "base": "visionRole",
       "pro": "visionProRole",
       "fallback": "vision",
-      "proFallback": "vision-pro"
+      "proFallback": "vision"
     }
   },
   "runtime": {
-    "litellmKey": "sk-local",
+    "litellmKey": "",
+    "bindHost": "127.0.0.1",
+    "voiceBindHost": "127.0.0.1",
+    "langfuseEnabled": false,
+    "n8nTimezone": "UTC",
     "persona": {
       "systemPrompt": "You are Bob, a helpful AI assistant. Be direct and honest, and if you don't know something, say so. When the user tells you durable facts about themselves \u2014 their name, role, or lasting preferences \u2014 save them with the memory_store tool (type 'profile' for identity, 'preference' for how they like you to work) so you remember them in future sessions. Don't re-store what you already know."
     },
@@ -101,11 +105,12 @@
         "episodic": 0.5
       },
       "maxSummaryTokens": 512,
-      "autoSummarize": true,
       "autoConsolidate": true,
       "consolidateTimeout": 30,
       "reconcileTopK": 20,
       "maxRows": 2000,
+      "transcriptMaxRows": 20000,
+      "transcriptMaxDays": 90,
       "forgetAfterDays": {
         "episodic": 180
       },
@@ -116,16 +121,14 @@
     "vision": {
       "enabled": true,
       "visionRole": "vision",
-      "visionProRole": "vision-pro"
+      "visionProRole": "vision"
     },
     "voice": {
       "enabled": true,
       "preload": false,
       "sttIdleSeconds": 900,
-      "sttEngine": "faster-whisper",
       "sttModel": "small",
       "sttComputeType": "auto",
-      "ttsEngine": "piper",
       "ttsVoice": "en_GB-alan-medium",
       "silenceSec": 1.5
     },
@@ -134,9 +137,10 @@
       "agency": "show",
       "toolFormat": "hermes",
       "maxSteps": 10,
+      "maxDuplicateToolCalls": 2,
       "maxParallelTools": 1,
       "maxHistoryMsgs": 40,
-      "maxContextTokens": 6000,
+      "maxContextTokens": 0,
       "outputReserveTokens": 1024,
       "maxToolResultTokens": 1000,
       "compaction": "truncate",
@@ -152,10 +156,13 @@
       "maxAgentDepth": 2,
       "subAgentTools": [],
       "subAgentRoles": {},
+      "subAgentAllowPro": false,
       "plan": false,
       "verify": false,
       "selfRepair": false,
       "checkpoint": false,
+      "checkpointEdits": false,
+      "checkpointDbPath": "",
       "computerUse": {
         "enabled": false,
         "display": "virtual",
@@ -190,6 +197,7 @@
       "agentPort": 8084,
       "serveHost": "127.0.0.1",
       "apiTokens": [],
+      "acceptLitellmKey": true,
       "defaultOwner": "local",
       "authStore": false,
       "defaultRatePerMin": 0,
@@ -203,6 +211,7 @@
       "mcpEnabled": false,
       "mcpServers": {},
       "mcpTimeout": 30,
+      "mcpAllowTools": [],
       "mcpTransport": "stdio",
       "mcpPort": 8085,
       "mcpHost": "127.0.0.1",

@@ -7,10 +7,13 @@ with zero extra VRAM.
 This page documents the memory engine, persisted sessions, per-project memory, the `bob memory` CLI,
 the agent tools, and every `memory.*` config key.
 
-- **Store:** SQLite (`data/bob.db`) + BGE-M3 embeddings (the `embed` model, already pinned at
-  `:8081`; memory costs 0 extra VRAM and one embed call per store/recall).
+- **Store:** SQLite (`data/bob.db`) + Qwen3-Embedding-0.6B embeddings (the `embed` role every GPU
+  profile pins, served through `:8081`; memory costs 0 extra VRAM and one embed call per store/recall).
 - **Local always:** even when `bob chat --pro` routes answers to the cloud, recall and embedding stay
-  on BGE-M3 at `:8081`. Memory never leaves the machine.
+  on the local embedder. Memory never leaves the machine.
+- **No embedder (the `cpu` profile):** memory still stores, dedups exactly, injects the profile and
+  recalls by keyword (FTS5); semantic recall, near-dedup and `forget --query` need an embed role.
+  `bob memory status` says when semantic memory is off.
 - **On by default:** `memory.enabled = true`. Turn it off in `config/user.json` (`{"memory": {"enabled": false}}`).
 
 ---
@@ -49,33 +52,45 @@ global; `project` facts can be scoped to a repo (see [Per-project scoping](#per-
 
 ### Blended recall ranking
 
-Recall is **not** plain semantic search. Each candidate is scored:
+Recall is **not** plain semantic search, and it runs in two steps. First a **relevance gate**: a
+candidate survives only if its raw cosine to the query is at least `memory.recallThreshold` (in
+hybrid mode a keyword hit covering at least half the query's content words also qualifies; with
+rerank on, the reranker's raw score is the gate for the candidates it scores). Recency, type and
+salience never count toward the gate, so an unrelated query returns nothing. Then the survivors are
+**blended**:
 
 ```
 score = wSemantic·cosine + wRecency·decay + wType·typeWeight + wUsage·usage + wSalience·salience
 ```
 
-- **cosine**: BGE-M3 semantic similarity to the query.
+- **cosine**: semantic similarity to the query (the `embed` role, Qwen3-Embedding-0.6B).
 - **decay**: `exp(-age / halfLife[type])`, where age is measured from the **more recent** of
   `created_at` / `last_used`, so a fact you keep hitting stops decaying.
 - **typeWeight**: the per-type weight above.
 - **usage**: how often the fact has been recalled (capped).
 - **salience**: importance, see below.
 
-All weights are tunable (`memory.ranking.*`). Only results at or above `memory.recallThreshold` are
-returned, top `memory.recallK` first.
+All weights are tunable (`memory.ranking.*`). The top `memory.recallK` survivors by blended score are
+returned (the `memory_recall` tool uses the same default).
 
 ### Hybrid retrieval & cross-encoder rerank
 
-Recall runs dense (BGE-M3 cosine) by default. Set `memory.retrieval = "hybrid"` to also fuse a
+Recall runs dense (embedding cosine) by default. Set `memory.retrieval = "hybrid"` to also fuse a
 lexical BM25 ranking (SQLite FTS5) via Reciprocal Rank Fusion, so a lexically-exact hit that a dense
 scan ranks poorly still surfaces.
 
 On top of hybrid, `memory.rerank = true` adds a **cross-encoder rerank**, the second stage of the
 standard retrieve-then-rerank pipeline. The top `memory.rerankTopN` fused candidates are re-scored by
-a reranker model that reads each (query, candidate) pair jointly, and that score (min-max normalized)
-replaces the semantic term before the recency/type/salience blend. This sharpens relevance and, under
-a `recallThreshold`, filters out the embedding-similarity noise floor that hybrid alone would inject.
+a reranker model that reads each (query, candidate) pair jointly. Its **raw** score (a 0 to 1
+relevance probability for Qwen3-Reranker) is gated at `recallThreshold` first, so an irrelevant set of
+candidates returns nothing; only the survivors' scores replace the semantic term before the
+recency/type/salience blend (an unbounded-logit reranker is min-max rescaled over the survivors only).
+
+The query and each candidate are truncated client-side to fit the rerank role's input limit. A
+reranker scores a (query, document) pair as one sequence that llama-server cannot split across
+micro-batches, so the limit is the smaller of its `ctx` and its `-ub` (n_ubatch), less the prompt
+template. If that leaves too little room to rank, recall warns and falls back to the hybrid order;
+give the rerank role `-ub` equal to its `ctx`.
 
 The reranker (`Qwen3-Reranker-0.6B`, ~0.6 GB) **ships with every GPU profile** but is **loaded only
 on demand**: it is not pinned and not in the swap group, so it costs no VRAM until a recall actually
@@ -88,8 +103,8 @@ reranks, and it unloads after an idle window (`ttl`). Turn it on with one flag:
 On a fresh install the model is already downloaded; when **updating an existing install**, pull it once
 with `bob fetch`, then `bob gen && bob restart`. The rerank call goes straight to the endpoint's
 `/v1/rerank` (LiteLLM's `/rerank` expects a cloud provider); override with `memory.rerankBaseUrl` for a
-remote reranker. **Loud-fail:** if no reranker is reachable, recall logs one warning and falls back to
-the hybrid order. Default off = today's behavior.
+remote reranker. **Loud-fail:** if no reranker is reachable, recall logs a warning (each distinct reason, repeated at
+most every 10 minutes) and falls back to the hybrid order. Default off = hybrid unchanged.
 
 ### Importance & salience
 
@@ -119,14 +134,20 @@ is never silently dropped even if the summarizer fails.
 
 ### Dedup & third-person normalization
 
-On store, content is normalized to third person ("I prefer X" → "User prefers X") so recalled notes
-never read as Bob's own identity, then deduped: exact (content hash) and near (cosine ≥
-`memory.dedupThreshold`), scoped to the same owner/type.
+On store, a note about the user is normalized to third person ("I prefer X" → "User prefers X") so
+recalled notes never read as Bob's own identity (indexed code chunks are stored verbatim), then deduped
+against the **active** rows (not forgotten, not superseded): exact (content hash) and near (cosine ≥
+`memory.dedupThreshold`), scoped to the same owner/type. So a fact you forgot can be stored again.
+
+Inputs are fitted to the models: text longer than the embed role's context is embedded by its head
+and tail, and the consolidation/summary call keeps the most recent turns that fit the chat role's
+context (thinking is switched off for local roles, so the answer isn't spent on reasoning).
 
 ### Provenance
 
 Each consolidated row records the **session that produced it** (`source_session`), visible in
-`bob memory show <id>` / `export`. You can retract everything a session taught Bob:
+`bob memory show <id>` / `export`. You can retract everything a session taught Bob (its memories are soft-deleted and its transcript
+turns removed):
 
 ```bash
 bob memory forget --session <session-id>
@@ -212,6 +233,11 @@ result is a normal tool result, so it too is subject to compaction / tool-result
 re-overflow. Embedding is best-effort (the FTS keyword index is the always-present floor, so capture
 survives an embed-server outage). Off by default = no transcript persistence beyond today's sessions.
 
+The search covers every persisted run for the same owner and project, not only the current
+conversation. The transcript is bounded: turns older than `memory.transcriptMaxDays` (default 90) and
+all but the newest `memory.transcriptMaxRows` (default 20000) are pruned as new turns arrive.
+`bob memory clear` wipes it along with everything else.
+
 ---
 
 ## Project instruction files
@@ -245,13 +271,23 @@ bob memory show  <id>                 Full row incl. source_session / provenance
 bob memory edit  <id> "<text>"        Replace a memory (re-embeds; supersedes the old row)
 bob memory pin   <id>   /   unpin <id>   Protect from pruning / release
 bob memory forget <id>                Soft-delete one memory (kept for audit)
-bob memory forget --query "<q>"       Soft-delete the best match for a query
-bob memory forget --session <id>      Soft-delete everything a session produced
+bob memory forget --query "<q>" [--yes]
+                                      Show the best strong semantic match, then soft-delete it on
+                                      confirmation (--yes skips the prompt; needs the embedder)
+bob memory forget --session <id>      Soft-delete everything a session produced + drop its transcript
 bob memory export [--owner <id>]      Dump memories as JSON
-bob memory migrate [--normalize]      Run schema migration (--normalize re-embeds to 3rd person; backs up first)
+bob memory migrate [--normalize] [--reembed]
+                                      Run schema migration; --normalize rewrites to 3rd person,
+                                      --reembed rebuilds stale or missing vectors (both back up first)
 bob memory init-profile --name "<n>" --work "<w>"    Seed identity as profile rows
-bob memory clear [--yes]              Wipe ALL memories
+bob memory clear [--yes]              Wipe ALL memories, core-memory blocks, the transcript and
+                                      their full-text indexes
+bob memory --db <path> <subcommand>   Run any subcommand against another database file
+bob code index [--rebuild]            Build (or, with --rebuild, re-index from scratch) the semantic
+                                      code index
 ```
+
+A forgotten fact also leaves the injected profile, and it can be stored again later.
 
 Types for `--type`: `profile`, `preference`, `project`, `fact`, `episodic`.
 
@@ -266,9 +302,10 @@ When `memory.enabled`, these tools are available to the agent loop (and over MCP
 - **`memory_block`** (when `memory.coreBlocks` is configured): append to / replace an always-injected
   core-memory block the agent curates for itself.
 - **`conversation_search`** (when `agent.conversationPaging` is on): search and page back earlier turns
-  that have scrolled out of the current context.
+  that have scrolled out of the current context, from this and earlier sessions of the same owner and
+  project.
 
-All operate only on the local `bob.db` via the embed server, scoped to the run's owner (and project
+All operate only on the local `bob.db` via the embed server (keyword-only without one), scoped to the run's owner (and project
 scope). `memory_store` and `memory_block` are mutating, subject to the approval policy. See
 [SECURITY.md](SECURITY.md).
 
@@ -287,11 +324,12 @@ All keys live in `config/defaults.json` under `runtime.memory` and can be overri
 | `profileMaxTokens` | `200` | Cap on the profile block. |
 | `maxInjectedTokens` | `1200` | Total budget for injected memory (profile + autoRecall + `BOB.md`); over budget trims autoRecall → profile → `BOB.md`. |
 | `dbPath` | `data/bob.db` | Memory database (gitignored). |
-| `embedModel` | `embed` | Embedding model role (BGE-M3 at `:8081`). |
-| `recallK` | `5` | Max results returned by a recall. |
-| `recallThreshold` | `0.35` | Minimum blended score to return. |
+| `embedModel` | `embed` | LiteLLM model name (= registry role) of the embedder. Inputs are fitted to that model's context before embedding. |
+| `recallK` | `5` | Max results returned by a recall (also the `memory_recall` tool's default). |
+| `recallThreshold` | `0.35` | Relevance gate: minimum raw cosine (or raw rerank score) a result needs, before blending. |
+| `rerankThreshold` | (unset) | Optional separate gate for the raw rerank score; unset, the reranker gates at `recallThreshold`. |
 | `dedupThreshold` | `0.92` | Cosine at/above which a new store is treated as a duplicate. |
-| `retrieval` | `"dense"` | `"dense"` (BGE-M3 cosine only) or `"hybrid"` (fuse BM25/FTS5 via RRF). |
+| `retrieval` | `"dense"` | `"dense"` (embedding cosine only) or `"hybrid"` (fuse BM25/FTS5 via RRF). |
 | `rrfK` | `60` | Reciprocal Rank Fusion constant for hybrid retrieval. |
 | `rerank` | `false` | Cross-encoder rerank of the fused candidates (implies the hybrid path). Needs a `reranking` model in the stack; loud-fails to hybrid if absent. |
 | `rerankTopN` | `20` | How many fused candidates the reranker re-scores. |
@@ -304,8 +342,7 @@ All keys live in `config/defaults.json` under `runtime.memory` and can be overri
 | `ranking.wSalience` | `0.3` | Weight: importance/salience. |
 | `ranking.halfLifeDays` | see [Typed memory](#typed-memory) | Per-type recency half-lives. |
 | `typeWeights` | see table | Per-type rank weights. |
-| `maxSummaryTokens` | `512` | Token budget for the consolidation/summary LLM call. Must clear the reasoning budget of a reasoning model (a tight cap yields an empty completion). |
-| `autoSummarize` | `true` | Legacy `bob chat` REPL: summarise on exit. |
+| `maxSummaryTokens` | `512` | Output budget for the consolidation/summary LLM call (thinking is off for local roles; the input is fitted to the role's context minus this). |
 | `autoConsolidate` | `true` | Consolidate durable facts when a shell/server session ends. |
 | `consolidateTimeout` | `30` | Seconds bounding the end-of-session consolidation call. |
 | `reconcileTopK` | `20` | How many existing facts to show the extractor for supersede decisions. |
@@ -314,6 +351,8 @@ All keys live in `config/defaults.json` under `runtime.memory` and can be overri
 | `scopeByProject` | `true` | Scope `project`-type facts per repo; `false` = one global pool. |
 | `projectFiles` | `true` | Read `BOB.md` / `AGENTS.md` project instruction files at session start. |
 | `bobMdMaxTokens` | `4000` | Cap on the concatenated project instruction files. |
+| `transcriptMaxRows` | `20000` | Conversation-paging transcript: keep at most this many newest turns (0 = no row cap). |
+| `transcriptMaxDays` | `90` | Conversation-paging transcript: drop turns older than this (0 = no age cap). |
 
 Conversation paging is an **`agent.*`** key: `agent.conversationPaging` (default `false`) enables
 full-transcript persistence and the `conversation_search` tool (see [Conversation paging](#conversation-paging-recall-over-dropped-turns)).
@@ -327,9 +366,12 @@ full-transcript persistence and the `conversation_search` tool (see [Conversatio
   memory migrate` applies additive migrations in place (a legacy DB is upgraded automatically on first
   open).
 - `data/sessions.db`: persisted shell/server session transcripts (`agent.sessionDbPath`).
-- Nothing is sent to the cloud for memory: BGE-M3 runs locally. `--pro` affects only the chat
+- The DB runs in WAL mode with a busy timeout, so the shell, the agent server and CLI verbs can use it
+  at the same time.
+- Nothing is sent to the cloud for memory: the embedder runs locally. `--pro` affects only the chat
   response, never recall or embedding.
-- To wipe: `bob memory clear --yes` (memories) or delete `data/bob.db` (rebuilt empty on next use).
+- To wipe: `bob memory clear --yes` (memories, core blocks and transcript) or delete `data/bob.db`
+  (rebuilt empty on next use).
 
 ---
 
@@ -339,10 +381,12 @@ See also: [USAGE.md](USAGE.md) (full command reference), [TUNING.md](TUNING.md) 
 
 ## Changing the embedding model
 
-Each row records the embed model that produced its vector (`embed_model`, schema v4). Vectors from two
-different models are not comparable, and two models of the same width do not fail loudly. bge-m3 and
-Qwen3-Embedding-0.6B are both 1024-dimensional, so a stale vector would otherwise be scored against a
-fresh query and return a meaningless number.
+Each row records the embed model that produced its vector (`embed_model`, schema v4; transcript turns
+carry the same stamp), and the active model is re-read when `bob profile` switches profiles, so a
+running shell or server stamps the right one. Vectors from two
+different models are not comparable, and two models of the same width do not fail loudly: two
+1024-dimensional embedders (Qwen3-Embedding-0.6B is one) would otherwise have a stale vector scored
+against a fresh query and return a meaningless number.
 
 A row whose stamp does not match the active `embed` model is treated as "no vector yet": it still
 matches by keyword/FTS and is skipped by near-dedup, but it stays out of semantic recall. `bob doctor`
@@ -350,9 +394,12 @@ reports the count and names the fix, and because `bob update` ends with a doctor
 changes the embed model tells you on the spot. Rebuild the stale vectors with the embed server up:
 
 ```bash
-bob memory migrate            # reports how many rows are stale
+bob memory migrate            # reports how many rows are stale or have no vector yet
 bob memory migrate --reembed  # rebuilds them (backs the DB up first)
 ```
 
-The semantic code index goes through the same store, so re-run `bob code index` after an embed-model
-change (or point migrate at it: `bob memory migrate --reembed --db data/code.db`).
+`--reembed` also fills in rows stored without a vector (captured while the embed server was down), and
+re-embeds each row from the same input it was stored with, including a chunk's situating context.
+
+The semantic code index goes through the same store: re-running `bob code index` after an embed-model
+change re-embeds each unchanged chunk whose vector is stale.

@@ -10,9 +10,12 @@ NOT gate on a real tool round-trip (tool-protocol correctness lives in the unit 
   3. `bob agent serve`: GET /health (no auth) + an owner-scoped session turn + an SSE stream.
      Step 3 gates the SERVER CONTRACT (auth, session, routing, SSE); a backend-model failure there
      (e.g. a resource-starved CPU-tier reload) is SKIPped — "a coherent answer" is step 2's job.
+With --up, skips are capped (--max-skips, default 1): a run where most checks skipped proved only that the
+endpoint answers, so it FAILs instead of passing on "endpoint reachable" alone.
 
   python scripts/smoke.py            # test whatever is running; SKIP (exit 0) if nothing is up
   python scripts/smoke.py --up       # bring the stack + agent server up first, tear the server down after
+  python scripts/smoke.py --up --max-skips 0   # tolerate no backend SKIP at all (a GPU tier)
   python scripts/smoke.py --up --require-gpu --expect-source prebuilt
                                      # additionally assert the staged engine is the GPU tier and, optionally,
                                      # that it came from a downloaded prebuilt (vs a source build). The GPU
@@ -41,12 +44,13 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 import osenv  # noqa: E402
-from bob_core import _port, load_config  # noqa: E402
+from bob_core import _litellm_key, load_config, service_port  # noqa: E402
 
 BOB = str(REPO / "bob") if osenv.os_name() != "windows" else None
 
 _pass = 0
 _fail = 0
+_skip = 0
 
 
 def ok(m):
@@ -62,6 +66,8 @@ def bad(m):
 
 
 def skip(m):
+    global _skip
+    _skip += 1
     print(f"  SKIP  {m}")
 
 
@@ -149,13 +155,14 @@ def main(argv=None) -> int:
     up = "--up" in argv or "-Up" in argv
     require_gpu = "--require-gpu" in argv
     expect_source = _arg_value(argv, "--expect-source")
+    max_skips = int(_arg_value(argv, "--max-skips") or 1)
     timeout = 300
 
     cfg = load_config()
-    port = cfg.get("port") or _port(cfg, "port")
-    agent_port = (cfg.get("agent", {}) or {}).get("agentPort") or _port(cfg, "agentPort")
+    port = service_port(cfg, "port")
+    agent_port = service_port(cfg, "agentPort")
     agent_host = (cfg.get("agent", {}) or {}).get("serveHost") or "127.0.0.1"
-    litellm_key = osenv.secret("litellmKey", cfg.get("litellmKey", "sk-local"), cfg)
+    litellm_key = _litellm_key(cfg)
     inf_base = f"http://localhost:{port}/v1"
     agent_base = f"http://{agent_host}:{agent_port}"
 
@@ -188,11 +195,14 @@ def main(argv=None) -> int:
     try:
         proc = subprocess.run(_bob_argv(["agent", "say hi"]), env=_bob_env(),
                               capture_output=True, text=True, timeout=timeout)
-        answer = (proc.stdout or proc.stderr or "").strip()
-        if answer and len(answer) >= 2 and not answer.startswith(("ERROR", "Traceback", "Error:")):
+        # The answer is stdout only: stderr carries diagnostics, and an error printed there is not an answer.
+        answer = (proc.stdout or "").strip()
+        if proc.returncode != 0:
+            bad(f"bob agent 'say hi' exited {proc.returncode}: {(proc.stderr or proc.stdout or '').strip()[-200:]}")
+        elif answer and len(answer) >= 2 and not answer.startswith(("ERROR", "Traceback", "Error:")):
             ok(f"bob agent 'say hi' answered ({len(answer)} chars)")
         else:
-            bad(f"bob agent 'say hi' returned no coherent answer: {answer[:120]}")
+            bad(f"bob agent 'say hi' returned no coherent answer on stdout: {answer[:120]!r}")
     except subprocess.TimeoutExpired:
         if osenv.gpu_info() is None:
             skip(f"bob agent 'say hi' — backend/timeout on the CPU tier (cold load > {timeout}s); "
@@ -213,7 +223,9 @@ def main(argv=None) -> int:
                                               env=_bob_env())
             server_up = _wait_url(f"{agent_base}/health", 30)
 
-        if not server_up:
+        if not server_up and up:
+            bad(f"agent server never came up at {agent_base} (bob agent serve)")
+        elif not server_up:
             skip(f"agent server not running at {agent_base} — start it (bob agent serve) or pass --up.")
         else:
             try:
@@ -273,7 +285,9 @@ def main(argv=None) -> int:
             osenv.stop_process_tree(server_pid)
             pidfile.unlink(missing_ok=True)
 
-    print(f"\n{_pass} passed, {_fail} failed")
+    if up and _skip > max_skips:
+        bad(f"{_skip} checks skipped (limit {max_skips}): this run proved little beyond a reachable endpoint")
+    print(f"\n{_pass} passed, {_fail} failed, {_skip} skipped")
     return 1 if _fail else 0
 
 

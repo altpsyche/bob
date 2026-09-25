@@ -15,7 +15,7 @@ from pathlib import Path
 REPO = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 
-from bob_core import load_config, get_llm_client, check_litellm, get_role, _port
+from bob_core import CompletionError, load_config, check_litellm, complete, get_role, _port
 
 
 SYSTEM_PROMPTS = {
@@ -46,9 +46,10 @@ SYSTEM_PROMPTS = {
     ),
 }
 
-# Long-form drafts (PR, docs) route to the thinking role; short-form to chat. The routing
-# table itself lives in bob_core.get_role — here we only pick the task.
-TYPE_TASK_MAP = {"pr": "think", "doc": "think"}
+# Long-form drafts (PR, docs) route to the reasoning role (the roleTable "ponder" task); short-form to
+# chat. The routing table itself lives in bob_core.get_role; here we only pick the task.
+TYPE_TASK_MAP = {"pr": "ponder", "doc": "ponder"}
+MAX_OUT_TOKENS = 2048   # the draft's output cap (bob_core.complete clamps it to the model's window)
 
 
 def draft(prompt: str, type: str = "default", config: dict = None) -> str:
@@ -58,28 +59,18 @@ def draft(prompt: str, type: str = "default", config: dict = None) -> str:
     system_prompt = SYSTEM_PROMPTS[draft_type]
 
     role = get_role(config, TYPE_TASK_MAP.get(draft_type, "chat"))
-
-    client = get_llm_client(config)
-
-    resp = client.chat.completions.create(
-        model=role,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
-        ],
-        stream=False,
-        timeout=int((config or {}).get("agent", {}).get("requestTimeout", 600)),
-    )
-    return resp.choices[0].message.content or ""
+    text, _finish = complete(config, role, [{"role": "system", "content": system_prompt},
+                                            {"role": "user", "content": prompt}], MAX_OUT_TOKENS)
+    return text
 
 
-def main():
-    p = argparse.ArgumentParser(description="Draft text from a prompt via local LLM")
+def main(argv=None) -> int:
+    p = argparse.ArgumentParser(prog="bob draft", description="Draft text from a prompt via local LLM")
     p.add_argument("prompt", nargs="*", help="What to draft")
     p.add_argument("--type", "-t", choices=["email", "pr", "slack", "doc"], default=None,
                    help="Draft type — shapes tone and format")
     p.add_argument("--role", default=None, help="Model role override")
-    args = p.parse_args()
+    args = p.parse_args(argv)
 
     prompt_text = " ".join(args.prompt).strip()
     if not prompt_text and not sys.stdin.isatty():
@@ -91,25 +82,30 @@ def main():
         print("Examples:", file=sys.stderr)
         print('  bob draft "apologise for missing the deadline" --type email', file=sys.stderr)
         print('  bob draft "add streaming support to the API" --type pr', file=sys.stderr)
-        print('  bob draft "focus instrumental playlist for coding"', file=sys.stderr)
-        sys.exit(1)
+        print('  bob draft "let the team know the deploy is done" --type slack', file=sys.stderr)
+        return 1
 
     try:
         config = load_config()
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
+        return 1
     if not check_litellm(config):
         port = _port(config, "litellmPort")
         print(f"Error: LiteLLM proxy not reachable at localhost:{port}", file=sys.stderr)
         print("Run: bob up", file=sys.stderr)
-        sys.exit(1)
+        return 1
 
     if args.role:
         config.setdefault("routing", {})["defaultRole"] = args.role
 
-    print(draft(prompt_text, args.type or "default", config))
+    try:
+        print(draft(prompt_text, args.type or "default", config))
+    except CompletionError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

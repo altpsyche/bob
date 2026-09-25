@@ -42,7 +42,7 @@ _MODELS_CFG = {
 class TestLockShape(unittest.TestCase):
     def test_committed_lock_parses_and_is_well_formed(self):
         lk = versions.load_lock()
-        for key in ("lockVersion", "release", "submodules", "toolchain", "requirements", "models"):
+        for key in ("lockVersion", "release", "submodules", "binaries", "models"):
             self.assertIn(key, lk, f"versions.lock missing '{key}'")
         self.assertIsInstance(lk["submodules"], dict)
         self.assertTrue(lk["submodules"], "no submodules pinned")
@@ -159,7 +159,7 @@ class TestLockModelManifest(unittest.TestCase):
         (self.repo / "models").mkdir()
 
     def _run(self):
-        with mock.patch("bob_models.load_models_config", return_value=_MODELS_CFG):
+        with mock.patch("bob.versions._tracked_models_config", return_value=_MODELS_CFG):
             return versions.lock_model_manifest(repo=self.repo)
 
     def test_union_dedup_order_and_fields(self):
@@ -184,11 +184,23 @@ class TestLockModelManifest(unittest.TestCase):
         # The Qwen3-Coder false-STALE case: manifest has a real sha for a model the committed lock pins null.
         (self.repo / "models" / "manifest.json").write_text(json.dumps({"coder.gguf": {"sha256": "AAA"}}))
         (self.repo / "versions.lock").write_text(json.dumps({"models": {"coder.gguf": {"sha256": None}}}))
-        with mock.patch("bob_models.load_models_config", return_value=_MODELS_CFG):
+        with mock.patch("bob.versions._tracked_models_config", return_value=_MODELS_CFG):
             on = versions.lock_model_manifest(repo=self.repo, use_manifest=True)
             off = versions.lock_model_manifest(repo=self.repo, use_manifest=False)
         self.assertEqual(on["coder.gguf"]["sha256"], "aaa")   # default: manifest adopted
         self.assertIsNone(off["coder.gguf"]["sha256"])        # off: committed lock's null wins -> deterministic
+
+
+    def test_user_overlay_never_reaches_the_lock(self):
+        # A local config/user.json override (extra profile, swapped model) must not make `bob lock --check`
+        # report STALE or leak into the tracked lock: the lock is built from the committed models.json only.
+        (self.repo / "config").mkdir()
+        (self.repo / "config" / "models.json").write_text(json.dumps(_MODELS_CFG))
+        (self.repo / "config" / "user.json").write_text(json.dumps(
+            {"profiles": {"mine": {"chat": {"gguf": "local-only.gguf", "repo": "me/x", "path": "x.gguf"}}}}))
+        m = versions.lock_model_manifest(repo=self.repo)
+        self.assertNotIn("local-only.gguf", m)
+        self.assertEqual(list(m), ["chat.gguf", "coder.gguf", "tiny.gguf"])
 
 
 class TestBuildAndText(unittest.TestCase):
@@ -197,10 +209,20 @@ class TestBuildAndText(unittest.TestCase):
              mock.patch("bob.versions.lock_model_manifest", return_value={}), \
              mock.patch("bob.versions.bob_version", return_value="9.9.9"):
             obj = versions.build_lock_object()
-        self.assertEqual(list(obj), ["lockVersion", "release", "submodules", "toolchain",
-                                     "requirements", "tools", "models"])
+        self.assertEqual(list(obj), ["lockVersion", "release", "submodules", "binaries", "models"])
         self.assertEqual(obj["release"], "9.9.9")
-        self.assertEqual(obj["toolchain"], versions.LOCK_TOOLCHAIN)
+        self.assertEqual(obj["binaries"], versions.LOCK_BINARIES)
+
+    def test_pinned_binary_reads_the_lock(self):
+        lock = {"binaries": versions.LOCK_BINARIES}
+        pin = versions.pinned_binary("llama-swap", "linux-x86_64", lock=lock)
+        self.assertEqual(pin["version"], "v255")
+        self.assertRegex(pin["sha256"], r"^[0-9a-f]{64}$")
+        self.assertIsNone(versions.pinned_binary("llama-swap", "freebsd-x86_64", lock=lock))
+        self.assertIsNone(versions.pinned_binary("nope", "linux-x86_64", lock=lock))
+
+    def test_whisper_cpp_is_not_pinned(self):
+        self.assertNotIn("external/whisper.cpp", versions.LOCK_SUBMODULES)
 
     def test_text_is_2space_json_with_null_and_floats(self):
         with mock.patch("bob.versions.submodule_commits", return_value={"s": None}), \

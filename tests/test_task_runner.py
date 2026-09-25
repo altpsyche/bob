@@ -93,6 +93,19 @@ class TestTaskRunner(unittest.TestCase):
         bob_task_runner.run_task(self.cfg, "t2", "alice", goal="do it", cancel=cancel)
         self.assertEqual(self._store().load_run("t2", "alice")["status"], "cancelled")
 
+    def test_upstream_down_exits_nonzero(self):
+        bob_core.check_litellm = lambda config=None: False     # LiteLLM unreachable
+        rc = bob_task_runner.run_task(self.cfg, "t3", "alice", goal="do it")
+        self.assertEqual(rc, 1)
+
+    def test_max_steps_without_answer_exits_2(self):
+        loop_call = '<tool_call>{"name": "nope", "arguments": {"i": %d}}</tool_call>'
+        bob_core.get_llm_client = lambda config=None: _common.scripted_client(
+            [loop_call % i for i in range(10)])
+        self.cfg["agent"]["maxSteps"] = 2
+        rc = bob_task_runner.run_task(self.cfg, "t4", "alice", goal="do it")
+        self.assertEqual(rc, 2)
+
 
 class TestTaskVerbs(unittest.TestCase):
     """The task start/status/logs CLI verbs create, list, and inspect detached tasks, owner-scoped,

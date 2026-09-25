@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Tier-0 shell stub. The ONE thin, unavoidable shell layer: ensure a system
-# python3 (one package-manager call), then hand off to the Python cold-start kernel, which installs the
-# toolchain (compiler, cmake, ninja, go, node, python3, CUDA) via apt/dnf/pacman/zypper. Zero PowerShell.
-# Idempotent — safe to re-run.
+# python3 (one package-manager call), then hand off to the Python cold-start kernel, which installs what
+# this install needs via apt/dnf/pacman/zypper/rpm-ostree: always git, curl and a venv-compatible Python;
+# the compiler, cmake, ninja and Go only for a source build. Zero PowerShell. Idempotent, safe to re-run.
 #
-#   ./install_prereqs.sh          # GPU build (expects an NVIDIA driver + CUDA toolkit)
-#   ./install_prereqs.sh --cpu    # CPU-only tier (skips the CUDA toolkit)
+#   ./install_prereqs.sh                # default: driver-only prebuilt engine (needs only the NVIDIA driver)
+#   ./install_prereqs.sh --cpu          # CPU-only tier
+#   ./install_prereqs.sh --from-source  # + the build toolchain (and the CUDA toolkit on a GPU box)
+#   ./install_prereqs.sh --with-node    # + Node.js/npm (optional: n8n, Continue's npx MCP servers)
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PYTHONPATH="$SCRIPT_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}"

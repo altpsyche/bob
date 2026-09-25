@@ -140,7 +140,8 @@ def make_tracer(config: dict, sink=None) -> Tracer:
     if not agent.get("tracing", False):
         return Tracer(enabled=False)
     if sink is None:
-        sink = _otlp_sink(agent) if (agent.get("tracingSink", "file") == "otlp") else _file_sink(agent)
+        sink = (_otlp_sink(agent, config) if (agent.get("tracingSink", "file") == "otlp")
+                else _file_sink(agent))
     return Tracer(enabled=True, sink=sink)
 
 
@@ -237,10 +238,32 @@ def format_trace(trace_id: str) -> str:
 # Not unit-tested (the seam above is, via a fake sink); smoke-validated against Langfuse (:3001).
 # ---------------------------------------------------------------------------
 
-def _otlp_sink(agent: dict):
+def otlp_target(agent: dict, config: dict = None) -> tuple:
+    """(endpoint, headers) for the OTLP exporter. The endpoint is agent.otlpEndpoint, else the local
+    Langfuse OTLP route on its configured port. Langfuse authenticates OTLP with HTTP Basic over its
+    project keys, so when LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY resolve through the secret seam the
+    headers carry `Authorization: Basic base64(pk:sk)`; otherwise none."""
+    import base64
+
+    endpoint = agent.get("otlpEndpoint", "")
+    if not endpoint:
+        from bob_core import service_port
+        endpoint = f"http://127.0.0.1:{service_port(config or {}, 'langfusePort')}/api/public/otel/v1/traces"
+    headers = {}
+    try:
+        import osenv
+        pk, sk = osenv.secret("LANGFUSE_PUBLIC_KEY"), osenv.secret("LANGFUSE_SECRET_KEY")
+    except Exception:
+        pk = sk = None
+    if pk and sk:
+        headers["Authorization"] = "Basic " + base64.b64encode(f"{pk}:{sk}".encode()).decode("ascii")
+    return endpoint, headers
+
+
+def _otlp_sink(agent: dict, config: dict = None):
     """Return a callable(Span) that exports to an OTLP collector, or a no-op that warns once if the
     opentelemetry SDK is missing (loud-fail: tracing degrades to off, the run never crashes)."""
-    endpoint = agent.get("otlpEndpoint", "") or "http://127.0.0.1:4318/v1/traces"
+    endpoint, headers = otlp_target(agent, config)
     try:
         from opentelemetry.sdk.trace import TracerProvider, ReadableSpan  # type: ignore  # noqa: F401
         from opentelemetry.sdk.trace.export import BatchSpanProcessor  # type: ignore
@@ -254,7 +277,7 @@ def _otlp_sink(agent: dict):
         return None
 
     provider = TracerProvider()
-    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
+    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint, headers=headers)))
     ot_tracer = provider.get_tracer("bob-agent")
 
     def _export(span: Span) -> None:
