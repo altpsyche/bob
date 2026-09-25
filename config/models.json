@@ -10,7 +10,6 @@
     "parallel": 1,
     "noMmap": false,
     "kvQuantV": "q8_0",
-    "maxTokens": 512,
     "numa": "",
     "ngl": 99,
     "n8nTimezone": "UTC",
@@ -45,30 +44,29 @@
     "deepseek": {
       "pro": {
         "coder": {
-          "maxTokens": 4096,
           "model": "deepseek-v4-flash",
           "systemPrompt": "You are an expert software engineer. Be direct. No preambles."
         },
         "chat": {
-          "maxTokens": 4096,
           "model": "deepseek-v4-flash",
           "systemPrompt": "Be helpful and concise."
         },
         "ponder": {
-          "maxTokens": 8192,
-          "model": "deepseek-v4-pro"
+          "model": "deepseek-v4-pro",
+          "maxOutputTokens": 65536
         },
         "vision": {
-          "maxTokens": 2048,
           "model": "deepseek-v4-flash"
         },
         "writer": {
-          "maxTokens": 8192,
           "model": "deepseek-v4-pro",
           "systemPrompt": "You are a careful writer. Produce clear, well-organized prose. No preambles."
         }
       },
       "enabled": true,
+      "_capacity": "contextWindow/maxOutputTokens are the models' limits, set on the peer or overridden per role. maxOutputTokens is the output cap every *-pro route defaults to (litellm.yaml max_tokens, and the dsh route); a client that sends its own max_tokens still wins. V4 flash and pro take 1M in and far more than 32K out. supportsVision marks a role image capable, and neither V4 model takes images.",
+      "contextWindow": 1000000,
+      "maxOutputTokens": 32768,
       "apiKeyEnv": "DEEPSEEK_API_KEY",
       "litellmPrefix": "deepseek",
       "proxy": "https://api.deepseek.com"
@@ -76,26 +74,25 @@
     "zhipu": {
       "pro": {
         "coder": {
-          "maxTokens": 8192,
           "model": "glm-5.3",
           "systemPrompt": "You are an expert software engineer. Be direct. No preambles."
         },
         "chat": {
-          "maxTokens": 4096,
           "model": "glm-5.3",
           "systemPrompt": "Be helpful and concise."
         },
         "ponder": {
-          "maxTokens": 8192,
           "model": "glm-5.3"
         },
         "writer": {
-          "maxTokens": 8192,
           "model": "glm-5.3",
           "systemPrompt": "You are a careful writer. Produce clear, well-organized prose. No preambles."
         }
       },
       "enabled": false,
+      "_capacity": "GLM-5 family: 200000 in and 128000 out on every host LiteLLM lists; both are stated at the conservative end.",
+      "contextWindow": 200000,
+      "maxOutputTokens": 32768,
       "apiKeyEnv": "ZHIPU_API_KEY",
       "litellmPrefix": "openai",
       "proxy": "https://api.z.ai/api/paas/v4"
@@ -103,12 +100,12 @@
     "kimi": {
       "pro": {
         "coder": {
-          "maxTokens": 8192,
           "model": "kimi-k3",
           "systemPrompt": "You are an expert software engineer. Be direct. No preambles."
         }
       },
       "enabled": false,
+      "_capacity": "kimi-k3 limits unconfirmed: set contextWindow and maxOutputTokens before enabling, or the provider's default output cap applies.",
       "apiKeyEnv": "MOONSHOT_API_KEY",
       "litellmPrefix": "openai",
       "proxy": "https://api.moonshot.ai/v1"

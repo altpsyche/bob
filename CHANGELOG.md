@@ -37,6 +37,30 @@ rebuilds only what changed, verifies, and rolls back on failure.
   name in dsh's credential store, `$DSH_HOME/.credentials.yaml`, editing only that line so the user's
   other keys and comments survive. dsh watches the file, so a running harness connects on its next
   request. [scripts/tools/generate.py](scripts/tools/generate.py).
+- **DeepSeek Harness was told the wrong window for several models.** The 32gb tier advertised all 393216
+  tokens of `-c`, but `--parallel 2 --no-kv-unified` gives each request 196608, so dsh overran the slot
+  long before it compacted. 4096- and 8192-token roles (16gb vision, all of 8gb and cpu, 12gb
+  ponder/writer) were offered even though pi-ai caps output at the window minus the prompt minus 4096,
+  which left them one token to answer in; roles under 16384 are now left out and `bob gen` names them.
+  Pro roles carried Bob's short chat cap (2048 to 8192 output tokens), which truncated an agent's file
+  writes mid tool call, and no window at all; they now take the peer's real `contextWindow` and
+  `maxOutputTokens` (DeepSeek V4: 1000000 in, 32768 out). `vision-pro` was marked image capable while
+  routing to a model that takes no images; a pro role is image capable only with `supportsVision`, and
+  a `vision` role without it is left out. [scripts/tools/generate.py](scripts/tools/generate.py),
+  [config/models.json](config/models.json).
+- **Cloud models cut off long answers and large tool calls.** Each pro role carried its own short output
+  cap (2048 to 8192 tokens), which `litellm.yaml` applied to every client that sends no `max_tokens`:
+  `bob chat --pro`, the agent loop's pro fallback, Continue, aider and Open WebUI. A local role has no
+  cap, so the same file write that worked on `coder` broke mid tool call on `coder-pro`. The cap now
+  comes from the peer's `maxOutputTokens` (DeepSeek 32768, with `ponder` raised to 65536 because its
+  thinking spends the same budget; GLM 32768), overridable per role, and the per-role `maxTokens` is
+  gone. A client's own `max_tokens` still wins. [scripts/tools/generate.py](scripts/tools/generate.py),
+  [config/models.json](config/models.json).
+- **Two `maxTokens` settings did nothing.** `defaults.maxTokens` was documented as `bob chat`'s default
+  and `voice.maxTokens` as the voice reply cap, but no code read either. Both are removed rather than
+  wired up: a hard cap cuts a spoken reply mid-sentence, and a reasoning model can spend all of it
+  thinking. Voice replies stay short through the voice system prompt, and `bob chat --max N` still caps
+  a single call.
 - **A memory lookup was unloading the chat model.** llama-swap puts any model Bob does not list as a
   swap member into an implicit default group whose `exclusive` defaults to true, so loading `embed` or
   `rerank` evicted everything else — every semantic recall paid a full model reload. `bob gen` now emits

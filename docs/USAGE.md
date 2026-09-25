@@ -412,7 +412,6 @@ cat article.txt | fabric --pattern extract_wisdom | bob speak   # read fabric ou
 
 | Key | Default | Effect |
 |-----|---------|--------|
-| `maxTokens` | `512` | Caps the voice reply length. Lower (e.g. `256`) for faster one-liners; raise if Bob cuts off. |
 | `silenceSec` | `1.5` | Seconds of mic silence before recording stops. Raise if Bob cuts off while you're still speaking. |
 | `systemPrompt` | *(voice-specific)* | The system prompt used only in `bob voice`; instructs the model to reply in plain spoken sentences with no markdown. |
 | `sttModel` | `'small'` | STT model size (faster-whisper CT2): `tiny`, `base`, `small`, `medium`, `large-v3`. Larger = more accurate, slower. Re-run `bob setup-voice` after changing. |
@@ -770,6 +769,13 @@ too, when it is already installed. Two drop-ins land in the harness home (`$DSH_
 |---|---|---|
 | `settings.yaml` | a `bob` provider route: every chat-capable role plus the enabled pro peers | merged, so your other providers and sections survive |
 | `cordis.patch.yml` | Bob's tool registry as an MCP server (`bob agent mcp`), stdio or HTTP per `agent.mcpTransport` | appended once, only when `agent.mcpEnabled` is on |
+
+**What each model advertises.** A local role declares the window one request really gets: its `-c`,
+divided by its slots when `--parallel` splits the KV cache (so the 32gb tier's 393216 is 196608 per
+request). A role under 16384 is left out, because dsh's prompt and pi-ai's fixed 4096-token output margin
+would leave it no room to answer, and `bob gen` names what it left out. A pro role declares its peer's
+`contextWindow` and `maxOutputTokens` (the model's own limits, the same output cap LiteLLM applies to
+every client), and is image capable only when the peer says `supportsVision`.
 
 Both are generated into `config/dsh/` first, from the same registry every other client config comes from,
 so a model refresh reaches dsh with one `bob gen` and dsh re-reads the route on its next request.

@@ -217,6 +217,18 @@ class TestLitellm(unittest.TestCase):
         self.assertIn("      model: deepseek/deepseek-v4-flash", out)
         self.assertIn("      api_key: os.environ/DEEPSEEK_API_KEY", out)
 
+    def test_pro_output_cap_is_the_peer_limit_with_role_overrides(self):
+        """Every client that sends no max_tokens gets maxOutputTokens: long enough for a large tool
+        call, and a role can raise it (ponder spends its thinking against the same cap)."""
+        out = self._gen()
+        self.assertIn("  - model_name: coder-pro\n    litellm_params:\n      model: deepseek/deepseek-v4-flash\n"
+                      "      api_base: https://api.deepseek.com\n      api_key: os.environ/DEEPSEEK_API_KEY\n"
+                      "      max_tokens: 32768\n", out)
+        self.assertIn("      model: deepseek/deepseek-v4-pro\n      api_base: https://api.deepseek.com\n"
+                      "      api_key: os.environ/DEEPSEEK_API_KEY\n      max_tokens: 65536\n", out)
+        for short in (2048, 4096, 8192):
+            self.assertNotIn(f"max_tokens: {short}\n", out)
+
     def test_settings(self):
         out = self._gen()
         self.assertIn("  num_retries: 3", out)
@@ -290,17 +302,69 @@ class TestDsh(unittest.TestCase):
         self.assertIn("        supportsDeveloperRole: false", out)
         self.assertIn("        maxTokensField: max_tokens", out)
 
-    def test_models_skip_non_chat_roles_and_mark_vision(self):
+    def test_models_skip_non_chat_roles(self):
         out = self._gen("16gb")
         self.assertIn("        - id: coder\n          contextWindow: 40960", out)
-        self.assertIn("        - id: vision\n          contextWindow: 4096\n"
-                      "          input: [text, image]", out)
         for skipped in ("agent", "fim", "embed", "rerank"):
             self.assertNotIn(f"        - id: {skipped}\n", out)
 
-    def test_pro_peers_carry_max_tokens(self):
+    def test_local_vision_is_marked_image_capable(self):
+        out = self._gen("24gb")
+        self.assertIn("        - id: vision\n          contextWindow: 98304\n"
+                      "          input: [text, image]", out)
+
+    def test_a_window_too_small_for_an_agent_is_left_out(self):
+        """pi-ai caps output at window - prompt - 4096, so a 4096-token model would answer in one
+        token; the route must not offer it."""
+        import bob_models
+        self.assertNotIn("        - id: vision\n", self._gen("16gb"))   # 16gb vision runs at 4096
+        entries, skipped = gen._dsh_models(bob_models.load_models_config(), "16gb")
+        self.assertIn("vision (4096 ctx < 16384)", skipped)
+        self.assertNotIn("vision", [e[0] for e in entries])
+
+    def test_split_slots_advertise_the_per_request_window(self):
+        """--parallel 2 --no-kv-unified gives each request half of -c; advertising all of it lets
+        dsh overrun the slot before it ever compacts."""
+        out = self._gen("32gb")
+        self.assertIn("        - id: chat\n          contextWindow: 196608", out)
+        self.assertNotIn("393216", out)
+
+    def test_slot_ctx(self):
+        d = {"parallel": 1}
+        self.assertEqual(gen._slot_ctx({"ctx": 8192}, d), 8192)
+        self.assertEqual(gen._slot_ctx({"ctx": 8192, "flags": ["--parallel", "4"]}, d), 2048)
+        self.assertEqual(gen._slot_ctx({"ctx": 8192, "flags": ["-np", "2", "--kv-unified"]}, d), 8192)
+        self.assertEqual(gen._slot_ctx({"ctx": 8192}, {"parallel": 2}), 4096)
+
+    def test_pro_peers_carry_real_capacities_not_the_chat_cap(self):
         out = self._gen("16gb")
-        self.assertIn("        - id: coder-pro\n          maxTokens: 4096", out)
+        self.assertIn("        - id: coder-pro\n          contextWindow: 1000000\n"
+                      "          maxTokens: 32768", out)
+        self.assertIn("        - id: ponder-pro\n          contextWindow: 1000000\n"
+                      "          maxTokens: 65536", out)       # the role override wins
+        self.assertNotIn("maxTokens: 4096", out)
+
+    def test_a_vision_pro_role_that_takes_no_images_is_left_out(self):
+        import unittest.mock as m
+        self.assertNotIn("vision-pro", self._gen("16gb"))   # deepseek-v4-flash takes no images
+        mcfg = {"defaults": {}, "peers": {"p": {"pro": {"vision": {"model": "m", "supportsVision": True},
+                                                        "chat": {"model": "m"}}}}}
+        with m.patch.object(gen, "_ordered_models", return_value=("x", [])):
+            entries, _ = gen._dsh_models(mcfg)
+        self.assertEqual(entries, [("chat-pro", 0, 0, False), ("vision-pro", 0, 0, True)])
+
+    def test_install_removes_a_route_with_no_models(self):
+        """pi-ai refuses a route resolving no models, so a profile with nothing that fits must drop a
+        stale route rather than write an empty one."""
+        import unittest.mock as m
+        with tempfile.TemporaryDirectory() as d:
+            home = Path(d)
+            self._install(home)
+            self.assertIn("bob:", (home / "settings.yaml").read_text(encoding="utf-8"))
+            with m.patch.object(gen, "_dsh_models", return_value=([], [])):
+                msg = self._install(home)
+            self.assertIn("removed the 'bob' route", msg)
+            self.assertNotIn("bob:", (home / "settings.yaml").read_text(encoding="utf-8"))
 
     def test_every_profile_generates(self):
         import bob_models

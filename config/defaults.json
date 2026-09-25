@@ -127,8 +127,7 @@
       "sttComputeType": "auto",
       "ttsEngine": "piper",
       "ttsVoice": "en_GB-alan-medium",
-      "silenceSec": 1.5,
-      "maxTokens": 512
+      "silenceSec": 1.5
     },
     "agent": {
       "enabled": false,

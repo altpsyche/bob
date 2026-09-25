@@ -329,10 +329,11 @@ def gen_litellm(profile: str = None) -> str:
         proxy = peer.get("proxy")
         for role in sorted(pro):
             rv = pro[role]
-            if isinstance(rv, str):
-                model_id, max_toks = rv, None
-            else:
-                model_id, max_toks = rv.get("model"), rv.get("maxTokens")
+            # maxOutputTokens (role, else peer) is the default output cap for every client that sends
+            # none; unset leaves the provider's own default, which is often far shorter.
+            rv = rv if isinstance(rv, dict) else {"model": rv}
+            model_id = rv.get("model")
+            max_toks = rv.get("maxOutputTokens") or peer.get("maxOutputTokens")
             out += [f"  - model_name: {role}-pro", "    litellm_params:",
                     f"      model: {prefix}/{model_id}"]
             if proxy:
@@ -464,6 +465,9 @@ def gen_continue(profile: str = None) -> str:
 _DSH_SKIP_ROLES = {"agent", "fim", "embed", "rerank"}
 _DSH_MCP_ID = "bob-tools"
 _DSH_KEY_REF = "BOB_LITELLM_KEY"   # the credential name the route and the MCP header resolve
+# Smallest per-request window worth offering a coding agent: pi-ai keeps 4096 tokens back as margin,
+# and dsh's system prompt plus tool schemas take several thousand more before the first turn.
+_DSH_MIN_CTX = 16384
 
 
 def _dsh_home() -> Path:
@@ -475,15 +479,42 @@ def _dsh_home() -> Path:
     return Path(env).expanduser() if env else Path.home() / ".dsh"
 
 
+def _slot_ctx(m: dict, defaults: dict) -> int:
+    """The window ONE request gets from a llama-server: -c split across its slots unless the KV cache
+    is unified. Slots come from the model's own --parallel (appended last, so it wins) or the
+    defaults' `parallel`; a split is assumed unless --kv-unified is explicit, since overstating the
+    window is the failure (dsh then overruns the slot before it compacts) and understating it is not."""
+    flags = [str(f) for f in (m.get("flags") or [])]
+    slots = int(defaults.get("parallel") or 1)
+    for i, f in enumerate(flags[:-1]):
+        if f in ("--parallel", "-np"):
+            slots = int(flags[i + 1])
+    ctx = int(m.get("ctx") or 0)
+    if slots > 1 and not {"--kv-unified", "-kvu"} & set(flags):
+        return ctx // slots
+    return ctx
+
+
 def _dsh_models(mcfg: dict, profile: str = None):
-    """[(model_id, contextWindow|0, maxTokens|0, vision)] for the dsh route: the local chat-capable
-    roles, then each enabled peer's pro roles, first peer wins on a duplicate id."""
+    """([(model_id, contextWindow|0, maxTokens|0, vision)], [skipped note]) for the dsh route: the
+    local chat-capable roles, then each enabled peer's pro roles, first peer wins on a duplicate id.
+
+    A local role whose per-request window is under _DSH_MIN_CTX is left out: pi-ai caps output at the
+    window minus the prompt minus a fixed 4096-token margin, so on a small window every reply is
+    clamped to a single token. A pro role takes contextWindow / maxOutputTokens from the role, else
+    the peer; left unset, pi-ai's defaults stand. A pro role is image
+    capable only when it says supportsVision, and a 'vision' pro role that is not is left out."""
     _, models = _ordered_models(mcfg, profile)
-    out, seen = [], set()
+    defaults = mcfg.get("defaults") or {}
+    out, skipped, seen = [], [], set()
     for m in models:
         if m["role"] in _DSH_SKIP_ROLES or m.get("embedding") or m.get("reranking"):
             continue
-        out.append((m["role"], int(m.get("ctx") or 0), 0, bool(m.get("supportsVision"))))
+        ctx = _slot_ctx(m, defaults)
+        if ctx < _DSH_MIN_CTX:
+            skipped.append(f"{m['role']} ({ctx} ctx < {_DSH_MIN_CTX})")
+            continue
+        out.append((m["role"], ctx, 0, bool(m.get("supportsVision"))))
         seen.add(m["role"])
     for peer in enabled_peers(mcfg):
         for role in sorted(peer.get("pro") or {}):
@@ -492,11 +523,16 @@ def _dsh_models(mcfg: dict, profile: str = None):
             mid = f"{role}-pro"
             if mid in seen:
                 continue
-            rv = peer["pro"][role]
-            max_tokens = int(rv.get("maxTokens") or 0) if isinstance(rv, dict) else 0
-            out.append((mid, 0, max_tokens, role == "vision"))
+            rv = peer["pro"][role] if isinstance(peer["pro"][role], dict) else {}
+            vision = bool(rv.get("supportsVision", peer.get("supportsVision")))
+            if role == "vision" and not vision:
+                skipped.append(f"{mid} ({rv.get('model')} takes no images)")
+                continue
+            ctx = int(rv.get("contextWindow") or peer.get("contextWindow") or 0)
+            max_tokens = int(rv.get("maxOutputTokens") or peer.get("maxOutputTokens") or 0)
+            out.append((mid, ctx, max_tokens, vision))
             seen.add(mid)
-    return out
+    return out, skipped
 
 
 def _dsh_mcp_lines(bobcfg: dict) -> list:
@@ -565,7 +601,10 @@ def gen_dsh(profile: str = None) -> str:
         "        supportsDeveloperRole: false",
         "        maxTokensField: max_tokens",
         "      models:"]
-    for mid, ctx, max_tokens, vision in _dsh_models(mcfg, profile):
+    entries, skipped = _dsh_models(mcfg, profile)
+    if not entries:
+        out[-1] += " []"
+    for mid, ctx, max_tokens, vision in entries:
         out.append(f"        - id: {mid}")
         if ctx > 0:
             out.append(f"          contextWindow: {ctx}")
@@ -577,7 +616,8 @@ def gen_dsh(profile: str = None) -> str:
 
     patch = header + _dsh_mcp_lines(bobcfg)
     patch_file = _write(REPO / "config" / "dsh" / "cordis.patch.yml", "\n".join(patch) + "\n")
-    return f"Generated {settings}\nGenerated {patch_file}"
+    note = f"\n  left out of the dsh route: {', '.join(skipped)}" if skipped else ""
+    return f"Generated {settings}\nGenerated {patch_file}{note}"
 
 
 def install_dsh() -> str:
@@ -609,6 +649,8 @@ def _install_dsh_settings(home: Path) -> str:
     try:
         import yaml
     except ModuleNotFoundError:
+        if "      models: []" in src.read_text(encoding="utf-8"):
+            return "  settings: no model fits dsh on this profile, route not written"
         if dest.exists():
             return f"  settings: PyYAML not available to merge — copy the route from {src} by hand"
         dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
@@ -624,6 +666,12 @@ def _install_dsh_settings(home: Path) -> str:
         if not isinstance(existing, dict):
             return f"  settings: {dest} is not a mapping — left as-is"
     providers = existing.setdefault("llm-pi-ai", {}).setdefault("providers", {})
+    if not route.get("models"):
+        # pi-ai refuses a route that resolves no models, so a stale one is removed, not emptied.
+        if providers.pop("bob", None) is None:
+            return "  settings: no model fits dsh on this profile, route not written"
+        dest.write_text(yaml.safe_dump(existing, sort_keys=False, allow_unicode=True), encoding="utf-8")
+        return f"  settings: no model fits dsh on this profile, removed the 'bob' route from {dest}"
     unchanged = providers.get("bob") == route
     providers["bob"] = route
     if unchanged:

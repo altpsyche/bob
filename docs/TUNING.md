@@ -38,7 +38,6 @@ The `defaults` block in `config/models.json` controls the server launch flags an
 | `mlockBig` | `false` | Apply `--mlock` to swap-group models (ponder/coder/chat). Pins CPU-resident pages in RAM. Windows: needs `SeLockMemoryPrivilege`. |
 | `numa` | `""` | NUMA strategy (`--numa`). Options: `""` (off), `"isolate"`, `"distribute"`, `"numactl"`. On 7950X3D: try `"isolate"` first. |
 | `webuiSecret` | `"bob-dev"` | Open WebUI session key. Change before exposing on a LAN. |
-| `maxTokens` | `512` | Default `max_tokens` for `bob chat`. |
 
 Ports are **not** in this block; they live once in [config/defaults.json](../config/defaults.json) under `ports` (llama-swap `8080`, LiteLLM proxy `8081`, whisper `8082`, piper `8083`, agent server `8084`, Open WebUI `3000`).
 
@@ -342,7 +341,6 @@ Voice-specific settings live in `config/defaults.json` under `runtime.voice`; ov
 
 | Key | Default | Effect |
 |-----|---------|--------|
-| `maxTokens` | `512` | Max tokens the model generates per voice turn. Lower (e.g. `256`) for shorter, faster replies. Raise if the model cuts off mid-sentence on complex questions. |
 | `silenceSec` | `1.5` | Seconds of mic silence before recording stops. If Bob cuts you off while you're still speaking, raise to `2.0`. |
 | `sttModel` | `"small"` | Whisper model size: `tiny.en`, `base.en`, `small`, `medium`. Larger is more accurate but slower. Re-run `bob setup-voice` after changing to download the new model file. |
 | `ttsVoice` | `"en_GB-alan-medium"` | Piper voice (ONNX file). Re-run `bob setup-voice` after changing to fetch a new voice. |
@@ -353,8 +351,7 @@ Override in `config/user.json`:
 {
   "voice": {
     "sttModel": "medium",
-    "silenceSec": 2.0,
-    "maxTokens": 256
+    "silenceSec": 2.0
   }
 }
 ```
@@ -409,16 +406,16 @@ Pro (cloud) model prompts live inside the peer config as a `systemPrompt` field 
   "peers": {
     "deepseek": {
       "pro": {
-        "coder":   { "model": "deepseek-v4-flash", "maxTokens": 4096, "systemPrompt": "You are an expert software engineer. Be direct. No preambles." },
-        "chat":    { "model": "deepseek-v4-flash", "maxTokens": 4096, "systemPrompt": "Be helpful and concise." },
-        "ponder": { "model": "deepseek-v4-pro",    "maxTokens": 8192 }
+        "coder":  { "model": "deepseek-v4-flash", "systemPrompt": "You are an expert software engineer. Be direct. No preambles." },
+        "chat":   { "model": "deepseek-v4-flash", "systemPrompt": "Be helpful and concise." },
+        "ponder": { "model": "deepseek-v4-pro", "maxOutputTokens": 65536 }
       }
     }
   }
 }
 ```
 
-The `maxTokens` field caps per-model output in `litellm.yaml`. Without it, a reasoning model like R1 can generate 10k to 15k tokens unbounded. Bare-string values (the legacy form without `maxTokens`) still work; only the object form supports `maxTokens` and `systemPrompt`.
+The peer's `maxOutputTokens` (32768 for DeepSeek) is the output cap each `*-pro` route defaults to in `litellm.yaml`, and a role can override it, as `ponder` does above. It stops a runaway generation without cutting off a long answer or a large tool call, and a client that sends its own `max_tokens` still wins. Local roles have no cap: they stop when the model finishes or the window fills. A role can also be a bare model string; only the object form takes `systemPrompt` or an override.
 
 **Continue.dev**: `config/continue/config.yaml` is **generated** by `gen_continue` from the same `prompts` in `config/models.json`, then linked into `~/.continue/` by setup. Change the role prompts in `config/models.json` (or `config/user.json`) and run `bob gen` rather than editing the generated file, which is overwritten on the next regenerate.
 

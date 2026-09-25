@@ -65,6 +65,8 @@ This is auto-selected when no GPU is detected. It produces a `-DGGML_CUDA=OFF` e
 
   Export the key first (Linux: `export MYPROVIDER_API_KEY=…`; Windows: `set MYPROVIDER_API_KEY=…`), then `bob chat --pro "…"` routes to it while local roles keep working.
 
+  Give the peer its real limits when you know them: `maxOutputTokens` is the output cap every `*-pro` route defaults to (without it the provider's own default applies, which is often short enough to cut off a long answer), and `contextWindow` (input tokens) is what agent harnesses such as DeepSeek Harness budget against. Set `supportsVision: true` on any role whose model takes images. Without these, dsh assumes 262144 in and 32768 out, and a `vision` role is left out of its route.
+
 ## No Go compiler for llama-swap
 
 `bob build` builds llama-swap from the Go submodule. If Go isn't installed, download the release binary for your OS from the [llama-swap releases page](https://github.com/mostlygeek/llama-swap/releases) (`llama-swap.exe` on Windows, the Linux binary as `llama-swap`) and place it in `bin/`. `bob build` and `bob serve` will use it as-is and skip the Go build.

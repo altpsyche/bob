@@ -626,7 +626,6 @@ The voice loop uses a dedicated system prompt that tells the model to reply in p
 **Tips:**
 - Use headphones to stop the mic from picking up the speaker.
 - Whisper small runs in ~300 ms on GPU after the first load. Silence detection threshold is `voice.silenceSec` (default `1.5`) in `config/user.json`.
-- `voice.maxTokens` (default `512`) caps reply length. Lower it for faster short answers.
 - To wire `bob voice` audio through Open WebUI instead: `bob piper` starts a piper HTTP server on `:8083`; wire it in WebUI Admin Panel → Audio → Text-to-Speech Engine.
 
 ---
