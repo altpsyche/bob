@@ -235,6 +235,21 @@ class TestBuildLlama(_BuildTreeMixin, unittest.TestCase):
         self.assertFalse(any("CUDA_ARCHITECTURES" in a for a in configure))
         self.assertEqual(osenv.build_tier_marker(bin_dir=self.bin)["tier"], "cpu")   # marker records CPU tier
 
+    def _configure(self, **kw):
+        cap = []
+        with mock.patch("osenv.os_name", return_value="linux"), \
+             mock.patch.object(build_mod, "_resolve_cmake", return_value="cmake"), \
+             mock.patch.object(build_mod, "_run", side_effect=self._fake_run(cap)):
+            build_mod.build_llama(cpu=True, force=True, **kw)
+        return next(c for c in cap if any("GGML_CUDA" in a for a in c))
+
+    def test_portable_build_targets_a_fixed_baseline(self):
+        """A published engine runs on other CPUs: a native build crashes there with an illegal instruction."""
+        self.assertIn("-DGGML_NATIVE=OFF", self._configure(portable=True))
+
+    def test_local_build_stays_native(self):
+        self.assertFalse(any("GGML_NATIVE" in a for a in self._configure()))
+
     def test_cuda_missing_root_raises(self):
         with mock.patch("osenv.os_name", return_value="linux"), \
              mock.patch("osenv.gpu_arch", return_value={"CudaArch": 120, "Gen": "Blackwell", "MinCudaMajor": 12}), \
@@ -740,3 +755,23 @@ class TestCliArgParsing(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDistBuildIsPortable(unittest.TestCase):
+    """`bob build --dist` produces the published engines, so both tiers compile for the portable baseline."""
+
+    def _handle(self, argv):
+        from bob import cli
+        fake = mock.Mock()
+        fake.build_llama.return_value = "built"
+        with mock.patch.object(cli, "_build_mod", return_value=fake):
+            self.assertEqual(cli._handle_build(argv), 0)
+        return fake.build_llama.call_args.kwargs
+
+    def test_cpu_dist_is_portable(self):
+        self.assertTrue(self._handle(["--dist", "--cpu"])["portable"])
+
+    def test_cuda_dist_is_portable(self):
+        kw = self._handle(["--dist", "--cuda-archs", "75;89"])
+        self.assertTrue(kw["portable"])
+        self.assertEqual(kw["cuda_archs"], "75;89")

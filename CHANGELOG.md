@@ -9,6 +9,17 @@ rebuilds only what changed, verifies, and rolls back on failure.
 ## [Unreleased]
 
 ### Fixed
+- **Prebuilt engines run on any x86-64 CPU from the last decade, not just ones like the build runner's.**
+  A distribution build (`bob build --dist`, what the release publishes) compiled its CPU code for the
+  GitHub runner's own instruction set, so a downloaded engine could crash with an illegal instruction on
+  an older CPU. Distribution builds now target a fixed baseline (`-DGGML_NATIVE=OFF`: AVX2, FMA, F16C,
+  no AVX-512); a local source build stays native. Published rows carry a build `recipe`, and a release
+  rebuilds rather than reuses engines whose recipe differs. [scripts/tools/build.py](scripts/tools/build.py),
+  [.github/scripts/pack_engine.py](.github/scripts/pack_engine.py).
+- **`bob agent <goal>` exits 1 when the run fails.** It printed the error and exited 0 with no answer, so a
+  script or CI job could not tell a failed run from a quiet one.
+- **Secrets are stored reliably on Windows.** Windows refuses to rename over `data/secrets.json` while
+  another process has it open, so a first-use write could fail; it is now retried briefly.
 - **Pushing a release tag creates its GitHub release.** The engine publish jobs upload into a GitHub release
   but nothing created one, so a tag without a hand-made release page failed every upload. A `release-page`
   job now creates it from the tag's CHANGELOG section when it is missing and leaves an existing one alone.

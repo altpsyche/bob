@@ -586,6 +586,32 @@ class TestEnsureSecret(unittest.TestCase):
         if osenv.os_name() != "windows":
             self.assertEqual(osenv.secrets_file().stat().st_mode & 0o777, 0o600)
 
+    def test_windows_replace_refused_by_a_reader_is_retried(self):
+        """Windows refuses to rename over secrets.json while another process has it open: the write retries
+        instead of failing the caller."""
+        real = os.replace
+        calls = {"n": 0}
+
+        def flaky(src, dst):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise PermissionError(5, "Access is denied")
+            return real(src, dst)
+
+        with mock.patch.object(osenv, "is_windows", return_value=True), \
+                mock.patch.object(osenv.os, "replace", side_effect=flaky), \
+                mock.patch("time.sleep"):
+            val = osenv.ensure_secret("bobRetrySecret")
+        self.assertEqual(json.loads(osenv.secrets_file().read_text())["bobRetrySecret"], val)
+        self.assertEqual(calls["n"], 3)
+
+    def test_replace_refusal_is_not_retried_off_windows(self):
+        with mock.patch.object(osenv, "is_windows", return_value=False), \
+                mock.patch.object(osenv.os, "replace", side_effect=PermissionError(13, "denied")):
+            with self.assertRaises(PermissionError):
+                osenv.ensure_secret("bobNoRetrySecret")
+        self.assertEqual(list(self.tmp.glob("*.tmp")), [])   # the temp file never lingers
+
     def test_concurrent_first_use_agrees_on_one_value(self):
         """Many processes generating the same secret at once: every one returns the value that was stored,
         and each earlier secret in the file survives (no lost update)."""

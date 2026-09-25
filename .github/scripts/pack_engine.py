@@ -36,6 +36,10 @@ PRESET = 6   # xz -6: within ~1% of -9 on these binaries, at a fraction of the m
 # The CUDA engines are one fat multi-arch binary (Turing..Blackwell) built against this CUDA major.
 CUDA_ARCHS = "75;80;89;120"
 CUDA_MAJOR = 12
+# The build recipe the published rows were made with. The release pipeline reuses a prior release's
+# engines only when its commit AND recipe match, so bump this whenever the build flags change what the
+# binary is (2: portable CPU code, -DGGML_NATIVE=OFF, instead of the build runner's instruction set).
+RECIPE = 2
 
 
 def _tar(staging: Path, tar_path: Path) -> int:
@@ -81,6 +85,7 @@ def engine_row(os_name: str, tier: str, repo: str, tag: str, commit: str, cpu_ar
         "sha256": sha256, "bytes": int(nbytes), "builtFromCommit": commit,
         "cudaArchs": CUDA_ARCHS if cuda else "",
         "cudaMajor": CUDA_MAJOR if cuda else None,
+        "recipe": RECIPE,
     }}
 
 

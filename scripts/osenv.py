@@ -341,6 +341,21 @@ def _read_secrets_text(sf: Path, attempts: int = 20) -> str:
     raise PermissionError(str(sf))   # unreachable: the last attempt re-raises
 
 
+def _replace_secrets_file(tmp: Path, sf: Path, attempts: int = 40) -> None:
+    """os.replace the temp file over secrets.json. On Windows the rename is refused while another process
+    has secrets.json open (a plain secret() read holds no lock), so it is retried briefly; elsewhere the
+    replace is atomic and never contends with a reader."""
+    for attempt in range(attempts):
+        try:
+            os.replace(tmp, sf)
+            return
+        except PermissionError:
+            if not is_windows() or attempt == attempts - 1:
+                raise
+            import time
+            time.sleep(0.05)
+
+
 def _read_secrets_file(sf: Path) -> dict:
     """The secrets.json mapping, or {} when it is absent. A file that exists but does not parse to a JSON
     object is moved aside to secrets.json.corrupt-<timestamp> (0600) and SecretsFileCorrupt is raised:
@@ -398,7 +413,7 @@ def ensure_secret(name: str, nbytes: int = 32, prefix: str = "", legacy: str = N
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(json.dumps(data, indent=2) + "\n")
-            os.replace(tmp, sf)
+            _replace_secrets_file(tmp, sf)
         except BaseException:
             tmp.unlink(missing_ok=True)
             raise

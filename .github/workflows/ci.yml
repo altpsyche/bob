@@ -212,7 +212,14 @@ jobs:
           import hashlib, json
           d = json.load(open("versions.lock"))
           def h(x): return hashlib.sha256(json.dumps(x, sort_keys=True).encode()).hexdigest()[:16]
-          print("build=" + h([d.get("submodules"), d.get("toolchain")]))
+          # A source build is native (-march=native): its binary only runs on a CPU with the same
+          # instruction set, so the runner's CPU features are part of the key.
+          import platform
+          try:
+              cpu = next(l for l in open("/proc/cpuinfo") if l.startswith("flags"))
+          except (OSError, StopIteration):
+              cpu = platform.processor()
+          print("build=" + h([d.get("submodules"), d.get("binaries"), cpu]))
           print("model=" + h(d.get("models")))
           PY
       # Build cache: EXACT key only (no restore-keys). A partial restore could bring back a prior submodule
@@ -415,8 +422,10 @@ jobs:
                    -q "[.[] | select(.isDraft==false) | .tagName] | map(select(. != \"$cur\")) | .[0]" 2>/dev/null || echo "")
           reuse=false
           if [ -n "$prev" ] && gh release download "$prev" -p engines.json -O prev.json 2>/dev/null; then
-            prevcommit=$(python3 -c "import json; d=json.load(open('prev.json')); r=[v for k,v in d.items() if not k.startswith('_') and v.get('component')=='llama-server']; print(r[0]['builtFromCommit'] if r else '')" 2>/dev/null || echo "")
-            [ -n "$prevcommit" ] && [ "$prevcommit" = "$pinned" ] && reuse=true
+            # Reuse only when the prior engines came from the same commit AND the same build recipe
+            # (pack_engine.RECIPE): a recipe change (e.g. portable CPU code) must rebuild every asset.
+            prev_ok=$(python3 -c "import json, sys; sys.path.insert(0, '.github/scripts'); import pack_engine; d=json.load(open('prev.json')); r=[v for k,v in d.items() if not k.startswith('_') and v.get('component')=='llama-server']; print('yes' if r and all(x.get('builtFromCommit')=='$pinned' and x.get('recipe')==pack_engine.RECIPE for x in r) else 'no')" 2>/dev/null || echo "no")
+            [ "$prev_ok" = "yes" ] && reuse=true
           fi
           echo "reuse=$reuse" >> "$GITHUB_OUTPUT"
           echo "prev=$prev"   >> "$GITHUB_OUTPUT"

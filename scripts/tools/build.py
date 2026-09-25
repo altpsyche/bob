@@ -78,13 +78,18 @@ def _resolve_cmake(generator: str) -> str:
 # --- build llama.cpp (CUDA or CPU) ----------------------------------------------------------------
 
 def build_llama(cpu: bool = False, arch: int = 0, force: bool = False, cuda_root: str = "",
-                cuda_archs: str = "") -> str:
+                cuda_archs: str = "", portable: bool = False) -> str:
     """(Re)build llama.cpp -> bin/llama-server. Auto-detects arch + CUDA root (osenv) unless given; CPU
     build with cpu=True. Installed into bin/ by per-file replace; Windows stages CUDA runtime DLLs.
 
     cuda_archs (e.g. '75;80;89;120') builds a FAT distribution binary that runs on every listed NVIDIA gen,
     with NO local GPU required (only the CUDA toolkit) — the mode the CI publish job uses to produce the
-    prebuilt asset. It implies a CUDA build and bypasses nvidia-smi arch detection."""
+    prebuilt asset. It implies a CUDA build and bypasses nvidia-smi arch detection.
+
+    portable=True compiles the CPU code for a fixed x86-64 baseline (-DGGML_NATIVE=OFF: SSE4.2, AVX, AVX2,
+    FMA, F16C, BMI2; no AVX-512) instead of the build machine's own instruction set. A published engine runs
+    on machines other than the one that built it, and a native build crashes with an illegal instruction on
+    a CPU that lacks what the builder had. A local build stays native: it runs where it was built."""
     import os
     import osenv
 
@@ -189,6 +194,9 @@ def build_llama(cpu: bool = False, arch: int = 0, force: bool = False, cuda_root
             cfg.append(f"-DCMAKE_CUDA_HOST_COMPILER={cuda_host_cxx}")
     else:
         cfg = [cmake, "-B", "build", "-G", flags["Generator"], "-DGGML_CUDA=OFF", "-DCMAKE_BUILD_TYPE=Release"]
+    if portable:
+        cfg.append("-DGGML_NATIVE=OFF")
+        lines.append("Portable CPU code: x86-64 AVX2 baseline, not this machine's instruction set")
 
     print("\n".join(lines), file=sys.stderr)
     _run(cfg, cwd=SRC_LLAMA)

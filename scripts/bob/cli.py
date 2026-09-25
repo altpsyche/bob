@@ -884,8 +884,9 @@ def _handle_build(rest: list) -> int:
                  if "--cuda-archs" in rest and rest.index("--cuda-archs") + 1 < len(rest)
                  else "75;80;89;120")
         try:
-            print(_build_mod().build_llama(cpu=True, force=True) if cpu
-                  else _build_mod().build_llama(cuda_archs=archs, force=True))
+            # A distribution artifact runs on other machines, so its CPU code is never tuned to the builder.
+            print(_build_mod().build_llama(cpu=True, force=True, portable=True) if cpu
+                  else _build_mod().build_llama(cuda_archs=archs, force=True, portable=True))
         except RuntimeError as e:
             print(f"build failed: {e}", file=sys.stderr)
             return 1

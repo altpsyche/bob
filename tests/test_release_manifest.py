@@ -75,6 +75,8 @@ class TestManifestContract(unittest.TestCase):
         self.assertEqual((row["cudaArchs"], row["cudaMajor"]), (pack_engine.CUDA_ARCHS, 12))
         (_, cpu), = pack_engine.engine_row("linux", "cpu", "o/r", "v1", "c", sha256="x", nbytes=1).items()
         self.assertEqual((cpu["cudaArchs"], cpu["cudaMajor"]), ("", None))
+        # The recipe is what lets the release pipeline tell a portable build from an older native one.
+        self.assertEqual((row["recipe"], cpu["recipe"]), (pack_engine.RECIPE, pack_engine.RECIPE))
 
     def _patched(self, man, pinned=None):
         return (mock.patch.object(lifecycle, "_load_engine_manifest", return_value=man),
