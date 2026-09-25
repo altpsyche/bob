@@ -4,6 +4,7 @@ every profile incl. the cpu tier.
 Hermetic: reads the real config/models.json (the neutral registry) and writes the generated files to
 their normal deterministic locations (idempotent — same bytes each run); gen_webui is tested against a
 minimal temp sqlite db. No network."""
+import os
 import sqlite3
 import sys
 import tempfile
@@ -367,6 +368,47 @@ class TestDsh(unittest.TestCase):
             self.assertIn("already carries", self._install(home))
             self.assertEqual(
                 (home / "cordis.patch.yml").read_text(encoding="utf-8").count("id: bob-tools"), 1)
+
+    def test_install_stores_the_key_owner_only_on_a_fresh_home(self):
+        """A new user has nothing exported: the route only authenticates because install_dsh puts the
+        key in dsh's credential store, which dsh refuses to load if other users can read it."""
+        with tempfile.TemporaryDirectory() as d:
+            home = Path(d)
+            self.assertIn("stored BOB_LITELLM_KEY", self._install(home))
+            cred = home / ".credentials.yaml"
+            key = bob_core._litellm_key(CFG)
+            self.assertEqual(cred.read_text(encoding="utf-8"),
+                             f'version: 1\n\nrefs:\n  BOB_LITELLM_KEY: "{key}"\n')
+            if os.name == "posix":
+                self.assertEqual(cred.stat().st_mode & 0o777, 0o600)
+            self.assertIn("already carries", self._install(home))
+
+    def test_install_adds_the_key_beside_the_users_credentials(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = Path(d)
+            cred = home / ".credentials.yaml"
+            cred.write_text("version: 1\n\n# my deepseek key\nrefs:\n    DEEPSEEK_API_KEY: sk-mine\n\n"
+                            "records:\n  llm-pi-ai/amazon-bedrock:\n    kind: api-key\n",
+                            encoding="utf-8")
+            self._install(home)
+            text = cred.read_text(encoding="utf-8")
+            self.assertIn("# my deepseek key\nrefs:\n    BOB_LITELLM_KEY: ", text)   # child indent kept
+            self.assertIn("    DEEPSEEK_API_KEY: sk-mine\n", text)
+            self.assertIn("records:\n  llm-pi-ai/amazon-bedrock:\n    kind: api-key\n", text)
+            self.assertEqual(text.count("BOB_LITELLM_KEY"), 1)
+
+    def test_install_rewrites_a_stale_key_and_appends_missing_refs(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = Path(d)
+            cred = home / ".credentials.yaml"
+            cred.write_text("version: 1\nrefs:\n  BOB_LITELLM_KEY: old\n  X_KEY: x\n", encoding="utf-8")
+            self.assertIn("updated BOB_LITELLM_KEY", self._install(home))
+            text = cred.read_text(encoding="utf-8")
+            self.assertNotIn(": old", text)
+            self.assertIn("  X_KEY: x\n", text)
+            cred.write_text("version: 1\n", encoding="utf-8")
+            self._install(home)
+            self.assertIn("refs:\n  BOB_LITELLM_KEY: ", cred.read_text(encoding="utf-8"))
 
     def test_install_leaves_mcp_alone_when_disabled(self):
         with tempfile.TemporaryDirectory() as d:

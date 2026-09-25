@@ -463,6 +463,7 @@ def gen_continue(profile: str = None) -> str:
 # 'agent' is Bob's own loop model; fim/embed/rerank are not chat models, so dsh has no use for them.
 _DSH_SKIP_ROLES = {"agent", "fim", "embed", "rerank"}
 _DSH_MCP_ID = "bob-tools"
+_DSH_KEY_REF = "BOB_LITELLM_KEY"   # the credential name the route and the MCP header resolve
 
 
 def _dsh_home() -> Path:
@@ -557,7 +558,7 @@ def gen_dsh(profile: str = None) -> str:
         "      displayName: Bob (local)",
         "      api: openai-completions",
         f"      baseURL: http://localhost:{litellm_port}/v1",
-        "      apiKeyEnv: BOB_LITELLM_KEY",
+        f"      apiKeyEnv: {_DSH_KEY_REF}",
         "      compat:",
         "        # llama.cpp chat templates know no 'developer' role, and llama-server caps output with",
         "        # max_tokens. pi-ai addresses an unrecognized endpoint as OpenAI itself, so both are set.",
@@ -591,9 +592,7 @@ def install_dsh() -> str:
         return (f"install-dsh: no DeepSeek Harness home at {home} — skipping "
                 "(run `npx @deepseek-ai/dsh web` once, then `bob gen`)")
 
-    lines = [_install_dsh_settings(home),
-             "  key: dsh resolves the credential by env-var name — export BOB_LITELLM_KEY to match "
-             "the litellmKey seam (default sk-local)"]
+    lines = [_install_dsh_settings(home), _install_dsh_credential(home)]
     if (_bob_cfg().get("agent", {}) or {}).get("mcpEnabled"):
         lines.append(_install_dsh_mcp(home))
     else:
@@ -631,6 +630,51 @@ def _install_dsh_settings(home: Path) -> str:
         return f"  settings: {dest} already current"
     dest.write_text(yaml.safe_dump(existing, sort_keys=False, allow_unicode=True), encoding="utf-8")
     return f"  settings: merged the 'bob' route into {dest}"
+
+
+def _install_dsh_credential(home: Path) -> str:
+    """Store Bob's LiteLLM key in dsh's local credential store ($DSH_HOME/.credentials.yaml) under the
+    name the route's apiKeyEnv references, so the route authenticates with nothing exported. dsh
+    watches that file, so a running harness uses the key on its next request.
+
+    Edited by line rather than re-dumped: dsh keeps comments in the file and refuses to load anything
+    it cannot parse strictly, so only the one ref line is ever written."""
+    import os
+    import re
+    from bob_core import _litellm_key
+
+    dest = home / ".credentials.yaml"
+    key = _litellm_key(_bob_cfg())
+    if not dest.exists():
+        dest.write_text(f"version: 1\n\nrefs:\n  {_DSH_KEY_REF}: {_yaml_str(key)}\n", encoding="utf-8")
+        os.chmod(dest, 0o600)   # dsh refuses a credential file other users can read
+        return f"  key: stored {_DSH_KEY_REF} in {dest}"
+
+    lines = dest.read_text(encoding="utf-8").splitlines()
+    refs_at = next((i for i, ln in enumerate(lines) if re.match(r"refs:\s*(#.*)?$", ln)), None)
+    if refs_at is None:
+        if any(ln.startswith("refs:") for ln in lines):
+            return f"  key: {dest} writes refs inline; add {_DSH_KEY_REF} to it by hand"
+        lines += ["", "refs:", f"  {_DSH_KEY_REF}: {_yaml_str(key)}"]
+        verb = "stored"
+    else:
+        end = next((i for i in range(refs_at + 1, len(lines)) if re.match(r"\S", lines[i])
+                    and not lines[i].startswith("#")), len(lines))
+        section = range(refs_at + 1, end)
+        hit = next((i for i in section if re.match(rf"\s+{_DSH_KEY_REF}\s*:", lines[i])), None)
+        if hit is not None:
+            indent, current = re.match(rf"(\s+){_DSH_KEY_REF}\s*:\s*(.*?)\s*$", lines[hit]).groups()
+            if current in (key, _yaml_str(key), f"'{key}'"):
+                return f"  key: {dest} already carries {_DSH_KEY_REF}"
+            lines[hit] = f"{indent}{_DSH_KEY_REF}: {_yaml_str(key)}"
+            verb = "updated"
+        else:
+            child = next((re.match(r"\s+", lines[i]).group() for i in section
+                          if re.match(r"\s+[^\s#]", lines[i])), "  ")
+            lines.insert(refs_at + 1, f"{child}{_DSH_KEY_REF}: {_yaml_str(key)}")
+            verb = "stored"
+    dest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return f"  key: {verb} {_DSH_KEY_REF} in {dest}"
 
 
 def _install_dsh_mcp(home: Path) -> str:

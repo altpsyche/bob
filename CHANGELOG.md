@@ -31,6 +31,12 @@ rebuilds only what changed, verifies, and rolls back on failure.
   [scripts/tools/stack.py](scripts/tools/stack.py), [config/defaults.json](config/defaults.json)
 
 ### Fixed
+- **Bob's models in DeepSeek Harness failed with "no credential for provider route bob".** The route
+  referenced `BOB_LITELLM_KEY`, but nothing set it, so a fresh install could not connect until the user
+  exported it by hand and restarted dsh. `bob gen` (and setup) now stores Bob's `litellmKey` under that
+  name in dsh's credential store, `$DSH_HOME/.credentials.yaml`, editing only that line so the user's
+  other keys and comments survive. dsh watches the file, so a running harness connects on its next
+  request. [scripts/tools/generate.py](scripts/tools/generate.py).
 - **A memory lookup was unloading the chat model.** llama-swap puts any model Bob does not list as a
   swap member into an implicit default group whose `exclusive` defaults to true, so loading `embed` or
   `rerank` evicted everything else — every semantic recall paid a full model reload. `bob gen` now emits

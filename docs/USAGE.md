@@ -774,12 +774,10 @@ too, when it is already installed. Two drop-ins land in the harness home (`$DSH_
 Both are generated into `config/dsh/` first, from the same registry every other client config comes from,
 so a model refresh reaches dsh with one `bob gen` and dsh re-reads the route on its next request.
 
-**The key.** dsh resolves credentials by environment-variable name, never from a file a tool wrote, so
-export the LiteLLM key under the name the route references:
-
-```
-export BOB_LITELLM_KEY=sk-local   # or your litellmKey, if you changed it
-```
+**The key.** The route names its credential (`BOB_LITELLM_KEY`) instead of carrying it, and `bob gen`
+stores Bob's `litellmKey` under that name in dsh's own credential store (`$DSH_HOME/.credentials.yaml`,
+owner-only). dsh watches that file, so the route authenticates on its next request with nothing exported
+and no restart. An exported `BOB_LITELLM_KEY` still wins for the run it was exported in.
 
 **Why the route sets compatibility switches.** pi-ai, the dsh adapter this route uses, infers a request
 shape from the endpoint URL and treats an address it does not recognize as OpenAI itself. Two of those
