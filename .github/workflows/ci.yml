@@ -300,6 +300,24 @@ jobs:
           done
           echo "===== bin/ ====="
           ls -l bin 2>/dev/null || true
+          # The upstream's own startup error is near the top of llama-swap.log (the tail is the retry loop),
+          # and a direct run of the first model command shows it even when llama-swap only reports the exit.
+          echo "===== llama-swap.log (head) ====="
+          head -n 80 logs/llama-swap.log 2>/dev/null || true
+          if [ -x bin/llama-server ] && [ -f config/llama-swap.yaml ]; then
+            cmd=$(tools/venv-litellm/bin/python - <<'PY'
+          import yaml
+          d = yaml.safe_load(open("config/llama-swap.yaml"))
+          srv = d.get("macros", {}).get("srv", "")
+          m = next(iter(d["models"].values()))["cmd"].replace("${srv}", srv)
+          print(m.replace("${env.LLAMA_LOCAL_ROOT}", ".").replace("${PORT}", "18555"))
+          PY
+            )
+            echo "===== direct: $cmd ====="
+            timeout 60 $cmd 2>&1 | tail -n 40 || true
+            echo "===== ldd bin/llama-server ====="
+            ldd bin/llama-server 2>&1 | grep -E "not found|=>" | head -30 || true
+          fi
 
   # The default install path is prebuilt-first (lifecycle.ensure_engine), but acceptance-cpu compiles from
   # source, so the binary most users actually receive never executes in the per-PR gate. This job resolves
