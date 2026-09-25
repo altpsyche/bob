@@ -8,6 +8,8 @@ rebuilds only what changed, verifies, and rolls back on failure.
 
 ## [Unreleased]
 
+## [2.0.1] (2026-09-25)
+
 ### Fixed
 - **Prebuilt engines run on any x86-64 CPU from the last decade, not just ones like the build runner's.**
   A distribution build (`bob build --dist`, what the release publishes) compiled its CPU code for the
