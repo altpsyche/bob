@@ -354,7 +354,7 @@ Bob: Got a DeepSeek API key? (Enter to skip)
 Bob: Ready. Type 'bob' to start.
 ```
 
-This writes your name and work context to `data/bob.db` (profile table) and your API key to `peers.deepseek.apiKey` in `config/user.json` (gitignored).
+This writes your name and work context to `data/bob.db` (profile table) and your DeepSeek key, if you give one, to `data/secrets.json` (gitignored, mode 0600), the same store `bob key set deepseek` writes.
 
 ### Budget tracking
 

@@ -85,7 +85,7 @@ bob status
 
 The active profile's models are listed (16gb: `chat`, `coder`, `ponder`, `writer`, `agent`, `vision`, `fim`, `embed`, `rerank`; the first five are one 27B under five names). None are loaded into VRAM yet; they load on first use and stay until idle. `embed` (search indexing) is pinned and never unloads, and so is `fim` (autocomplete) on every profile but 16gb, where it takes turns with chat.
 
-> **Pro models:** If you've set `DEEPSEEK_API_KEY`, four additional models are available via the LiteLLM proxy at `:8081`: `chat-pro`, `ponder-pro`, `coder-pro`, `writer-pro`. These route directly to the DeepSeek API, no local GPU required, no platform fee. GLM-5.3 (z.ai) and Kimi K3 (Moonshot) are opt-in coding-peer alternatives. See [USAGE.md § Pro models](USAGE.md#pro-models-api-backed-no-platform-fee).
+> **Pro models:** Once you add a DeepSeek key (`bob key set deepseek`, or `/key set deepseek` in the shell), four additional models are available via the LiteLLM proxy at `:8081`: `chat-pro`, `ponder-pro`, `coder-pro`, `writer-pro`. These route directly to the DeepSeek API, no local GPU required, no platform fee. GLM-5.3 (z.ai) and Kimi K3 (Moonshot) are opt-in coding-peer alternatives. See [USAGE.md § Pro models](USAGE.md#pro-models-api-backed-no-platform-fee).
 
 > **Tip, start at login:** To bring the background stack up automatically every login, run `bob up --no-open` from a startup entry: on Linux a user systemd unit or a `@reboot` cron line; on Windows a Task Scheduler task set to "At log on".
 
@@ -142,7 +142,7 @@ bob chat --pro "explain CAP theorem with a concrete example"
 bob chat            # default: chat (general conversation, Qwen3.8-27B)
 bob think           # chat with thinking on (use /model ponder in the shell for the reasoning role)
 bob code            # coder: the same 27B at a coding temperature
-bob chat --pro      # chat-pro: DeepSeek via API (needs DEEPSEEK_API_KEY)
+bob chat --pro      # chat-pro: DeepSeek via API (add the key: bob key set deepseek)
 bob think --pro     # ponder-pro: strongest reasoning, via API
 bob code --pro      # coder-pro: via API
 ```
