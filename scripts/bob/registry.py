@@ -178,6 +178,8 @@ COMMANDS = [
      "args": "[--force]", "handler": "fabric-setup"},
     {"name": "aider-setup", "group": "Setup", "summary": "Opt-in: install aider (tools/venv-aider) and generate its config",
      "args": "[--force]", "handler": "aider-setup"},
+    {"name": "key", "group": "Setup", "summary": "List, set, or remove provider API keys (DeepSeek, GLM, Kimi, search)",
+     "args": "[list] | set <provider> [key] | rm <provider>", "handler": "key"},
     {"name": "gen", "group": "Setup", "summary": "Regenerate runtime configs from models.json",
      "args": "[profile]", "handler": "gen"},
     {"name": "build", "group": "Setup", "summary": "Install the llama.cpp engine (prebuilt, or --from-source; --cpu for no-GPU)",

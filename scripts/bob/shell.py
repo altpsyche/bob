@@ -109,6 +109,8 @@ _COMMANDS = [
     _Cmd("/webui", "open the Open WebUI browser tab", "_cmd_webui"),
     _Cmd("/stop", "stop local inference (frees VRAM)", "_cmd_stop"),
     _Cmd("/logs", "recent inference-server log", "_cmd_logs"),
+    _Cmd("/key", "provider API keys: list, set (hidden prompt), remove", "_cmd_key",
+         args="[set <provider>|rm <provider>]", subs=("set", "rm")),
     _Cmd("/theme", "switch the colour theme or reload it", "_cmd_theme",
          args="[<preset>|reload]", subs=("reload",)),
     _Cmd("/rewind", "undo the last turn's file edits (restore from checkpoints)", "_cmd_rewind",
@@ -680,7 +682,14 @@ class BobShell:
             ("/session", "resume"): self._session_refs,
             ("/session", "delete"): lambda: ["all"] + self._session_refs(),
             ("/theme",): lambda: theme_mod.preset_names() + ["reload"],
+            ("/key", "set"): self._key_names,
+            ("/key", "rm"): self._key_names,
         }
+
+    def _key_names(self) -> list:
+        """Provider names for /key completion, from bob.keys (the peers in models.json + search keys)."""
+        from bob import keys
+        return [r["name"] for r in keys.entries()]
 
     def _service_names(self) -> list:
         """Service names (and distinct labels) for /services completion, from the SERVICES registry."""
@@ -916,6 +925,48 @@ class BobShell:
         import stack   # scripts/tools is on sys.path (module top)
         self.console.print(stack.stack_stop(self.config))
         self._render_dashboard()      # visual feedback — everything flips to down (VRAM freed)
+
+    def _read_secret(self, label: str) -> str:
+        """A hidden-input prompt for a secret ('' when cancelled). Split out so tests can stub it."""
+        try:
+            from prompt_toolkit import prompt as ptk_prompt
+            return ptk_prompt(f"{label} (input hidden): ", is_password=True)
+        except (EOFError, KeyboardInterrupt):
+            return ""
+
+    def _cmd_key(self, arg: str = "") -> None:
+        """/key: list provider API keys and where each resolves from. /key set <provider> asks for the key
+        at a hidden prompt (never on the command line, which the shell history file would keep); /key rm
+        <provider> removes a stored one. Both go through bob.keys, the same core as `bob key`."""
+        from bob import keys
+        parts = arg.split()
+        if not parts or parts[0] == "list":
+            self.console.print("\n".join(keys.status_lines()), markup=False)
+            self.console.print(f"[{self.theme.muted}]set one: /key set <provider>[/]")
+            return
+        action = parts[0].lower()
+        if action not in ("set", "rm") or len(parts) != 2:
+            if action == "set" and len(parts) > 2:
+                self.console.print("[yellow]don't paste the key on the command line (shell history keeps "
+                                   "it). Run /key set <provider> and paste it at the hidden prompt.[/]")
+            else:
+                self.console.print("[yellow]usage: /key [set <provider>|rm <provider>][/]")
+            return
+        try:
+            if action == "set":
+                if keys.find(parts[1]) is None:
+                    raise ValueError(f"unknown provider '{parts[1]}' (see /key)")
+                value = self._read_secret(f"{parts[1]} API key")
+                if not value.strip():
+                    self.console.print("[dim]no key entered, nothing stored[/]")
+                    return
+                lines = keys.set_key(parts[1], value, self.config)
+            else:
+                lines = keys.remove_key(parts[1], self.config)
+        except ValueError as e:
+            self.console.print(f"[yellow]{e}[/]")
+            return
+        self.console.print("\n".join(lines), markup=False)
 
     def _cmd_logs(self, arg: str = "") -> None:
         """/logs [N] — a bounded tail of the inference-server log (no follow; the shell owns the TTY)."""

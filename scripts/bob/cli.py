@@ -1125,6 +1125,39 @@ def _handle_diagnose(rest: list) -> int:
     return 0
 
 
+def _handle_key(rest: list) -> int:
+    """bob key [list] | set <provider> [key] | rm <provider>: manage provider API keys (bob.keys). With no
+    key on the command line, `set` reads it from stdin when piped, else prompts without echo, so the key
+    stays out of shell history."""
+    from bob import keys
+    action = rest[0] if rest else "list"
+    if action == "list":
+        print("API keys (stored in the secret store, never a tracked file):")
+        print("\n".join(keys.status_lines()))
+        print("\nSet one: bob key set <provider>")
+        return 0
+    if action not in ("set", "rm", "remove") or len(rest) < 2:
+        print("usage: bob key [list] | set <provider> [key] | rm <provider>", file=sys.stderr)
+        return 2
+    try:
+        if action == "set":
+            value = rest[2] if len(rest) > 2 else None
+            if value is None:
+                if sys.stdin.isatty():
+                    import getpass
+                    value = getpass.getpass(f"{rest[1]} API key (input hidden): ")
+                else:
+                    value = sys.stdin.readline()
+            lines = keys.set_key(rest[1], value, _cfg())
+        else:
+            lines = keys.remove_key(rest[1], _cfg())
+    except (ValueError, KeyboardInterrupt, EOFError) as e:
+        print(f"key: {e or 'cancelled'}", file=sys.stderr)
+        return 1
+    print("\n".join(lines))
+    return 0
+
+
 def _handle_gen(rest: list) -> int:
     """bob gen [profile] — regenerate all runtime configs from config/models.json."""
     tools_dir = str(SCRIPTS / "tools")
@@ -1594,6 +1627,7 @@ _HANDLERS = {
     "lock": _handle_lock,             # versions.lock writer + gate (scripts/bob/versions.py)
     "release": _handle_release,       # cut a release without drift (scripts/bob/versions.py)
     "mlock": _handle_mlock,           # mlock privilege status/grant (osenv)
+    "key": _handle_key,               # provider API keys (scripts/bob/keys.py)
     "gen": _handle_gen,               # config generators (scripts/tools/generate.py)
     "setup": _handle_setup,           # health / diagnostics (scripts/tools/health.py)
     "reset": _handle_reset,           # factory reset (kernel.reset_all_data; shared with /reset)

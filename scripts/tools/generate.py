@@ -379,15 +379,15 @@ def gen_litellm(profile: str = None) -> str:
         if m.get("supportsVision"):
             out.append("      supports_vision: true")
 
-    import os as _os
+    import osenv
     for peer in peers:
         pro = peer.get("pro") or {}
         if not pro:
             continue
         key_env = peer.get("apiKeyEnv")
-        if key_env and not _os.environ.get(key_env):
-            print(f"gen-litellm: env var '{key_env}' not set for peer '{peer['name']}' — pro models will "
-                  "fail at request time", file=sys.stderr)
+        if key_env and not osenv.secret(key_env, peer.get("apiKey") or None):
+            print(f"gen-litellm: no {key_env} for peer '{peer['name']}', so its pro models will fail at "
+                  f"request time. Add it with: bob key set {peer['name']}", file=sys.stderr)
         prefix = peer.get("litellmPrefix") or "openai"
         proxy = peer.get("proxy")
         for role in sorted(pro):

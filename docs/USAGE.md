@@ -54,6 +54,7 @@ In the shell:
 | `/skill [name]` | list or run a skill (tool-sequence or sub-agent) |
 | `/session new\|list\|resume <id>\|show` · `/status` · `/clear` | persisted sessions (`data/sessions.db`) + state; leaving a session consolidates it into memory |
 | `/logs` · `/stop` | tail the server log / stop the stack |
+| `/key` · `/key set <provider>` · `/key rm <provider>` | list provider API keys / add one at a hidden prompt / remove one (see [Pro models](#pro-models-api-backed-no-platform-fee)) |
 | `/theme [reload]` | show/reload the theme ([config/ui.json](../config/ui.json)) |
 | `/exit` | leave |
 
@@ -205,21 +206,18 @@ Additional model names are available via the LiteLLM proxy (`:8081`) when the co
 
 DeepSeek V4 takes no images, so no cloud vision role ships. `--pro` on an image request uses `vision.visionProRole`, which defaults to the local `vision` model; point it at a pro role whose peer is marked `supportsVision` to send images to the cloud. A pro role without `supportsVision` refuses image input with a clear message. A pro role uses the same per-role system prompt as its local role (`prompts` in `config/models.json`) unless its peer entry sets its own `systemPrompt`. Each peer declares `contextWindow` and `maxOutputTokens` (DeepSeek V4: 1000000 and 32768, with `ponder` raised to 65536), which the generated client configs use.
 
-**API keys**: all four pro roles route through DeepSeek by default, so only one key is needed. Set it in the environment:
+**API keys**: all four pro roles route through DeepSeek by default, so only one key is needed (platform.deepseek.com, API keys). Add it from the shell or the terminal:
 
-Linux:
-```bash
-export DEEPSEEK_API_KEY='sk-...'   # platform.deepseek.com -> API keys
+```
+/key set deepseek          # in the bob shell: paste the key at the hidden prompt
+bob key set deepseek       # same from a terminal (hidden prompt; or pipe it on stdin)
+bob key                    # every provider, and where its key resolves from
+bob key rm deepseek        # remove a stored key
 ```
 
-Windows:
-```bat
-setx DEEPSEEK_API_KEY "sk-..."     :: platform.deepseek.com -> API keys
-```
+The key goes to `data/secrets.json` (gitignored, mode 0600), and a running LiteLLM proxy restarts so it takes effect at once. A key exported in the environment (`DEEPSEEK_API_KEY`) or held in the OS keychain wins over the stored one, and `bob key` names the source in use. Onboarding's DeepSeek prompt stores the key the same way. `bob key` also holds the web tool's search keys (`brave`, `tavily`). Pro models are only available through `:8081` (LiteLLM). Direct `:8080` requests return "model not found" because llama-swap only serves local models.
 
-Or store it via onboarding (it writes the key to `peers.deepseek.apiKey` in `config/user.json`, gitignored). Pro models are only available through `:8081` (LiteLLM). Direct `:8080` requests return "model not found" because llama-swap only serves local models.
-
-**Other coding peers (opt-in).** Two alternative cloud coders ship defined but disabled in `config/models.json`: **GLM-5.3** (z.ai, key `ZHIPU_API_KEY`) and **Kimi K3** (Moonshot, key `MOONSHOT_API_KEY`). Enable one at a time (set its `enabled: true`, export its key, run `bob gen`); each provides `coder-pro` (GLM also provides `chat-pro`, `ponder-pro` and `writer-pro`), so run a single coding peer to avoid a name clash. DeepSeek stays the enabled default.
+**Other coding peers (opt-in).** Two alternative cloud coders ship defined but disabled in `config/models.json`: **GLM-5.3** (z.ai, `bob key set zhipu`) and **Kimi K3** (Moonshot, `bob key set kimi`). Setting a disabled peer's key enables it in `config/user.json` and regenerates the configs. Each provides `coder-pro` (GLM also provides `chat-pro`, `ponder-pro` and `writer-pro`), and LiteLLM splits a model name served by two enabled peers between them, so run one coding peer at a time: disable the other with `"peers": {"deepseek": {"enabled": false}}` in `config/user.json`, then `bob gen`. DeepSeek stays the enabled default.
 
 **Override providers or models** in `config/user.json` under a `peers` block (see `config/user.json.example`). You can disable individual peers, change which model a role uses, or add OpenRouter as a fallback (5.5% platform fee applies). Run `bob gen` after any change.
 

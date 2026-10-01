@@ -579,8 +579,9 @@ def onboard() -> None:
         print(f"Bob: {msg}")
 
     # A re-onboard (marked but the profile never seeded) shouldn't re-nag for a key already on file.
-    _existing = _read_user_config()
-    has_key = bool(((_existing.get("peers") or {}).get("deepseek") or {}).get("apiKey"))
+    from bob import keys
+    _deepseek = keys.find("deepseek")
+    has_key = bool(_deepseek and _deepseek["source"])
 
     print()
     bob("Hi. Let me set up your profile.")
@@ -612,23 +613,15 @@ def onboard() -> None:
     cfg = _read_user_config()
     if not isinstance(cfg.get("bob"), dict):
         cfg["bob"] = {}
-    key_added = False
-    if api_key:
-        cfg.setdefault("peers", {}).setdefault("deepseek", {})
-        if cfg["peers"]["deepseek"].get("apiKey") != api_key:
-            cfg["peers"]["deepseek"]["apiKey"] = api_key
-            key_added = True
     _write_user_config(cfg)
 
-    if key_added:
-        print("Regenerating config with API key...", file=sys.stderr)
+    if api_key:
         try:
-            _tools_on_path()
-            import generate
-            generate.configure(_load_config())
-            generate.gen_all()
-        except Exception:  # noqa: BLE001 — best-effort
-            pass
+            for line in keys.set_key("deepseek", api_key, _load_config()):
+                print(f"  {line}", file=sys.stderr)
+        except (ValueError, OSError) as e:
+            print(f"  (couldn't store the key: {e}. Add it later with `bob key set deepseek`.)",
+                  file=sys.stderr)
 
     print()
     bob(f"Ready, {user_name}. Type 'bob chat' to start.")

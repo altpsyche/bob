@@ -8,6 +8,19 @@ rebuilds only what changed, verifies, and rolls back on failure.
 
 ## [Unreleased]
 
+### Added
+- **`bob key` and `/key` manage provider API keys from the terminal.** `bob key` lists every cloud peer
+  (DeepSeek, GLM, Kimi) and search key with where it resolves from; `bob key set <provider>` (or `/key set
+  <provider>` in the shell) reads the key at a hidden prompt and stores it in `data/secrets.json` (0600),
+  `bob key rm <provider>` removes it. Setting a disabled peer's key enables it, and a running LiteLLM
+  restarts so the key takes effect. [scripts/bob/keys.py](scripts/bob/keys.py).
+
+### Fixed
+- **A stored peer key reaches LiteLLM.** The proxy read peer keys only from the shell environment, so a
+  key saved by onboarding (or kept in the keychain or `data/secrets.json`) never authenticated the `*-pro`
+  models. Every LiteLLM start now resolves each enabled peer's key through the secret seam, and onboarding
+  stores its DeepSeek key there instead of in `config/user.json`.
+
 ## [2.0.1] (2026-09-25)
 
 ### Fixed

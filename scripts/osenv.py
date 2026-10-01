@@ -408,16 +408,75 @@ def ensure_secret(name: str, nbytes: int = 32, prefix: str = "", legacy: str = N
             return data[name]
         val = legacy or (prefix + _secrets.token_hex(nbytes))
         data[name] = val
-        tmp = sf.with_name(f"{sf.name}.{os.getpid()}.{_secrets.token_hex(4)}.tmp")
-        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(json.dumps(data, indent=2) + "\n")
-            _replace_secrets_file(tmp, sf)
-        except BaseException:
-            tmp.unlink(missing_ok=True)
-            raise
+        _write_secrets_file(sf, data)
     return val
+
+
+def _write_secrets_file(sf: Path, data: dict) -> None:
+    """Write `data` as secrets.json: a 0600 temp file renamed over it, so the secrets are never on disk
+    at a wider mode and a reader never sees a partial file. The caller holds file_lock(secrets.json.lock)."""
+    import secrets as _secrets
+    tmp = sf.with_name(f"{sf.name}.{os.getpid()}.{_secrets.token_hex(4)}.tmp")
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(data, indent=2) + "\n")
+        _replace_secrets_file(tmp, sf)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def store_secret(name: str, value: str) -> Path:
+    """Persist `value` as the secret `name` in <data_dir>/secrets.json (replacing any stored value) and
+    return the file. The read-modify-write runs under the same lock as ensure_secret, so the other
+    secrets survive a concurrent write, and a secrets.json that does not parse is never overwritten."""
+    if not value:
+        raise ValueError(f"empty value for secret '{name}'")
+    sf = secrets_file()
+    with file_lock(sf.with_name(sf.name + ".lock")):
+        data = _read_secrets_file(sf)
+        data[name] = value
+        _write_secrets_file(sf, data)
+    return sf
+
+
+def delete_secret(name: str) -> bool:
+    """Remove the secret `name` from <data_dir>/secrets.json. True when it was there. The env and the OS
+    keychain are left alone: a value from either still resolves through secret()."""
+    sf = secrets_file()
+    if not sf.exists():
+        return False
+    with file_lock(sf.with_name(sf.name + ".lock")):
+        data = _read_secrets_file(sf)
+        if name not in data:
+            return False
+        del data[name]
+        _write_secrets_file(sf, data)
+    return True
+
+
+def secret_source(name: str):
+    """Where secret() resolves `name` from: "env", "keychain", "secrets.json", or None when no source
+    has it. The same precedence secret() applies, so a status view names the source that wins."""
+    if os.environ.get(name) or os.environ.get("BOB_" + name.upper()):
+        return "env"
+    try:
+        import keyring  # type: ignore
+
+        if keyring.get_password("bob", name):
+            return "keychain"
+    except Exception:
+        pass  # keyring absent or backend unavailable
+    sf = secrets_file()
+    if sf.exists():
+        try:
+            data = json.loads(_read_secrets_text(sf))
+            if isinstance(data, dict) and data.get(name):
+                return "secrets.json"
+        except (json.JSONDecodeError, OSError):
+            pass
+    return None
 
 
 # --- notifications -------------------------------------------------------------------------------

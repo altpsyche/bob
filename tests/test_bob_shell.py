@@ -7,6 +7,7 @@ it."""
 import io
 import time
 import unittest
+from unittest import mock
 
 import _common  # noqa: F401 — puts scripts/ on sys.path
 from _common import FakeRegistry, fake_config
@@ -1199,6 +1200,38 @@ class TestGate(unittest.TestCase):
         # module-level run() must refuse and return 0 (help), never construct/enter the REPL.
         self.assertEqual(shellmod.run(fake_config()), 0)
 
+
+
+class TestSlashKey(unittest.TestCase):
+    """/key routes to bob.keys: the key is read at a hidden prompt, never taken from the command line."""
+
+    def test_set_reads_hidden_prompt(self):
+        from bob import keys
+        sh, out = _make_shell()
+        sh._read_secret = lambda label: "sk-abc"
+        with mock.patch.object(keys, "find", return_value={"name": "deepseek"}), \
+                mock.patch.object(keys, "set_key", return_value=["Stored DEEPSEEK_API_KEY."]) as st:
+            self.assertTrue(sh.dispatch("/key set deepseek"))
+        st.assert_called_once_with("deepseek", "sk-abc", sh.config)
+        self.assertIn("Stored DEEPSEEK_API_KEY.", out.file.getvalue())
+
+    def test_inline_key_refused(self):
+        from bob import keys
+        sh, out = _make_shell()
+        with mock.patch.object(keys, "set_key") as st:
+            sh.dispatch("/key set deepseek sk-abc")
+        st.assert_not_called()
+        self.assertIn("hidden prompt", out.file.getvalue())
+
+    def test_empty_entry_stores_nothing(self):
+        from bob import keys
+        sh, out = _make_shell()
+        sh._read_secret = lambda label: ""
+        with mock.patch.object(keys, "find", return_value={"name": "deepseek"}), \
+                mock.patch.object(keys, "set_key") as st:
+            sh.dispatch("/key set deepseek")
+        st.assert_not_called()
+        self.assertIn("nothing stored", out.file.getvalue())
 
 if __name__ == "__main__":
     unittest.main()

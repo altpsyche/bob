@@ -411,6 +411,17 @@ def _langfuse_env(config: dict) -> dict:
     }
 
 
+def _peer_key_env() -> dict:
+    """Every enabled cloud peer's API key, resolved through the secret seam (bob.keys.peer_key_env).
+    litellm.yaml reads each one as `os.environ/<apiKeyEnv>`, so a key stored with `bob key set` reaches
+    the proxy without being exported in the shell. {} when the registry cannot be read."""
+    try:
+        from bob import keys
+        return keys.peer_key_env()
+    except Exception:  # noqa: BLE001: a key lookup failure must not stop the proxy; pro routes then 401
+        return {}
+
+
 def _start_litellm_bg(config: dict) -> str:
     osenv = _osenv()
 
@@ -432,7 +443,7 @@ def _start_litellm_bg(config: dict) -> str:
     new_pid = osenv.start_detached(
         [str(proxy), "--config", str(cfg), "--host", bind_host(config), "--port", str(port)],
         pidfile=_pidfile("litellm"), log_path=_logfile("litellm"),
-        env={"PYTHONUTF8": "1", LITELLM_KEY_ENV: key, **_langfuse_env(config)})
+        env={"PYTHONUTF8": "1", LITELLM_KEY_ENV: key, **_langfuse_env(config), **_peer_key_env()})
     return f"LiteLLM proxy: http://localhost:{port}/v1 (PID {new_pid})"
 
 
