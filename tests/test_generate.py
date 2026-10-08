@@ -251,6 +251,17 @@ class TestLitellm(unittest.TestCase):
         for short in (2048, 4096, 8192):
             self.assertNotIn(f"max_tokens: {short}\n", out)
 
+    def test_litellm_callback_shim_lives_beside_the_config(self):
+        """LiteLLM resolves a callback module relative to the config file, not sys.path. A shim must sit
+        beside config/litellm.yaml or the proxy refuses to start on a fresh install."""
+        import importlib.util
+        shim = Path(bob_core.REPO) / "config" / "bob_context_callback.py"
+        self.assertTrue(shim.exists())
+        spec = importlib.util.spec_from_file_location("bob_litellm_callback_shim", shim)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)                      # type: ignore[union-attr]
+        self.assertTrue(hasattr(module, "proxy_handler_instance"))
+
     def test_settings(self):
         out = self._gen()
         self.assertIn("  num_retries: 3", out)
