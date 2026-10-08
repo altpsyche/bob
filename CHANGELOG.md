@@ -8,6 +8,9 @@ rebuilds only what changed, verifies, and rolls back on failure.
 
 ## [Unreleased]
 
+### Fixed
+- **Setup and update install the complete DSH link, not just the provider route.** `setup_clients` now calls the same `bob dsh install` path users run manually, so the pinned DSH package, profile home, provider route, credential, enabled MCP tools, native `bob-dsh-bridge`, and default DSH model are all wired in one pass. This closes the gap between the advertised one-command update and the actual link state.
+
 ## [2.1.1] (2026-10-09)
 
 ### Changed

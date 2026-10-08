@@ -329,16 +329,25 @@ class TestWire(unittest.TestCase):
         with mock.patch.object(Path, "home", return_value=home), \
              mock.patch.object(generate, "configure"), \
              mock.patch.object(generate, "gen_continue"), \
-             mock.patch.object(generate, "gen_dsh"), \
-             mock.patch.object(generate, "install_dsh", return_value="dsh skipped"), \
-             mock.patch.object(bob_dsh, "ensure_dsh", return_value="dsh 0.1.5-rc.3 already installed") as ensure, \
-             mock.patch.object(bob_dsh, "ensure_home", return_value="dsh home ready") as ensure_home, \
+             mock.patch.object(bob_dsh, "install", return_value="Installed bob dsh link") as install, \
              mock.patch.object(kernel, "_wire") as wire:
             kernel.setup_clients()
-        ensure.assert_called_once()
-        ensure_home.assert_called_once()
+        install.assert_called_once_with(tools=False, bridge=True, use_default=True)
         linked = [c.args[1] for c in wire.call_args_list]
         self.assertEqual(linked, [home / ".continue" / "config.yaml"])
+
+    def test_setup_clients_preserves_enabled_mcp_tools(self):
+        import bob_dsh
+        import generate
+        home = _tmp(self)
+        with mock.patch.object(Path, "home", return_value=home), \
+             mock.patch.object(kernel, "_load_config", return_value={"agent": {"mcpEnabled": True}}), \
+             mock.patch.object(generate, "configure"), \
+             mock.patch.object(generate, "gen_continue"), \
+             mock.patch.object(bob_dsh, "install", return_value="Installed bob dsh link") as install, \
+             mock.patch.object(kernel, "_wire"):
+            kernel.setup_clients()
+        install.assert_called_once_with(tools=True, bridge=True, use_default=True)
 
 
 @unittest.skipIf(sys.platform == "win32", "POSIX symlink install")

@@ -309,20 +309,19 @@ def setup_clients() -> None:
     _tools_on_path()
     import bob_dsh
     import generate
-    generate.configure(_load_config())
+    cfg = _load_config()
+    generate.configure(cfg)
     generate.gen_continue()
-    # The pinned DSH package is part of a default setup: `bob dsh install` can repair it later, but a
-    # fresh install should not require a second command to get the primary client. Node/pnpm missing or
-    # an offline box yields a clear status line, never a setup failure. After the package is present,
-    # create the profile home non-interactively so the drop-ins below have somewhere to land.
-    print("  " + bob_dsh.ensure_dsh().replace("\n", "\n  "), file=sys.stderr)
-    print("  " + bob_dsh.ensure_home().replace("\n", "\n  "), file=sys.stderr)
     home = Path.home()
     _wire(REPO / "config" / "continue" / "config.yaml", home / ".continue" / "config.yaml")
     _remove_legacy_aider_link(home)
 
-    generate.gen_dsh()
-    print(generate.install_dsh(), file=sys.stderr)
+    # One DSH call does the whole link: pinned package install, non-interactive profile-home creation,
+    # provider route + credential, MCP tools when the user has enabled them, native bridge, and the
+    # default DSH model. `bob dsh install` is the same function, so setup and repair cannot drift.
+    tools = bool((cfg.get("agent", {}) or {}).get("mcpEnabled"))
+    print("  " + bob_dsh.install(tools=tools, bridge=True, use_default=True).replace("\n", "\n  "),
+          file=sys.stderr)
 
     if not _have("node"):
         print("  Node.js not found: Continue's npx-based MCP servers and n8n need it. Install Node.js "

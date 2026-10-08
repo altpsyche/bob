@@ -225,6 +225,33 @@ class TestSessions(unittest.TestCase):
         self.assertIn("unknown DSH session", shown)
 
 
+class TestInstallLink(unittest.TestCase):
+    def test_install_covers_route_credential_tools_bridge_and_default_model(self):
+        import generate
+        cfg = _common.fake_config()
+        with tempfile.TemporaryDirectory(prefix="bob-dsh-install-") as d:
+            root = Path(d) / ".dsh"
+            root.mkdir()
+            with mock.patch.object(bob_dsh, "home", return_value=root), \
+                 mock.patch.object(bob_dsh, "ensure_dsh", return_value="dsh package ready"), \
+                 mock.patch.object(bob_dsh, "ensure_home", return_value="dsh home ready"), \
+                 mock.patch.object(bob_core, "load_config", return_value=cfg), \
+                 mock.patch.object(generate, "configure"), \
+                 mock.patch.object(generate, "gen_dsh", return_value="routes"), \
+                 mock.patch.object(generate, "_install_dsh_settings", return_value="settings") as settings, \
+                 mock.patch.object(generate, "_install_dsh_credential", return_value="credential") as credential, \
+                 mock.patch.object(bob_dsh, "_install_mcp", return_value="mcp") as mcp, \
+                 mock.patch.object(bob_dsh, "bridge_on", return_value="bridge") as bridge, \
+                 mock.patch.object(bob_dsh, "set_default_model", return_value="model") as default:
+                out = bob_dsh.install(tools=True, bridge=True, use_default=True)
+        self.assertIn("Installed bob dsh link", out)
+        settings.assert_called_once_with(root)
+        credential.assert_called_once_with(root)
+        mcp.assert_called_once_with(root)
+        bridge.assert_called_once_with("web")
+        default.assert_called_once_with("web", bob_dsh.DEFAULT_MODEL)
+
+
 class TestEnsureDsh(unittest.TestCase):
     def test_pinned_version_already_installed_is_a_noop(self):
         with mock.patch.object(bob_dsh, "pinned_dsh_version", return_value="0.1.5-rc.3"), \
