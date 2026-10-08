@@ -21,6 +21,13 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 CONFIG_DSH = REPO / "config" / "dsh"
+
+# The DSH CLI is often the first Bob surface a user touches (and `bob dsh trust` resolves tiers from
+# the live tool registry), so make the sibling tool modules importable here instead of relying on the
+# caller having already extended sys.path.
+for _p in (REPO / "scripts", REPO / "scripts" / "tools"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 DEFAULT_MODEL = "coder-deep"
 FALLBACK_MODEL = "chat-deep"
 PROVIDER = "bob"
@@ -287,6 +294,347 @@ def bridge_off(profile: str = None) -> str:
         return f"profile {target}: could not update bridge state ({e})"
 
 
+def _dsh_db(create: bool = False):
+    """Open the Bob memory DB used by the DSH import tables. Reads do not create a DB."""
+    import sqlite3
+    from bob_core import _get_db_path, load_config
+    cfg = load_config()
+    path = Path(_get_db_path(cfg))
+    if not create and not path.exists():
+        return None, cfg, path
+    return sqlite3.connect(str(path)), cfg, path
+
+
+def _dsh_tables(db) -> bool:
+    try:
+        return db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='dsh_sessions'").fetchone() is not None
+    except Exception:
+        return False
+
+
+def sessions_list() -> str:
+    db, _cfg, _path = _dsh_db()
+    if db is None:
+        return "no imported DSH sessions"
+    try:
+        if not _dsh_tables(db):
+            return "no imported DSH sessions"
+        rows = db.execute(
+            "SELECT s.session_id, s.parent_session_id, s.cwd, s.last_seq, s.state, s.updated_at,"
+            " (SELECT COUNT(*) FROM transcript t WHERE t.run_id = 'dsh:' || s.session_id) AS turns"
+            " FROM dsh_sessions s ORDER BY s.updated_at DESC, s.session_id").fetchall()
+    finally:
+        db.close()
+    if not rows:
+        return "no imported DSH sessions"
+    lines = [f"{'session':<36} {'parent':<36} {'last':<6} {'turns':<6} state  cwd"]
+    for sid, parent, cwd, last, state, _updated, turns in rows:
+        lines.append(f"{sid:<36} {(parent or '-'):<36} {last:<6} {turns:<6} {state or '':<7} {cwd or '-'}")
+    return "\n".join(lines)
+
+
+def sessions_show(session_id: str) -> str:
+    db, _cfg, _path = _dsh_db()
+    if db is None:
+        return f"unknown DSH session: {session_id}"
+    try:
+        if not _dsh_tables(db):
+            return f"unknown DSH session: {session_id}"
+        row = db.execute(
+            "SELECT parent_session_id, cwd, origin, last_seq, state, updated_at"
+            " FROM dsh_sessions WHERE session_id=?", [session_id]).fetchone()
+        turns = db.execute(
+            "SELECT seq, role, tool_name, content FROM transcript WHERE run_id=? ORDER BY seq",
+            [f"dsh:{session_id}"]).fetchall()
+        raw_events = db.execute(
+            "SELECT COUNT(*) FROM dsh_events WHERE session_id=?", [session_id]).fetchone()[0]
+    finally:
+        db.close()
+    if row is None:
+        return f"unknown DSH session: {session_id}"
+    lines = [f"session {session_id}", f"  parent: {row[0] or '-'}", f"  cwd: {row[1] or '-'}",
+             f"  origin: {row[2] or '-'}", f"  last_seq: {row[3]}", f"  state: {row[4] or '-'}",
+             f"  raw events: {raw_events}", f"  turns: {len(turns)}"]
+    for seq, role, tool, content in turns:
+        label = f"{role}:{tool}" if tool else role
+        lines.append(f"  [{seq}] {label}: {str(content)[:160]}")
+    return "\n".join(lines)
+
+
+def sessions_consolidate(session_id: str) -> str:
+    from bob_core import consolidate_session, load_config, project_key
+    db, cfg, _path = _dsh_db()
+    if db is None:
+        return f"no imported turns for DSH session: {session_id}"
+    try:
+        if not _dsh_tables(db):
+            return f"no imported turns for DSH session: {session_id}"
+        turns = [{"role": role, "content": content, "tool_name": tool_name}
+                 for _seq, role, tool_name, content in db.execute(
+                     "SELECT seq, role, tool_name, content FROM transcript WHERE run_id=? ORDER BY seq",
+                     [f"dsh:{session_id}"]).fetchall()]
+        row = db.execute("SELECT cwd FROM dsh_sessions WHERE session_id=?", [session_id]).fetchone()
+    finally:
+        db.close()
+    if not turns:
+        return f"no imported turns for DSH session: {session_id}"
+    # Match the shell/agent-API consolidation scope: the project key (git root/cwd) when project
+    # scoping is on, not the raw DSH cwd string.
+    scope = project_key(row[0], cfg) if row and row[0] else None
+    result = consolidate_session(turns, config=cfg, owner=cfg.get("agent", {}).get("defaultOwner", "local"),
+                                 scope=scope, session_id=session_id)
+    return f"consolidated {session_id}: {result}"
+
+
+def sessions_forget(session_id: str) -> str:
+    """Forget one imported DSH session: raw events, derived transcript, and any memory it produced."""
+    import bob_memory
+    from bob_core import _get_db_path, load_config
+    cfg = load_config()
+    db_path = Path(_get_db_path(cfg))
+    owner = cfg.get("agent", {}).get("defaultOwner", "local")
+    facts = 0
+    turns = 0
+    if db_path.exists():
+        # Provenance-based memory forget first, then the transcript (it is not audit-retained).
+        try:
+            facts = bob_memory.forget_by_session(session_id, db_path, owner=owner)
+        except Exception:
+            facts = 0
+        try:
+            turns = bob_memory.forget_transcript_session(session_id, db_path, owner=owner)
+        except Exception:
+            turns = 0
+    db, _cfg, _path = _dsh_db()
+    if db is not None:
+        try:
+            if _dsh_tables(db):
+                db.execute("DELETE FROM dsh_events WHERE session_id=?", [session_id])
+                db.execute("DELETE FROM dsh_sessions WHERE session_id=?", [session_id])
+                db.commit()
+        finally:
+            db.close()
+    return (f"forgot DSH session {session_id}: {turns} transcript turn(s), "
+            f"{facts} consolidated memory row(s)")
+
+
+_TRUST_TIER_ALIASES = {
+    "observe": "read", "read": "read", "read-only": "read", "readonly": "read",
+    "write": "write", "edit": "write", "project": "write",
+    "execute": "execute", "exec": "execute", "shell": "execute",
+    "all": "all", "full": "all", "*": "all",
+}
+_TRUST_TIERS = ("read", "write", "execute", "all")
+
+
+def _gated_tools(registry) -> set:
+    """Every tool Bob's unattended/MCP gate refuses unless explicitly allowed."""
+    gated = set(getattr(registry, "approval_required_tools", set()))
+    gated |= set(getattr(registry, "mutating_tools", set()))
+    gated |= set(getattr(registry, "remote_tools", set()))
+    gated |= {"spawn_agent", "schedule_run"}
+    return gated
+
+
+def trust_tiers(registry) -> dict:
+    """The DSH trust tiers as concrete allow-sets, derived from the live registry.
+
+    read    -- no state-changing tools
+    write   -- state-changing tools that are not command execution, delegation, scheduling or remote MCP
+    execute -- write + command-execution tools
+    all     -- every gated tool, including delegation and remote MCP
+    """
+    gated = _gated_tools(registry)
+    dangerous = {"spawn_agent", "schedule_run"} | set(getattr(registry, "remote_tools", set()))
+    execute = {n for n in gated if n not in dangerous}
+    # `write` is the coding-loop subset: mutations, but not tools whose whole point is running commands
+    # or crossing an external boundary. Approval-required tools (shell_run, ...) are command execution.
+    write = {n for n in execute
+             if n not in getattr(registry, "approval_required_tools", set())}
+    return {"read": set(), "write": write, "execute": execute, "all": gated}
+
+
+def _trust_spec_tools(spec, tiers: dict) -> set:
+    if isinstance(spec, str):
+        return set(tiers.get(_TRUST_TIER_ALIASES.get(spec.strip().lower(), ""), set()))
+    if isinstance(spec, (list, tuple, set)):
+        return {str(n) for n in spec if str(n).strip()}
+    return set()
+
+
+def resolve_dsh_allow(config: dict = None, cwd: str = None, registry=None) -> set:
+    """The effective unattended allow-set for a DSH/MCP call: the explicit global
+    agent.mcpAllowTools list plus the tier selected for this project (falling back to global), or
+    the explicit list agent.mcpAllowTools when no trust tier is configured."""
+    from bob_core import load_config
+    cfg = config or load_config()
+    agent = cfg.get("agent", {}) or {}
+    base = {str(n) for n in (agent.get("mcpAllowTools") or []) if str(n).strip()}
+    trust = agent.get("dshTrust") or {}
+    if not isinstance(trust, dict) or not trust:
+        return base
+    if registry is None:
+        from tool_registry import ToolRegistry
+        registry = ToolRegistry.from_config(cfg, quiet=True)
+    tiers = trust_tiers(registry)
+    projects = trust.get("projects") or {}
+    project_spec = None
+    if cwd and isinstance(projects, dict):
+        project_spec = projects.get(str(Path(cwd).resolve()))
+    active = project_spec if project_spec is not None else trust.get("global")
+    return base | _trust_spec_tools(active, tiers)
+
+
+def make_trust_hook(config: dict, registry):
+    """A built-in PreToolUse hook: a configured DSH trust tier is a deny-by-default policy for the
+    unattended MCP surface. It is inert for attended runs (where the operator can approve), and inert
+    when no dshTrust tier is configured, so existing behavior is unchanged."""
+    trust = (config or {}).get("agent", {}).get("dshTrust") or {}
+    if not isinstance(trust, dict) or not trust:
+        return None
+
+    def hook(name, args, context):
+        if getattr(context, "unattended_allow", None) is None:
+            return None
+        cwd = getattr(context, "cwd", None) or os.getcwd()
+        try:
+            effective = resolve_dsh_allow(config, cwd=cwd, registry=registry)
+        except Exception:
+            return None
+        if name in _gated_tools(registry) and name not in effective:
+            return {"decision": "deny"}
+        return None
+
+    return hook
+
+
+def trust_tier_names() -> str:
+    return ", ".join(_TRUST_TIERS)
+
+
+def _trust_config_path() -> Path:
+    import bob_config
+    path = bob_config.user_config_path()
+    return Path(path) if path is not None else (REPO / "config" / "user.json")
+
+
+def _load_json_dict(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_json_dict(path: Path, data: dict) -> None:
+    import tempfile
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".user-", suffix=".json.tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(data, indent=2) + "\n")
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+def _project_key(project: str = None) -> str:
+    return str(Path(project).expanduser().resolve() if project else Path.cwd().resolve())
+
+
+def trust_status(config: dict = None, cwd: str = None) -> str:
+    from bob_core import load_config
+    cfg = config or load_config()
+    agent = cfg.get("agent", {}) or {}
+    trust = agent.get("dshTrust") or {}
+    manual = list(agent.get("mcpAllowTools") or [])
+    lines = ["bob dsh trust", f"  mcpAllowTools: {', '.join(manual) if manual else '(empty)'}"]
+    if isinstance(trust, dict) and trust:
+        lines.append(f"  global tier:  {trust.get('global') or '(unset)'}")
+        projects = trust.get("projects") or {}
+        if projects:
+            for path, spec in sorted(projects.items()):
+                lines.append(f"  project tier: {path} -> {spec}")
+    else:
+        lines.append("  trust tiers:  (unset; only agent.mcpAllowTools is consulted)")
+    try:
+        from tool_registry import ToolRegistry
+        reg = ToolRegistry.from_config(cfg, quiet=True)
+        effective = sorted(resolve_dsh_allow(cfg, cwd=cwd or os.getcwd(), registry=reg))
+        tiers = trust_tiers(reg)
+        lines.append(f"  effective for {_project_key(cwd)}: {', '.join(effective) if effective else '(read-only)'}")
+        lines.append("  tiers: " + ", ".join(f"{name}({len(tools)})" for name, tools in tiers.items()))
+    except Exception as e:
+        lines.append(f"  (could not resolve tiers: {e})")
+    return "\n".join(lines)
+
+
+def trust_tools(tools: list = None, all_tools: bool = False, off: bool = False, tier: str = None,
+                scope: str = "global", project: str = None) -> str:
+    """Update DSH trust. Without arguments, show status.
+
+    scope=global writes agent.dshTrust.global (and explicit tools to agent.mcpAllowTools);
+    scope=project writes agent.dshTrust.projects[<resolved project path>]. A tier is a symbolic name
+    (read|write|execute|all) resolved from the live tool registry; an explicit tool list is a custom
+    per-scope allow-set. `off` clears the selected scope (and the global manual list, for global)."""
+    path = _trust_config_path()
+    if path.suffix == ".toml":
+        return (f"edit agent.dshTrust and agent.mcpAllowTools in {path} by hand, then re-run "
+                f"(tiers: {trust_tier_names()})")
+    data = _load_json_dict(path)
+    agent = data.setdefault("agent", {})
+    trust = agent.setdefault("dshTrust", {})
+    if not isinstance(trust, dict):
+        trust = agent["dshTrust"] = {}
+    projects = trust.setdefault("projects", {})
+    if not isinstance(projects, dict):
+        projects = trust["projects"] = {}
+    key = _project_key(project)
+    if off:
+        if scope == "project":
+            projects.pop(key, None)
+            result = f"cleared trust tier for project {key}"
+        else:
+            trust.pop("global", None)
+            agent["mcpAllowTools"] = []
+            result = "cleared global trust tier and mcpAllowTools"
+    elif all_tools:
+        spec = "all"
+        if scope == "project":
+            projects[key] = spec
+        else:
+            trust["global"] = spec
+        result = f"trust tier {spec} set for {'project ' + key if scope == 'project' else 'all projects'}"
+    elif tier:
+        normalized = _TRUST_TIER_ALIASES.get(str(tier).strip().lower())
+        if normalized not in _TRUST_TIERS:
+            return f"unknown trust tier '{tier}' (known: {trust_tier_names()})"
+        if scope == "project":
+            projects[key] = normalized
+        else:
+            trust["global"] = normalized
+        result = f"trust tier {normalized} set for {'project ' + key if scope == 'project' else 'all projects'}"
+    elif tools:
+        names = sorted({str(t) for t in tools if str(t).strip()})
+        if scope == "project":
+            current = projects.get(key)
+            current_names = set(current) if isinstance(current, (list, tuple, set)) else set()
+            projects[key] = sorted(current_names | set(names))
+        else:
+            current = {str(n) for n in (agent.get("mcpAllowTools") or []) if str(n).strip()}
+            agent["mcpAllowTools"] = sorted(current | set(names))
+        result = f"trusted {', '.join(names)} for {'project ' + key if scope == 'project' else 'all projects'}"
+    else:
+        return trust_status()
+    # Drop an empty trust block so an unconfigured install keeps the old mcpAllowTools-only behavior.
+    if not trust.get("global") and not projects:
+        agent.pop("dshTrust", None)
+    _write_json_dict(path, data)
+    return f"{path}: {result}"
+
+
 def import_session(payload: dict, config: dict = None) -> dict:
     """Import one native-bridge payload through the one Bob transcript pipeline."""
     from bob_core import _get_db_path, load_config
@@ -496,6 +844,42 @@ def main(argv: list) -> int:
         if sub == "off":
             print(bridge_off(profile)); return 0
         print(bridge_status(profile)); return 0
+    if cmd == "sessions":
+        sub = args[0] if args else "list"
+        if sub == "list":
+            print(sessions_list()); return 0
+        if sub == "show" and len(args) > 1:
+            print(sessions_show(args[1])); return 0
+        if sub == "consolidate" and len(args) > 1:
+            print(sessions_consolidate(args[1])); return 0
+        if sub == "forget" and len(args) > 1:
+            print(sessions_forget(args[1])); return 0
+        print("usage: bob dsh sessions <list|show <id>|consolidate <id>|forget <id>>", file=sys.stderr)
+        return 2
+    if cmd == "trust":
+        if "--tiers" in args or "--list-tiers" in args:
+            print("trust tiers: " + trust_tier_names()); return 0
+        if "--status" in args or not args:
+            print(trust_status()); return 0
+        off = "--off" in args
+        all_tools = "--all" in args
+        scope = "project" if "--project" in args else "global"
+        project = None
+        if "--project" in args:
+            i = args.index("--project")
+            if i + 1 < len(args) and not args[i + 1].startswith("--"):
+                project = args[i + 1]
+        tier = None
+        if "--tier" in args:
+            j = args.index("--tier")
+            if j + 1 >= len(args):
+                print("usage: bob dsh trust --tier <read|write|execute|all>", file=sys.stderr); return 2
+            tier = args[j + 1]
+        skip = {"--off", "--all", "--global", "--project", "--tier", "--status"}
+        skip_values = {project, tier}
+        names = [a for a in args if a not in skip and a not in skip_values and not a.startswith("--")]
+        print(trust_tools(names, all_tools=all_tools, off=off, tier=tier, scope=scope, project=project))
+        return 0
     if cmd == "import-session":
         raw = sys.stdin.read()
         try:
@@ -517,7 +901,7 @@ def main(argv: list) -> int:
     if cmd == "uninstall":
         print(uninstall(profile)); return 0
     if cmd in ("help", "-h", "--help"):
-        print("usage: bob dsh <status|doctor|install|use|mode|tools|bridge|logs|uninstall>")
+        print("usage: bob dsh <status|doctor|install|use|mode|tools|trust|bridge|sessions|logs|uninstall>")
         return 0
     print(f"unknown dsh command: {cmd}", file=sys.stderr)
     return 2

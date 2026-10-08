@@ -11,8 +11,8 @@
      (a missing optional dep silently skipping a whole area is how a green gate lies)  (skip with --no-tests)
 
 Exits non-zero if any category failed, so the git pre-commit hook (or CI) blocks. Stdlib-only, so any
-interpreter runs it; the suite runs under BOB_PYTHON (else this interpreter), which must carry the
-runtime deps for the skip guard to pass.
+interpreter runs it; the suite runs under BOB_PYTHON (else the checkout's tools/venv-litellm, else
+this interpreter), which must carry the runtime deps for the skip guard to pass.
 
   python scripts/check.py            # full
   python scripts/check.py --no-tests # skip the unittest suite (static checks only)
@@ -27,7 +27,22 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "scripts"
-PY = os.environ.get("BOB_PYTHON") or sys.executable
+
+
+def _suite_python() -> str:
+    """The interpreter for the suite: BOB_PYTHON when set, else the checkout's runtime venv when it
+    exists (it carries the runtime deps the skip guard requires), else this interpreter."""
+    env_py = os.environ.get("BOB_PYTHON")
+    if env_py:
+        return env_py
+    for rel in ("tools/venv-litellm/bin/python", "tools/venv-litellm/Scripts/python.exe"):
+        candidate = REPO / rel
+        if candidate.exists():
+            return str(candidate)
+    return sys.executable
+
+
+PY = _suite_python()
 
 # Skips the suite may take, as (test-id prefix, platforms where the skip is expected; None = anywhere).
 # Everything else that skips is a dependency the gate interpreter lacks, and fails the check.

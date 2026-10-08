@@ -93,12 +93,11 @@ class TestGeneratedSecrets(unittest.TestCase):
         for rel in bob_fsguard.KEY_BEARING:
             self.assertTrue(bob_fsguard.is_denied_secret(bob_fsguard.REPO / rel), rel)
 
-    def test_n8n_config_and_webui_secret_key_are_denied(self):
+    def test_n8n_config_and_dsh_credentials_are_denied(self):
         repo = bob_fsguard.REPO
         self.assertTrue(bob_fsguard.is_denied_secret(repo / "tools" / "n8n-data" / ".n8n" / "config"))
         self.assertTrue(bob_fsguard.is_denied_secret(repo / "tools" / "n8n-data" / "config"))
-        self.assertTrue(bob_fsguard.is_denied_secret(repo / "tools" / "webui-data" / ".webui_secret_key"))
-        self.assertTrue(bob_fsguard.is_denied_secret(repo / "scripts" / ".webui_secret_key"))
+        self.assertTrue(bob_fsguard.is_denied_secret(repo / "scripts" / ".credentials.yaml"))
 
     def test_ordinary_repo_files_stay_readable(self):
         repo = bob_fsguard.REPO

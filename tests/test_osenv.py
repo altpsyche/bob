@@ -79,6 +79,7 @@ class TestSecret(unittest.TestCase):
         self._env = os.environ.pop("BOB_DATA_DIR", None)
         self._litellm_env = os.environ.pop("BOB_LITELLMKEY", None)
         self.dst = Path(tempfile.mkdtemp(prefix="bob-sec-"))
+        (self.dst / ".migrated").write_text("", encoding="utf-8")   # never copy the real data/ secrets
         os.environ["BOB_DATA_DIR"] = str(self.dst)
         # Force the keychain step to a no-op so precedence tests are deterministic.
         self._fake_keyring = types.SimpleNamespace(get_password=lambda service, name: None)
@@ -398,8 +399,7 @@ class TestKillByName(_ForceOSMixin, unittest.TestCase):
             (100, f"{r}/bin/llama-swap", [f"{r}/bin/llama-swap", "--config", "x"]),
             (101, "/usr/bin/vim", ["vim", f"{r}/logs/llama-swap.log"]),
             (102, "/usr/bin/tail", ["tail", "-f", "llama-swap"]),
-            (103, "/usr/bin/python3.12", [f"{r}/tools/venv-webui/bin/python",
-                                          f"{r}/tools/venv-webui/bin/open-webui", "serve"]),
+            (103, "/usr/bin/node", [f"{r}/tools/n8n/node_modules/.bin/n8n", "start"]),
             (104, "/usr/local/bin/llama-server", ["/usr/local/bin/llama-server", "-m", "x"]),
             (105, "/usr/bin/bash", ["bash", "-c", f"pkill -f llama-swap; {r}/bin/llama-swap"]),
             (os.getpid(), f"{r}/bin/llama-swap", []),   # never ourselves
@@ -407,15 +407,15 @@ class TestKillByName(_ForceOSMixin, unittest.TestCase):
 
     def test_matches_only_repo_executables(self):
         with mock.patch.object(osenv, "_process_table", side_effect=self._table):
-            found = osenv.find_managed_processes(["llama-swap", "llama-server", "open-webui"])
-        self.assertEqual(sorted(found), [(100, "llama-swap"), (103, "open-webui")])
+            found = osenv.find_managed_processes(["llama-swap", "llama-server", "n8n"])
+        self.assertEqual(sorted(found), [(100, "llama-swap"), (103, "n8n")])
 
     def test_stop_kills_matches_and_returns_names(self):
         reaped = []
         with mock.patch.object(osenv, "_process_table", side_effect=self._table), \
              mock.patch.object(osenv, "stop_process_tree", side_effect=lambda pid: reaped.append(pid)):
-            killed = osenv.stop_processes_by_name(["llama-swap", "open-webui", "nothing"])
-        self.assertEqual(killed, ["llama-swap", "open-webui"])
+            killed = osenv.stop_processes_by_name(["llama-swap", "n8n", "nothing"])
+        self.assertEqual(killed, ["llama-swap", "n8n"])
         self.assertEqual(sorted(reaped), [100, 103])
 
     def test_string_arg_is_treated_as_single_name(self):
@@ -564,6 +564,7 @@ def _ensure_secret_worker(args):
 class TestEnsureSecret(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
+        (self.tmp / ".migrated").write_text("", encoding="utf-8")   # never copy the real data/ secrets
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self._env = {k: os.environ.pop(k) for k in ("BOB_DATA_DIR", "bobTestSecret", "BOB_BOBTESTSECRET")
                      if k in os.environ}
@@ -654,7 +655,7 @@ class TestEnsureSecret(unittest.TestCase):
     def test_a_malformed_file_is_moved_aside_not_overwritten(self):
         sf = osenv.secrets_file()
         sf.parent.mkdir(parents=True, exist_ok=True)
-        broken = '{"N8N_ENCRYPTION_KEY": "keep-me", "WEBUI_SECRET_KEY": '
+        broken = '{"N8N_ENCRYPTION_KEY": "keep-me", "LANGFUSE_SECRET_KEY": '
         sf.write_text(broken)
         self.assertIsNone(osenv.secret("bobTestSecret"))           # a read still does not crash
         with self.assertRaises(osenv.SecretsFileCorrupt) as cm:

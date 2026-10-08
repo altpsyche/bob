@@ -9,11 +9,12 @@ export const Config = z.object({
   timeoutMs: z.number().step(1).min(1000).default(30000),
 });
 
-function collectSessions(ctx, rootId) {
-  const all = typeof ctx.sessions?.list === "function" ? ctx.sessions.list() : [];
+async function collectSessions(ctx, rootId) {
+  const listed = typeof ctx.sessions?.list === "function" ? await ctx.sessions.list() : [];
+  const all = Array.isArray(listed) ? listed : [];
   const byParent = new Map();
   for (const session of all) {
-    const parent = session?.header?.parentSession;
+    const parent = session?.header?.parentSession ?? session?.header?.parentSessionId;
     if (!parent) continue;
     if (!byParent.has(parent)) byParent.set(parent, []);
     byParent.get(parent).push(session);
@@ -71,14 +72,14 @@ export function apply(ctx, config) {
     const rootId = agent?.session?.header?.id;
     if (!rootId) return;
     try {
-      const sessions = collectSessions(ctx, rootId).map((session) => ({
+      const sessions = await Promise.all((await collectSessions(ctx, rootId)).map(async (session) => ({
         session_id: session.header.id,
-        parent_session_id: session.header.parentSession ?? null,
+        parent_session_id: session.header.parentSession ?? session.header.parentSessionId ?? null,
         cwd: session.header.cwd ?? null,
         origin: session.header.origin ?? null,
-        events: typeof session.snapshotEvents === "function" ? session.snapshotEvents() : [],
-        messages: typeof session.deriveMessages === "function" ? session.deriveMessages() : [],
-      }));
+        events: typeof session.snapshotEvents === "function" ? await session.snapshotEvents() : [],
+        messages: typeof session.deriveMessages === "function" ? await session.deriveMessages() : [],
+      })));
       await runBob(command, args, {
         root_session_id: rootId,
         source: "dsh",

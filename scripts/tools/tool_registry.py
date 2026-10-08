@@ -157,6 +157,16 @@ class ToolRegistry:
         except Exception as e:
             print(f"[warn] MCP client init failed: {e}", file=sys.stderr)
 
+        # Built-in PreToolUse policy for DSH/MCP trust tiers. Inert unless agent.dshTrust is configured,
+        # so an install that predates tiers (or uses only mcpAllowTools) is byte-identical in behavior.
+        try:
+            import bob_dsh
+            hook = bob_dsh.make_trust_hook(config, registry)
+            if hook is not None:
+                registry.hooks["PreToolUse"].append(hook)
+        except Exception as e:
+            print(f"[warn] DSH trust hook unavailable: {e}", file=sys.stderr)
+
         if not quiet:
             registry._print_startup_summary()
         return registry

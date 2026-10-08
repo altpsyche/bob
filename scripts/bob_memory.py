@@ -1335,13 +1335,31 @@ def _dsh_block_text(block: dict) -> str:
     return json.dumps(block, ensure_ascii=False)
 
 
-def _dsh_message_turn(message: dict) -> dict:
+def _dsh_tool_names(messages: list) -> dict:
+    """Map tool-call ids to declared names so a derived DSH tool-result row can carry the tool name.
+
+    Real DSH deriveMessages() surfaces an assistant tool-call as a content block and the paired
+    tool/result as a message whose source only names the call id; the name lives on the call block."""
+    names = {}
+    for message in messages or []:
+        if not isinstance(message, dict):
+            continue
+        for block in message.get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "tool-call":
+                call_id = block.get("id") or block.get("toolCallId")
+                if call_id:
+                    names[str(call_id)] = str(block.get("name") or "")
+    return names
+
+
+def _dsh_message_turn(message: dict, tool_names: dict = None) -> dict:
     source = message.get("source") or {}
     role = str(message.get("role") or "user")
     tool_name = None
     if source.get("kind") == "tool":
         role = "tool"
-        tool_name = str(source.get("name") or "")
+        call_id = str(source.get("callId") or "")
+        tool_name = (tool_names or {}).get(call_id) or str(source.get("name") or "")
     content = message.get("content")
     if isinstance(content, list):
         body = "\n".join(_dsh_block_text(b) for b in content if isinstance(b, dict))
@@ -1395,7 +1413,8 @@ def dsh_import_sessions(sessions: list, db_path: Path, owner: str = "local",
                     " last_seq=MAX(dsh_sessions.last_seq, excluded.last_seq), state=excluded.state",
                     [sid, parent, cwd, s.get("origin"), now, now, last_seq, s.get("state") or "imported"])
                 messages = s.get("messages") or []
-                turns = [_dsh_message_turn(m) for m in messages if isinstance(m, dict)]
+                tool_names = _dsh_tool_names(messages)
+                turns = [_dsh_message_turn(m, tool_names) for m in messages if isinstance(m, dict)]
                 turns = [t for t in turns if t["content"].strip()]
                 db.execute("DELETE FROM transcript WHERE run_id=?", [f"dsh:{sid}"])
                 for seq, turn in enumerate(turns):

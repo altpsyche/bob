@@ -3,7 +3,7 @@ every profile incl. the cpu tier.
 
 Hermetic: reads the real config/models.json (the neutral registry) but writes every generated file under
 a temp directory (generate.REPO is patched for the whole module, so the real config/ is never touched);
-gen_webui is tested against a minimal temp sqlite db and dsh against a temp $DSH_HOME. No network."""
+dsh is tested against a temp $DSH_HOME. No network."""
 import json
 import os
 import shutil
@@ -293,7 +293,7 @@ class TestLitellm(unittest.TestCase):
         """The runtime reads these from config/defaults.json; a copy in models.json defaults is dead."""
         import bob_models
         d = bob_models.load_models_config()["defaults"]
-        for dead in ("webuiSecret", "port", "langfusePort", "n8nTimezone", "langfuseEnabled"):
+        for dead in ("port", "langfusePort", "n8nTimezone", "langfuseEnabled"):
             self.assertNotIn(dead, d)
 
     def test_glm_and_kimi_peers_when_enabled(self):
@@ -626,68 +626,6 @@ class TestDsh(unittest.TestCase):
             self.assertFalse((home / "cordis.patch.yml").exists())
 
 
-class TestWebui(unittest.TestCase):
-    def test_skips_when_no_admin_user(self):
-        with tempfile.TemporaryDirectory() as d:
-            db = Path(d) / "webui.db"
-            conn = sqlite3.connect(db)
-            conn.execute("CREATE TABLE user (id TEXT, role TEXT)")   # no admin row
-            conn.commit()
-            conn.close()
-            self.assertIn("no admin user found", gen._webui_write(str(db), [{"id": "chat", "prompt": "x"}]))
-
-    def test_writes_prompts_to_minimal_db(self):
-        with tempfile.TemporaryDirectory() as d:
-            db = Path(d) / "webui.db"
-            conn = sqlite3.connect(db)
-            conn.execute("CREATE TABLE user (id TEXT, role TEXT)")
-            conn.execute("INSERT INTO user (id, role) VALUES ('u1', 'admin')")
-            conn.execute("""CREATE TABLE model (id TEXT PRIMARY KEY, user_id TEXT, base_model_id TEXT,
-                            name TEXT, params TEXT, meta TEXT, updated_at INTEGER, created_at INTEGER,
-                            is_active INTEGER)""")
-            conn.commit()
-            conn.close()
-            msg = gen._webui_write(str(db), [{"id": "chat", "prompt": "Be concise."},
-                                             {"id": "coder", "prompt": ""}])
-            self.assertIn("Generated Open WebUI", msg)
-            conn = sqlite3.connect(db)
-            rows = dict(conn.execute("SELECT id, params FROM model").fetchall())
-            conn.close()
-            self.assertIn("chat", rows)
-            self.assertIn("Be concise.", rows["chat"])
-            self.assertEqual(rows["coder"], "{}")   # empty prompt -> cleared
-
-    def test_update_keeps_the_users_fields(self):
-        """Bob owns only params.system: a user's name, meta, other params and active flag survive."""
-        with tempfile.TemporaryDirectory() as d:
-            db = Path(d) / "webui.db"
-            conn = sqlite3.connect(db)
-            conn.execute("CREATE TABLE user (id TEXT, role TEXT)")
-            conn.execute("INSERT INTO user (id, role) VALUES ('u1', 'admin')")
-            conn.execute("""CREATE TABLE model (id TEXT PRIMARY KEY, user_id TEXT, base_model_id TEXT,
-                            name TEXT, params TEXT, meta TEXT, updated_at INTEGER, created_at INTEGER,
-                            is_active INTEGER)""")
-            conn.execute("INSERT INTO model VALUES ('chat','u9','chat','My Chat',?,?,1,1,0)",
-                         (json.dumps({"system": "old", "temperature": 0.2}), json.dumps({"tags": ["x"]})))
-            conn.commit()
-            conn.close()
-            gen._webui_write(str(db), [{"id": "chat", "prompt": "Be concise."}])
-            conn = sqlite3.connect(db)
-            row = conn.execute("SELECT user_id, name, params, meta, created_at, is_active FROM model "
-                               "WHERE id='chat'").fetchone()
-            conn.close()
-            self.assertEqual(row[0], "u9")
-            self.assertEqual(row[1], "My Chat")
-            self.assertEqual(json.loads(row[2]), {"system": "Be concise.", "temperature": 0.2})
-            self.assertEqual(json.loads(row[3]), {"tags": ["x"]})
-            self.assertEqual((row[4], row[5]), (1, 0))
-            gen._webui_write(str(db), [{"id": "chat", "prompt": ""}])
-            conn = sqlite3.connect(db)
-            params = conn.execute("SELECT params FROM model WHERE id='chat'").fetchone()[0]
-            conn.close()
-            self.assertEqual(json.loads(params), {"temperature": 0.2})
-
-
 class TestRegistryConsistency(unittest.TestCase):
     """Registry-level invariants the generators rely on."""
 
@@ -903,77 +841,6 @@ class TestDshCredentialRefresh(unittest.TestCase):
         self.assertFalse((home / ".credentials.yaml").exists())
 
 
-class TestWebuiKeySync(unittest.TestCase):
-    """Open WebUI's persistent config wins over its environment, so the stored key of each connection to
-    Bob's LiteLLM is rewritten; a connection the user added to another server keeps its key."""
-
-    def _db(self, rows):
-        d = tempfile.mkdtemp(prefix="bob-webui-")
-        db = Path(d) / "webui.db"
-        conn = sqlite3.connect(db)
-        conn.execute('CREATE TABLE config ("key" TEXT NOT NULL, value JSON NOT NULL, updated_at BIGINT, '
-                     'PRIMARY KEY ("key"))')
-        for k, v in rows.items():
-            conn.execute("INSERT INTO config VALUES (?,?,1)", (k, json.dumps(v)))
-        conn.commit()
-        conn.close()
-        return db
-
-    def _rows(self, db):
-        conn = sqlite3.connect(db)
-        out = {k: json.loads(v) for k, v in conn.execute("SELECT key, value FROM config")}
-        conn.close()
-        return out
-
-    def test_rewrites_bobs_connections_and_keeps_others(self):
-        key = bob_core._litellm_key(CFG)
-        db = self._db({"openai.api_base_urls": ["http://localhost:8081/v1", "https://api.example.com/v1",
-                                                "http://127.0.0.1:8081/v1/"],
-                       "openai.api_keys": [_OLD_FIXED_KEY, "sk-user-own"],
-                       "rag.openai.api_base_url": "http://localhost:8081/v1",
-                       "rag.openai.api_key": "sk-bob-stale"})
-        msg = gen.webui_sync_key(db, CFG)
-        self.assertIn("updated the stored LiteLLM key", msg)
-        rows = self._rows(db)
-        self.assertEqual(rows["openai.api_keys"], [key, "sk-user-own", key])
-        self.assertEqual(rows["rag.openai.api_key"], key)
-        self.assertEqual(gen.webui_sync_key(db, CFG), "")   # idempotent
-
-    def test_a_running_webui_is_told_to_restart(self):
-        rows = {"rag.openai.api_base_url": "http://localhost:8081/v1", "rag.openai.api_key": "sk-bob-stale"}
-        with mock.patch.object(osenv, "is_port_in_use", return_value=True):
-            msg = gen.webui_sync_key(self._db(rows), CFG)
-        self.assertIn("keeps the old key until it restarts", msg)
-        with mock.patch.object(osenv, "is_port_in_use", return_value=False):
-            msg = gen.webui_sync_key(self._db(rows), CFG)
-        self.assertIn("updated the stored LiteLLM key", msg)
-        self.assertNotIn("restart", msg)
-
-    def test_a_non_bob_embedding_connection_is_left_alone(self):
-        db = self._db({"rag.openai.api_base_url": "https://api.openai.com/v1", "rag.openai.api_key": "sk-mine"})
-        self.assertEqual(gen.webui_sync_key(db, CFG), "")
-        self.assertEqual(self._rows(db)["rag.openai.api_key"], "sk-mine")
-
-    def test_absent_db_and_old_schema_are_skipped(self):
-        self.assertEqual(gen.webui_sync_key(Path(tempfile.mkdtemp()) / "webui.db", CFG), "")
-        d = Path(tempfile.mkdtemp()) / "webui.db"
-        sqlite3.connect(d).close()
-        self.assertEqual(gen.webui_sync_key(d, CFG), "")
-
-    def test_a_locked_db_is_skipped_with_a_warning(self):
-        db = self._db({"rag.openai.api_base_url": "http://localhost:8081/v1", "rag.openai.api_key": "old"})
-        holder = sqlite3.connect(db)
-        holder.execute("BEGIN EXCLUSIVE")
-        try:
-            with mock.patch.object(sqlite3, "connect",
-                                   side_effect=lambda p, timeout=5: sqlite3.Connection(p, timeout=0.1)):
-                msg = gen.webui_sync_key(db, CFG)
-        finally:
-            holder.rollback()
-            holder.close()
-        self.assertIn("locked", msg)
-
-
 class TestFabricKeyRefresh(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp(prefix="bob-fabric-"))
@@ -1052,7 +919,7 @@ class TestKeyBearingFilesArePrivate(unittest.TestCase):
 
 class TestSideEffectFree(unittest.TestCase):
     def test_tool_test_writes_nothing(self):
-        """tool_loader --test generate must not write config/, the WebUI db or the real ~/.dsh."""
+        """tool_loader --test generate must not write config/ or the real ~/.dsh."""
         import sqlite3 as _sq
         bob_core._litellm_key(CFG)   # the key is generated once on first use; that write is not gen's
         with mock.patch.object(Path, "write_text", side_effect=AssertionError("wrote a file")), \

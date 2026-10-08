@@ -1,6 +1,6 @@
 """
 OpenAI-compatible TTS server wrapping piper CLI.
-Exposes POST /v1/audio/speech so Open WebUI can use piper as its TTS engine.
+Exposes POST /v1/audio/speech as an OpenAI-compatible TTS endpoint.
 
 Config (set via env vars):
   PIPER_EXE   — absolute path to bin/piper.exe

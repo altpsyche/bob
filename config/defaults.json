@@ -7,7 +7,6 @@
     "ttsPort": 8083,
     "agentPort": 8084,
     "mcpPort": 8085,
-    "webuiPort": 3000,
     "langfusePort": 3001,
     "n8nPort": 5678,
     "searxngPort": 8888
@@ -222,6 +221,7 @@
       "tracingSink": "file",
       "otlpEndpoint": "",
       "permissions": {},
+      "dshTrust": {},
       "sandbox": "off",
       "sandboxLimits": {
         "cpuSeconds": 30,

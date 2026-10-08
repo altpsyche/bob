@@ -40,7 +40,7 @@ exercises `/health` + an owner-scoped session turn + an SSE stream as the end-to
 All under the `agent` block of the runtime config, override in `config/user.json`;
 defaults live in `config/defaults.json` under `runtime.agent`:
 `serveHost`, `agentPort`, `apiTokens`, `acceptLitellmKey`, `defaultOwner`, `authStore`, `sessionDbPath`,
-`maxSessionTokens`, `gitAllowedRoots`, `logMaxBytes`/`logBackupCount`, `mcpEnabled`, `mcpAllowTools`. See [TUNING.md](TUNING.md).
+`maxSessionTokens`, `gitAllowedRoots`, `logMaxBytes`/`logBackupCount`, `mcpEnabled`, `mcpAllowTools`, `dshTrust`. See [TUNING.md](TUNING.md).
 
 ## Endpoints
 

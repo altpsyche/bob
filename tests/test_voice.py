@@ -289,7 +289,7 @@ class TestFasterWhisperServer(unittest.TestCase):
         self.assertEqual(r.json()["text"], "hello world")
 
     def test_openai_transcriptions_endpoint(self):
-        # Open WebUI and the n8n workflow call the OpenAI-compatible route; `model` is accepted and ignored.
+        # OpenAI-compatible clients and the n8n workflow call this route; `model` is accepted and ignored.
         fws, client = self._client()
         seg = mock.Mock(text=" hi there", start=0.0, end=1.0)
         fws._model = mock.Mock(transcribe=mock.Mock(return_value=([seg], mock.Mock(language="en",

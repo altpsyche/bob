@@ -3,7 +3,7 @@
 Splash (header + model/role + session + tool/skill counts) + a prompt. Non-slash input is an agent
 turn; slash commands drive the shell: a turn (`/agent`, `/voice`, `/skill`), inspection (`/tools`,
 `/skills`, `/status`, `/help`), state (`/model`, `/agency`, `/session`, `/theme`, `/clear`, `/reset`),
-and the cockpit that manages the whole stack from inside (`/up`, `/restart`, `/webui`, `/services`,
+and the cockpit that manages the whole stack from inside (`/up`, `/restart`, `/services`,
 `/stop`, `/logs`). Every command is one entry in `_COMMANDS`; the completion tree, the dispatch table, and the
 `/help` listing all derive from it, so a new command is a single edit. The turn drives
 `run_agent_events` (bob_loop) — the SAME event stream the HTTP server consumes ([bob_agent_server.py])
@@ -105,7 +105,7 @@ _COMMANDS = [
     _Cmd("/status", "system dashboard: every service, up/down", "_cmd_status"),
     _Cmd("/services", "service dashboard; toggle a service in place", "_cmd_services",
          args="[start|stop [name]]", subs=("start", "stop")),
-    _Cmd("/up", "start the stack in the background (endpoint + proxy + WebUI)", "_cmd_up",
+    _Cmd("/up", "start the stack in the background (endpoint + proxy)", "_cmd_up",
          args="[--with-services]"),
     _Cmd("/restart", "restart the inference endpoint", "_cmd_restart"),
     _Cmd("/stop", "stop local inference (frees VRAM)", "_cmd_stop"),
@@ -814,7 +814,7 @@ class BobShell:
         tbl.add_row("endpoint",
                     f"[{t.success}]ready[/]" if reachable else f"[{t.error}]DOWN[/] (run: bob up)")
         self.console.print(tbl)
-        # The whole system in one glance — so services (WebUI, SearXNG, n8n, Langfuse, …) aren't a
+        # The whole system in one glance — so services (SearXNG, n8n, Langfuse, …) aren't a
         # separate mystery from the assistant.
         self._render_dashboard()
 
@@ -850,8 +850,8 @@ class BobShell:
         `bob` verbs. (The plain-text `bob status` keeps CLI verbs; that's the CLI context.) Only the
         agent HTTP server is genuinely external — it's a separate long-running server, not a toggle."""
         import stack
-        if r["core"] or r["name"] == "open-webui":
-            return "/up"                                  # inference + WebUI come up together
+        if r["core"]:
+            return "/up"                                  # core inference comes up together
         toggleable = {s["name"] for s in stack.SERVICES if s.get("start") or s.get("kind") == "docker"}
         if r["name"] in toggleable:
             return f"/services start {r['name']}"         # whisper/piper/n8n + the Docker services
@@ -878,7 +878,7 @@ class BobShell:
     def _toggle_service(self, action: str, name) -> str:
         """Route a /services toggle to the right lifecycle op, derived from the SERVICES registry (no
         hardcoded service sets): daemons → service_control; Docker (or no name) → the compose group;
-        core inference / WebUI / agent-api aren't single-service toggles here (dedicated commands)."""
+        core inference / agent-api aren't single-service toggles here (dedicated commands)."""
         import stack
         by = {s["name"]: s for s in stack.SERVICES}
         label_to_name = {s.get("label", s["name"]): s["name"] for s in stack.SERVICES}
@@ -894,39 +894,22 @@ class BobShell:
         if canonical in docker:
             return stack.services_control(self.config, action, service=canonical)  # just this container
         return (f"'{canonical}' can't be toggled individually here. Use "
-                f"/up, /restart, /stop (inference/WebUI), or `bob agent serve` (agent-api).")
+                f"/up, /restart, /stop (inference), or `bob agent serve` (agent-api).")
 
     def _cmd_up(self, arg: str = "") -> None:
-        """/up [--with-services] [--no-open] — bring the stack up in the background (endpoint + proxy +
-        WebUI) without leaving the shell. The cockpit: manage the system from here, not raw `bob` verbs."""
+        """/up [--with-services] — bring the stack up in the background (endpoint + proxy) without
+        leaving the shell. The cockpit: manage the system from here, not raw `bob` verbs."""
         import stack
         toks = arg.split()
         with_services = "--with-services" in toks or "services" in toks
-        open_browser = "--no-open" not in toks
-        self.console.print(stack.stack_up(self.config, open_browser=open_browser,
-                                          with_services=with_services))
+        self.console.print(stack.stack_up(self.config, with_services=with_services))
         self._render_dashboard()      # visual feedback — the rows that came up flip green
 
     def _cmd_restart(self, _arg: str = "") -> None:
-        """/restart — bounce the inference endpoint + proxy (+ WebUI) and wait for ready."""
+        """/restart — bounce the inference endpoint + proxy and wait for ready."""
         import stack
         self.console.print(stack.stack_restart(self.config))
         self._render_dashboard()
-
-    def _cmd_webui(self, _arg: str = "") -> None:
-        """/webui — open the Open WebUI browser tab if it's running; else point at how to start it.
-        (The foreground `bob webui` blocks a terminal, so the shell never launches it inline — /up or
-        /services start webui bring it up in the background.)"""
-        import osenv
-        import stack   # noqa: F401 — keeps scripts/tools import parity with the other cockpit cmds
-        from bob_core import _port
-        port = _port(self.config, "webuiPort")
-        if osenv.is_port_in_use(port):
-            osenv.open_url(f"http://localhost:{port}")
-            self.console.print(f"[{self.theme.muted}]opening http://localhost:{port}[/]")
-        else:
-            self.console.print("Open WebUI isn't running. [bold]/up[/] starts it in the background "
-                               "(or [bold]/services start webui[/]).")
 
     def _cmd_stop(self, _arg: str = "") -> None:
         """/stop — tear down local inference (frees VRAM) without leaving the shell. Auto-start brings

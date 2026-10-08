@@ -9,7 +9,7 @@ subprocessing them. Only prereqs, the venv creation, and the *first* build are k
   python3 -m bob.kernel prereqs [--cpu] [--from-source] [--with-node]   # Tier 0: toolchain + Python
   python3 -m bob.kernel setup [flags]        # Tier 1: the 12-step fresh-machine orchestrator
   python3 -m bob.kernel bootstrap [flags]    #          submodules -> build -> venvs -> gen -> fetch
-  python3 -m bob.kernel venv <name...>       #          create tools/venv-<name> (litellm|aider|eval|webui)
+  python3 -m bob.kernel venv <name...>       #          create tools/venv-<name> (litellm|aider|eval)
   python3 -m bob.kernel build-swap           #          install the llama-swap proxy (release binary or Go)
   python3 -m bob.kernel aider-setup          #          opt-in: create venv-aider from its lock
 
@@ -197,8 +197,7 @@ def bootstrap(skip_models: bool = False, skip_build: bool = False, profile: str 
     else:
         print("Skipping builds (--skip-build)", file=sys.stderr)
 
-    # Python tools: ISOLATED venvs (open-webui & aider have conflicting dep pins). venv-litellm is the
-    # runtime; webui and aider are opt-in.
+    # Python tools: ISOLATED venvs. venv-litellm is the runtime; aider is opt-in.
     print("\n=== Python venvs (3.12+) + tools ===", file=sys.stderr)
     if py:
         names = ["litellm"] + (["aider"] if with_aider else [])
@@ -308,9 +307,14 @@ def setup_clients() -> None:
     installed. aider is opt-in (bob aider-setup) and runs with an explicit --config, so nothing is wired
     into the home dir for it."""
     _tools_on_path()
+    import bob_dsh
     import generate
     generate.configure(_load_config())
     generate.gen_continue()
+    # The pinned DSH package is part of a default setup: `bob dsh install` can repair it later, but a
+    # fresh install should not require a second command to get the primary client. Node/pnpm missing or
+    # an offline box yields a clear status line, never a setup failure.
+    print("  " + bob_dsh.ensure_dsh().replace("\n", "\n  "), file=sys.stderr)
     home = Path.home()
     _wire(REPO / "config" / "continue" / "config.yaml", home / ".continue" / "config.yaml")
     _remove_legacy_aider_link(home)
@@ -815,7 +819,7 @@ def setup(skip_models: bool = False, skip_build: bool = False, skip_voice: bool 
 # --- single-venv + swap helpers (the CI granular provisioning steps) -----------------------------
 
 def make_venv(name: str) -> str:
-    """Create one Bob venv by short name (litellm|aider|eval|webui), used for CI's granular
+    """Create one Bob venv by short name (litellm|aider|eval), used for CI's granular
     runtime-venv step."""
     if name not in VENVS:
         raise RuntimeError(f"unknown venv '{name}': one of {', '.join(VENVS)}")
@@ -875,7 +879,7 @@ def main(argv=None) -> int:
         if cmdname == "setup":
             s.add_argument("--with-fabric", action="store_true", help="also build + configure fabric (opt-in)")
 
-    sv = sub.add_parser("venv", help="create tools/venv-<name> (litellm|aider|eval|webui)")
+    sv = sub.add_parser("venv", help="create tools/venv-<name> (litellm|aider|eval)")
     sv.add_argument("names", nargs="+")
 
     sw = sub.add_parser("build-swap", help="install the llama-swap proxy (pinned release binary, or Go build)")

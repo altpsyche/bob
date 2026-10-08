@@ -8,7 +8,7 @@
 # the retired PowerShell harness: it mirrors how install_prereqs.bat bootstraps today.
 #
 # Flags: --dev / --channel <stable|latest> are consumed here; --cpu, --from-source and --with-node also
-# reach the prereq step; every other flag (--with-aider, --with-fabric, --with-webui, --skip-models, ...)
+# reach the prereq step; every other flag (--with-aider, --with-fabric, --skip-models, ...)
 # passes through to setup.
 $ErrorActionPreference = 'Stop'
 

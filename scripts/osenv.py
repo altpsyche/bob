@@ -379,7 +379,7 @@ def _read_secrets_file(sf: Path) -> dict:
     except OSError:
         pass
     raise SecretsFileCorrupt(
-        f"{sf} is not valid JSON, so Bob's generated secrets (LiteLLM, n8n, Open WebUI, Langfuse) could not "
+        f"{sf} is not valid JSON, so Bob's generated secrets (LiteLLM, n8n, Langfuse) could not "
         f"be read. It was moved to {aside}. Repair that file and move it back to {sf.name} before running "
         "Bob again: starting without it generates new secrets, and a new n8n key cannot decrypt n8n's "
         "stored credentials.")
@@ -882,7 +882,7 @@ def _process_table() -> list:
 
 def find_managed_processes(names) -> list:
     """[(pid, name)] for live processes that are one of Bob's OWN executables named in `names`: the
-    running binary (or, for a script, its interpreter's first two argv entries: `python open-webui`,
+    running binary (or, for a script, its interpreter's first two argv entries: `python <managed-script>`,
     `node n8n`) must be a file under the repo's bin/ or tools/ whose name is in `names`. An editor, a
     `tail -f logs/llama-swap.log`, or a system llama-server elsewhere never matches."""
     if isinstance(names, str):
@@ -902,7 +902,7 @@ def find_managed_processes(names) -> list:
 
 
 def stop_processes_by_name(names) -> list:
-    """Stop Bob's own daemons by executable name (llama-swap/llama-server/open-webui/n8n), the way to
+    """Stop Bob's own daemons by executable name (llama-swap/llama-server/n8n), the way to
     reap one that survived a stale or missing pidfile. Matching is exact and repo-scoped (see
     find_managed_processes), never a substring match over every command line. Returns the names for which
     a live process was actually stopped."""
@@ -1050,7 +1050,7 @@ def docker_install_hint() -> str:
 
 
 def open_url(url: str) -> bool:
-    """Open a URL in the user's default browser (e.g. `up` opens the WebUI). POSIX: xdg-open / open;
+    """Open a URL in the user's default browser. POSIX: xdg-open / open;
     Windows: webbrowser (os.startfile-backed). Returns True if a launcher fired, False on a headless
     box with no opener."""
     name = os_name()

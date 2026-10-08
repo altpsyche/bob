@@ -5,7 +5,7 @@ Two endpoints on `sttPort`, same model:
                                   client and the /voice loop use.
   POST /v1/audio/transcriptions   the OpenAI-compatible form (multipart `file`, `model` accepted and
                                   ignored, optional `language` / `prompt` / `temperature` /
-                                  `response_format` json|text|verbose_json), for Open WebUI and n8n.
+                                  `response_format` json|text|verbose_json), for OpenAI-compatible clients and n8n.
 The CT2 model loads on the first request (or at startup with STT_PRELOAD) with built-in Silero VAD for
 endpointing; a GPU whose CUDA runtime does not load falls back to CPU int8.
 

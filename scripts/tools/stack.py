@@ -1,10 +1,10 @@
 """Bob lifecycle capabilities — the local inference stack: llama-swap endpoint, LiteLLM
-proxy, Open WebUI, faster-whisper STT, piper TTS, and optional Docker services.
+proxy, faster-whisper STT, piper TTS, and optional Docker services.
 
 Network exposure: every service binds to the top-level `bindHost` config key (default 127.0.0.1, loopback
 only; "0.0.0.0" opts into the LAN). llama-swap always stays on loopback: LAN clients reach the models
 through the key-checked LiteLLM proxy. The voice servers take no key, so they bind `voiceBindHost` instead
-(loopback unless set). Service secrets (Open WebUI, n8n, Langfuse, SearXNG) are generated
+(loopback unless set). Service secrets (n8n, Langfuse, SearXNG) are generated
 on first use and kept through osenv.ensure_secret, never in a tracked file.
 
 Functional grouping: one module, several related tool fns, each reached three ways with no
@@ -41,7 +41,7 @@ SCRIPTS = REPO / "scripts"
 #   group     dashboard grouping
 #   desc      one-line description
 #   kind      "native"   Bob-launched daemon tracked by logs/<name>.pid (appears in `ps`, tree-killed on
-#                        stop); has a `start` fn (except llama-swap/open-webui, launched by stack_up)
+#                        stop); has a `start` fn (except llama-swap, launched by stack_up)
 #             "docker"   a docker-compose service (guided-install + `docker compose up`, no pidfile)
 #             "external" managed by its own verb (agent-api via `bob agent serve`); port-checked only
 #   requires  optional capability gate, e.g. "docker" (triggers the generic guided install on start)
@@ -50,8 +50,6 @@ SCRIPTS = REPO / "scripts"
 #   url_suffix path appended to the status URL (e.g. "/v1"); default ""
 #   procnames executable names for the name-kill fallback (osenv.stop_processes_by_name, which matches only
 #             Bob's own binaries under bin/ and tools/) — reaped by name so they die even with a stale/missing
-#             pidfile (empty = pidfile-only teardown). open-webui is here: it's detached and a prior stop
-#             unlinks its pidfile, so a name-kill is the only thing that can still find a reparented WebUI.
 #   hint      the command that starts it (shown on a `down` line so the dashboard is actionable, and in
 #             the TUI cockpit's toggle routing)
 SERVICES = [
@@ -67,8 +65,6 @@ SERVICES = [
     {"name": "piper",      "port": "ttsPort", "group": "Voice", "kind": "native",
      "procnames": (), "policy": "lazy", "agent_control": True, "hint": "bob piper start",
      "desc": "text-to-speech server (optional; voice also works without it)"},
-    {"name": "open-webui", "label": "webui", "port": "webuiPort", "group": "Web & automation", "kind": "native",
-     "procnames": ("open-webui",), "policy": "lazy", "hint": "bob up", "desc": "Open WebUI, browser chat"},
     {"name": "n8n",        "port": "n8nPort",     "group": "Web & automation", "kind": "native",
      "procnames": ("n8n",), "policy": "lazy", "hint": "bob services n8n start",
      "desc": "workflow automation (native, opt-in)"},
@@ -261,7 +257,7 @@ def service_snapshot(config: dict) -> list:
 
 def _service_health_lines(config: dict) -> list:
     """One-glance up/down for EVERY component (inference, voice, web/automation, agent), always shown —
-    so `bob status` answers 'is SearXNG / n8n / WebUI actually running?' in one place. Renders the one
+    so `bob status` answers 'is SearXNG / n8n actually running?' in one place. Renders the one
     service_snapshot; piper is labelled optional (CLI/voice TTS uses the binary directly, so a down
     :8083 server doesn't mean voice is broken)."""
     osenv = _osenv()
@@ -705,54 +701,6 @@ def _start_n8n_bg(config: dict) -> str:
     return f"{out}\n{warning}" if warning else out
 
 
-def _webui_env(config: dict) -> dict:
-    """Open WebUI's environment: LiteLLM as its OpenAI + embedding backend, and a session-signing secret
-    generated on first use (a fixed default would let anyone who can reach the port forge a session)."""
-    osenv = _osenv()
-    from bob_core import _litellm_key
-    litellm_key = _litellm_key(config)
-    api_base = f"http://localhost:{service_port(config, 'litellmPort')}/v1"
-    return {
-        "OPENAI_API_BASE_URL": api_base, "OPENAI_API_KEY": litellm_key,
-        "RAG_EMBEDDING_ENGINE": "openai", "RAG_OPENAI_API_BASE_URL": api_base,
-        "RAG_OPENAI_API_KEY": litellm_key, "RAG_EMBEDDING_MODEL": "embed",
-        "DATA_DIR": str(REPO / "tools" / "webui-data"),
-        "WEBUI_SECRET_KEY": osenv.ensure_secret("webuiSecret"),
-    }
-
-
-def _start_webui_bg(config: dict):
-    """Start Open WebUI detached, unless one is already running (tracked pid or the port answering), so a
-    second `bob up` never spawns a duplicate that overwrites the pidfile. Returns (status-line, started)."""
-    osenv = _osenv()
-    webui = osenv.venv_exe("venv-webui", "open-webui")
-    port = service_port(config, "webuiPort")
-    if not webui.exists():
-        return "open-webui not installed (opt-in); skipping. (re-run setup with --with-webui)", False
-    pid = _read_pid("open-webui")
-    if (pid is not None and osenv.pid_alive(pid)) or osenv.is_port_in_use(port):
-        return f"Open WebUI already running: http://localhost:{port}", False
-    key_line = _webui_sync_key(config)
-    new_pid = osenv.start_detached(
-        [str(webui), "serve", "--host", bind_host(config), "--port", str(port)],
-        pidfile=_pidfile("open-webui"), log_path=_logfile("open-webui"), env=_webui_env(config))
-    line = f"Open WebUI: http://localhost:{port} (PID {new_pid})"
-    return (f"{key_line}\n{line}" if key_line else line), True
-
-
-def _webui_sync_key(config: dict) -> str:
-    """Bring the LiteLLM key Open WebUI stored in its db up to the current one before it starts
-    (generate.webui_sync_key); its db-stored connection settings win over the environment."""
-    tools = str(SCRIPTS / "tools")
-    if tools not in sys.path:
-        sys.path.insert(0, tools)
-    try:
-        import generate
-        return generate.webui_sync_key(REPO / "tools" / "webui-data" / "webui.db", config)
-    except Exception as e:  # noqa: BLE001 (advisory: WebUI still starts)
-        return f"warning: could not check Open WebUI's stored LiteLLM key ({e})"
-
-
 def _swap_launch(config: dict) -> tuple:
     """The ONE llama-swap launch spec — (exe, argv, env_add, port) — shared by the background
     (_start_endpoint_bg) and foreground (serve_foreground) starts, so the exe path, llama-swap.yaml
@@ -779,7 +727,7 @@ def _start_endpoint_bg(config: dict) -> tuple:
     running (each detached), then poll until llama-swap answers AND the LiteLLM proxy the loop/clients call
     accepts connections. Returns (ok, status-lines); ok is True only when the proxy port answers, so a
     crashed LiteLLM next to a healthy llama-swap is restarted rather than reported as running. CORE ONLY:
-    whisper/WebUI/Docker are NOT started here — that's the caller's (stack_up's) concern, so 'start
+    whisper/Docker are NOT started here — that's the caller's (stack_up's) concern, so 'start
     inference' means exactly one thing in exactly one place."""
     osenv = _osenv()
 
@@ -862,12 +810,11 @@ def ensure_deps(config: dict, inference: bool = False, stt: bool = False, search
     return ok, lines
 
 
-def stack_up(config: dict, open_browser: bool = True, with_services: bool = False) -> str:
+def stack_up(config: dict, with_services: bool = False) -> str:
     """The persistent 'bring up everything for outside-terminal use': core inference + (STT if voice
     preload), then optionally start Docker services. Composes
     ensure_inference (the one place that starts inference) rather than re-launching it — so `bob up` and the
-    auto-start share identical core-start behaviour; `bob up` just adds the extras. Idempotent: a WebUI that
-    is already running is left alone."""
+    auto-start share identical core-start behaviour; `bob up` just adds the extras."""
     osenv = _osenv()
 
     err = _ensure_configs(config)
@@ -887,11 +834,10 @@ def stack_up(config: dict, open_browser: bool = True, with_services: bool = Fals
 
 
 def stack_restart(config: dict) -> str:
-    """Background restart: bounce the endpoint + proxy (+ Open WebUI when it was running; voice servers
-    survive), then bring core inference back via the one ensure_inference and restart WebUI if it had been
-    up. Each stop waits for the process to exit, and the start waits for the ports to be released, so the
-    new servers never race the dying ones for a port or for VRAM. The restart set is derived from the
-    SERVICES registry, not another hardcoded list."""
+    """Background restart: bounce the endpoint + proxy (voice servers survive), then bring core inference
+    back via the one ensure_inference. Each stop waits for the process to exit, and the start waits for the
+    ports to be released, so the new servers never race the dying ones for a port or for VRAM. The restart
+    set is derived from the SERVICES registry, not another hardcoded list."""
     osenv = _osenv()
     restart = [s for s in SERVICES if s.get("core")]
     for svc in [s["name"] for s in restart]:
@@ -939,7 +885,7 @@ def _service_stop(svc: str, label: str) -> str:
 
 # Bind the native start fns onto their SERVICES entries. This is done here (below the fn definitions)
 # because the entries are declared at the top of the file before these fns exist. After this, SERVICES is the single control source: no parallel table.
-# llama-swap / open-webui are native but launched by stack_up (not service_control), so they carry no
+# llama-swap is native but launched by stack_up (not service_control), so it carries no
 # `start`; agent-api is external.
 def _bind_start_fns() -> None:
     for _name, _fn in (("litellm", _start_litellm_bg), ("whisper", _start_stt_bg),
@@ -1131,7 +1077,7 @@ def _prepare_docker_service(name: str) -> None:
 def _lazy_service_names() -> list:
     """Opt-in add-ons (policy: lazy) that the group `bob services` verb operates on when no name is given."""
     return [s["name"] for s in SERVICES if s.get("policy") == "lazy"
-            and s.get("kind") in ("native", "docker") and s["name"] not in ("whisper", "piper", "open-webui")]
+            and s.get("kind") in ("native", "docker") and s["name"] not in ("whisper", "piper")]
 
 
 def services_control(config: dict, action: str = "status", service: str = None) -> str:
@@ -1211,31 +1157,6 @@ def serve_foreground(config: dict) -> int:
     print(f"Endpoint: http://localhost:{port}/v1   (loopback only; Ctrl+C to stop)", file=sys.stderr)
     return subprocess.run(argv, env={**os.environ, **env_add}).returncode
 
-
-def webui_foreground(config: dict) -> int:
-    """`bob webui` — run Open WebUI in the foreground (opt-in, blocking)."""
-    osenv = _osenv()
-
-    webui = osenv.venv_exe("venv-webui", "open-webui")
-    if not webui.exists():
-        print("Open WebUI not installed (opt-in). Re-run setup with --with-webui", file=sys.stderr)
-        return 1
-    port = service_port(config, "webuiPort")
-    # If something is already serving :webuiPort (e.g. a `bob up` started WebUI in the background),
-    # a foreground `serve` would just fail to bind. Point at the running instance instead of crashing.
-    if osenv.is_port_in_use(port):
-        url = f"http://localhost:{port}"
-        print(f"Open WebUI is already running at {url} (port {port} in use, likely from `bob up`). "
-              f"Opening it; run `bob stop` first if you want a fresh foreground instance.", file=sys.stderr)
-        osenv.open_url(url)
-        return 0
-    key_line = _webui_sync_key(config)
-    if key_line:
-        print(key_line, file=sys.stderr)
-    return subprocess.run([str(webui), "serve", "--host", bind_host(config), "--port", str(port)],
-                          env={**os.environ, **_webui_env(config)}).returncode
-
-
 def logs_follow(config: dict, lines: int = 50) -> int:
     """`bob logs [-n N]` — tail-follow logs/llama-swap.log (CLI-only; the bounded stack_logs tool is
     the agent surface)."""
@@ -1254,8 +1175,8 @@ def logs_follow(config: dict, lines: int = 50) -> int:
 
 # --- agent tool adapters --------------------------------------------------------------------------
 
-def _stack_up(open_browser: bool = True, with_services: bool = False) -> str:
-    return stack_up(_cfg, open_browser=open_browser, with_services=with_services)
+def _stack_up(with_services: bool = False) -> str:
+    return stack_up(_cfg, with_services=with_services)
 
 
 def _stack_stop() -> str:
@@ -1296,14 +1217,13 @@ TOOL_DEFS = [
     {"type": "function", "function": {
         "name": "stack_up",
         "description": ("Bring the local inference stack up in the background: llama-swap endpoint + "
-                        "LiteLLM proxy (+ faster-whisper STT when voice.preload is set) + Open WebUI. Use "
+                        "LiteLLM proxy (+ faster-whisper STT when voice.preload is set). Use "
                         "when the user wants to start Bob / the models / the endpoint."),
         "parameters": {"type": "object", "properties": {
-            "open_browser": {"type": "boolean", "description": "Open the WebUI in a browser (default true)."},
             "with_services": {"type": "boolean", "description": "Also start Docker services (default false)."}}}}},
     {"type": "function", "function": {
         "name": "stack_stop",
-        "description": "Stop all Bob services (frees VRAM): the endpoint, proxy, WebUI, voice servers, and Docker services.",
+        "description": "Stop all Bob services (frees VRAM): the endpoint, proxy, voice servers, and Docker services.",
         "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {
         "name": "stack_restart",

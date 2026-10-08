@@ -390,7 +390,7 @@ def _patch(target, name, value):
 
 
 class TestCockpit(unittest.TestCase):
-    """Lifecycle controls from inside the shell (the cockpit): /up, /restart, /webui, all routed
+    """Lifecycle controls from inside the shell (the cockpit): /up, /restart, all routed
     to the one stack.* core so you never drop to raw `bob` verbs to manage the system."""
 
     def test_up_routes_to_stack_up(self):
@@ -399,10 +399,10 @@ class TestCockpit(unittest.TestCase):
         sh, out = _make_shell()
         calls = {}
         with _patch(osenv, "is_port_in_use", lambda p, *a, **k: False), \
-             _patch(stack, "stack_up", lambda cfg, open_browser=True, with_services=False:
-                    calls.update(ob=open_browser, ws=with_services) or "brought up"):
+             _patch(stack, "stack_up", lambda cfg, with_services=False:
+                    calls.update(ws=with_services) or "brought up"):
             sh.dispatch("/up")
-        self.assertEqual((calls["ob"], calls["ws"]), (True, False))
+        self.assertFalse(calls["ws"])
         self.assertIn("brought up", out.file.getvalue())
 
     def test_up_flags_parsed(self):
@@ -411,10 +411,10 @@ class TestCockpit(unittest.TestCase):
         sh, _ = _make_shell()
         calls = {}
         with _patch(osenv, "is_port_in_use", lambda p, *a, **k: False), \
-             _patch(stack, "stack_up", lambda cfg, open_browser=True, with_services=False:
-                    calls.update(ob=open_browser, ws=with_services) or "x"):
-            sh.dispatch("/up --with-services --no-open")
-        self.assertEqual((calls["ob"], calls["ws"]), (False, True))
+             _patch(stack, "stack_up", lambda cfg, with_services=False:
+                    calls.update(ws=with_services) or "x"):
+            sh.dispatch("/up --with-services")
+        self.assertTrue(calls["ws"])
 
     def test_restart_routes_to_stack_restart(self):
         import osenv

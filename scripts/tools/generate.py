@@ -7,7 +7,6 @@
   gen_continue    -> config/continue/config.yaml
   gen_dsh         -> config/dsh/{settings.yaml,cordis.patch.yml} (DeepSeek Harness route + MCP entry)
   gen_aider       -> config/aider/{.aider.conf.yml,model-metadata.json} (`bob aider` passes --config)
-  gen_webui       -> tools/webui-data/webui.db (model system prompts; skips if the db is absent)
 
 `gen` also installs the dsh drop-ins into $DSH_HOME, skipping when dsh is not installed.
 
@@ -793,7 +792,7 @@ def gen_dsh(profile: str = None) -> str:
 
 def install_dsh() -> str:
     """Merge the generated drop-ins into $DSH_HOME. Skips gracefully when dsh is not installed, the
-    same way gen_webui skips a missing webui.db, so `bob gen` is safe on a machine without it.
+    same way client drop-ins are skipped when the client is absent, so `bob gen` is safe on a machine without it.
 
     settings.yaml is merged key-wise (dsh's Settings UI owns the rest of that document, so only the
     'bob' provider route is touched); cordis.patch.yml is appended to textually, because it may carry
@@ -942,186 +941,6 @@ def _install_dsh_mcp(home: Path) -> str:
     dest.write_text(current + sep + "\n" + "\n".join(entry) + "\n", encoding="utf-8")
     return f"  mcp: appended the '{_DSH_MCP_ID}' entry to {dest}"
 
-
-# --- gen-webui ------------------------------------------------------------------------------------
-
-def gen_webui(profile: str = None) -> str:
-    """Sync model system prompts into the Open WebUI sqlite db. Skips gracefully if the db is absent,
-    or if WebUI holds the write lock."""
-    import bob_models
-
-    db_path = REPO / "tools" / "webui-data" / "webui.db"
-    if not db_path.exists():
-        return "gen-webui: webui.db not found — skipping (run 'bob webui' once to create it)"
-
-    mcfg = bob_models.load_models_config()
-    _, models = _ordered_models(mcfg, profile)
-    peers = enabled_peers(mcfg)
-    prompts = mcfg.get("prompts", {})
-
-    defaults = mcfg.get("defaults") or {}
-    entries = []
-    for m in models:
-        if not bob_models.is_chat_role(m["role"], m):
-            continue
-        ctx = _slot_ctx(m, defaults)
-        for name, _window in _wire_mode_models(m["role"], ctx, "local"):
-            entries.append({"id": name, "prompt": _role_prompt(prompts, m["role"])})
-    for peer in peers:
-        pro = peer.get("pro")
-        if not pro:
-            continue
-        for role in sorted(pro):
-            if not bob_models.is_chat_role(role):
-                continue
-            rv = pro[role]
-            base_name = f"{role}-pro"
-            peer_window = int((rv or {}).get("contextWindow") or peer.get("contextWindow") or 0) if isinstance(rv, dict) else int(peer.get("contextWindow") or 0)
-            for name, _window in _wire_mode_models(base_name, peer_window, "api"):
-                entries.append({"id": name, "prompt": _role_prompt(prompts, role, pro[role])})
-
-    lines = [_webui_write(str(db_path), entries)]
-    key_line = webui_sync_key(db_path)
-    if key_line:
-        lines.append(key_line)
-    return "\n".join(lines)
-
-
-# The Open WebUI config rows that hold Bob's LiteLLM connection: the chat connections (parallel lists of
-# base URLs and keys) and the embedding connection.
-_WEBUI_KEY_ROWS = ("openai.api_base_urls", "openai.api_keys", "rag.openai.api_base_url", "rag.openai.api_key")
-
-
-def webui_sync_key(db_path, config: dict = None) -> str:
-    """Point the connections Open WebUI stored for Bob's LiteLLM at the current key. With persistent config
-    (its default) WebUI keeps these in its own db, where they win over the OPENAI_API_KEY / RAG_OPENAI_API_KEY
-    Bob starts it with, so a changed key would otherwise never reach it. Only a connection whose base URL is
-    Bob's proxy (localhost / 127.0.0.1 on litellmPort) is touched; any other connection the user added keeps
-    its key. Returns a status line, or "" when the db is absent or already current. A locked db (WebUI
-    running) is skipped with a warning after a short busy wait."""
-    import json
-    import sqlite3
-    import time
-
-    from bob_core import _litellm_key, _port
-
-    path = Path(db_path)
-    if not path.exists():
-        return ""
-    cfg = config if config is not None else _bob_cfg()
-    key = _litellm_key(cfg)
-    port = _port(cfg, "litellmPort")
-    bob_urls = {f"http://{host}:{port}/v1" for host in ("localhost", "127.0.0.1")}
-
-    def ours(url) -> bool:
-        return isinstance(url, str) and url.rstrip("/") in bob_urls
-
-    def load(raw):
-        try:
-            return json.loads(raw) if raw is not None else None
-        except (TypeError, ValueError):
-            return None
-
-    try:
-        db = sqlite3.connect(str(path), timeout=2)
-        try:
-            marks = ",".join("?" * len(_WEBUI_KEY_ROWS))
-            rows = {k: load(v) for k, v in
-                    db.execute(f"SELECT key, value FROM config WHERE key IN ({marks})", _WEBUI_KEY_ROWS)}
-            updates = {}
-            urls, keys = rows.get("openai.api_base_urls"), rows.get("openai.api_keys")
-            if isinstance(urls, list) and isinstance(keys, list):
-                new = list(keys)
-                for i, url in enumerate(urls):
-                    if ours(url):
-                        new += [""] * (i + 1 - len(new))
-                        new[i] = key
-                if new != keys:
-                    updates["openai.api_keys"] = new
-            if ours(rows.get("rag.openai.api_base_url")) and rows.get("rag.openai.api_key") != key:
-                updates["rag.openai.api_key"] = key
-            if updates:
-                now = int(time.time())
-                with db:
-                    for k, v in updates.items():
-                        db.execute("UPDATE config SET value=?, updated_at=? WHERE key=?", (json.dumps(v), now, k))
-        finally:
-            db.close()
-    except sqlite3.OperationalError as ex:
-        msg = str(ex).lower()
-        if "no such table" in msg:
-            return ""
-        if "locked" in msg or "busy" in msg:
-            return ("warning: Open WebUI's db is locked, so its stored LiteLLM key was not checked; it is "
-                    "updated on the next start (or `bob gen` with WebUI stopped).")
-        return f"warning: could not update Open WebUI's stored LiteLLM key ({ex})"
-    if not updates:
-        return ""
-    line = f"Open WebUI: updated the stored LiteLLM key ({', '.join(sorted(updates))})"
-    import osenv
-    if osenv.is_port_in_use(_port(cfg, "webuiPort")):
-        # A running WebUI read these rows at start and keeps using the old key until it restarts.
-        line += ("; Open WebUI is running and keeps the old key until it restarts "
-                 "(run `bob stop`, then `bob up`)")
-    return line
-
-
-def _webui_write(db_path: str, entries: list) -> str:
-    """Write the prompt entries to webui.db. Bob owns only params.system: an existing model row keeps
-    its name, meta, other params and active flag, and gets just that key set or removed; a missing row
-    is created. Short busy timeout so a running WebUI (holding the lock) makes us skip with a clear
-    message rather than block."""
-    import json
-    import sqlite3
-    import time
-
-    lines = []
-    try:
-        db = sqlite3.connect(db_path, timeout=3)
-        cur = db.cursor()
-        cur.execute("SELECT id FROM user WHERE role='admin' LIMIT 1")
-        row = cur.fetchone()
-        if not row:
-            db.close()
-            return "gen-webui: no admin user found — skipping"
-        admin_id = row[0]
-        now_ms = int(time.time() * 1000)
-        for e in entries:
-            eid = e["id"]
-            prompt = (e.get("prompt") or "").strip()
-            cur.execute("SELECT params FROM model WHERE id=?", (eid,))
-            existing = cur.fetchone()
-            if existing is None:
-                params = json.dumps({"system": prompt}) if prompt else "{}"
-                cur.execute(
-                    """INSERT INTO model
-                       (id, user_id, base_model_id, name, params, meta, updated_at, created_at, is_active)
-                       VALUES (?,?,?,?,?,?,?,?,1)""",
-                    (eid, admin_id, eid, eid, params, "{}", now_ms, now_ms))
-            else:
-                try:
-                    params = json.loads(existing[0] or "{}")
-                except (TypeError, ValueError):
-                    params = {}
-                params = params if isinstance(params, dict) else {}
-                if prompt:
-                    params["system"] = prompt
-                else:
-                    params.pop("system", None)
-                cur.execute("UPDATE model SET params=?, updated_at=? WHERE id=?",
-                            (json.dumps(params), now_ms, eid))
-            lines.append(f"  {eid}: system prompt {'set' if prompt else 'cleared'}")
-        db.commit()
-        db.close()
-    except sqlite3.OperationalError as ex:
-        if "locked" in str(ex).lower():
-            return ("gen-webui: webui.db is locked (Open WebUI running?) — skipping; re-run `bob gen` "
-                    "after stopping WebUI.")
-        raise
-    return "Generated Open WebUI model system prompts\n" + "\n".join(lines)
-
-
-# --- gen-aider ------------------------------------------------------------------------------------
 
 def _aider_map_tokens(window: int) -> int:
     """aider's repo-map budget for a `window`-token model: a sixteenth of it in 256-token steps,
@@ -1288,7 +1107,7 @@ def refresh_fabric_env() -> str:
 
 # --- gen (all) ------------------------------------------------------------------------------------
 
-# The generators that write files only (no install step, no Open WebUI db), in the order `gen` runs them.
+# The generators that write files only, in the order `gen` runs them.
 _FILE_GENERATORS = ("gen_llama_swap", "gen_litellm", "gen_continue", "gen_dsh", "gen_aider")
 
 
@@ -1297,7 +1116,7 @@ def gen_all(profile: str = None) -> str:
     route the profile cannot serve. Port of the `gen` verb."""
     import bob_models
 
-    lines = [gen_llama_swap(profile), gen_litellm(profile), gen_webui(profile),
+    lines = [gen_llama_swap(profile), gen_litellm(profile),
              gen_continue(profile), gen_dsh(profile), gen_aider(profile), install_dsh()]
     fabric = refresh_fabric_env()
     if fabric:
@@ -1308,7 +1127,7 @@ def gen_all(profile: str = None) -> str:
 
 def render_all(profile: str = None) -> dict:
     """{repo-relative path: text} for every file the generators would write, rendered in memory: nothing
-    under config/ is touched, Open WebUI's db is not opened and $DSH_HOME is not read or written."""
+    under config/ is touched and $DSH_HOME is not read or written."""
     global _write
     captured = {}
 
@@ -1352,7 +1171,7 @@ TOOL_DEFS = [
     {"type": "function", "function": {
         "name": "gen",
         "description": ("Regenerate all runtime configs (llama-swap.yaml, litellm.yaml, Continue config, "
-                        "DeepSeek Harness route, aider config, Open WebUI prompts) from config/models.json. "
+                        "DeepSeek Harness route and aider config) from config/models.json. "
                         "Run after changing the model registry or profile. Mutating (writes config files)."),
         "parameters": {"type": "object", "properties": {}}}},
 ]

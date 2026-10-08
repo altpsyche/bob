@@ -142,19 +142,19 @@ class TestHandlerFlags(unittest.TestCase):
         self._patch(_health_mod=lambda: None, _cfg=lambda: {})
         self.assertEqual(cli._handle_setup(["bogus"]), 1)
 
-    def test_up_accepts_posix_and_legacy_flags(self):
+    def test_up_accepts_with_services_and_ignores_retired_open_flags(self):
         seen = []
 
         class _Stack:
-            def stack_up(self, cfg, open_browser=True, with_services=False):
-                seen.append((open_browser, with_services))
+            def stack_up(self, cfg, with_services=False):
+                seen.append(with_services)
                 return "up"
 
         self._patch(_stack=lambda: _Stack(), _cfg=lambda: {})
         cli._handle_up([])
-        cli._handle_up(["--no-open", "--with-services"])
-        cli._handle_up(["-NoOpen", "-WithServices"])
-        self.assertEqual(seen, [(True, False), (False, True), (False, True)])
+        cli._handle_up(["--with-services"])
+        cli._handle_up(["-WithServices", "--no-open"])
+        self.assertEqual(seen, [False, True, True])
 
 
 class TestResolve(unittest.TestCase):

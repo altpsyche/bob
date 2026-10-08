@@ -29,7 +29,7 @@ class TestEnsureEndpoint(unittest.TestCase):
 
     def _fake_stack(self, counter):
         # Auto-start delegates to the one ensure_deps(inference=True) seam (core only), NOT the full
-        # stack_up — so `bob chat` no longer silently starts WebUI/whisper. Returns (ok, lines).
+        # stack_up — so `bob chat` no longer silently starts voice extras. Returns (ok, lines).
         return lambda: types.SimpleNamespace(
             ensure_deps=lambda *a, **k: (counter.__setitem__("up", counter["up"] + 1) or True, []))
 

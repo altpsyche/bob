@@ -19,25 +19,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts" / "too
 import stack  # noqa: E402
 import osenv  # noqa: E402
 
-CFG = {"port": 8080, "litellmPort": 8081, "sttPort": 8082, "ttsPort": 8083, "webuiPort": 3000,
+CFG = {"port": 8080, "litellmPort": 8081, "sttPort": 8082, "ttsPort": 8083,
        "langfusePort": 3001, "searxngPort": 8888, "n8nPort": 5678, "voice": {"enabled": False}}
 
-# The key-drift helpers rewrite the real repo's generated configs and Open WebUI's db (generate.REPO and
-# stack.REPO), so they are stubbed for the whole module; the tests of them call the saved originals
-# against a temp tree. Plain attribute swaps, not mock.patch.start(): _LogsMixin's patch.stopall would
-# undo those after its first test.
+# The key-drift helpers rewrite the real repo's generated configs (generate.REPO and stack.REPO), so
+# they are stubbed for the whole module; the tests of them call the saved originals against a temp tree.
+# Plain attribute swaps, not mock.patch.start(): _LogsMixin's patch.stopall would undo those after its
+# first test.
 _REAL_SYNC_KEY_CONFIGS = stack._sync_key_configs
-_REAL_WEBUI_SYNC_KEY = stack._webui_sync_key
 
 
 def setUpModule():
     stack._sync_key_configs = lambda config: []
-    stack._webui_sync_key = lambda config: ""
 
 
 def tearDownModule():
     stack._sync_key_configs = _REAL_SYNC_KEY_CONFIGS
-    stack._webui_sync_key = _REAL_WEBUI_SYNC_KEY
 
 
 class TestStackToolSurface(unittest.TestCase):
@@ -94,13 +91,13 @@ class TestPs(unittest.TestCase):
 class TestStatus(unittest.TestCase):
     def test_endpoint_down_still_shows_services(self):
         # Regression: status must NOT bail when inference is down — the whole point is to see the rest
-        # (SearXNG/n8n/WebUI) in one place. Endpoint reads [down] but the Services table still renders.
+        # (SearXNG/n8n) in one place. Endpoint reads [down] but the Services table still renders.
         with mock.patch.object(stack, "_http_json", side_effect=OSError("down")), \
              mock.patch.object(osenv, "is_port_in_use", return_value=False):
             out = stack.stack_status(CFG)
         self.assertIn("[down]", out)
         self.assertIn("Services", out)
-        for svc in ("endpoint", "whisper", "webui", "searxng", "n8n", "langfuse", "agent-api"):
+        for svc in ("endpoint", "whisper", "searxng", "n8n", "langfuse", "agent-api"):
             self.assertIn(svc, out)
 
     def test_endpoint_up_marks_loaded_and_shows_full_service_table(self):
@@ -115,7 +112,6 @@ class TestStatus(unittest.TestCase):
         self.assertRegex(out, r"UP\s+whisper\s+:8082")    # stt up
         self.assertRegex(out, r"UP\s+searxng\s+:8888")    # searxng up
         self.assertRegex(out, r"down\s+n8n\s+:5678")      # n8n down
-        self.assertRegex(out, r"down\s+webui\s+:3000")    # webui down
 
 
 class TestServiceRegistry(unittest.TestCase):
@@ -166,34 +162,6 @@ class TestServiceRegistry(unittest.TestCase):
         self.assertIn("→ start: bob whisper start", out)
         self.assertTrue(snap["searxng"]["unavailable"])     # docker service -> unavailable
         self.assertFalse(snap["whisper"]["unavailable"])    # non-docker service -> not affected
-
-
-class TestWebuiForeground(unittest.TestCase):
-    """`bob webui` must not crash on a bind error when WebUI is already up (e.g. from `bob up`)."""
-
-    def _webui_exe(self):
-        exe = mock.Mock()
-        exe.exists.return_value = True
-        return exe
-
-    def test_already_running_points_and_skips_serve(self):
-        with mock.patch.object(osenv, "venv_exe", return_value=self._webui_exe()), \
-             mock.patch.object(osenv, "is_port_in_use", return_value=True), \
-             mock.patch.object(osenv, "open_url") as open_url, \
-             mock.patch.object(stack.subprocess, "run") as run:
-            rc = stack.webui_foreground(CFG)
-        self.assertEqual(rc, 0)
-        run.assert_not_called()            # no doomed foreground bind on the occupied port
-        open_url.assert_called_once()      # pointed the user at the running instance
-
-    def test_serves_when_port_free(self):
-        with mock.patch.object(osenv, "venv_exe", return_value=self._webui_exe()), \
-             mock.patch.object(osenv, "is_port_in_use", return_value=False), \
-             mock.patch.object(stack.subprocess, "run",
-                               return_value=mock.Mock(returncode=0)) as run:
-            rc = stack.webui_foreground(CFG)
-        self.assertEqual(rc, 0)
-        run.assert_called_once()           # free port -> actually serve in the foreground
 
 
 class TestSwapLaunchSpec(unittest.TestCase):
@@ -388,18 +356,6 @@ class TestStop(unittest.TestCase):
             out = stack.stack_stop(CFG)
         self.assertEqual(out, "Nothing was running.")
 
-    def test_open_webui_reaped_by_name_without_pidfile(self):
-        # Regression: WebUI must be name-killed even with NO open-webui.pid (a prior stop unlinks it),
-        # else a reparented WebUI keeps holding :3000 and no later `bob stop` can find it.
-        self.assertIn("open-webui", stack._NAME_KILL)
-        with mock.patch.object(osenv, "stop_processes_by_name", return_value=["open-webui"]) as sk, \
-             mock.patch.object(osenv, "pid_alive", return_value=False), \
-             mock.patch.object(stack.shutil, "which", return_value=None):
-            out = stack.stack_stop(CFG)   # no open-webui.pid on disk
-        sk.assert_called_once_with(stack._NAME_KILL)
-        self.assertIn("open-webui", out)
-
-
 class TestLogs(unittest.TestCase):
     def setUp(self):
         self.logs = Path(tempfile.mkdtemp(prefix="bob-logs-"))
@@ -513,19 +469,6 @@ class TestBindHost(_LogsMixin, unittest.TestCase):
         self.assertEqual(seen["env"]["LANGFUSE_PUBLIC_KEY"], "s")
         self.assertIn("LANGFUSE_HOST", seen["env"])
 
-    def test_webui_binds_loopback_with_a_generated_secret(self):
-        seen = {}
-        with mock.patch.object(osenv, "venv_exe", return_value=Path(__file__)), \
-             mock.patch.object(osenv, "is_port_in_use", return_value=False), \
-             mock.patch.object(osenv, "secret", return_value="sk-local"), \
-             mock.patch.object(osenv, "ensure_secret", return_value="generated") as es, \
-             mock.patch.object(osenv, "start_detached", side_effect=lambda argv, **k: seen.update(argv=argv, **k) or 7):
-            line, started = stack._start_webui_bg(CFG)
-        self.assertTrue(started)
-        self.assertEqual(seen["argv"][seen["argv"].index("--host") + 1], "127.0.0.1")
-        self.assertEqual(seen["env"]["WEBUI_SECRET_KEY"], "generated")
-        es.assert_any_call("webuiSecret")
-
     def _voice_env(self, start, cfg):
         seen = {}
         with mock.patch.object(osenv, "venv_exe", return_value=Path(__file__)), \
@@ -580,56 +523,35 @@ class TestEndpointAlwaysEnsuresLiteLLM(_LogsMixin, unittest.TestCase):
 
 
 class TestRestart(_LogsMixin, unittest.TestCase):
-    def _restart(self, webui_up, ports_free=True):
+    def _restart(self, ports_free=True):
         order = []
         (self.logs / "llama-swap.pid").write_text("100")
-        (self.logs / "open-webui.pid").write_text("300")
         busy = {"state": True}
 
         def port(p, *a, **k):
-            if p == 3000:
-                return webui_up and busy["state"]
             return busy["state"] and not ports_free
 
-        with mock.patch.object(osenv, "pid_alive", side_effect=lambda pid: pid == 300 and webui_up or pid == 100), \
-             mock.patch.object(osenv, "stop_process_tree", side_effect=lambda pid: order.append(("stop", pid))), \
+        with mock.patch.object(osenv, "pid_alive", side_effect=lambda pid: pid == 100), \
+             mock.patch.object(osenv, "stop_process_tree",
+                               side_effect=lambda pid: order.append(("stop", pid))), \
              mock.patch.object(osenv, "stop_processes_by_name", return_value=[]), \
              mock.patch.object(osenv, "is_port_in_use", side_effect=port), \
-             mock.patch.object(stack, "_poll", side_effect=lambda check, **k: (busy.update(state=False) if ports_free else None) or check()), \
+             mock.patch.object(stack, "_poll",
+                               side_effect=lambda check, **k: (busy.update(state=False) if ports_free else None) or check()), \
              mock.patch.object(stack, "_ensure_configs", return_value=""), \
              mock.patch.object(stack, "ensure_inference",
-                               side_effect=lambda c: order.append(("start", "core")) or (True, ["up"])), \
-             mock.patch.object(stack, "_start_webui_bg",
-                               side_effect=lambda c: order.append(("start", "webui")) or ("webui up", True)):
+                               side_effect=lambda c: order.append(("start", "core")) or (True, ["up"])):
             out = stack.stack_restart(CFG)
         return out, order
 
-    def test_webui_is_not_restarted(self):
-        _out, order = self._restart(webui_up=True)
-        self.assertNotIn(("start", "webui"), order)
-        self.assertLess(order.index(("stop", 100)), order.index(("start", "core")))   # stop completes first
-
-    def test_webui_left_down_when_it_was_down(self):
-        _out, order = self._restart(webui_up=False)
-        self.assertNotIn(("start", "webui"), order)
+    def test_stops_then_starts_core(self):
+        _out, order = self._restart(ports_free=True)
+        self.assertLess(order.index(("stop", 100)), order.index(("start", "core")))
 
     def test_aborts_when_ports_stay_busy(self):
-        out, order = self._restart(webui_up=False, ports_free=False)
+        out, order = self._restart(ports_free=False)
         self.assertIn("Restart aborted", out)
         self.assertNotIn(("start", "core"), order)
-
-
-class TestUpDoesNotDuplicateWebui(_LogsMixin, unittest.TestCase):
-    def test_second_up_leaves_running_webui_alone(self):
-        (self.logs / "open-webui.pid").write_text("300")
-        with mock.patch.object(osenv, "venv_exe", return_value=Path(__file__)), \
-             mock.patch.object(osenv, "pid_alive", return_value=True), \
-             mock.patch.object(osenv, "start_detached") as sd:
-            line, started = stack._start_webui_bg(CFG)
-        sd.assert_not_called()
-        self.assertFalse(started)
-        self.assertIn("already running", line)
-        self.assertEqual((self.logs / "open-webui.pid").read_text(), "300")
 
 
 class TestServicePortAccessor(unittest.TestCase):
@@ -791,23 +713,6 @@ class TestLiteLLMKeyDrift(_LogsMixin, unittest.TestCase):
         with mock.patch.object(generate, "refresh_stale_key_files", return_value=[]), \
              mock.patch.object(generate, "refresh_dsh_credential", side_effect=OSError("denied")):
             self.assertIn("dsh", _REAL_SYNC_KEY_CONFIGS(CFG)[0])
-
-    def test_webui_start_syncs_its_stored_key_first(self):
-        import generate
-        repo = Path(tempfile.mkdtemp(prefix="bob-webui-repo-"))
-        with mock.patch.object(stack, "REPO", repo), \
-             mock.patch.object(generate, "webui_sync_key", return_value="Open WebUI: updated") as w:
-            self.assertEqual(_REAL_WEBUI_SYNC_KEY(CFG), "Open WebUI: updated")
-        w.assert_called_once_with(repo / "tools" / "webui-data" / "webui.db", CFG)
-        with mock.patch.object(osenv, "venv_exe", return_value=Path(__file__)), \
-             mock.patch.object(osenv, "is_port_in_use", return_value=False), \
-             mock.patch.object(osenv, "ensure_secret", return_value="g"), \
-             mock.patch.object(stack, "_webui_sync_key", return_value="Open WebUI: updated"), \
-             mock.patch.object(osenv, "start_detached", return_value=7):
-            line, started = stack._start_webui_bg(CFG)
-        self.assertTrue(started)
-        self.assertIn("Open WebUI: updated", line)
-
 
 class TestLiteLLMKeyProbe(unittest.TestCase):
     """bob_core.litellm_key_rejected: only a 401/403 to Bob's key counts; no answer is not a mismatch."""

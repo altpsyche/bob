@@ -791,6 +791,8 @@ Manage the link with `bob dsh`:
 - `bob dsh use` sets Bob as the default DSH model.
 - `bob dsh mode quick|deep` switches the default model alias.
 - `bob dsh tools on|off` mounts or removes Bob's MCP tool registry in DSH.
+- `bob dsh trust` shows the effective DSH trust tier; `bob dsh trust --tier read|write|execute|all` sets the global tier, and `bob dsh trust --tier all --project [path]` sets a per-project override. Tiers are resolved from the live tool registry, and a configured tier is enforced by a built-in PreToolUse policy on unattended DSH/MCP calls. Explicit tools still work: `bob dsh trust shell_run file_write`.
+- `bob dsh sessions list|show <id>|consolidate <id>|forget <id>` inspects or maintains the sessions imported by the native bridge. `consolidate` runs the same memory consolidation pipeline as a Bob session, and `forget` removes the raw events, derived transcript, and provenance-stamped memory rows.
 - `bob dsh bridge on|off` mounts or removes the native DSH bridge that imports complete session surfaces, assistant messages, tool results, and subagent transcripts into Bob.
 - `bob dsh doctor` reports layer conflicts, missing credentials, missing tools, and a default model that is not Bob.
 
@@ -798,7 +800,7 @@ Bob owns each DSH setting in exactly one layer: global provider and credential s
 
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) is a model-agnostic coding agent with a browser UI and a headless mode. Bob serves it as the model backend, context source, memory store, and tool provider. The link is managed by `bob dsh`; no second configuration system lives in Bob.
 
-`bob dsh install` installs the DSH version pinned in `versions.lock` when pnpm or npm is available, then writes Bob's provider route and credential, sets the default DSH model, and installs the native `bob-dsh-bridge` plugin.
+`bob setup` installs the DSH version pinned in `versions.lock` as part of the default flow (when pnpm or npm is available), so a fresh install does not need a second command just to get the primary client. `bob dsh install` repairs or re-runs that link: it installs or upgrades DSH, then writes Bob's provider route and credential, sets the default DSH model, and installs the native `bob-dsh-bridge` plugin.
 
 The native bridge is the only DSH transcript ingestion path:
 
@@ -816,7 +818,7 @@ bob dsh tools on
 bob dsh tools status
 ```
 
-`bob dsh tools on` sets `agent.mcpEnabled = true` and installs Bob's MCP entry into DSH. `bob dsh tools off` removes the DSH entry. State-changing tools remain gated by `agent.mcpAllowTools`.
+`bob dsh tools on` sets `agent.mcpEnabled = true` and installs Bob's MCP entry into DSH. `bob dsh tools off` removes the DSH entry. State-changing tools remain gated by `agent.mcpAllowTools` and, when configured, the DSH trust tier described above.
 
 Context modes:
 

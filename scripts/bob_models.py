@@ -142,7 +142,7 @@ def regenerate_configs() -> bool:
     models.json via the Python generators. Best-effort: True on success, False if generation raised
     (leaving the existing configs in place). Single-sourced here so the stack bring-up
     (scripts/tools/stack.py) and profile switch (scripts/tools/models.py) share ONE regen. `bob gen`
-    regenerates the rest too (Continue, dsh, aider, Open WebUI); the hot path only needs these two."""
+    regenerates the rest too (Continue, dsh, aider); the hot path only needs these two."""
     import sys as _sys
 
     tools = str(REPO / "scripts" / "tools")

@@ -24,7 +24,7 @@ Or run any capability directly, for quick questions, scripts, and pipes:
 | `bob remember "…"` · `bob recall "…"` | Store or search memory (semantic + recency + importance). |
 | `bob memory <cmd>` | Curate memory: `list`, `show`, `edit`, `pin`, `forget`, `export`. |
 | `bob help` | The full command catalog. |
-| `bob dsh <status|install|use|mode|tools|bridge|doctor>` | Install and manage the DeepSeek Harness link: pinned DSH, default model, context modes, MCP tools, and the native Bob session bridge. |
+| `bob dsh <status|install|use|mode|tools|trust|sessions|bridge|doctor>` | Install and manage the DeepSeek Harness link: pinned DSH, default model, context modes, MCP tools, per-project/global trust tiers, imported sessions, and the native Bob session bridge. |
 
 **Agent tools** run inside the loop (`bob agent` or the shell), not as `bob <verb>` commands: memory, web, git, file, shell, fabric, plus the plugins summarise, draft, search, play. List them with `bob tools` / `bob plugins`, or call one directly with `bob --run <tool> '{json}'`.
 
@@ -119,7 +119,7 @@ bob chat "hi"                   # one-shot
 bob agent "summarise README.md" # agentic task
 ```
 
-`bob up` optionally pre-warms the endpoint (`:8080`) and LiteLLM proxy (`:8081`). Any OpenAI client works by pointing its base URL at `http://localhost:8081/v1`; the DeepSeek Harness is the primary browser and terminal coding client. Install or repair the link with `bob dsh install`, then mount tools explicitly with `bob dsh tools on`.
+`bob up` optionally pre-warms the endpoint (`:8080`) and LiteLLM proxy (`:8081`). Any OpenAI client works by pointing its base URL at `http://localhost:8081/v1`; the DeepSeek Harness is the primary browser and terminal coding client. `bob setup` installs the pinned DSH package by default; repair the link with `bob dsh install`, then mount tools explicitly with `bob dsh tools on`.
 
 `setup` flags: `--profile 12gb`, `--skip-models`, `--skip-voice`, `--cpu`, `--from-source`, `--launch`, `--with-aider`, `--with-fabric`. Setup suggests a profile for your GPU but never overrides one you chose. The one-command installer defaults to the **stable** channel (the latest release, with prebuilt engines); pass `--dev` (or `--channel latest`) to the installer to track the latest `main`, which builds the engine from source whenever `main` pins a llama.cpp commit no release has shipped. `--dev` and `--channel` are installer flags, not setup flags; after install, `bob update --channel` switches channels. Run `bob agent install` once to register the background scheduler (Linux cron / Windows Scheduled Task).
 

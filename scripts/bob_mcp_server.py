@@ -57,7 +57,13 @@ def dispatch(registry, name: str, arguments: dict, config: dict = None, owner: s
     from bob_permissions import run_gated
 
     config = config or {}
-    allow = config.get("agent", {}).get("mcpAllowTools") or []
+    # The DSH trust tier (project > global) augments the explicit mcpAllowTools list; with no tier
+    # configured this is exactly the old flat list, so existing installs are unchanged.
+    try:
+        import bob_dsh
+        allow = bob_dsh.resolve_dsh_allow(config, cwd=str(Path.cwd()), registry=registry)
+    except Exception:
+        allow = {str(n) for n in (config.get("agent", {}).get("mcpAllowTools") or []) if str(n).strip()}
     return run_gated(registry, name, json.dumps(arguments or {}), config=config,
                      owner=owner or STDIO_OWNER, agency="silent", allow_unattended=allow, surface="mcp")
 

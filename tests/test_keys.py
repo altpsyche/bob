@@ -24,6 +24,7 @@ MCFG = {"peers": {
 class _SecretsTmp(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
+        (self.tmp / ".migrated").write_text("", encoding="utf-8")   # never copy the real data/ secrets
         self.addCleanup(shutil.rmtree, self.tmp, True)
         env = mock.patch.dict(os.environ, {"BOB_DATA_DIR": str(self.tmp)})
         env.start()

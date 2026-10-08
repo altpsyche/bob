@@ -4,7 +4,7 @@ Pure and stateless — callers pass the allow-list (and, for secret checks, the 
 holds no config globals and is safe to import from any tool. The secrets denylist refuses sensitive files
 (the litellm key / api tokens in config.json / secrets.json, *.psd1 config, *.db session/memory stores,
 logs, .env files, the generated client configs that embed Bob's LiteLLM key, n8n's config (its credential
-encryption key), Open WebUI's secret key file, and the usual home credential dirs) even when they fall
+encryption key), and the usual home credential dirs) even when they fall
 inside an allowed root, which by default is the repo root and would otherwise expose them.
 """
 from pathlib import Path
@@ -20,9 +20,9 @@ KEY_BEARING = frozenset({
     "config/litellm.yaml", "config/continue/config.yaml", "config/aider/.aider.conf.yml",
     "config/aider/model-metadata.json", "config/dsh/settings.yaml", "config/dsh/cordis.patch.yml"})
 
-# config.json / secrets.json carry litellmKey / apiTokens / provider keys; .webui_secret_key is the file
-# Open WebUI keeps its session-signing key in; .credentials.yaml is the DeepSeek Harness credential store.
-DENY_BASENAMES = {"config.json", "secrets.json", ".webui_secret_key", ".credentials.yaml"}
+# config.json / secrets.json carry litellmKey / apiTokens / provider keys; .credentials.yaml is the
+# DeepSeek Harness credential store.
+DENY_BASENAMES = {"config.json", "secrets.json", ".credentials.yaml"}
 DENY_SUFFIXES = (".psd1", ".db")   # .psd1 config files; *.db session/memory stores
 _N8N_DATA = ("tools", "n8n-data")   # n8n's user folder; any `config` under it holds the encryption key
 

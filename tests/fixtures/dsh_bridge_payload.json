@@ -1,0 +1,275 @@
+{
+  "root_session_id": "root-7f3a",
+  "source": "dsh",
+  "sessions": [
+    {
+      "session_id": "root-7f3a",
+      "parent_session_id": null,
+      "cwd": "/home/dev/project",
+      "origin": null,
+      "events": [
+        {
+          "type": "turn/start",
+          "seq": 0,
+          "time": 1770000000000,
+          "data": {
+            "turn": 0
+          }
+        },
+        {
+          "type": "user/message",
+          "seq": 1,
+          "time": 1770000000001,
+          "data": {
+            "id": "msg_user_1",
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Fix the bridge import."
+              }
+            ],
+            "source": {
+              "kind": "user"
+            }
+          },
+          "surfaceOp": "append"
+        },
+        {
+          "type": "step/start",
+          "seq": 2,
+          "time": 1770000000002,
+          "data": {
+            "turn": 0,
+            "step": 0
+          }
+        },
+        {
+          "type": "assistant/message",
+          "seq": 3,
+          "time": 1770000000003,
+          "data": {
+            "turn": 0,
+            "step": 0,
+            "message": {
+              "id": "msg_assistant_1",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "assistant reply: working on the DSH bridge"
+                },
+                {
+                  "type": "tool-call",
+                  "id": "call_shell_1",
+                  "name": "shell_run",
+                  "arguments": "{\"command\": \"pytest tests/test_bob_dsh.py\"}"
+                }
+              ],
+              "source": {
+                "kind": "model",
+                "provider": "bob",
+                "model": "coder-deep"
+              }
+            },
+            "stream": []
+          },
+          "surfaceOp": "append"
+        },
+        {
+          "type": "tool/call",
+          "seq": 4,
+          "time": 1770000000004,
+          "data": {
+            "turn": 0,
+            "step": 0,
+            "callId": "call_shell_1",
+            "name": "shell_run",
+            "arguments": "{\"command\": \"pytest tests/test_bob_dsh.py\"}"
+          }
+        },
+        {
+          "type": "tool/result",
+          "seq": 5,
+          "time": 1770000000005,
+          "data": {
+            "turn": 0,
+            "step": 0,
+            "message": {
+              "id": "msg_tool_1",
+              "role": "user",
+              "content": [
+                {
+                  "type": "tool-result",
+                  "toolCallId": "call_shell_1",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "1 passed"
+                    }
+                  ]
+                }
+              ],
+              "source": {
+                "kind": "tool",
+                "callId": "call_shell_1"
+              }
+            }
+          },
+          "surfaceOp": "append"
+        },
+        {
+          "type": "step/end",
+          "seq": 6,
+          "time": 1770000000006,
+          "data": {
+            "turn": 0,
+            "step": 0
+          }
+        },
+        {
+          "type": "turn/end",
+          "seq": 7,
+          "time": 1770000000007,
+          "data": {
+            "turn": 0,
+            "reason": "complete"
+          }
+        }
+      ],
+      "messages": [
+        {
+          "id": "msg_user_1",
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Fix the bridge import."
+            }
+          ],
+          "source": {
+            "kind": "user"
+          }
+        },
+        {
+          "id": "msg_assistant_1",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "assistant reply: working on the DSH bridge"
+            },
+            {
+              "type": "tool-call",
+              "id": "call_shell_1",
+              "name": "shell_run",
+              "arguments": "{\"command\": \"pytest tests/test_bob_dsh.py\"}"
+            }
+          ],
+          "source": {
+            "kind": "model",
+            "provider": "bob",
+            "model": "coder-deep"
+          }
+        },
+        {
+          "id": "msg_tool_1",
+          "role": "user",
+          "content": [
+            {
+              "type": "tool-result",
+              "toolCallId": "call_shell_1",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "1 passed"
+                }
+              ]
+            }
+          ],
+          "source": {
+            "kind": "tool",
+            "callId": "call_shell_1"
+          }
+        }
+      ]
+    },
+    {
+      "session_id": "child-91b2",
+      "parent_session_id": "root-7f3a",
+      "cwd": "/home/dev/project",
+      "origin": "subagent",
+      "events": [
+        {
+          "type": "turn/start",
+          "seq": 0,
+          "time": 1770000000000,
+          "data": {
+            "turn": 0
+          }
+        },
+        {
+          "type": "assistant/message",
+          "seq": 1,
+          "time": 1770000000001,
+          "data": {
+            "turn": 0,
+            "step": 0,
+            "message": {
+              "id": "msg_child_1",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "subagent reply: checked the child session"
+                }
+              ],
+              "source": {
+                "kind": "model",
+                "provider": "bob",
+                "model": "coder-deep"
+              }
+            },
+            "stream": []
+          },
+          "surfaceOp": "append"
+        },
+        {
+          "type": "step/end",
+          "seq": 2,
+          "time": 1770000000002,
+          "data": {
+            "turn": 0,
+            "step": 0
+          }
+        },
+        {
+          "type": "turn/end",
+          "seq": 3,
+          "time": 1770000000003,
+          "data": {
+            "turn": 0,
+            "reason": "complete"
+          }
+        }
+      ],
+      "messages": [
+        {
+          "id": "msg_child_1",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "subagent reply: checked the child session"
+            }
+          ],
+          "source": {
+            "kind": "model",
+            "provider": "bob",
+            "model": "coder-deep"
+          }
+        }
+      ]
+    }
+  ]
+}

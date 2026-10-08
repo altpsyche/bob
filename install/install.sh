@@ -9,7 +9,7 @@
 # backend).
 #
 # Overrides (env): BOB_HOME (install dir), BOB_REPO_URL (git source). Pass --cpu for the CPU-only tier,
-# --from-source to compile the engine, and any other setup flag (--with-aider, --with-fabric, --with-webui,
+# --from-source to compile the engine, and any other setup flag (--with-aider, --with-fabric,
 # --skip-models, ...) to pass it through to setup; --with-node also reaches the prereq step.
 # Channel: installs default to the 'stable' release tag (tested, carries the prebuilt driver-only engines);
 # pass --dev (or --channel latest) to track the latest main instead. --dev and --channel are consumed here.

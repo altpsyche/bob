@@ -730,7 +730,7 @@ def _handle_aider_setup(rest: list) -> int:
 
 # --- lifecycle ------------------------------------------------------------------------------------
 # Each verb routes to the scripts/tools/stack.py capability the agent also calls (no duplicated logic).
-# up/stop/restart/ps and the service controls are background/non-blocking; serve/webui are foreground.
+# up/stop/restart/ps and the service controls are background/non-blocking; serve is foreground.
 
 def _stack():
     tools_dir = str(SCRIPTS / "tools")
@@ -748,7 +748,7 @@ def _cfg():
 def _ensure_endpoint(config) -> None:
     """Auto-start CORE inference on demand so `bob`, `bob chat`, and `bob agent` just work without a
     separate `bob up`. Delegates to the single stack.ensure_inference() — it starts ONLY llama-swap +
-    LiteLLM (not WebUI/whisper: those are `bob up`'s extras) and waits until the proxy is reachable, so
+    LiteLLM (whisper is a `bob up` extra) and waits until the proxy is reachable, so
     'start inference' lives in exactly one place. No-op when already up. Best-effort: a launch failure
     prints a hint, not a crash (the turn then surfaces the real connection error).
 
@@ -776,11 +776,10 @@ def _ensure_endpoint(config) -> None:
 
 
 def _handle_up(rest: list) -> int:
-    """bob up [--no-open] [--with-services]: background bring-up (endpoint + proxy)."""
+    """bob up [--with-services]: background bring-up (endpoint + proxy)."""
     rest = list(rest)
-    open_browser = not any(f in rest for f in ("-NoOpen", "--no-open"))
     with_services = any(f in rest for f in ("-WithServices", "--with-services"))
-    print(_stack().stack_up(_cfg(), open_browser=open_browser, with_services=with_services))
+    print(_stack().stack_up(_cfg(), with_services=with_services))
     return 0
 
 
@@ -820,10 +819,6 @@ def _handle_logs(rest: list) -> int:
     elif rest and rest[0].isdigit():
         n = int(rest[0])
     return _stack().logs_follow(_cfg(), lines=n)
-
-
-def _handle_webui(rest: list) -> int:
-    return _stack().webui_foreground(_cfg())
 
 
 def _service_action(rest: list) -> str:

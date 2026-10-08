@@ -187,7 +187,7 @@ Install or repair the link:
 bob dsh install
 ```
 
-That installs the DSH version pinned in `versions.lock` when a package manager is available, sets Bob as the default DSH model, writes the provider route and credential, and installs the native `bob-dsh-bridge`.
+`bob setup` installs the DSH version pinned in `versions.lock` by default when a package manager is available; `bob dsh install` repairs the same link, sets Bob as the default DSH model, writes the provider route and credential, and installs the native `bob-dsh-bridge`.
 
 Switch context modes with:
 
@@ -203,7 +203,24 @@ bob dsh tools on
 bob dsh tools status
 ```
 
-The native bridge imports complete DSH session surfaces, assistant messages, tool results, and subagent transcripts into Bob. Check the link with:
+Trust the coding tools for this project (or globally) when you want DSH to run them unattended:
+
+```bash
+bob dsh trust --tier execute --project
+bob dsh trust --tier read            # start read-only (explicit mcpAllowTools still merges)
+bob dsh trust                        # show the effective policy
+```
+
+The native bridge imports complete DSH session surfaces, assistant messages, tool results, and subagent transcripts into Bob. Inspect or maintain them with:
+
+```bash
+bob dsh sessions list
+bob dsh sessions show <session-id>
+bob dsh sessions consolidate <session-id>
+bob dsh sessions forget <session-id>
+```
+
+Check the link with:
 
 ```bash
 bob dsh status
