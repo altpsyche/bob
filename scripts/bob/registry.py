@@ -130,6 +130,10 @@ COMMANDS = [
      "args": "[<name>] <start|stop|status|logs>", "handler": "services"},
     {"name": "webui", "group": "Run", "summary": "Launch Open WebUI only",
      "args": "", "handler": "webui"},
+    {"name": "dsh", "group": "Run",
+     "summary": "Manage the DeepSeek Harness link (status, install, use, mode, tools, hooks)",
+     "args": "<status|doctor|install|use|mode|tools|hooks|logs|uninstall> ...",
+     "handler": "dsh"},
 
     # --- Services: start/stop/status one inference or voice daemon ----------------------------
     {"name": "litellm", "group": "Services", "summary": "Manage the LiteLLM proxy",

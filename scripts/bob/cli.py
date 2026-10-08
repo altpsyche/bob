@@ -1604,6 +1604,12 @@ def _handle_edit(rest: list) -> int:
     return 0
 
 
+def _handle_dsh(rest: list) -> int:
+    """bob dsh — manage the DeepSeek Harness link through one Python module."""
+    import bob_dsh
+    return bob_dsh.main(list(rest))
+
+
 _HANDLERS = {
     "agent_run": _handle_agent_run,
     "agent_serve": _handle_agent_serve,
@@ -1653,6 +1659,7 @@ _HANDLERS = {
     "ps": _handle_ps,
     "logs": _handle_logs,
     "webui": _handle_webui,
+    "dsh": _handle_dsh,
     "litellm": _svc_handler("litellm"),   # one service_control core, per-verb adapters
     "whisper": _svc_handler("whisper"),
     "piper": _svc_handler("piper"),

@@ -785,6 +785,18 @@ aider auto-commits each accepted edit to git; work on a branch so `/undo` can ro
 
 ### Browser and terminal: DeepSeek Harness (dsh)
 
+Manage the link with `bob dsh`:
+
+- `bob dsh status` shows the detected DSH install, active profile, Bob route, tools, hooks, and default model.
+- `bob dsh install` writes Bob's provider route, credential, and profile default model.
+- `bob dsh use` sets Bob as the default DSH model.
+- `bob dsh mode quick|deep` switches the default model alias.
+- `bob dsh tools on|off` mounts or removes Bob's MCP tool registry in DSH.
+- `bob dsh hooks on|off` mounts or removes Bob context injection at session start.
+- `bob dsh doctor` reports layer conflicts, missing credentials, missing tools, and a default model that is not Bob.
+
+Bob owns each DSH setting in exactly one layer: global provider and credential settings live under `$DSH_HOME`, profile-specific default models live under the active DSH profile, and plugin entries live in the home patch file.
+
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) is a model-agnostic coding agent with
 a browser UI and a headless mode. Bob serves it two ways at once: as the model backend, and as a tool
 provider over MCP. Nothing about dsh runs inside Bob, and Bob needs nothing from it; the pairing is the

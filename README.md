@@ -24,6 +24,7 @@ Or run any capability directly, for quick questions, scripts, and pipes:
 | `bob remember "…"` · `bob recall "…"` | Store or search memory (semantic + recency + importance). |
 | `bob memory <cmd>` | Curate memory: `list`, `show`, `edit`, `pin`, `forget`, `export`. |
 | `bob help` | The full command catalog. |
+| `bob dsh <status|install|use|mode|tools|hooks|doctor>` | Manage the DeepSeek Harness link: default model, context modes, MCP tools, and Bob context hooks. |
 
 **Agent tools** run inside the loop (`bob agent` or the shell), not as `bob <verb>` commands: memory, web, git, file, shell, fabric, plus the plugins summarise, draft, search, play. List them with `bob tools` / `bob plugins`, or call one directly with `bob --run <tool> '{json}'`.
 
