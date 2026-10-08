@@ -8,6 +8,8 @@ rebuilds only what changed, verifies, and rolls back on failure.
 
 ## [Unreleased]
 
+## [2.1.0] (2026-10-09)
+
 ### Added
 - **DeepSeek Harness replaces Open WebUI as the default browser surface.** `bob up` no longer starts Open WebUI, `bob webui` and the shell `/webui` command are removed, setup no longer offers `--with-webui`, and the remaining Open WebUI generators, lifecycle code, tests, and requirement files are gone. DSH is the browser and terminal coding client, with `bob dsh` managing the link.
 - **First-class DeepSeek Harness link management.** `bob dsh status|doctor|install|use|mode|tools|bridge|logs|uninstall` installs the DSH version pinned in `versions.lock` when a package manager is available, then manages Bob's provider route, credential, default DSH model, MCP tool mount, and the native `bob-dsh-bridge` plugin from one module. Bob-owned DSH settings use one owner layer, so the same key is never written twice. The native bridge imports complete DSH session surfaces, assistant messages, tool results, and subagent transcripts into Bob's owner-scoped transcript store through one `bob dsh import-session` pipeline. The old hook bridge is removed from the command surface. `bob dsh doctor` reports missing or conflicting link state. [scripts/bob_dsh.py](scripts/bob_dsh.py), [scripts/dsh_bridge](scripts/dsh_bridge), [versions.lock](versions.lock).
