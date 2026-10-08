@@ -44,7 +44,6 @@ Core inference (the `:8081` API and the `bob` CLI) works out of the box. Everyth
 | aider | opt-in client (`--with-aider`, `bob aider-setup`) | terminal coding agent: review the plan before any file is touched |
 | DeepSeek Harness | client | browser and headless coding agent; Bob serves it models and, over MCP, its tools |
 | fabric | opt-in client (`--with-fabric`, `bob fabric-setup`) | 254 named LLM patterns, pipe any text through them |
-| Open WebUI `:3000` | opt-in at setup (`--with-webui`) | browser chat, RAG, image input, voice |
 | n8n `:5678` | opt-in, native (`bob services n8n start`) | visual workflow automation |
 | SearXNG `:8888` | opt-in, Docker (`bob services searxng start`) | private self-hosted meta-search |
 | Langfuse `:3001` | opt-in, Docker (`bob services langfuse start`) | observability dashboard (default trace sink is a local file, `bob traces`) |
@@ -120,9 +119,9 @@ bob chat "hi"                   # one-shot
 bob agent "summarise README.md" # agentic task
 ```
 
-`bob up` optionally pre-warms the endpoint (`:8080`) and LiteLLM proxy (`:8081`); `--with-webui` at setup adds Open WebUI (`:3000`). Any OpenAI client works by pointing its base URL at `http://localhost:8081/v1`.
+`bob up` optionally pre-warms the endpoint (`:8080`) and LiteLLM proxy (`:8081`). Any OpenAI client works by pointing its base URL at `http://localhost:8081/v1`; the DeepSeek Harness is the primary browser and terminal coding client.
 
-`setup` flags: `--profile 12gb`, `--skip-models`, `--skip-voice`, `--cpu`, `--from-source`, `--launch`, `--with-webui`, `--with-aider`, `--with-fabric`. Setup suggests a profile for your GPU but never overrides one you chose. The one-command installer defaults to the **stable** channel (the latest release, with prebuilt engines); pass `--dev` (or `--channel latest`) to the installer to track the latest `main`, which builds the engine from source whenever `main` pins a llama.cpp commit no release has shipped. `--dev` and `--channel` are installer flags, not setup flags; after install, `bob update --channel` switches channels. Run `bob agent install` once to register the background scheduler (Linux cron / Windows Scheduled Task).
+`setup` flags: `--profile 12gb`, `--skip-models`, `--skip-voice`, `--cpu`, `--from-source`, `--launch`, `--with-aider`, `--with-fabric`. Setup suggests a profile for your GPU but never overrides one you chose. The one-command installer defaults to the **stable** channel (the latest release, with prebuilt engines); pass `--dev` (or `--channel latest`) to the installer to track the latest `main`, which builds the engine from source whenever `main` pins a llama.cpp commit no release has shipped. `--dev` and `--channel` are installer flags, not setup flags; after install, `bob update --channel` switches channels. Run `bob agent install` once to register the background scheduler (Linux cron / Windows Scheduled Task).
 
 ## Docs
 

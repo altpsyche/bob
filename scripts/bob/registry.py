@@ -112,7 +112,7 @@ COMMANDS = [
      "args": "", "handler": "budget"},
 
     # --- Run: run the stack day-to-day (also available live in the shell as /up, /stop, …) -----
-    {"name": "up", "group": "Run", "summary": "Start endpoint + Open WebUI silently",
+    {"name": "up", "group": "Run", "summary": "Start the endpoint + proxy in the background",
      "args": "[--no-open] [--with-services]", "handler": "up"},
     {"name": "serve", "group": "Run", "summary": "Start the inference stack (llama-swap + LiteLLM), interactive",
      "args": "", "handler": "serve"},
@@ -128,8 +128,6 @@ COMMANDS = [
      "args": "[-n N]", "handler": "logs"},
     {"name": "services", "group": "Run", "summary": "Opt-in add-ons: n8n (native) / SearXNG / Langfuse (Docker)",
      "args": "[<name>] <start|stop|status|logs>", "handler": "services"},
-    {"name": "webui", "group": "Run", "summary": "Launch Open WebUI only",
-     "args": "", "handler": "webui"},
     {"name": "dsh", "group": "Run",
      "summary": "Manage the DeepSeek Harness link (status, install, use, mode, tools, hooks)",
      "args": "<status|doctor|install|use|mode|tools|hooks|logs|uninstall> ...",

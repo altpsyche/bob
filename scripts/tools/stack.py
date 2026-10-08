@@ -864,7 +864,7 @@ def ensure_deps(config: dict, inference: bool = False, stt: bool = False, search
 
 def stack_up(config: dict, open_browser: bool = True, with_services: bool = False) -> str:
     """The persistent 'bring up everything for outside-terminal use': core inference + (STT if voice
-    preload) + Open WebUI, then optionally open the browser and start Docker services. Composes
+    preload), then optionally start Docker services. Composes
     ensure_inference (the one place that starts inference) rather than re-launching it — so `bob up` and the
     auto-start share identical core-start behaviour; `bob up` just adds the extras. Idempotent: a WebUI that
     is already running is left alone."""
@@ -878,16 +878,6 @@ def stack_up(config: dict, open_browser: bool = True, with_services: bool = Fals
     # on the first /voice use (ensure_deps(stt=True)) unless voice.preload asks for a warm one up front.
     if config.get("voice", {}).get("enabled") and config.get("voice", {}).get("preload"):
         lines.append(_start_stt_bg(config))
-
-    webui_port = service_port(config, "webuiPort")
-    line, started = _start_webui_bg(config)
-    lines.append(line)
-    if started and open_browser:
-        if _poll(lambda: osenv.is_port_in_use(webui_port), timeout=120, interval=0.5):
-            lines.append("Open WebUI ready.")
-            osenv.open_url(f"http://localhost:{webui_port}")
-        else:
-            lines.append(f"Open WebUI didn't respond; open manually: http://localhost:{webui_port}")
 
     if with_services:
         lines.append(services_control(config, "start"))
@@ -903,10 +893,7 @@ def stack_restart(config: dict) -> str:
     new servers never race the dying ones for a port or for VRAM. The restart set is derived from the
     SERVICES registry, not another hardcoded list."""
     osenv = _osenv()
-    restart = [s for s in SERVICES if s.get("core") or s["name"] == "open-webui"]
-    webui_pid = _read_pid("open-webui")
-    webui_was_up = ((webui_pid is not None and osenv.pid_alive(webui_pid))
-                    or osenv.is_port_in_use(service_port(config, "webuiPort")))
+    restart = [s for s in SERVICES if s.get("core")]
     for svc in [s["name"] for s in restart]:
         pid = _read_pid(svc)
         if pid is not None and osenv.pid_alive(pid):
@@ -922,8 +909,6 @@ def stack_restart(config: dict) -> str:
     if err:
         return err
     ok, lines = ensure_inference(config)   # the one core-start op, same as auto-start / `bob up`
-    if webui_was_up:
-        lines.append(_start_webui_bg(config)[0])
     return "Restarting endpoint...\n" + "\n".join(lines)
 
 

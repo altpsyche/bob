@@ -29,7 +29,7 @@ class TestRegistry(unittest.TestCase):
             # entry / server / misc
             "agent serve", "agent mcp", "clip", "help",
             # lifecycle
-            "serve", "stop", "up", "restart", "status", "ps", "logs", "webui",
+            "serve", "stop", "up", "restart", "status", "ps", "logs",
             "litellm", "whisper", "piper", "services",
             # health
             "setup", "doctor", "diagnose", "version",
@@ -100,7 +100,7 @@ class TestSharedSurfaceSignpost(unittest.TestCase):
 
     def test_shared_includes_cockpit_commands(self):
         shared = cli._shared_with_shell()
-        for name in ("up", "stop", "restart", "status", "services", "webui", "logs"):
+        for name in ("up", "stop", "restart", "status", "services", "logs"):
             self.assertIn(name, shared)
 
     def test_print_help_names_shared_commands(self):

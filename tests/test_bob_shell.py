@@ -485,23 +485,6 @@ class TestCockpit(unittest.TestCase):
             sh.dispatch("/services start bogus")
         self.assertIn("unknown service", out.file.getvalue())
 
-    def test_webui_opens_when_running(self):
-        import osenv
-        sh, _ = _make_shell()
-        opened = []
-        with _patch(osenv, "is_port_in_use", lambda p, *a, **k: True), \
-             _patch(osenv, "open_url", lambda u: opened.append(u)):
-            sh.dispatch("/webui")
-        self.assertEqual(len(opened), 1)
-
-    def test_webui_advises_when_down(self):
-        import osenv
-        sh, out = _make_shell()
-        with _patch(osenv, "is_port_in_use", lambda p, *a, **k: False), \
-             _patch(osenv, "open_url", lambda u: None):
-            sh.dispatch("/webui")
-        self.assertIn("/up", out.file.getvalue())        # honest next step, no inline foreground block
-
     def test_services_dashboard_lists_every_service(self):
         import osenv
         import stack

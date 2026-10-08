@@ -4,12 +4,11 @@ Server configuration internals and tuning: the launch flags the models run with,
 
 ## How the server config is generated
 
-The runtime config files (and the Open WebUI model table) are generated from [config/models.json](../config/models.json) every time you run `bob serve` or `bob gen`. Don't edit them by hand; edit `config/models.json` (or your `config/user.json` override) instead. The generators are Python functions in [scripts/tools/generate.py](../scripts/tools/generate.py).
+The runtime config files are generated from [config/models.json](../config/models.json) every time you run `bob serve` or `bob gen`. Don't edit them by hand; edit `config/models.json` (or your `config/user.json` override) instead. The generators are Python functions in [scripts/tools/generate.py](../scripts/tools/generate.py).
 
 - `config/llama-swap.yaml` (`gen_llama_swap`): local model routing, swap groups, KV cache flags
 - `config/litellm.yaml` (`gen_litellm`): LiteLLM proxy model list, including pro models (API-backed peers)
 - `config/continue/config.yaml` (`gen_continue`): Continue.dev model list plus per-role `systemMessage`
-- Open WebUI model table (`gen_webui`): syncs system prompts from `config/models.json` into the Open WebUI SQLite database (`tools/webui-data/webui.db`); skipped if that db doesn't exist yet
 
 The generated `llama-swap.yaml` has this structure:
 
@@ -38,19 +37,19 @@ The `defaults` block in `config/models.json` controls the server launch flags an
 | `mlockBig` | `false` | Apply `--mlock` to swap-group models (ponder/coder/chat). Pins CPU-resident pages in RAM. Windows: needs `SeLockMemoryPrivilege`. |
 | `numa` | `""` | NUMA strategy (`--numa`). Options: `""` (off), `"isolate"`, `"distribute"`, `"numactl"`. On 7950X3D: try `"isolate"` first. |
 
-Ports are **not** in this block; they live once in [config/defaults.json](../config/defaults.json) under `ports` (llama-swap `8080`, LiteLLM proxy `8081`, faster-whisper STT `8082`, piper `8083`, agent server `8084`, Open WebUI `3000`). Override a port with a top-level key of the same name in `config/user.json` (for example `"litellmPort": 8091`); `agentPort` and `mcpPort` go under `agent`.
+Ports are **not** in this block; they live once in [config/defaults.json](../config/defaults.json) under `ports` (llama-swap `8080`, LiteLLM proxy `8081`, faster-whisper STT `8082`, piper `8083`, agent server `8084`). Override a port with a top-level key of the same name in `config/user.json` (for example `"litellmPort": 8091`); `agentPort` and `mcpPort` go under `agent`.
 
 Four runtime keys sit at the **top level** of `config/user.json` rather than in this block:
 
 | Key | Default | Effect |
 |-----|---------|--------|
-| `bindHost` | `"127.0.0.1"` | Address every service binds: LiteLLM, Open WebUI, n8n, and the Docker services' published ports. llama-swap always stays on loopback (LiteLLM fronts it), and the voice servers bind `voiceBindHost`. Set `"0.0.0.0"` for LAN access; the LiteLLM key is then the only guard on the proxy. |
+| `bindHost` | `"127.0.0.1"` | Address every service binds: LiteLLM, n8n, and the Docker services' published ports. llama-swap always stays on loopback (LiteLLM fronts it), and the voice servers bind `voiceBindHost`. Set `"0.0.0.0"` for LAN access; the LiteLLM key is then the only guard on the proxy. |
 | `voiceBindHost` | `"127.0.0.1"` | Address faster-whisper (STT) and piper (TTS) bind. They have no authentication, so they stay on loopback even when `bindHost` opens the rest; set `"0.0.0.0"` only when another machine needs speech and the network is trusted. |
 | `litellmKey` | `""` | Empty means generated: a random `sk-bob-...` key created on first use and kept in `data/secrets.json` (the environment or the OS keychain win if they hold one). Set it only to pin a key of your own. Run `bob gen` after a change so every client config carries it. |
 | `langfuseEnabled` | `false` | Send LiteLLM traces to a local Langfuse (`bob services langfuse start`). |
 | `n8nTimezone` | `"UTC"` | Timezone for n8n schedules. |
 
-Every other service secret (Open WebUI, n8n encryption key, SearXNG, all Langfuse keys and passwords) is generated on first use the same way and has no config key.
+Every other service secret (n8n encryption key, SearXNG, all Langfuse keys and passwords) is generated on first use the same way and has no config key.
 
 **KV cache type options** (valid for both `kvQuantK` and `kvQuantV`): `f16`, `bf16`, `q8_0`, `q5_1`, `q5_0`, `q4_1`, `q4_0`, `iq4_nl`.
 
@@ -128,7 +127,7 @@ endpoint requires `Authorization: Bearer <token>`.
 | `agent.agentPort` | `8084` | Server port. |
 | `agent.apiTokens` | `[]` | Per-client Bearer tokens, each `{"token": "sk-…", "owner": "alice"}`. Sessions are owner-scoped: a token only sees sessions its owner created (others 404). Bare strings still work (token = owner). |
 | `agent.defaultOwner` | `"local"` | Owner id the `litellmKey` (and any unlabelled session) maps to. |
-| `agent.acceptLitellmKey` | `true` | Accept the LiteLLM key as a bearer token on the agent API and the MCP HTTP transport. Set `false` so only `agent.apiTokens` entries and store-issued tokens open them. With it on, anyone holding the key (every generated client config, n8n, fabric, Open WebUI) gets an unscoped `agent.defaultOwner` identity; the hardened setup is scoped `agent.apiTokens` with this set to `false`. |
+| `agent.acceptLitellmKey` | `true` | Accept the LiteLLM key as a bearer token on the agent API and the MCP HTTP transport. Set `false` so only `agent.apiTokens` entries and store-issued tokens open them. With it on, anyone holding the key (every generated client config, n8n, fabric) gets an unscoped `agent.defaultOwner` identity; the hardened setup is scoped `agent.apiTokens` with this set to `false`. |
 | `agent.sessionDbPath` | `"data/sessions.db"` | SQLite store for multi-turn sessions (WAL, created on first server start). |
 | `agent.maxSessionTokens` | `0` | Per-session token budget; `0` = unlimited. Once reached, that session's completions return HTTP 402. |
 | `agent.gitAllowedRoots` | `[]` | Extra repos `git_*` may read; the Bob repo root is always allowed. |
@@ -394,7 +393,7 @@ Override in `config/user.json`:
 
 The voice loop reuses the **same** agent turn (and persona) as text chat; there is no separate voice system prompt. To keep replies speech-friendly, it runs `bob_voice.format_for_speech()` ([scripts/bob_voice.py](../scripts/bob_voice.py)), a post-processor that strips markdown and typographic symbols before the text reaches piper. The chain is: model output → strip `<think>` blocks → `format_for_speech` → piper TTS.
 
-**Piper HTTP server (for Open WebUI TTS):** `bob piper` starts a FastAPI wrapper around piper on `:8083` that accepts OpenAI-compatible `POST /v1/audio/speech` requests. The OpenAI `voice` parameter is accepted but ignored: piper always uses the configured `ttsVoice` ONNX file. Wire it in Open WebUI: Admin Panel → Audio → Text-to-Speech Engine → `http://localhost:8083`.
+**Piper HTTP server (OpenAI-compatible TTS):** `bob piper` starts a FastAPI wrapper around piper on `:8083` that accepts OpenAI-compatible `POST /v1/audio/speech` requests. The OpenAI `voice` parameter is accepted but ignored: piper always uses the configured `ttsVoice` ONNX file.
 
 ---
 
@@ -422,7 +421,7 @@ memory behaviour are guided by the tool descriptions, not the system prompt.
 
 The remaining two surfaces are separate:
 
-**Open WebUI**: driven from `config/models.json`. The top-level `prompts` key holds per-role prompts for local models:
+**Client prompts**: the top-level `prompts` key holds per-role prompts for local models:
 
 ```json
 {
@@ -433,7 +432,6 @@ The remaining two surfaces are separate:
 }
 ```
 
-`bob gen` calls `gen_webui`, which merges these into the Open WebUI SQLite database: it sets each Bob model's system prompt and leaves every other field and model you edited in WebUI alone. Override in `config/user.json` using the same key names. `ponder` has its own prompt (think it through, state assumptions, weigh alternatives, conclude).
 
 A pro (cloud) role uses the same `prompts[role]` as its local role, so `coder-pro` gets the `coder` prompt. To give one pro role a different prompt, set `systemPrompt` on it in the object form:
 

@@ -776,7 +776,7 @@ def _ensure_endpoint(config) -> None:
 
 
 def _handle_up(rest: list) -> int:
-    """bob up [--no-open] [--with-services]: background bring-up (endpoint + proxy + WebUI)."""
+    """bob up [--no-open] [--with-services]: background bring-up (endpoint + proxy)."""
     rest = list(rest)
     open_browser = not any(f in rest for f in ("-NoOpen", "--no-open"))
     with_services = any(f in rest for f in ("-WithServices", "--with-services"))
@@ -1658,7 +1658,6 @@ _HANDLERS = {
     "status": _handle_status,         # loaded-models status (scripts/tools/stack.py)
     "ps": _handle_ps,
     "logs": _handle_logs,
-    "webui": _handle_webui,
     "dsh": _handle_dsh,
     "litellm": _svc_handler("litellm"),   # one service_control core, per-verb adapters
     "whisper": _svc_handler("whisper"),

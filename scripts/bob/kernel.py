@@ -13,7 +13,7 @@ subprocessing them. Only prereqs, the venv creation, and the *first* build are k
   python3 -m bob.kernel build-swap           #          install the llama-swap proxy (release binary or Go)
   python3 -m bob.kernel aider-setup          #          opt-in: create venv-aider from its lock
 
-Flags: --skip-models --skip-build --skip-voice --launch --profile <p> --with-webui --with-aider
+Flags: --skip-models --skip-build --skip-voice --launch --profile <p> --with-aider
        --with-fabric --cpu --from-source
 """
 import argparse
@@ -98,8 +98,7 @@ VENVS = {
     "litellm": ("venv-litellm", "litellm-requirements"),
     "aider":   ("venv-aider", "aider-requirements"),
     "eval":    ("venv-eval", "eval-requirements"),
-    "webui":   ("venv-webui", "webui-requirements"),
-}
+    }
 
 
 def _profile_chosen() -> bool:
@@ -143,7 +142,7 @@ def _select_profile(profile: str = None) -> None:
 
 
 def bootstrap(skip_models: bool = False, skip_build: bool = False, profile: str = None,
-              with_webui: bool = False, cpu: bool = False, from_source: bool = False,
+              cpu: bool = False, from_source: bool = False,
               with_aider: bool = False) -> None:
     """Submodules -> engine + proxy -> Python venvs -> LiteLLM key -> gen configs -> fetch models.
     Re-runnable; heavy steps skippable. Imports the capability fns directly."""
@@ -202,10 +201,7 @@ def bootstrap(skip_models: bool = False, skip_build: bool = False, profile: str 
     # runtime; webui and aider are opt-in.
     print("\n=== Python venvs (3.12+) + tools ===", file=sys.stderr)
     if py:
-        names = ["litellm"] + (["webui"] if with_webui else []) + (["aider"] if with_aider else [])
-        if not with_webui:
-            print("  skipping venv-webui (open-webui is opt-in: re-run with --with-webui to install)",
-                  file=sys.stderr)
+        names = ["litellm"] + (["aider"] if with_aider else [])
         if not with_aider:
             print("  skipping venv-aider (aider is opt-in: bob aider-setup, or re-run with --with-aider)",
                   file=sys.stderr)
@@ -664,7 +660,7 @@ def verify_install() -> int:
 # --- setup (the 12-step orchestrator) ------------------------------------------------------------
 
 def setup(skip_models: bool = False, skip_build: bool = False, skip_voice: bool = False,
-          launch: bool = False, profile: str = None, with_webui: bool = False, cpu: bool = False,
+          launch: bool = False, profile: str = None, cpu: bool = False,
           from_source: bool = False, with_aider: bool = False, with_fabric: bool = False) -> int:
     """The fresh-machine orchestrator. Idempotent; safe to re-run. Prerequisites must be installed first
     via `python3 -m bob.kernel prereqs`. aider and fabric are opt-in (--with-aider / --with-fabric, or
@@ -749,7 +745,7 @@ def setup(skip_models: bool = False, skip_build: bool = False, skip_voice: bool 
         print("  (Windows: winget/VS-bundled cmake handled by the build)", file=sys.stderr)
 
     _step(6, total, "Bootstrap: submodules -> engine -> venvs -> configs -> models", "first build takes 5-15 min")
-    bootstrap(skip_models=skip_models, skip_build=skip_build, profile=profile, with_webui=with_webui, cpu=cpu,
+    bootstrap(skip_models=skip_models, skip_build=skip_build, profile=profile, cpu=cpu,
               from_source=from_source, with_aider=with_aider)
 
     _step(7, total, "Wire clients (Continue + dsh; aider when opted in)")
@@ -842,7 +838,7 @@ def build_swap(from_source: bool = False) -> str:
 # muscle memory used PowerShell-style switches. Normalize them to the argparse `--kebab` form.
 _FLAG_ALIASES = {
     "-skipmodels": "--skip-models", "-skipbuild": "--skip-build", "-skipvoice": "--skip-voice",
-    "-launch": "--launch", "-withwebui": "--with-webui", "-cpu": "--cpu", "--cpu": "--cpu",
+    "-launch": "--launch", "-cpu": "--cpu", "--cpu": "--cpu",
     "-profile": "--profile", "-fromsource": "--from-source", "-withaider": "--with-aider",
     "-withfabric": "--with-fabric", "-withnode": "--with-node",
 }
@@ -871,7 +867,6 @@ def main(argv=None) -> int:
         s.add_argument("--skip-build", action="store_true")
         s.add_argument("--skip-voice", action="store_true")
         s.add_argument("--launch", action="store_true")
-        s.add_argument("--with-webui", action="store_true", help="also install Open WebUI (opt-in)")
         s.add_argument("--with-aider", action="store_true", help="also install aider (opt-in)")
         s.add_argument("--cpu", action="store_true", help="force the CPU build tier (skip CUDA)")
         s.add_argument("--from-source", action="store_true",
@@ -898,11 +893,11 @@ def main(argv=None) -> int:
         if args.cmd == "setup":
             return setup(skip_models=args.skip_models, skip_build=args.skip_build,
                          skip_voice=args.skip_voice, launch=args.launch, profile=args.profile,
-                         with_webui=args.with_webui, cpu=args.cpu, from_source=args.from_source,
+                         cpu=args.cpu, from_source=args.from_source,
                          with_aider=args.with_aider, with_fabric=args.with_fabric)
         if args.cmd == "bootstrap":
             bootstrap(skip_models=args.skip_models, skip_build=args.skip_build, profile=args.profile,
-                      with_webui=args.with_webui, cpu=args.cpu, from_source=args.from_source,
+                      cpu=args.cpu, from_source=args.from_source,
                       with_aider=args.with_aider)
             return 0
         if args.cmd == "venv":

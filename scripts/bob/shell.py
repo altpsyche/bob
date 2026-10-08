@@ -108,7 +108,6 @@ _COMMANDS = [
     _Cmd("/up", "start the stack in the background (endpoint + proxy + WebUI)", "_cmd_up",
          args="[--with-services]"),
     _Cmd("/restart", "restart the inference endpoint", "_cmd_restart"),
-    _Cmd("/webui", "open the Open WebUI browser tab", "_cmd_webui"),
     _Cmd("/stop", "stop local inference (frees VRAM)", "_cmd_stop"),
     _Cmd("/logs", "recent inference-server log", "_cmd_logs"),
     _Cmd("/key", "provider API keys: list, set (hidden prompt), remove", "_cmd_key",

@@ -60,7 +60,7 @@ In the shell:
 
 Type `/` to filter the command list. Gated tools (e.g. `shell_run`, or any tool under `/agency confirm`) show an inline approval: **y** runs it once, **N** (the default) refuses, **a** approves this exact call (same tool, same arguments) for the rest of the session, and **t** approves the tool for any arguments; **Ctrl-C** cancels the in-flight turn and returns to the prompt. Inference auto-starts on your first turn if the stack isn't already up.
 
-**Two surfaces, one core.** The shell's `/commands` and the terminal's `bob <verb>` are not competing menus: use `bob <verb>` for scripting, cron, and SSH one-shots; use `/command` to drive the same thing from inside the cockpit. The lifecycle/cockpit commands live on **both**: `bob up`/`/up`, `bob stop`/`/stop`, `bob status`/`/status`, plus `restart`, `services`, `webui`, `logs`. Each is a thin front door over one shared core (e.g. [`scripts/tools/stack.py`](../scripts/tools/stack.py)), never a second implementation. Session-only state (`/model`, `/agency`, `/session`, `/theme`, `/clear`) is shell-only by design; provisioning and one-shot conversation (`chat`, `fetch`, `build`, `setup`, …) are terminal-only. From the terminal, `bob help` prints the same generated command catalog and, at the end, lists which commands are also `/commands` in the shell.
+**Two surfaces, one core.** The shell's `/commands` and the terminal's `bob <verb>` are not competing menus: use `bob <verb>` for scripting, cron, and SSH one-shots; use `/command` to drive the same thing from inside the cockpit. The lifecycle/cockpit commands live on **both**: `bob up`/`/up`, `bob stop`/`/stop`, `bob status`/`/status`, plus `restart`, `services`, `logs`. Each is a thin front door over one shared core (e.g. [`scripts/tools/stack.py`](../scripts/tools/stack.py)), never a second implementation. Session-only state (`/model`, `/agency`, `/session`, `/theme`, `/clear`) is shell-only by design; provisioning and one-shot conversation (`chat`, `fetch`, `build`, `setup`, …) are terminal-only. From the terminal, `bob help` prints the same generated command catalog and, at the end, lists which commands are also `/commands` in the shell.
 
 ## One-shot chat: `chat`, `think`, `code`
 
@@ -119,12 +119,12 @@ Inference gets served three ways; pick by how long you want it up:
 |---------|--------------|----------|
 | **auto-start** (default) | The first `bob` shell turn or `bob chat`/`bob agent` call brings the stack up on demand if it isn't already reachable. | Normal interactive and one-shot use, you never think about it. |
 | `bob serve` | Foreground stack (llama-swap `:8080` + LiteLLM `:8081`). Stays in your terminal, prints logs, stops with Ctrl-C. | You want to watch the logs, or run in a dedicated terminal/pane. |
-| `bob up` | Background bring-up (endpoint + proxy, and Open WebUI if it's installed). Returns to your prompt. | You want inference to stay up for IDE/terminal tools and the API without a foreground process. |
+| `bob up` | Background bring-up (endpoint + proxy). Returns to your prompt. | You want inference to stay up for IDE/terminal tools and the API without a foreground process. |
 
 `bob up` flags:
 
 ```
-bob up                     # start endpoint + proxy in the background (opens WebUI if installed)
+bob up                     # start endpoint + proxy in the background
 bob up --no-open           # don't open the browser
 bob up --with-services     # also start the opt-in services group (Langfuse / SearXNG / n8n); off by default
 ```
@@ -1036,14 +1036,9 @@ Results are saved as JSON under `results/eval-<role>-<task>-<timestamp>/`. The p
 
 Scores well below these ranges usually mean the chat template wasn't applied correctly. Run the same task before and after a quant change to measure the quality delta.
 
-## Browser chat and RAG: Open WebUI
+## Browser and terminal coding: DeepSeek Harness
 
-Open WebUI is opt-in; install it at setup with `--with-webui` (Linux `./setup.sh --with-webui`, Windows `setup.bat --with-webui`). Once installed, `bob up` starts it on port 3000 (pre-wired to the local endpoint and embedding model), or `bob webui` launches it alone.
-
-Open WebUI uses the `embed` model for document search automatically. Add documents through the workspace panel; they are indexed locally and available in any chat via the RAG interface. Create model presets in Workspace → Models (e.g. a low-temperature preset for careful, deliberate answers).
-
-> **Agent model in WebUI:** Selecting the `agent` model in Open WebUI runs raw inference, tool schemas are not injected and `<tool_call>` blocks appear as plain text. For full tool use, run `bob agent "goal"` in the terminal, or start `bob agent serve` and call `http://localhost:8084/v1/agent/completions` from n8n or any HTTP client.
-
+Open WebUI is removed from the product path. The DeepSeek Harness is the browser and terminal coding client, with Bob as its model, context, memory, and tool backend. Manage the link with `bob dsh` as described above.
 ## Customizing your setup: config/user.json
 
 Configuration is all JSON. Three files:

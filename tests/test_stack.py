@@ -604,9 +604,9 @@ class TestRestart(_LogsMixin, unittest.TestCase):
             out = stack.stack_restart(CFG)
         return out, order
 
-    def test_webui_restarted_when_it_was_running(self):
-        out, order = self._restart(webui_up=True)
-        self.assertIn(("start", "webui"), order)
+    def test_webui_is_not_restarted(self):
+        _out, order = self._restart(webui_up=True)
+        self.assertNotIn(("start", "webui"), order)
         self.assertLess(order.index(("stop", 100)), order.index(("start", "core")))   # stop completes first
 
     def test_webui_left_down_when_it_was_down(self):
