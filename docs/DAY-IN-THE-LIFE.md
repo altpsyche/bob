@@ -10,7 +10,7 @@ A hands-on tour of every feature in the stack, structured as a working session. 
 
 - [Morning: Starting Up](#morning-starting-up)
 - [Feature 1: The bob shell + Chat](#feature-1-the-bob-shell--chat)
-- [Feature 2: Open WebUI (Browser Chat)](#feature-2-open-webui-browser-chat)
+- [Feature 2: DeepSeek Harness (Browser and Terminal Coding)](#feature-2-deepseek-harness-browser-and-terminal-coding)
 - [Feature 3: Continue.dev (VS Code Autocomplete and Chat)](#feature-3-continuedev-vs-code-autocomplete-and-chat)
 - [Feature 4: Cline (VS Code Agentic Edits)](#feature-4-cline-vs-code-agentic-edits)
 - [Feature 5: Aider (Terminal Plan-then-Edit)](#feature-5-aider-terminal-plan-then-edit)
@@ -65,7 +65,7 @@ Every capability is also a one-shot `bob <verb>` command (covered below) for scr
 
 ### Optional: pre-warm the stack in the background
 
-Auto-start is on-demand: it brings inference up when you first talk. To warm everything up ahead of time, or keep it running for tools outside the terminal (Open WebUI, VS Code, n8n), pre-warm it:
+Auto-start is on-demand: it brings inference up when you first talk. To warm everything up ahead of time, or keep it running for tools outside the terminal (DeepSeek Harness, VS Code, n8n), pre-warm it:
 
 ```bash
 bob up
@@ -75,7 +75,7 @@ This starts, silently in the background:
 - The **llama-swap engine** at `http://localhost:8080/v1`: the local model server (llama.cpp)
 - The **LiteLLM proxy** at `http://localhost:8081/v1`: the OpenAI-compatible endpoint all your AI tools point at (adds retry + pro-model routing)
 
-Add `--with-services` to also start the opt-in add-on services (Langfuse, SearXNG, n8n) on demand; they are off by default and never auto-start. Opt into Open WebUI at setup time with `setup.sh --with-webui` (or `setup.bat --with-webui`). `bob up` opens your browser if WebUI is enabled; suppress that with `bob up --no-open`.
+Add `--with-services` to also start the opt-in add-on services (Langfuse, SearXNG, n8n) on demand; they are off by default and never auto-start. DeepSeek Harness is the browser and terminal coding client; install or repair the link with `bob dsh install`.
 
 Check what's running:
 
@@ -177,46 +177,38 @@ Full reference: [MEMORY.md](MEMORY.md). Disable memory by adding `{"memory": {"e
 
 ---
 
-## Feature 2: Open WebUI (Browser Chat)
+## Feature 2: DeepSeek Harness (Browser and Terminal Coding)
 
-**What it is:** A full-featured chat interface in your browser, like ChatGPT but running locally. Opt-in: enable it with `setup.sh --with-webui` (or `setup.bat --with-webui`), or launch it any time with `bob webui`.
+**What it is:** The main coding harness. DSH runs the coding loop in the browser or terminal, while Bob provides the models, context modes, memory, and tools.
 
-Open http://localhost:3000. On first visit, create a local account (username and password stored locally, with no signup email or server involved).
+Install or repair the link:
 
-Try a first message:
-```
-Explain what a hash map is in simple terms.
-```
-
-The `chat` model is used by default. The first word takes a moment while the model loads into VRAM; later messages in the same session are much faster.
-
-### Switching models
-
-At the top of the chat, click the model dropdown and switch to `ponder`, the larger reasoning model, better for complex questions, architecture discussions, or anything you want it to think through before answering.
-
-Switch back to `coder` for programming questions; it's faster and more precise on code tasks.
-
-### Thinking mode and /no_think
-
-The `ponder` and `chat` models use a reasoning scratchpad by default, thinking through the problem silently before responding. This produces better answers for hard questions but adds latency.
-
-For quick questions where you don't need deep reasoning:
-```
-What's the keyboard shortcut to close a tab in Chrome? /no_think
+```bash
+bob dsh install
 ```
 
-Adding `/no_think` at the end of a message skips the scratchpad. Use it for simple lookups; leave it off for planning, debugging, or architecture questions.
+That installs the DSH version pinned in `versions.lock` when a package manager is available, sets Bob as the default DSH model, writes the provider route and credential, and installs the native `bob-dsh-bridge`.
 
-### Document chat (RAG)
+Switch context modes with:
 
-Open the sidebar and find **Workspace → Knowledge**. Upload any PDF, text file, or document. Once indexed, start a new chat and click the `+` icon to attach it as context. Ask questions about it:
+```bash
+bob dsh mode quick
+bob dsh mode deep
 ```
-What are the main conclusions in this document?
+
+Mount Bob's MCP tools explicitly:
+
+```bash
+bob dsh tools on
+bob dsh tools status
 ```
 
-The `embed` model indexes the document locally. Nothing leaves your machine.
+The native bridge imports complete DSH session surfaces, assistant messages, tool results, and subagent transcripts into Bob. Check the link with:
 
----
+```bash
+bob dsh status
+bob dsh doctor
+```
 
 ## Feature 3: Continue.dev (VS Code Autocomplete and Chat)
 
@@ -550,7 +542,7 @@ bob litellm status  # confirm it's running
 
 **Step 3: Confirm clients use :8081:**
 
-All bundled clients (Continue, aider, Cline, fabric, Open WebUI, `bob chat`) are already configured for `:8081`. If you use a custom tool, set its API base to `http://localhost:8081/v1`.
+All bundled clients (DeepSeek Harness, Continue, aider, Cline, fabric, `bob chat`) are already configured for `:8081`. If you use a custom tool, set its API base to `http://localhost:8081/v1`.
 
 **Step 4: Make a request and check Langfuse:**
 
@@ -609,7 +601,7 @@ The voice loop has no system prompt of its own: it reuses Bob's persona and the 
 **Tips:**
 - Use headphones to stop the mic from picking up the speaker.
 - Whisper small runs in ~300 ms on GPU after the first load. Silence detection threshold is `voice.silenceSec` (default `1.5`) in `config/user.json`.
-- To wire `bob voice` audio through Open WebUI instead: `bob piper` starts a piper HTTP server on `:8083`; wire it in WebUI Admin Panel → Audio → Text-to-Speech Engine.
+- To use the piper TTS server from another OpenAI-compatible client, `bob piper` starts it on `:8083`.
 
 ---
 
@@ -727,7 +719,7 @@ bob clip https://news.ycombinator.com/item?id=12345678
 
 Fetches the page, strips HTML, summarises in 3 to 5 sentences, prints the summary, and stores `url: summary` to Bob's memory DB. Not an agent loop: one LLM call, very fast.
 
-### Serve via HTTP (for n8n and Open WebUI)
+### Serve via HTTP (for n8n and other clients)
 
 ```bash
 bob agent serve     # starts FastAPI on 127.0.0.1:8084; keep this terminal open
@@ -746,7 +738,7 @@ For token-by-token streaming, POST the same body to `/v1/agent/completions/strea
 
 Wire into n8n with an HTTP Request node: URL `http://localhost:8084/v1/agent/completions` (native n8n; use `http://host.docker.internal:8084/...` only if you run n8n in Docker yourself), method POST, authentication the **Bob LiteLLM** Header Auth credential (the agent API accepts the litellm key), body `{"goal": "{{ $json.goal }}"}`. Bind address and port are `agent.serveHost` / `agent.agentPort` in `config/user.json` (loopback by default; set `serveHost` to `0.0.0.0` to expose on the LAN; keep `allowPrivateFetch` false).
 
-> **Note:** Selecting the `agent` model directly in Open WebUI runs raw inference without tool injection; `<tool_call>` blocks appear as plain text. Use `bob agent serve` for full tool use from WebUI via a custom function or n8n workflow.
+> **Note:** A client that calls the `agent` model directly on `:8081` runs raw inference without Bob tool injection. Use `bob agent serve` for full tool use from a custom client or n8n workflow.
 
 ### Check agent health
 
@@ -1010,7 +1002,7 @@ For a first read-through, here's a short sequence that touches every feature:
 3. `bob think "design a plugin architecture for a game engine"`: one-shot with the ponder
 4. `bob remember "working on X project"` then `bob recall "current project"`: test memory store/search
 5. `bob up --with-services`: pre-warm inference + the opt-in add-on services in the background
-6. Open http://localhost:3000 (after `setup.sh --with-webui` or `bob webui`): chat with Open WebUI, try `/no_think`
+6. Run `bob dsh install`, then open DeepSeek Harness and confirm Bob is the default provider
 7. Open VS Code: accept an autocomplete suggestion, try `Ctrl+I` on a block of code
 8. Open the Continue panel (`Ctrl+L`): ask `@web what changed in the latest Python release?`
 9. Open the Cline panel: give it a small contained task ("add a docstring to this function")

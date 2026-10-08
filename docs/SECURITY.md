@@ -27,7 +27,7 @@ tools\venv-litellm\Scripts\python.exe -m unittest discover -s tests
 | Ownership | A token only sees/modifies sessions its owner created; others 404 (no existence leak) | `test_server.test_owner_cannot_read_others_session_404`, `..._delete_...`, `..._complete_...`, `..._stream_...`, `test_unknown_and_unowned_are_indistinguishable` |
 | `file_read`/`file_write` | Refuse paths outside `allowedReadPaths`/`allowedWritePaths` | `test_file.test_denies_outside_allowed_root` |
 | Secrets denylist | `config.json`, `*.psd1`, `*.db`, `logs/`, `.env*` unreadable even inside an allowed root; the litellm key never leaks | `test_file.test_denies_config_json_and_hides_secret`, `..._psd1`, `..._db`, `..._env`, `..._logs_dir`, `test_write_refuses_secret_even_when_allowed` |
-| Key-bearing files | `file_read` and `search_code` refuse the generated configs that embed or wire the LiteLLM key (`config/litellm.yaml`, `config/continue/config.yaml`, `config/aider/*`, `config/dsh/*`), any `config` under `tools/n8n-data/`, `.webui_secret_key`, dsh's `.credentials.yaml` and `secrets.json` | `test_fsguard.test_every_key_bearing_config_is_denied`, `test_n8n_config_and_webui_secret_key_are_denied`, `test_denies_secret_basenames`, `test_file_read_refuses_a_key_bearing_config` |
+| Key-bearing files | `file_read` and `search_code` refuse the generated configs that embed or wire the LiteLLM key (`config/litellm.yaml`, `config/continue/config.yaml`, `config/aider/*`, `config/dsh/*`), any `config` under `tools/n8n-data/`, dsh's `.credentials.yaml` and `secrets.json` | `test_fsguard.test_every_key_bearing_config_is_denied`, `test_n8n_config_and_webui_secret_key_are_denied`, `test_denies_secret_basenames`, `test_file_read_refuses_a_key_bearing_config` |
 | `git_*` | Restricted to allow-listed repos (repo root + `gitAllowedRoots`); any other path refused; arguments can never become git options | `test_git.test_outside_repo_denied`, `test_default_repo_allowed`, `test_extra_root_allowed`, `test_diff_file_cannot_inject_git_options`, `test_repo_path_shaped_like_option_refused` |
 | `search_code` | Query can never become a search-tool option; obeys the same read allowlist and secrets denylist as `file_read` | `test_search_plugin.test_pre_flag_query_executes_nothing`, `test_path_outside_allowlist_refused`, `test_matches_in_denied_files_withheld` |
 | Tool names | A tool name another module already registered is refused (no shadowing) | `test_registry.test_plugin_cannot_shadow_system_tool` |
@@ -60,7 +60,7 @@ tools\venv-litellm\Scripts\python.exe -m unittest discover -s tests
   LiteLLM key or wire a client to it: `config/litellm.yaml`, `config/continue/config.yaml`, `config/aider/.aider.conf.yml`,
   `config/aider/model-metadata.json`, `config/dsh/settings.yaml` and `config/dsh/cordis.patch.yml`.
   `file_read` and `search_code` refuse them, along with any `config` file under `tools/n8n-data/` (n8n's
-  encryption key), `.webui_secret_key` (Open WebUI's session key), dsh's `.credentials.yaml` and
+  encryption key), dsh's `.credentials.yaml` and
   `secrets.json`. `config/litellm.yaml` itself holds no key: it reads
   `master_key: os.environ/LITELLM_MASTER_KEY`, which Bob sets when it starts the proxy.
 
@@ -173,8 +173,8 @@ and shell wiring run everywhere; real-confinement tests (write-outside-root deni
 - **The litellm key** is generated per machine (`sk-bob-...`, kept in `data/secrets.json`), not a
   shared default. An explicit `litellmKey` in `config/user.json` or `BOB_LITELLMKEY` in the environment
   wins.
-- **The litellm key is a wide credential.** Every generated client config, n8n's credential, fabric's
-  `.env` and Open WebUI hold it. With `agent.acceptLitellmKey` on (the default), anyone holding it gets an
+- **The litellm key is a wide credential.** Every generated client config, n8n's credential and fabric's
+  `.env` hold it. With `agent.acceptLitellmKey` on (the default), anyone holding it gets an
   unscoped `agent.defaultOwner` identity on the agent API and MCP: every tool and role, and the default owner's
   sessions. The hardened setup is scoped `agent.apiTokens` per client plus `agent.acceptLitellmKey = false`.
 - **Start the proxy through Bob.** `config/litellm.yaml` reads `master_key: os.environ/LITELLM_MASTER_KEY`.

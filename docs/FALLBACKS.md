@@ -13,10 +13,10 @@ bob diagnose    # system + model health check
 |---|---|---|---|
 | Inference engine | Bob prebuilt llama-server (driver-only, CUDA libs bundled) | Source build (`bob build --from-source`, CUDA 12.8) | Ollama |
 | Proxy / model router | llama-swap (pinned, SHA-verified release binary) | llama-swap Go build (`--from-source`) | Ollama's built-in model swapping |
-| Chat and RAG UI | Open WebUI (Python 3.12, port 3000) | AnythingLLM desktop installer | LM Studio |
+| Coding UI | DeepSeek Harness | Continue.dev | Cline |
 | IDE autocomplete | Continue.dev | twinny | LM Studio + Continue |
 | Plan and edit separately | aider architect mode | Cline Plan/Act | Cline single-model |
-| Embeddings | Qwen3-Embedding-0.6B | nomic-embed-text | Open WebUI's built-in nomic |
+| Embeddings | Qwen3-Embedding-0.6B | nomic-embed-text | any OpenAI-compatible embedder |
 
 ## Engine: prebuilt by default, source on request
 
@@ -44,7 +44,7 @@ The `cpu` profile's `chat` has a 4096-token window, too small for the full tool 
 
 **Prebuilt llama.cpp binary:** Download `*-bin-win-cuda-12.4-x64.zip` (Windows) or the matching Linux CUDA build from the [llama.cpp releases page](https://github.com/ggml-org/llama.cpp/releases). Extract the binaries to `bin/` and also copy the matching CUDA runtime libraries into `bin/` (`bob build` copies these automatically, but the prebuilt zip does not include them). This works on all supported GPU generations. On Blackwell it's slightly slower than a CUDA 12.8 source build; on Ada and Ampere the difference is negligible.
 
-**Ollama:** If you want to skip the build entirely, Ollama has GPU support for all three generations with no compile step. Install it from the official site, then change every client's API base from `http://localhost:8081/v1` to `http://localhost:11434/v1`. The Continue, aider, and Open WebUI configs all use `apiBase`, so it's a one-line change per config. Peak performance is lower than a native build, but all clients work correctly.
+**Ollama:** If you want to skip the build entirely, Ollama has GPU support for all three generations with no compile step. Install it from the official site, then change every client's API base from `http://localhost:8081/v1` to `http://localhost:11434/v1`. The Continue and aider configs use `apiBase`, so it's a one-line change per config. Peak performance is lower than a native build, but all clients work correctly.
 
 **Any external OpenAI-compatible endpoint:** To skip local inference altogether, point clients at any OpenAI-compatible URL. Two ways:
 
@@ -73,10 +73,6 @@ The `cpu` profile's `chat` has a 4096-token window, too small for the full tool 
 
 Setup installs llama-swap as the release binary pinned in `versions.lock` for your OS and CPU (x86_64 and arm64 Linux, Windows), SHA-256 verified before it lands in `bin/`, so no Go is needed. Go builds it from the submodule only with `--from-source`, on a platform with no pinned asset, or when the pinned release no longer matches the submodule commit. If the download fails (offline, a proxy), re-run `python -m bob.kernel build-swap` with network access, or download the matching release from the [llama-swap releases page](https://github.com/mostlygeek/llama-swap/releases) yourself and place it in `bin/` (`llama-swap.exe` on Windows); `bob serve` uses whatever is there.
 
-## Open WebUI won't install
-
-Open WebUI needs Python 3.11 or 3.12. Python 3.14 is too new; 3.10 is too old. It lives in its own virtual environment (`tools/venv-webui`), separate from aider's (`tools/venv-aider`), because their dependency pins conflict and can't share an environment. If pip still fails on the right Python version, the most reliable alternative is AnythingLLM, which is a desktop installer with no Python dependency. Install it, add an OpenAI connection pointing at `http://localhost:8081/v1`, choose a separate embedding backend, and organize documents per workspace.
-
-## Model file not found on download
+# Model file not found on download
 
 If `bob fetch` fails with a 404 or file-not-found error, the HuggingFace repository or filename for that model has probably changed. Open the model's page on huggingface.co, find the correct repo path and exact filename, update that model's `repo`, `path`, and `gguf` fields in `config/models.json`, then run `bob fetch` again. Use `bob fetch --list` first to preview the resolved download URLs without pulling anything.

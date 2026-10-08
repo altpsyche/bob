@@ -33,7 +33,7 @@ deep-merged with `user.json`. Command dispatch and help both come from
 
 Secrets never live in a tracked file. They resolve through the seam `osenv.secret(name)` with
 precedence **env var → OS keychain → `data/secrets.json` → config default**. A secret Bob needs and
-finds nowhere (the LiteLLM key, the Open WebUI, n8n and SearXNG secrets, the Langfuse keys) is generated
+finds nowhere (the LiteLLM key, the n8n and SearXNG secrets, the Langfuse keys) is generated
 once by `osenv.ensure_secret` and written to `data/secrets.json` (mode 0600 on POSIX). See
 [SECURITY.md](SECURITY.md).
 
@@ -106,7 +106,7 @@ python -m bob.kernel aider-setup         #          opt-in aider venv + config
 ```
 
 Flags (kebab-case, identical on both OSes): `--skip-models`, `--skip-build`, `--skip-voice`,
-`--launch`, `--with-webui`, `--with-aider`, `--with-fabric`, `--cpu`, `--from-source`, `--profile <name>`.
+`--launch`, `--with-aider`, `--with-fabric`, `--cpu`, `--from-source`, `--profile <name>`.
 Setup never replaces a profile you chose; it only suggests one that fits the detected VRAM. Every venv
 installs from its `.lock` file on every OS. `setup` needs no root; only
 Tier 0 prerequisites use one batched `sudo` (Linux). This page is the "how the pieces fit" reference;

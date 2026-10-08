@@ -383,19 +383,18 @@ Without Go, run `python -m bob.kernel build-swap` to install the pinned release 
 
 ## 6. Create the Python virtual environments
 
-Bob keeps its Python tools in isolated venvs under `tools/` because Open WebUI, aider, and LiteLLM have
-conflicting dependency pins. Build them with **Python 3.11 or 3.12** (3.13+ has Open WebUI conflicts).
-The kernel uses `osenv.new_bob_venv`; the manual equivalent is `python -m venv` plus a `pip install -r`
+Bob keeps its Python tools in isolated venvs under `tools/` because aider and LiteLLM have
+conflicting dependency pins. Build them with **Python 3.11 or 3.12**. The kernel uses
+`osenv.new_bob_venv`; the manual equivalent is `python -m venv` plus a `pip install -r`
 of the matching requirements file.
 
-One venv is built by default; `venv-webui` and `venv-aider` are opt-in; `venv-eval` is provisioned on
+One venv is built by default; `venv-aider` is opt-in; `venv-eval` is provisioned on
 demand by the first `bob eval`.
 
 | Venv | Requirements file | Built by default? |
 |---|---|---|
 | `venv-litellm` | `tools/litellm-requirements.txt` | yes, the LiteLLM proxy **and** the `bob` CLI's runtime deps live here |
 | `venv-aider` | `tools/aider-requirements.txt` | no, opt-in (`--with-aider` or `bob aider-setup`) |
-| `venv-webui` | `tools/webui-requirements.txt` | no, opt-in (large: torch/transformers, multi-GB) |
 | `venv-eval` | `tools/eval-requirements.txt` | no, on demand for `bob eval` |
 
 > The `bob` command itself runs under `tools/venv-litellm/bin/python`, so build **venv-litellm first**:
@@ -414,10 +413,6 @@ python3 -m venv tools/venv-aider
 tools/venv-aider/bin/python -m pip install --upgrade pip
 tools/venv-aider/bin/python -m pip install -r tools/aider-requirements.lock
 
-# opt-in Open WebUI venv (only if you want the browser UI):
-python3 -m venv tools/venv-webui
-tools/venv-webui/bin/python -m pip install --upgrade pip
-tools/venv-webui/bin/python -m pip install -r tools/webui-requirements.lock
 ```
 
 Windows:
@@ -432,7 +427,7 @@ tools\venv-aider\Scripts\python.exe -m pip install --upgrade pip
 tools\venv-aider\Scripts\python.exe -m pip install -r tools\aider-requirements.lock
 ```
 
-Each install takes 2 to 10 minutes; `venv-webui` is by far the largest.
+Each install takes 2 to 10 minutes.
 
 ---
 
@@ -464,6 +459,20 @@ If you don't use scoop, add the repo folder to PATH and invoke `bob` from there.
 then `bob help`.
 
 ---
+
+
+### Install the DeepSeek Harness link
+
+After `bob` resolves, install or repair the primary coding client link:
+
+```bash
+bob dsh install
+bob dsh bridge on
+bob dsh tools on    # optional: mount Bob's MCP tools explicitly
+bob dsh doctor
+```
+
+`bob dsh install` installs the DSH version pinned in `versions.lock` when pnpm or npm is available, writes Bob's provider route and credential, and sets Bob as the default DSH model. The native `bob-dsh-bridge` plugin imports complete DSH session surfaces, including assistant messages and subagent transcripts, into Bob.
 
 ## 8. Generate the runtime configs
 

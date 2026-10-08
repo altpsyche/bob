@@ -31,6 +31,11 @@ changed, verifies, and rolls back on failure.
 > a release cut that cannot drift; 1.3 moves the whole local registry a generation and adds a `writer` role
 > for long-form prose; 2.0 makes Bob private by default, closes every seam a repo-wide audit found, and runs
 > each GPU tier on one model. Everything up to and including 2.0 is shipped; everything above it is the plan.
+>
+> **Current default UI after 2.0.1:** DeepSeek Harness is the primary browser and terminal coding client.
+> Open WebUI is removed from the default product path, and the native `bob-dsh-bridge` imports complete
+> DSH session surfaces, assistant messages, tool results, and subagent transcripts into Bob. Context modes
+> are exposed as `<role>-quick` and `<role>-deep` model aliases through the LiteLLM pre-call callback.
 
 ---
 

@@ -103,7 +103,6 @@ fails partway, fix it and re-run; completed steps are skipped. Common flags (sam
 - `--profile 12gb` / `--profile cpu`: pick a model profile before downloading anything
 - `--cpu`: the CPU tier (no GPU engine)
 - `--from-source`: build the engine and llama-swap from source instead of using the prebuilts (the prereq step then installs the compiler, cmake, Go and, on a GPU box, the CUDA toolkit). Also the way to get NCCL back: the published prebuilt is built without it, since it only speeds up multi-GPU boxes and costs every downloader ~350 MB
-- `--with-webui`: also build the Open WebUI venv (opt-in; multi-GB torch/transformers)
 - `--with-aider`: also install aider and generate its config (opt-in; later: `bob aider-setup`)
 - `--with-fabric`: also build fabric and point it at the local endpoint (opt-in, needs Go; later: `bob fabric-setup`)
 - `--with-node` (prereq step and one-command installer only): also install Node.js, which n8n and Continue's npx MCP servers need
@@ -129,11 +128,11 @@ the `cpu` tier automatically. Verify with `bob doctor` (see [Verifying the insta
    - `git submodule update --init --recursive` fetches the llama.cpp and llama-swap source trees.
    - **Provision the engine** (`lifecycle.ensure_engine`), the single decision point shared by setup, `bob build`, and `bob update`: it downloads the prebuilt, driver-only engine (a `.tar.xz` whose size it announces before the download starts) and SHA256-verifies it against the release manifest, or builds from source on the CPU tier / with `--from-source` / when no matching prebuilt exists, writing the binaries to `bin/`. It also says up front what this machine will *not* get: arm64 Linux has no prebuilt and compiles instead, and an AMD or Intel GPU gets no acceleration, because the GPU tier is NVIDIA CUDA only. If a downloaded engine cannot run on the host it falls back to a source build automatically, so a machine is never left without a working engine. Skips if the binary already exists (`bob build --force` to re-provision). `bob update` snapshots `bin/` before a change and rolls back automatically if the new engine fails to verify.
    - **llama-swap**: installs the pinned, SHA-verified release binary for this OS and CPU (x86_64 and arm64). Go builds it only with `--from-source` or when no release is pinned for the platform.
-   - **Python venvs**: `tools/venv-litellm` (plus `tools/venv-webui` with `--with-webui` and `tools/venv-aider` with `--with-aider`) are created via `osenv.new_bob_venv` and installed from their `.lock` files on every OS. Kept separate on purpose, their pins conflict. (`venv-eval` is provisioned lazily by `bob eval`.)
+   - **Python venvs**: `tools/venv-litellm` (plus `tools/venv-aider` with `--with-aider`) are created via `osenv.new_bob_venv` and installed from their `.lock` files on every OS. Kept separate on purpose, their pins conflict. (`venv-eval` is provisioned lazily by `bob eval`.)
    - **LiteLLM key**: generated once (`sk-bob-...`) into `data/secrets.json` before any client config is written, so every generated file carries the same key.
    - **Generate configs** (`generate.gen_all`): writes `config/llama-swap.yaml`, `config/litellm.yaml` and the client configs from `config/models.json`. Never edit them by hand; they are regenerated on every `bob up`/`serve`.
    - **Fetch models** (`provision.fetch_models`): downloads the active profile's GGUFs (resume + SHA256-verify vs `versions.lock`).
-7. **Wire clients**: symlinks `config/continue/config.yaml` to `~/.continue/config.yaml`, merges the DeepSeek Harness drop-ins when dsh is installed, and (with `--with-aider`) installs aider. aider runs with `--config config/aider/.aider.conf.yml`, so nothing is written to `~/.aider.conf.yml`.
+7. **Wire clients**: symlinks `config/continue/config.yaml` to `~/.continue/config.yaml`, installs the pinned DeepSeek Harness when a package manager is available and merges the native `bob-dsh-bridge`, and (with `--with-aider`) installs aider. Run `bob dsh install` later to repair the DSH link, `bob dsh bridge on` to mount the native session bridge, and `bob dsh tools on` to mount Bob MCP tools. aider runs with `--config config/aider/.aider.conf.yml`, so nothing is written to `~/.aider.conf.yml`.
 8. **fabric** (opt-in, `--with-fabric`): builds the fabric CLI (Go) and points it at the local endpoint. Skipped otherwise.
 9. **Install the `bob` CLI**: symlinks `./bob` into `~/.local/bin` (POSIX) or a `bob.cmd` shim into scoop\shims (Windows).
 10. **Voice**: the faster-whisper STT model, the piper binary and voice, and the audio Python deps (plus the CUDA-12 cuBLAS/cuDNN wheels on an NVIDIA box, so STT runs on the GPU; it falls back to CPU int8 without them).
@@ -201,7 +200,7 @@ For a detailed walkthrough of what the Docker-backed services do internally, plu
 ## Verifying the install
 
 ```bash
-bob up                    # starts llama-swap (:8080) + LiteLLM proxy (:8081)  (+ Open WebUI :3000 if set up with --with-webui)
+bob up                    # starts llama-swap (:8080) + LiteLLM proxy (:8081)
 bob models                # should list the active profile's roles (16gb: chat, coder, ponder, writer, agent, vision, fim, embed, rerank)
 bob bench                 # performance check (see expected numbers below)
 bob chat coder "hi"       # end-to-end sanity check (routes via :8081 LiteLLM proxy)

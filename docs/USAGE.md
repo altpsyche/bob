@@ -141,7 +141,7 @@ bob stop      # stop Bob's own services and free VRAM (it never touches processe
 
 The endpoint logs go to `logs/llama-swap.log`; tail them live with `bob logs`. The server loads a model into VRAM on first request and unloads it after idle. The exceptions are `embed` (embeddings) and, on every profile but 16gb, `fim` (autocomplete), which are pinned and never unloaded. On 16gb `fim` joins the swap group, so autocomplete and chat take turns. Only one large model is resident at a time; switching between them takes a few seconds. On 16gb and up, `chat`, `coder`, `ponder`, `writer` and `agent` are one model under five names, so moving between them costs no swap.
 
-**mlock:** the pinned models (`embed`, and `fim` where it is pinned) are locked in physical RAM with `--mlock`, preventing the OS from paging their weights to disk under memory pressure (e.g. simultaneous VS Code autocomplete, chat, and Open WebUI load). On systems with less than 32 GB of RAM, disable it by overriding the `fim`/`embed` entries in `config/user.json` and re-running `bob gen`. Setting `mlockBig` on the swap-group models (ponder, coder, chat) extends mlock to their CPU-offloaded pages; on Windows this needs `SeLockMemoryPrivilege` (`bob mlock --grant` checks and grants it), on Linux you raise the memlock limit instead (`ulimit -l unlimited` or `/etc/security/limits.conf`).
+**mlock:** the pinned models (`embed`, and `fim` where it is pinned) are locked in physical RAM with `--mlock`, preventing the OS from paging their weights to disk under memory pressure (e.g. simultaneous VS Code autocomplete and chat load). On systems with less than 32 GB of RAM, disable it by overriding the `fim`/`embed` entries in `config/user.json` and re-running `bob gen`. Setting `mlockBig` on the swap-group models (ponder, coder, chat) extends mlock to their CPU-offloaded pages; on Windows this needs `SeLockMemoryPrivilege` (`bob mlock --grant` checks and grants it), on Linux you raise the memlock limit instead (`ulimit -l unlimited` or `/etc/security/limits.conf`).
 
 **Start automatically at login (optional):**
 
@@ -399,8 +399,7 @@ bob ps                              # shows whisper and piper rows alongside oth
 bob status                          # includes whisper and piper UP/down lines
 ```
 
-Wire piper into Open WebUI TTS: Admin Panel → Audio → Text-to-Speech Engine → `http://localhost:8083`.
-Wire whisper into Open WebUI STT: Admin Panel → Audio → Speech-to-Text Engine → `http://localhost:8082`
+OpenAI-compatible clients can use the piper TTS endpoint at `http://localhost:8083` and the faster-whisper STT endpoint at `http://localhost:8082`.
 (verify with `curl -X POST http://localhost:8082/v1/audio/transcriptions -F "file=@test.wav" -F "model=whisper-1"`).
 
 **Pipeline examples:**
@@ -545,7 +544,7 @@ The default `agent.toolFormat = 'hermes'` injects the tool schemas into the syst
 bob agent serve            # binds agent.serveHost:agent.agentPort (default 127.0.0.1:8084)
 ```
 
-Exposes the agent loop over HTTP for n8n / WebUI / other clients. Every endpoint except `/health` requires `Authorization: Bearer <token>` (the litellm key or an `agent.apiTokens` entry). Each token maps to an owner, and sessions are owner-scoped: a token sees only sessions its owner created. Supports one-shot `POST /v1/agent/completions`, token-streaming `POST /v1/agent/completions/stream` (SSE; cancels on client disconnect), and multi-turn `POST/GET/DELETE /v1/sessions`. An unreachable model backend returns 503 and a failing one 502, so a client can tell "retry later" from a bad request. Set `agent.acceptLitellmKey = false` so only issued tokens open the API. Full endpoint contract, event schema, and n8n wiring: [AGENT-SERVER.md](AGENT-SERVER.md).
+Exposes the agent loop over HTTP for n8n / other clients. Every endpoint except `/health` requires `Authorization: Bearer <token>` (the litellm key or an `agent.apiTokens` entry). Each token maps to an owner, and sessions are owner-scoped: a token sees only sessions its owner created. Supports one-shot `POST /v1/agent/completions`, token-streaming `POST /v1/agent/completions/stream` (SSE; cancels on client disconnect), and multi-turn `POST/GET/DELETE /v1/sessions`. An unreachable model backend returns 503 and a failing one 502, so a client can tell "retry later" from a bad request. Set `agent.acceptLitellmKey = false` so only issued tokens open the API. Full endpoint contract, event schema, and n8n wiring: [AGENT-SERVER.md](AGENT-SERVER.md).
 
 ### Expose Bob's tools over MCP
 
@@ -797,51 +796,47 @@ Manage the link with `bob dsh`:
 
 Bob owns each DSH setting in exactly one layer: global provider and credential settings live under `$DSH_HOME`, profile-specific default models live under the active DSH profile, and plugin entries live in the home patch file.
 
-[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) is a model-agnostic coding agent with
-a browser UI and a headless mode. Bob serves it two ways at once: as the model backend, and as a tool
-provider over MCP. Nothing about dsh runs inside Bob, and Bob needs nothing from it; the pairing is the
-one Bob is built for, a private local brain behind somebody else's front end.
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) is a model-agnostic coding agent with a browser UI and a headless mode. Bob serves it as the model backend, context source, memory store, and tool provider. The link is managed by `bob dsh`; no second configuration system lives in Bob.
 
-dsh is Node, so install it its own way (`npx @deepseek-ai/dsh web`), then run `bob gen`. Setup wires it
-too, when it is already installed. Two drop-ins land in the harness home (`$DSH_HOME`, default `~/.dsh`):
+`bob dsh install` installs the DSH version pinned in `versions.lock` when pnpm or npm is available, then writes Bob's provider route and credential, sets the default DSH model, and installs the native `bob-dsh-bridge` plugin.
 
-| File | What Bob writes | How |
-|---|---|---|
-| `settings.yaml` | a `bob` provider route: every chat-capable role plus the enabled pro peers | merged, so your other providers and sections survive |
-| `cordis.patch.yml` | Bob's tool registry as an MCP server (`bob agent mcp`), stdio or HTTP per `agent.mcpTransport` | appended once, only when `agent.mcpEnabled` is on |
+The native bridge is the only DSH transcript ingestion path:
 
-**What each model advertises.** A local role declares the window one request really gets: its `-c`,
-divided by its slots when `--parallel` splits the KV cache (so the 32gb tier's 393216 is 196608 per
-request). A role under 16384 is left out, because dsh's prompt and pi-ai's fixed 4096-token output margin
-would leave it no room to answer, and `bob gen` names what it left out. A pro role declares its peer's
-`contextWindow` and `maxOutputTokens` (the model's own limits, the same output cap LiteLLM applies to
-every client), and is image capable only when the peer says `supportsVision`.
+- `SessionStart` context comes from Bob's profile, project `BOB.md`, and core memory.
+- `agent/turn-stopping` reads the complete DSH session surface, including assistant messages.
+- child and subagent sessions are imported and linked to their parent session.
+- raw DSH events are stored in Bob's `dsh_events` table.
+- transcript rows are derived from the same imported surface.
+- `bob recall` and `conversation_search` can search the result.
 
-Both are generated into `config/dsh/` first, from the same registry every other client config comes from,
-so a model refresh reaches dsh with one `bob gen` and dsh re-reads the route on its next request.
+Tools are explicit:
 
-**The key.** The route names its credential (`BOB_LITELLM_KEY`) instead of carrying it, and `bob gen`
-stores Bob's `litellmKey` under that name in dsh's own credential store (`$DSH_HOME/.credentials.yaml`,
-owner-only). dsh watches that file, so the route authenticates on its next request with nothing exported
-and no restart. An exported `BOB_LITELLM_KEY` still wins for the run it was exported in.
+```bash
+bob dsh tools on
+bob dsh tools status
+```
 
-**Why the route sets compatibility switches.** pi-ai, the dsh adapter this route uses, infers a request
-shape from the endpoint URL and treats an address it does not recognize as OpenAI itself. Two of those
-inferences are wrong for llama.cpp: a reasoning model's system prompt would travel as `role: developer`,
-and the output cap as `max_completion_tokens`. The generated route sets `supportsDeveloperRole: false`
-and `maxTokensField: max_tokens`, which is why models work rather than every request failing.
+`bob dsh tools on` sets `agent.mcpEnabled = true` and installs Bob's MCP entry into DSH. `bob dsh tools off` removes the DSH entry. State-changing tools remain gated by `agent.mcpAllowTools`.
 
-**Bob's tools inside dsh.** With `agent.mcpEnabled` set to `true` in `config/user.json`, dsh spawns
-`bob agent mcp` over stdio and gets the whole registry: memory, web, git, file, shell, fabric, code
-search, and any plugin. The entry runs the server in the harness's own working directory, so those tools
-act on the project dsh has open, not on Bob's repo.
+Context modes:
 
-**A harness on another machine.** Set `agent.mcpTransport = "http"` and `bob gen` writes the same entry
-as a Streamable HTTP connection instead of a spawn, so dsh dials a Bob that is already running
-(`bob agent mcp --http`). Set `agent.mcpUrl` when dsh reaches Bob at something other than the local bind
-address, and export `BOB_LITELLM_KEY` (or the token you issued that client) on the dsh side, since the
-generated entry sends it as a Bearer header. When the transport changes, `bob gen` replaces the existing
-Bob entry in `cordis.patch.yml` in place rather than adding a second one.
+```bash
+bob dsh mode quick
+bob dsh mode deep
+```
+
+The mode writes the matching `<role>-quick` or `<role>-deep` alias into the active DSH profile. The same LiteLLM pre-call callback enforces the budget.
+
+Each Bob-owned DSH key has one owner layer:
+
+| File | Bob-owned key |
+|---|---|
+| `$DSH_HOME/settings.yaml` | `llm-pi-ai.providers.bob` |
+| `$DSH_HOME/.credentials.yaml` | `BOB_LITELLM_KEY` |
+| `$DSH_HOME/cordis.patch.yml` | Bob MCP plugin entry |
+| `$DSH_HOME/profiles/<name>/cordis.patch.yml` | `agent-default-model`, `bob-dsh-bridge` |
+
+`bob dsh doctor` reports missing routes, credentials, MCP tools, the native bridge, and a default model that is not Bob.
 
 ## Shell AI Patterns: fabric
 
@@ -872,11 +867,11 @@ bob litellm status   # show PID and uptime
 bob litellm stop     # stop the background proxy
 ```
 
-All clients (Continue, aider, Cline, fabric, Open WebUI, `bob chat`) use `:8081` by default. The proxy exposes all local model names (`coder`, `ponder`, `chat`, `writer`, `agent`, `vision`, `fim`, `embed`, `rerank`, whichever the profile serves) plus the pro model names (`chat-pro`, `ponder-pro`, `coder-pro`, `writer-pro`) when API keys are set. It requires the LiteLLM key on every request and binds `bindHost` (loopback by default). Each local role's sampling is enforced server-side by llama-swap (`setParams`), so a client's `temperature` or `top_p` cannot override it. Direct `:8080` access to llama-swap still works for local models but bypasses retry logic and Langfuse tracing.
+All clients (DeepSeek Harness, Continue, aider, Cline, fabric, `bob chat`) use `:8081` by default. The proxy exposes all local model names (`coder`, `ponder`, `chat`, `writer`, `agent`, `vision`, `fim`, `embed`, `rerank`, whichever the profile serves) plus the pro model names (`chat-pro`, `ponder-pro`, `coder-pro`, `writer-pro`) when API keys are set. It requires the LiteLLM key on every request and binds `bindHost` (loopback by default). Each local role's sampling is enforced server-side by llama-swap (`setParams`), so a client's `temperature` or `top_p` cannot override it. Direct `:8080` access to llama-swap still works for local models but bypasses retry logic and Langfuse tracing.
 
 `config/litellm.yaml` is generated automatically by `bob gen` and `bob serve`; do not edit it by hand. It holds no key: it reads `master_key: os.environ/LITELLM_MASTER_KEY`, which Bob sets from `litellmKey` when it starts the proxy.
 
-**When the key changes** (an upgrade, a rotated secret), every start, auto-start included, regenerates the generated configs that still carry the old key and restarts a Bob-started proxy that rejects the current one. Open WebUI's stored connection to Bob's proxy is updated before WebUI starts, and `bob gen` also updates fabric's LiteLLM key. `bob doctor` reports it on the "Generated configs carry the current LiteLLM key" row. Clients Bob does not configure (a phone, another machine, your own scripts) need the new key by hand.
+**When the key changes** (an upgrade, a rotated secret), every start, auto-start included, regenerates the generated configs that still carry the old key and restarts a Bob-started proxy that rejects the current one. `bob gen` also updates fabric's LiteLLM key and the DSH provider route. `bob doctor` reports it on the "Generated configs carry the current LiteLLM key" row. Clients Bob does not configure (a phone, another machine, your own scripts) need the new key by hand.
 
 ### Opt-in services (Langfuse, SearXNG, n8n)
 
@@ -886,7 +881,7 @@ A default install is 100% Docker-free: setup starts none of these services. They
 - **SearXNG** is a **Docker** opt-in: `bob services searxng start`. If Docker is missing, this runs a guided install through the system package manager first. Port 8888.
 - **Langfuse** is a **Docker** opt-in: `bob services langfuse start`. Same guided Docker install if needed. Port 3001.
 
-GPU tools (llama.cpp, Open WebUI) stay native for performance.
+GPU tools (llama.cpp) stay native for performance.
 
 ```
 bob services start    # start the opt-in services group, prints state table
@@ -901,7 +896,7 @@ Docker must be running before starting a Docker service (SearXNG or Langfuse). O
 { "langfusePort": 3001, "searxngPort": 8888, "n8nPort": 5678, "n8nTimezone": "America/New_York" }
 ```
 
-Every service binds `bindHost` (default `127.0.0.1`): LiteLLM, Open WebUI, n8n (`N8N_LISTEN_ADDRESS`), and the Docker services' published ports. Set `"bindHost": "0.0.0.0"` for LAN access; llama-swap stays on loopback regardless. piper and faster-whisper have no authentication, so they bind `voiceBindHost` (default `127.0.0.1`) instead and stay on loopback unless you set it too. Each service's secret (the n8n encryption key, the SearXNG secret, the Langfuse keys and passwords) is generated on first start into `data/secrets.json`.
+Every service binds `bindHost` (default `127.0.0.1`): LiteLLM, n8n (`N8N_LISTEN_ADDRESS`), and the Docker services' published ports. Set `"bindHost": "0.0.0.0"` for LAN access; llama-swap stays on loopback regardless. piper and faster-whisper have no authentication, so they bind `voiceBindHost` (default `127.0.0.1`) instead and stay on loopback unless you set it too. Each service's secret (the n8n encryption key, the SearXNG secret, the Langfuse keys and passwords) is generated on first start into `data/secrets.json`.
 
 After changing any of these, re-run `bob services start` to regenerate `.env` and restart containers.
 
@@ -1059,7 +1054,7 @@ Configuration is all JSON. Three files:
 
 Config resolves the same way on every OS: live from `defaults.json` deep-merged with `user.json`. No generated `data/config.json` is written or read.
 
-After changing config, run `bob gen` to regenerate the runtime configs (`config/llama-swap.yaml`, `config/litellm.yaml`, and Open WebUI system prompts) from the registry, no server restart needed for the next `bob serve`:
+After changing config, run `bob gen` to regenerate the runtime configs (`config/llama-swap.yaml`, `config/litellm.yaml`, and the DSH drop-ins) from the registry, no server restart needed for the next `bob serve`:
 
 ```
 bob gen             # regenerate runtime configs

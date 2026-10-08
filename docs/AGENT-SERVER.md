@@ -1,7 +1,7 @@
 # Agent HTTP server
 
 `bob agent serve` runs the agent tool-loop as a small HTTP service (FastAPI + uvicorn), so
-WebUIs, n8n, or other clients can drive Bob over REST or SSE.
+DeepSeek Harness, n8n, or other clients can drive Bob over REST or SSE.
 
 ```bash
 bob agent serve            # binds agent.serveHost:agent.agentPort (default 127.0.0.1:8084)
@@ -30,7 +30,7 @@ exercises `/health` + an owner-scoped session turn + an SSE stream as the end-to
   owner-scoped: a token can only read/delete/continue sessions its owner created; any other
   `session_id` returns **404**, indistinguishable from an unknown id. Revoke a token by removing it
   from config and restarting `bob agent serve`. See [SECURITY.md](SECURITY.md).
-- **The litellm key is unscoped here.** Every generated client config, n8n, fabric and Open WebUI hold
+- **The litellm key is unscoped here.** Every generated client config, n8n and fabric hold
   it, so with `agent.acceptLitellmKey` on anyone holding it reaches every tool and role as
   `agent.defaultOwner`. For a hardened setup, give each client a scoped `agent.apiTokens` entry and set
   `agent.acceptLitellmKey = false`.

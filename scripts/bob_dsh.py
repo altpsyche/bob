@@ -170,11 +170,28 @@ def _install_mcp(root: Path) -> str:
     return generate._install_dsh_mcp(root)
 
 
+def _set_mcp_enabled(enabled: bool) -> str:
+    """Set agent.mcpEnabled in the JSON user overlay. TOML overlays are left to the user."""
+    import bob_config
+    path = bob_config.user_config_path()
+    if path is not None and path.suffix == ".toml":
+        return f"set agent.mcpEnabled = true in {path} by hand, then re-run"
+    json_path = REPO / "config" / "user.json"
+    try:
+        data = json.loads(json_path.read_text(encoding="utf-8")) if json_path.exists() else {}
+    except Exception:
+        data = {}
+    agent = data.setdefault("agent", {})
+    agent["mcpEnabled"] = bool(enabled)
+    json_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return f"config/user.json: agent.mcpEnabled={str(bool(enabled)).lower()}"
+
+
 def tools_on(profile: str = None) -> str:
     root = home()
     if not root.is_dir():
         return _missing_home()
-    return _install_mcp(root)
+    return _set_mcp_enabled(True) + "\n" + _install_mcp(root)
 
 
 def tools_off(profile: str = None) -> str:
