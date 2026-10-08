@@ -690,21 +690,52 @@ def ensure_dsh() -> str:
     return f"installed @deepseek-ai/dsh@{want} with {name}"
 
 
+def ensure_home(profile: str = None) -> str:
+    """Create the local DSH profile home non-interactively when the package is installed but the profile
+    has never been booted. Runs `dsh --profile <name> --dump-config`, which composes the shipped profile
+    layers and exits before the app starts — no browser, no long-running process. This is what lets a
+    fresh `bob setup` / `bob update` finish wiring DSH in one command instead of requiring a separate
+    `dsh web` first."""
+    root = home()
+    target = profile or default_profile(root)
+    if (root / "profiles" / target).is_dir():
+        return f"dsh home already initialized at {root} (profile {target})"
+    exe = dsh_bin()
+    if not exe:
+        return ("dsh home not initialized and dsh binary not found. Install dsh, then run: "
+                "bob dsh install")
+    try:
+        r = subprocess.run([exe, "--profile", target, "--dump-config"],
+                           capture_output=True, text=True, timeout=180)
+    except Exception as e:
+        return f"dsh home init failed: {e}"
+    if r.returncode != 0:
+        detail = (r.stderr or r.stdout or "").strip().splitlines()
+        return "dsh home init failed: " + (detail[-1] if detail else f"exit {r.returncode}")
+    if not (root / "profiles" / target).is_dir():
+        return f"dsh home init did not create {root / 'profiles' / target}"
+    return f"initialized dsh home at {root} (profile {target})"
+
+
 def install(profile: str = None, tools: bool = False, bridge: bool = True,
             use_default: bool = False, mode: str = None, harness: bool = True) -> str:
     import generate
     from bob_core import load_config
 
     harness_line = ensure_dsh() if harness else ""
+    home_line = ensure_home(profile)
     root = home()
     if not root.is_dir():
-        return ((harness_line + "\n") if harness_line else "") + _missing_home()
+        prefix = "\n".join(x for x in (harness_line, home_line) if x)
+        return ((prefix + "\n") if prefix else "") + _missing_home()
     cfg = load_config()
     generate.configure(cfg)
     generate.gen_dsh()
     lines = []
     if harness_line:
         lines.append(harness_line)
+    if home_line:
+        lines.append(home_line)
     lines += [generate._install_dsh_settings(root), generate._install_dsh_credential(root)]
     target = profile or default_profile(root)
     if tools:

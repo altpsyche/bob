@@ -474,6 +474,33 @@ def _reinstall_venv() -> None:
             print(f"  (venv-aider reinstall skipped: {e})", file=sys.stderr)
 
 
+def _wire_clients_after_update() -> None:
+    """Run the same post-bootstrap client wiring as `bob setup`: regenerate every generated config
+    (`bob gen`) and re-run the setup client seam (Continue symlink, pinned DSH install, Bob's DSH
+    provider route/credential, default model, and native bridge). This is what makes `bob update` the
+    one command a user runs after a release move; future setup changes flow through both paths because
+    update calls the shared functions rather than copying them.
+
+    Best-effort: the code/engine update is already verified by this point, so a missing Node/package
+    manager or an offline client step is reported, not turned into a failed update. The operator can
+    re-run `bob gen` / `python -m bob.kernel setup --skip-models --skip-build --skip-voice` later."""
+    import osenv
+    # Client/DSH wiring first: it installs the pinned harness and creates the DSH profile home, so the
+    # full config regen below has a real home to merge the Bob route into.
+    try:
+        from bob import kernel
+        kernel.setup_clients()
+    except Exception as e:  # noqa: BLE001 — advisory; the verified update still stands
+        print(f"  client/DSH wiring skipped ({e}); run `bob setup --skip-models --skip-build` "
+              "or `bob dsh install` to retry.", file=sys.stderr)
+    try:
+        import generate
+        generate.configure(_cfg)
+        generate.gen_all()
+    except Exception as e:  # noqa: BLE001 — advisory; the verified update still stands
+        print(f"  config regeneration skipped ({e}); run `bob gen` to retry.", file=sys.stderr)
+
+
 def _restart_running_endpoint() -> None:
     """Restart the endpoint if the update owns it, so one `bob update` is the whole move. A stack that kept
     serving through the update is still running the pre-update binaries, and still on the generated config
@@ -832,6 +859,12 @@ def update_stack(tag: str = None, from_source: bool = False, channel: str = None
         osenv.remove_build_output_backup(BIN, bak)
         _clear_pending_rebuild()
         print("Rebuild verified.", file=sys.stderr)
+
+    # One command should leave a usable client, not just a new engine: regenerate the generated configs and
+    # re-run the SAME client/DSH wiring `bob setup` runs. Best-effort/advisory so a verified engine move is not
+    # undone by a missing Node/package manager.
+    print("Regenerating client configs and wiring DSH...", file=sys.stderr)
+    _wire_clients_after_update()
 
     # No relock here: versions.lock is a tracked file that arrived with the checkout above, already pinning
     # exactly these revisions. Regenerating it on this machine would bake local state into it and dirty the tree,

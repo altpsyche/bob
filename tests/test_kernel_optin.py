@@ -332,9 +332,11 @@ class TestWire(unittest.TestCase):
              mock.patch.object(generate, "gen_dsh"), \
              mock.patch.object(generate, "install_dsh", return_value="dsh skipped"), \
              mock.patch.object(bob_dsh, "ensure_dsh", return_value="dsh 0.1.5-rc.3 already installed") as ensure, \
+             mock.patch.object(bob_dsh, "ensure_home", return_value="dsh home ready") as ensure_home, \
              mock.patch.object(kernel, "_wire") as wire:
             kernel.setup_clients()
         ensure.assert_called_once()
+        ensure_home.assert_called_once()
         linked = [c.args[1] for c in wire.call_args_list]
         self.assertEqual(linked, [home / ".continue" / "config.yaml"])
 

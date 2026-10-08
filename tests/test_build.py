@@ -418,7 +418,7 @@ class TestUpdateStack(unittest.TestCase):
     def _run(self, before, after, verify=True, tag=None, changed="llama.cpp", cfg=None,
              gpu=None, cuda_ok=True, on_branch=True, prebuilt=False, from_source=False, pending_path=None,
              channel=None, on_tag=False, latest_tag="", stable_target="", swap_effect=None,
-             fabric_installed=True):
+             fabric_installed=True, gen_all_effect=None, setup_clients_effect=None):
         """Run update_stack with everything mocked; return (rc, mocks-by-name, git-calls). `changed`
         picks which submodule moves (before -> after); every other submodule stays put, so the test
         controls exactly which component the update should rebuild. `prebuilt` = whether a GPU prebuilt
@@ -427,6 +427,8 @@ class TestUpdateStack(unittest.TestCase):
         import contextlib
         import health
         import tempfile
+        import generate
+        from bob import kernel as kernel_mod
         git = []
         exe = Path(tempfile.mkdtemp()) / "bin-artifact"
         exe.write_text("ELF")  # so bin_exe(...).exists() is True after a rebuild
@@ -485,6 +487,14 @@ class TestUpdateStack(unittest.TestCase):
             "prov_configure": mock.patch("provision.configure"),
             "h_configure": mock.patch.object(health, "configure"),
             "health_check": mock.patch.object(health, "health_check", return_value="doctor-ok"),
+            # The update now runs the same post-bootstrap client wiring as `bob setup`: full config regen
+            # and the setup_clients/DSH seam. Both are mocked here (no real $DSH_HOME/Node/pnpm), with
+            # optional side effects so the advisory-failure path can be tested.
+            "gen_configure": mock.patch.object(generate, "configure"),
+            "gen_all": mock.patch.object(generate, "gen_all", return_value="generated",
+                                         side_effect=gen_all_effect),
+            "setup_clients": mock.patch.object(kernel_mod, "setup_clients", return_value=None,
+                                               side_effect=setup_clients_effect),
         }
         build_mod.configure(cfg or CFG)
         with contextlib.ExitStack() as es:
@@ -502,6 +512,24 @@ class TestUpdateStack(unittest.TestCase):
         mocks["write_lock"].assert_not_called()
         mocks["health_check"].assert_called_once()
         self.assertTrue(any("pull" in c for c in git))
+
+    def test_update_regenerates_configs_and_wires_clients(self):
+        # One `bob update` must leave the clients usable, not just the engine: it runs `bob gen` plus the
+        # same setup_clients/DSH seam `bob setup` runs, even when no submodule moved.
+        rc, mocks, _ = self._run("abc", "abc")
+        self.assertEqual(rc, 0)
+        mocks["gen_configure"].assert_called_once()
+        mocks["gen_all"].assert_called_once()
+        mocks["setup_clients"].assert_called_once()
+
+    def test_update_config_or_client_wiring_failures_are_advisory(self):
+        # The engine move is already verified; an offline/missing-Node client step must not turn the
+        # update red. Each half is attempted independently.
+        rc, mocks, _ = self._run("abc", "abc", gen_all_effect=RuntimeError("config boom"),
+                                 setup_clients_effect=RuntimeError("dsh boom"))
+        self.assertEqual(rc, 0)
+        mocks["gen_all"].assert_called_once()
+        mocks["setup_clients"].assert_called_once()
 
     def test_changed_rebuilds_and_discards_backup(self):
         rc, mocks, _ = self._run("aaa", "bbb", verify=True)

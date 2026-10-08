@@ -313,8 +313,10 @@ def setup_clients() -> None:
     generate.gen_continue()
     # The pinned DSH package is part of a default setup: `bob dsh install` can repair it later, but a
     # fresh install should not require a second command to get the primary client. Node/pnpm missing or
-    # an offline box yields a clear status line, never a setup failure.
+    # an offline box yields a clear status line, never a setup failure. After the package is present,
+    # create the profile home non-interactively so the drop-ins below have somewhere to land.
     print("  " + bob_dsh.ensure_dsh().replace("\n", "\n  "), file=sys.stderr)
+    print("  " + bob_dsh.ensure_home().replace("\n", "\n  "), file=sys.stderr)
     home = Path.home()
     _wire(REPO / "config" / "continue" / "config.yaml", home / ".continue" / "config.yaml")
     _remove_legacy_aider_link(home)

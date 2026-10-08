@@ -8,6 +8,9 @@ rebuilds only what changed, verifies, and rolls back on failure.
 
 ## [Unreleased]
 
+### Changed
+- **`bob update` is now the one command that also wires clients and DSH.** After moving the code/engine/runtime, it runs `bob gen` and the same `setup_clients` seam as `bob setup`: pinned DSH package install, non-interactive DSH profile-home creation, Bob provider route/credential/default model, native bridge, and Continue config. Future setup changes flow through update because both paths call the shared functions. Missing Node/package managers or an offline box are reported as advisory; the verified engine move still completes.
+
 ## [2.1.0] (2026-10-09)
 
 ### Added

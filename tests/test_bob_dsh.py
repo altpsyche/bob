@@ -240,6 +240,35 @@ class TestEnsureDsh(unittest.TestCase):
         self.assertIn("pnpm", out)
 
 
+class TestEnsureHome(unittest.TestCase):
+    def test_initializes_the_profile_noninteractively(self):
+        with tempfile.TemporaryDirectory(prefix="bob-dsh-home-") as d:
+            root = Path(d) / ".dsh"
+            calls = []
+
+            def fake_run(argv, **kwargs):
+                calls.append(argv)
+                (root / "profiles" / "web").mkdir(parents=True, exist_ok=True)
+                return mock.Mock(returncode=0, stdout="", stderr="")
+
+            with mock.patch.object(bob_dsh, "home", return_value=root), \
+                 mock.patch.object(bob_dsh, "dsh_bin", return_value="/usr/bin/dsh"), \
+                 mock.patch.object(bob_dsh.subprocess, "run", side_effect=fake_run):
+                out = bob_dsh.ensure_home()
+            self.assertIn("initialized dsh home", out)
+            self.assertEqual(calls[0][1:3], ["--profile", "web"])
+
+    def test_existing_home_is_left_alone(self):
+        with tempfile.TemporaryDirectory(prefix="bob-dsh-home-") as d:
+            root = Path(d) / ".dsh"
+            (root / "profiles" / "web").mkdir(parents=True)
+            with mock.patch.object(bob_dsh, "home", return_value=root), \
+                 mock.patch.object(bob_dsh.subprocess, "run") as run:
+                out = bob_dsh.ensure_home()
+            self.assertIn("already initialized", out)
+            run.assert_not_called()
+
+
 class TestTrustTiers(unittest.TestCase):
     """DSH trust is a per-project/global tier resolved from the live registry, plus the old explicit
     mcpAllowTools list; a built-in PreToolUse hook enforces it on unattended surfaces."""
