@@ -32,6 +32,16 @@ LOCK_SUBMODULES = ["external/llama.cpp", "external/llama-swap", "external/fabric
 # the checkout pins that same commit, so a submodule bump falls back to a source build rather than silently
 # running a binary from a different revision. Asset keys are '<os>-<cpuArch>' (osenv.os_name /
 # osenv.normalized_cpu_arch).
+# Non-binary external packages Bob installs with a package manager. Kept here so a fresh Bob install
+# can provision the same pinned DeepSeek Harness without a floating major/latest tag.
+LOCK_PACKAGES = {
+    "dsh": {
+        "name": "@deepseek-ai/dsh",
+        "version": "0.1.5-rc.3",
+        "manager": "pnpm",
+    },
+}
+
 LOCK_BINARIES = {
     "llama-swap": {
         "version": "v255",
@@ -66,6 +76,15 @@ def load_lock(path: Optional[Path] = None) -> dict:
             f"versions.lock not found at {path} — it is generated; run: bob lock"
         )
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def pinned_package(name: str, lock: Optional[dict] = None) -> Optional[dict]:
+    """The pinned package-manager entry for `name`, or None when absent."""
+    try:
+        lock = lock if lock is not None else load_lock()
+    except (RuntimeError, OSError, ValueError):
+        return None
+    return (lock.get("packages") or {}).get(name)
 
 
 def pinned_binary(name: str, platform_key: str, lock: Optional[dict] = None) -> Optional[dict]:
@@ -240,6 +259,7 @@ def build_lock_object(repo: Optional[Path] = None, models_config: Optional[dict]
         "release": bob_version(),
         "submodules": submodule_commits(repo),
         "binaries": json.loads(json.dumps(LOCK_BINARIES)),
+        "packages": json.loads(json.dumps(LOCK_PACKAGES)),
         "models": lock_model_manifest(models_config, repo, use_manifest=use_manifest),
     }
 

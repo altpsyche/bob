@@ -8,7 +8,9 @@ from pathlib import Path
 from unittest import mock
 
 import _common  # noqa: F401
+import bob_core
 import bob_dsh
+import bob_memory
 
 
 class _HomeMixin:
@@ -91,6 +93,29 @@ class TestHook(unittest.TestCase):
             code = bob_dsh.hook("pre-tool-use", "{}")
         self.assertEqual(code, 0)
         self.assertEqual(out.getvalue(), "")
+
+    def test_user_prompt_is_mirrored_to_bob_transcript(self):
+        payload = {"session_id": "s1", "cwd": "/project", "prompt": "hello dsh"}
+        with mock.patch.object(bob_core, "load_config", return_value=_common.fake_config()), \
+             mock.patch.object(bob_core, "_get_db_path", return_value=Path("/tmp/m.db")), \
+             mock.patch.object(bob_memory, "transcript_append") as append:
+            code = bob_dsh.hook("user-prompt", json.dumps(payload))
+        self.assertEqual(code, 0)
+        self.assertEqual(append.call_args.args[0], "dsh:s1")
+        self.assertEqual(append.call_args.args[1], "user")
+        self.assertEqual(append.call_args.args[2], "hello dsh")
+        self.assertEqual(append.call_args.kwargs["session_id"], "s1")
+
+    def test_post_tool_use_is_mirrored_with_tool_name(self):
+        payload = {"session_id": "s2", "cwd": "/project", "tool_name": "bash",
+                   "tool_response": "ok"}
+        with mock.patch.object(bob_core, "load_config", return_value=_common.fake_config()), \
+             mock.patch.object(bob_core, "_get_db_path", return_value=Path("/tmp/m.db")), \
+             mock.patch.object(bob_memory, "transcript_append") as append:
+            code = bob_dsh.hook("post-tool-use", json.dumps(payload))
+        self.assertEqual(code, 0)
+        self.assertEqual(append.call_args.args[2], "ok")
+        self.assertEqual(append.call_args.kwargs["tool_name"], "bash")
 
 
 class TestStatus(_HomeMixin, unittest.TestCase):

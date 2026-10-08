@@ -42,7 +42,7 @@ _MODELS_CFG = {
 class TestLockShape(unittest.TestCase):
     def test_committed_lock_parses_and_is_well_formed(self):
         lk = versions.load_lock()
-        for key in ("lockVersion", "release", "submodules", "binaries", "models"):
+        for key in ("lockVersion", "release", "submodules", "binaries", "packages", "models"):
             self.assertIn(key, lk, f"versions.lock missing '{key}'")
         self.assertIsInstance(lk["submodules"], dict)
         self.assertTrue(lk["submodules"], "no submodules pinned")
@@ -209,9 +209,10 @@ class TestBuildAndText(unittest.TestCase):
              mock.patch("bob.versions.lock_model_manifest", return_value={}), \
              mock.patch("bob.versions.bob_version", return_value="9.9.9"):
             obj = versions.build_lock_object()
-        self.assertEqual(list(obj), ["lockVersion", "release", "submodules", "binaries", "models"])
+        self.assertEqual(list(obj), ["lockVersion", "release", "submodules", "binaries", "packages", "models"])
         self.assertEqual(obj["release"], "9.9.9")
         self.assertEqual(obj["binaries"], versions.LOCK_BINARIES)
+        self.assertEqual(obj["packages"], versions.LOCK_PACKAGES)
 
     def test_pinned_binary_reads_the_lock(self):
         lock = {"binaries": versions.LOCK_BINARIES}

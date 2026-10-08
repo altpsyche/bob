@@ -140,6 +140,13 @@ def _write_hooks_config() -> str:
                 "matcher": "startup|resume|clear|compact",
                 "hooks": [{"type": "command", "command": "bob dsh hook session-start"}],
             }],
+            "UserPromptSubmit": [{
+                "hooks": [{"type": "command", "command": "bob dsh hook user-prompt"}],
+            }],
+            "PostToolUse": [{
+                "matcher": "*",
+                "hooks": [{"type": "command", "command": "bob dsh hook post-tool-use"}],
+            }],
             "Stop": [{
                 "hooks": [{"type": "command", "command": "bob dsh hook stop"}],
             }],
@@ -236,18 +243,62 @@ def _missing_home() -> str:
             "npm i -g @deepseek-ai/dsh, then run `dsh web` once, then `bob dsh install`.")
 
 
+
+
+def pinned_dsh_version() -> str:
+    """The DeepSeek Harness version pinned in versions.lock, with a conservative fallback."""
+    try:
+        from bob.versions import pinned_package
+        entry = pinned_package("dsh") or {}
+        return str(entry.get("version") or "0.1.5-rc.3")
+    except Exception:
+        return "0.1.5-rc.3"
+
+
+def ensure_dsh() -> str:
+    """Install or upgrade the pinned DeepSeek Harness when a package manager is available.
+
+    Bob never guesses a floating version: the exact version comes from versions.lock.
+    """
+    want = pinned_dsh_version()
+    have = dsh_version()
+    if have and want in have:
+        return f"dsh {have} already installed"
+    manager = shutil.which("pnpm") or shutil.which("npm")
+    if not manager:
+        return ("dsh not installed and no pnpm/npm found. Install Node.js + pnpm, then run: "
+                f"pnpm add -g @deepseek-ai/dsh@{want}")
+    name = "pnpm" if Path(manager).name.lower().startswith("pnpm") else "npm"
+    if name == "pnpm":
+        argv = [manager, "add", "-g", f"@deepseek-ai/dsh@{want}"]
+    else:
+        argv = [manager, "install", "-g", f"@deepseek-ai/dsh@{want}"]
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=600)
+    except Exception as e:
+        return f"dsh install failed: {e}"
+    if r.returncode != 0:
+        detail = (r.stderr or r.stdout or "").strip().splitlines()
+        return "dsh install failed: " + (detail[0] if detail else f"exit {r.returncode}")
+    return f"installed @deepseek-ai/dsh@{want} with {name}"
+
+
 def install(profile: str = None, tools: bool = False, hooks: bool = False,
-            use_default: bool = False, mode: str = None) -> str:
+            use_default: bool = False, mode: str = None, harness: bool = True) -> str:
     import generate
     from bob_core import load_config
 
+    harness_line = ensure_dsh() if harness else ""
     root = home()
     if not root.is_dir():
-        return _missing_home()
+        return ((harness_line + "\n") if harness_line else "") + _missing_home()
     cfg = load_config()
     generate.configure(cfg)
     generate.gen_dsh()
-    lines = [generate._install_dsh_settings(root), generate._install_dsh_credential(root)]
+    lines = []
+    if harness_line:
+        lines.append(harness_line)
+    lines += [generate._install_dsh_settings(root), generate._install_dsh_credential(root)]
     target = profile or default_profile(root)
     if tools:
         lines.append(_install_mcp(root))
@@ -339,6 +390,28 @@ def uninstall(profile: str = None) -> str:
     return "\n".join(lines)
 
 
+def _append_dsh_transcript(payload: dict, role: str, content: str, tool_name: str = None) -> None:
+    """Best-effort mirror one DSH turn into Bob's owner-scoped transcript store.
+
+    DSH session ids become `dsh:<id>` run ids, so `conversation_search` can page DSH history back
+    alongside native Bob session history.
+    """
+    sid = str(payload.get("session_id") or "").strip()
+    if not sid or not str(content or "").strip():
+        return
+    try:
+        from bob_core import _get_db_path, load_config
+        import bob_memory
+        cfg = load_config()
+        owner = cfg.get("agent", {}).get("defaultOwner", "local")
+        scope = payload.get("cwd") or os.getcwd()
+        bob_memory.transcript_append(
+            f"dsh:{sid}", role, str(content), _get_db_path(cfg),
+            owner=owner, scope=scope, tool_name=tool_name, session_id=sid)
+    except Exception:
+        pass
+
+
 def _hook_context() -> str:
     try:
         from bob_core import (core_blocks_block, load_config, memory_profile_block,
@@ -358,14 +431,27 @@ def _hook_context() -> str:
 
 
 def hook(event: str, stdin_text: str = None) -> int:
-    """Handle one DSH/Claude-Code hook event. Only SessionStart emits context today."""
+    """Handle one DSH/Claude-Code hook event.
+
+    SessionStart emits Bob profile/project memory. UserPromptSubmit and PostToolUse mirror DSH turns
+    into Bob's transcript store so both harnesses share one searchable history.
+    """
     event = (event or "").strip().lower()
-    if event != "session-start":
-        return 0
     raw = stdin_text if stdin_text is not None else sys.stdin.read()
     try:
-        json.loads(raw or "{}")
+        payload = json.loads(raw or "{}")
     except Exception:
+        return 0
+    if event == "user-prompt":
+        _append_dsh_transcript(payload, "user", str(payload.get("prompt") or ""))
+        return 0
+    if event == "post-tool-use":
+        body = payload.get("tool_response")
+        if not isinstance(body, str):
+            body = json.dumps(body, ensure_ascii=False) if body is not None else ""
+        _append_dsh_transcript(payload, "tool", body, tool_name=str(payload.get("tool_name") or ""))
+        return 0
+    if event != "session-start":
         return 0
     context = _hook_context()
     if context:
@@ -394,11 +480,13 @@ def main(argv: list) -> int:
         tools = "--tools" in args
         hooks = "--hooks" in args
         use_default = "--no-use" not in args
+        harness = "--no-harness" not in args
         mode = None
         if "--mode" in args:
             j = args.index("--mode")
             mode = args[j + 1] if j + 1 < len(args) else None
-        print(install(profile=profile, tools=tools, hooks=hooks, use_default=use_default, mode=mode))
+        print(install(profile=profile, tools=tools, hooks=hooks, use_default=use_default, mode=mode,
+                      harness=harness))
         return 0
     if cmd == "use":
         root = home()

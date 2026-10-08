@@ -35,6 +35,13 @@
       }
     }
   },
+  "packages": {
+    "dsh": {
+      "name": "@deepseek-ai/dsh",
+      "version": "0.1.5-rc.3",
+      "manager": "pnpm"
+    }
+  },
   "models": {
     "qwen3.5-9b-q4_k_m.gguf": {
       "repo": "unsloth/Qwen3.5-9B-GGUF",
