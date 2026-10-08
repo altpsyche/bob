@@ -208,7 +208,7 @@ class TestSessions(unittest.TestCase):
                                    turns=turns, **kw) or {"facts": 1, "summary": "s"}):
             out = bob_dsh.sessions_consolidate("root-7f3a")
         self.assertIn("consolidated root-7f3a", out)
-        self.assertEqual(calls["scope"], "/home/dev/project")
+        self.assertEqual(calls["scope"], str(Path("/home/dev/project").resolve()))
         self.assertEqual(calls["session_id"], "root-7f3a")
         self.assertEqual(len(calls["turns"]), 3)
 
