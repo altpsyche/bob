@@ -88,7 +88,8 @@ class SkillRegistry:
         return (out.error if out.error is not None else out.result) or ""
 
     def run_events(self, name: str, registry, config=None, context=None, args: str = "",
-                   cancel=None, approve=None, owner=None, scope=None, role=None):
+                   cancel=None, approve=None, owner=None, scope=None, role=None,
+                   context_mode=None):
         """Generator form: yields event dicts so an event consumer (the shell, the server)
         renders a skill run live. A sub-agent skill re-yields `run_agent_events` events directly — so
         skill execution surfaces through the SAME event stream as any agent turn, never bespoke shell
@@ -103,7 +104,8 @@ class SkillRegistry:
         else:
             yield from self._run_sub_agent_events(
                 name, s, registry, config, args,
-                cancel=cancel, approve=approve, owner=owner, scope=scope, role=role)
+                cancel=cancel, approve=approve, owner=owner, scope=scope, role=role,
+                context_mode=context_mode or getattr(context, "context_mode", None))
 
     def _run_steps_events(self, name: str, s: dict, registry, context, config=None, approve=None,
                           owner=None):
@@ -146,7 +148,8 @@ class SkillRegistry:
         yield {"type": "final", "result": "\n\n".join(out), "skill": name}
 
     def _run_sub_agent_events(self, name: str, s: dict, registry, config, args: str, *,
-                              cancel=None, approve=None, owner=None, scope=None, role=None):
+                              cancel=None, approve=None, owner=None, scope=None, role=None,
+                              context_mode=None):
         """Sub-agent skill: the skill's prompt is its `description` (+ any user args). Runs a
         fresh, ISOLATED `run_agent_events` at depth 0 — so it can itself spawn sub-agents,
         enforces the permission policy + auth scopes carried by `registry`, and traces via the tracer — then the
@@ -168,7 +171,7 @@ class SkillRegistry:
             task, config, role=role, agency=agent_cfg.get("agency", "show"),
             registry=registry, stream=False, history=None,
             cancel=cancel, approve=approve, owner=owner, scope=scope,
-            agent_depth=0, run_id=f"skill:{name}",
+            agent_depth=0, run_id=f"skill:{name}", context_mode=context_mode,
         )
 
     @staticmethod

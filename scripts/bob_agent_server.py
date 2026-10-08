@@ -46,6 +46,7 @@ class AgentRequest(BaseModel):
     agency: str = "silent"
     role: Optional[str] = None
     session_id: Optional[str] = None  # continue a persisted conversation
+    context_mode: Optional[str] = None  # quick | deep; omitted = config default
 
 
 class AgentResponse(BaseModel):
@@ -56,6 +57,7 @@ class AgentResponse(BaseModel):
 
 class SessionCreate(BaseModel):
     token_budget: int = 0  # 0 = unlimited; else reject once tokens_spent reaches it
+    context_mode: Optional[str] = None  # quick/deep mode carried by the session
 
 
 class SteerRequest(BaseModel):
@@ -65,6 +67,7 @@ class SteerRequest(BaseModel):
 
 class TaskCreate(BaseModel):
     goal: str              # the durable, detached run to enqueue
+    context_mode: Optional[str] = None  # quick | deep for this task
 
 
 # Live streaming runs, keyed by run id, so an owner can steer a run in flight (POST /v1/agent/steer).
@@ -260,8 +263,9 @@ def create_session(req: SessionCreate = SessionCreate(), authorization: str = He
     if _sessions is None:
         raise HTTPException(status_code=503, detail="Server not yet initialized")
     budget = req.token_budget or _session_max_tokens()
-    session = _sessions.create(token_budget=budget, owner_id=owner)
-    return {"session_id": session["id"], "token_budget": session["token_budget"]}
+    session = _sessions.create(token_budget=budget, owner_id=owner, context_mode=req.context_mode)
+    return {"session_id": session["id"], "token_budget": session["token_budget"],
+            "context_mode": session.get("context_mode")}
 
 
 @app.get("/v1/sessions/{sid}")
@@ -283,7 +287,8 @@ def delete_session(sid: str, authorization: str = Header(default="")):
 # Error kinds from the loop -> HTTP status: an unreachable upstream is 503 (retry later), a failing one
 # 502, a run-level refusal 422; anything else is a server fault (500).
 _ERROR_STATUS = {"upstream_unreachable": 503, "upstream_error": 502, "empty_response": 502,
-                 "truncated": 422, "vision_unavailable": 422, "context_overflow": 422, "not_found": 404, "conflict": 409}
+                 "truncated": 422, "vision_unavailable": 422, "context_overflow": 422,
+                 "invalid_context_mode": 422, "not_found": 404, "conflict": 409}
 
 
 @app.post("/v1/agent/completions", response_model=AgentResponse)
@@ -297,13 +302,15 @@ def agent_completions(req: AgentRequest, authorization: str = Header(default="")
     _check_role_scope(identity, req.role)   # RBAC role gate (403)
     owner = identity.owner
 
-    _, history = _load_session_or_404(req.session_id, owner)
+    session, history = _load_session_or_404(req.session_id, owner)
+    mode = req.context_mode or (session or {}).get("context_mode")
     rid = uuid.uuid4().hex[:8]  # request id threaded into the loop's log lines
     # Folded straight from the event stream: nothing is echoed to the server's stdout.
     out = bob_loop.fold_events(bob_loop.run_agent_events(
         req.goal, _config, role=req.role, agency=req.agency,
         registry=_scoped_registry(identity), history=history, run_id=rid, owner=owner,
         session_id=req.session_id, allowed_roles=identity.allowed_roles(),
+        context_mode=mode,
     ))
     if out.error is not None:
         raise HTTPException(status_code=_ERROR_STATUS.get(out.error_kind, 500), detail=out.error)
@@ -313,6 +320,8 @@ def agent_completions(req: AgentRequest, authorization: str = Header(default="")
             detail="Agent reached max steps without producing a final answer",
         )
     _record_turn(req.session_id, req.goal, out.result, out.usage)
+    if req.context_mode and req.session_id and _sessions is not None:
+        _sessions.set_context_mode_owned(req.session_id, owner, req.context_mode)
     return AgentResponse(result=out.result, session_id=req.session_id)
 
 
@@ -336,7 +345,8 @@ async def agent_completions_stream(
     owner = identity.owner
     scoped = _scoped_registry(identity)     # tool-scope restricted view
 
-    _, history = _load_session_or_404(req.session_id, owner)
+    session, history = _load_session_or_404(req.session_id, owner)
+    mode = req.context_mode or (session or {}).get("context_mode")
     cancel = CancelToken()
     sentinel = object()
     rid = uuid.uuid4().hex[:8]  # request id threaded into the loop's log lines
@@ -351,6 +361,7 @@ async def agent_completions_stream(
             req.goal, _config, role=req.role, agency=req.agency,
             registry=scoped, stream=True, history=history, cancel=cancel, run_id=rid, owner=owner,
             session_id=req.session_id, allowed_roles=identity.allowed_roles(),
+            context_mode=mode,
         )
         try:
             # Tell the client its run id up front so it can POST /v1/agent/steer while the run is live.
@@ -385,6 +396,8 @@ async def agent_completions_stream(
                 pass
             if got_final and final_result is not None:  # no bogus turn on disconnect/error/max_steps
                 _record_turn(req.session_id, req.goal, final_result, final_usage)
+                if req.context_mode and req.session_id and _sessions is not None:
+                    _sessions.set_context_mode_owned(req.session_id, owner, req.context_mode)
 
     return StreamingResponse(_sse(), media_type="text/event-stream")
 
@@ -426,10 +439,19 @@ def create_task(req: TaskCreate, authorization: str = Header(default="")):
     identity = _authenticate(authorization)
     _check_rate(identity)
     owner = identity.owner
+    if req.context_mode:
+        from bob_context import normalize_mode
+        try:
+            req.context_mode = normalize_mode(req.context_mode, _config)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=422, detail=str(e))
     store = _task_store()
     rid = uuid.uuid4().hex[:8]
     store.save_run(rid, owner, "queued", req.goal, [], step=0)
-    cli._launch_task(_config, rid, owner, req.goal, resume=False)
+    if req.context_mode:
+        cli._launch_task(_config, rid, owner, req.goal, resume=False, context_mode=req.context_mode)
+    else:
+        cli._launch_task(_config, rid, owner, req.goal, resume=False)
     return {"run_id": rid, "status": "queued"}
 
 

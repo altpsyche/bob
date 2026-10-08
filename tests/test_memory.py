@@ -643,7 +643,8 @@ class TestProjectScoping(unittest.TestCase):
         bob_core._project_memory_files = lambda pd: [Path(pd) / "BOB.md"]
         out = bob_core.project_memory_block(str(d), {"memory": {"projectFiles": True, "bobMdMaxTokens": 10}})
         prefix = "Project instructions (from BOB.md — follow these for this project):\n"
-        self.assertLessEqual(len(out) - len(prefix), 40)     # body capped at bobMdMaxTokens*4
+        body = out.split(prefix, 1)[1]
+        self.assertLessEqual(bob_core.est_tokens(body), 10)     # body capped at bobMdMaxTokens
 
 
 @unittest.skipUnless(bob_memory._DEPS_ERROR is None,
@@ -893,8 +894,10 @@ class TestInjectionBudget(unittest.TestCase):
 
     def test_trims_lowest_priority_first(self):
         import bob_core
-        blocks = [("autoRecall", "a" * 40, 1), ("profile", "p" * 40, 2), ("bobmd", "b" * 40, 3)]
-        joined, kept, dropped = bob_core.budget_injection(blocks, max_tokens=25)  # 100 chars
+        blocks = [("autoRecall", "word " * 20, 1), ("profile", "word " * 20, 2),
+                  ("bobmd", "word " * 20, 3)]
+        per_block = bob_core.est_tokens("word " * 20) + 2
+        joined, kept, dropped = bob_core.budget_injection(blocks, max_tokens=per_block * 2)
         self.assertIn("bobmd", kept)
         self.assertIn("profile", kept)
         self.assertEqual(dropped, ["autoRecall"])            # least-protected dropped first

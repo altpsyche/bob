@@ -330,7 +330,13 @@ class ToolRegistry:
         token = _RUN_CONTEXT.set(context)
         try:
             out = str(fn(**json.loads(arguments_json)))
-            if len(out) > self.max_result_chars:
+            policy = getattr(context, "context_policy", None) if context is not None else None
+            limit_tokens = getattr(policy, "max_tool_result_tokens", None) if policy is not None else None
+            if limit_tokens is not None:
+                from bob_core import est_tokens
+                if est_tokens(out) > int(limit_tokens):
+                    out = self._truncate_and_retain(out, max_tokens=int(limit_tokens))
+            elif len(out) > self.max_result_chars:
                 out = self._truncate_and_retain(out)
             return out
         except json.JSONDecodeError as e:
@@ -340,16 +346,27 @@ class ToolRegistry:
         finally:
             _RUN_CONTEXT.reset(token)
 
-    def _truncate_and_retain(self, out: str) -> str:
-        """Cap a result to max_result_chars but RETAIN the full text under a handle (the retention seam), so
-        the trimmed tail is recoverable via read_result() instead of being discarded."""
+    def _truncate_and_retain(self, out: str, max_tokens: int = None) -> str:
+        """Cap a result but RETAIN the full text under a handle (the retention seam), so the trimmed
+        tail is recoverable via read_result() instead of being discarded.
+
+        ``max_tokens`` is the active mode's result budget; when None the historical char cap is used.
+        """
         self._result_seq += 1
         handle = f"r{self._result_seq}"
         self._result_store[handle] = out
         if len(self._result_store) > self._result_store_max:
             oldest = min(self._result_store, key=lambda k: int(k[1:]))
             self._result_store.pop(oldest, None)
-        cut = len(out) - self.max_result_chars
+        tail_marker = f"\n[...truncated; retained as {handle}]"
+        if max_tokens is not None:
+            from bob_core import clip_text_to_tokens, est_tokens
+            reserve = est_tokens(tail_marker)
+            body = clip_text_to_tokens(out, max(0, int(max_tokens) - reserve),
+                                       marker="\n[...middle omitted to fit the context mode...]\n")
+            cut = max(0, len(out) - len(body))
+            return body + tail_marker
+        cut = max(0, len(out) - self.max_result_chars)
         return out[: self.max_result_chars] + f"\n[...truncated {cut} chars; retained as {handle}]"
 
     def read_result(self, handle: str, offset: int = 0, length: int = 4000) -> str:

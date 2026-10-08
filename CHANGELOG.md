@@ -9,6 +9,8 @@ rebuilds only what changed, verifies, and rolls back on failure.
 ## [Unreleased]
 
 ### Added
+- **Quick and Deep context modes, with separate local and API budgets.** `/mode quick` keeps chat prompts small; `/mode deep` uses the full local slot window or a large API budget for longer work. `bob chat --quick` and `bob agent --context-mode deep` select a mode for one run, sessions and checkpoints remember it, and sub-agents inherit it. A mode is a budget bundle, never a model swap: `bob agent --deep` still means plan/verify/self-repair. [scripts/bob_context.py](scripts/bob_context.py).
+- **Tokenizer-aware context estimation.** The flat 4-chars/token estimator is replaced by `tiktoken` `o200k_base` plus a conservative safety margin for dense content, so code, JSON, CJK, emoji, and UUID/hex no longer undercount the context budget. [scripts/bob_core.py](scripts/bob_core.py).
 - **`bob key` and `/key` manage provider API keys from the terminal.** `bob key` lists every cloud peer
   (DeepSeek, GLM, Kimi) and search key with where it resolves from; `bob key set <provider>` (or `/key set
   <provider>` in the shell) reads the key at a hidden prompt and stores it in `data/secrets.json` (0600),

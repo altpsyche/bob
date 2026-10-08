@@ -16,8 +16,8 @@ Or run any capability directly, for quick questions, scripts, and pipes:
 
 | Command | What it does |
 |---|---|
-| `bob chat "…"` | One-shot chat. `--think` deep reasoning, `--code` coding, `--pro` cloud. |
-| `bob agent "goal"` | Agentic task loop: plans, uses tools, executes. Schedulable via cron. |
+| `bob chat "…"` | One-shot chat. `--quick` low-context mode, `--context-mode deep` high-context, `--think` deep reasoning, `--code` coding, `--pro` cloud. |
+| `bob agent "goal"` | Agentic task loop: plans, uses tools, executes. `--quick` or `--context-mode deep` selects the context budget. Schedulable via cron. |
 | `bob voice` | Continuous voice loop: speak, Bob replies aloud. faster-whisper STT + piper TTS. |
 | `bob describe <image>` · `bob screenshot` | Describe an image or the screen. `--pro` for cloud vision. |
 | `bob clip <url>` | Fetch a page, summarise it, store it to memory. |
@@ -26,6 +26,8 @@ Or run any capability directly, for quick questions, scripts, and pipes:
 | `bob help` | The full command catalog. |
 
 **Agent tools** run inside the loop (`bob agent` or the shell), not as `bob <verb>` commands: memory, web, git, file, shell, fabric, plus the plugins summarise, draft, search, play. List them with `bob tools` / `bob plugins`, or call one directly with `bob --run <tool> '{json}'`.
+
+**Context modes:** `/mode quick` keeps the prompt small for fast chat; `/mode deep` opens the full local window or a large API budget (default 200k-token safety cap; set `contextModes.deep.api.maxContextTokens` to 0 for the full cloud window) for longer work. The local and API budgets are resolved separately, so a Quick local cap never clamps a 1M-token cloud peer.
 
 ## Stack
 

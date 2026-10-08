@@ -143,6 +143,7 @@ def _spawn_agent(task: str, role: str = None) -> str:
         system_prompt=profile["prompt"],                 # typed role -> distinct persona (else None)
         allowed_roles=getattr(ctx, "allowed_roles", None),
         unattended_allow=getattr(ctx, "unattended_allow", None),   # MCP's allow-set holds at every depth
+        context_mode=getattr(ctx, "context_mode", None),           # sub-runs inherit the caller's mode
     ))
 
     summary = {

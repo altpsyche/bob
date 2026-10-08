@@ -88,6 +88,19 @@ class TestDispatch(unittest.TestCase):
         sh.dispatch("/agency bogus")            # rejected — unchanged
         self.assertEqual(sh.agency, "confirm")
 
+    def test_context_mode_mutates_state(self):
+        sh, out = _make_shell()
+        self.assertEqual(sh.context_mode, "quick")
+        sh.dispatch("/mode deep")
+        self.assertEqual(sh.context_mode, "deep")
+        sh.dispatch("/mode slow")               # alias
+        self.assertEqual(sh.context_mode, "deep")
+        sh.dispatch("/mode quick")
+        self.assertEqual(sh.context_mode, "quick")
+        sh.dispatch("/mode turbo")              # rejected - unchanged
+        self.assertEqual(sh.context_mode, "quick")
+        self.assertIn("valid", out.file.getvalue())
+
     def test_model_unknown_role_warns_but_switches(self):
         sh, out = _make_shell()
         sh.dispatch("/model definitely-not-a-role")
@@ -598,10 +611,10 @@ class TestContextLabel(unittest.TestCase):
 
     def test_counts_history_tokens(self):
         sh, _ = _make_shell()
-        self.assertEqual(sh._context_label(), "~0 tok")          # empty history
+        self.assertIn("tok", sh._context_label())                # mode + window label
         sh.history = [{"role": "user", "content": "hello world " * 20}]
         self.assertIn("tok", sh._context_label())
-        self.assertNotEqual(sh._context_label(), "~0 tok")       # grows with content
+        self.assertNotEqual(sh._context_label(), "quick ~0 tok")  # grows with content
 
     def test_shows_percent_with_budget(self):
         sh, _ = _make_shell()

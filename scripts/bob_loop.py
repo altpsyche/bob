@@ -34,7 +34,7 @@ _NOOP_TRACER = Tracer(enabled=False)
 
 
 # The one token estimator lives in bob_core; the loop keeps its historical name for it.
-from bob_core import est_tokens as _estimate_tokens, tokens_to_chars  # noqa: E402
+from bob_core import est_tokens as _estimate_tokens, clip_text_to_tokens  # noqa: E402
 
 # Flat token cost of one image content block. An image's prompt cost depends on its pixels (the vision
 # encoder's patch count), not on the length of its base64 text, so it is charged at a fixed estimate
@@ -99,11 +99,9 @@ def _clamp_message(m: dict, budget: int) -> dict:
     room = budget - overhead
     if room <= 0:
         return m
-    chars = tokens_to_chars(room)
-    if len(content) <= chars:
+    if _estimate_tokens(content) <= room:
         return m
-    head = chars // 2
-    return {**m, "content": content[:head] + _CLAMP_MARKER + content[-(chars - head):]}
+    return {**m, "content": clip_text_to_tokens(content, room, marker=_CLAMP_MARKER)}
 
 
 def _tail_budget(max_tokens: int, head_tokens: int, reserve: int = 0) -> int:
@@ -466,11 +464,12 @@ class RunContext:
     run id, and the approval callback. Lets a tool (a future sub-agent tool) reach these without any
     change to its fn(**args) signature."""
     __slots__ = ("cancel", "config", "registry", "run_id", "approve", "owner", "agent_depth", "scope",
-                 "policy", "todos", "tracer", "trace_span", "allowed_roles", "session_id", "unattended_allow")
+                 "policy", "todos", "tracer", "trace_span", "allowed_roles", "session_id",
+                 "unattended_allow", "context_mode", "context_policy")
 
     def __init__(self, cancel, config, registry, run_id, approve, owner="local", agent_depth=0,
                  scope=None, policy=None, todos=None, tracer=None, trace_span=None, allowed_roles=None,
-                 session_id=None, unattended_allow=None):
+                 session_id=None, unattended_allow=None, context_mode=None, context_policy=None):
         self.cancel = cancel
         self.config = config
         self.registry = registry
@@ -502,6 +501,10 @@ class RunContext:
         # A surface with no operator (MCP): the tool names agent.mcpAllowTools lets run there. None for an
         # attended run. dispatch_with_approval refuses gated tools not in it; spawn_agent hands it to the sub-run.
         self.unattended_allow = frozenset(unattended_allow) if unattended_allow is not None else None
+        # Active context mode and its resolved policy; tools that produce large results read this so
+        # their cap follows the mode without rebuilding the registry.
+        self.context_mode = context_mode
+        self.context_policy = context_policy
 
 
 def _call_id(tc, step: int, idx: int) -> str:
@@ -692,6 +695,10 @@ def parse_args():
                    help="Stream the final answer token-by-token to stdout")
     p.add_argument("--deep", action="store_true",
                    help="Enable plan + verify + self-repair for this run")
+    p.add_argument("--context-mode", default=None,
+                   help="Context budget mode: quick or deep (aliases fast/slow)")
+    p.add_argument("--quick", action="store_true",
+                   help="Shorthand for --context-mode quick")
     return p.parse_args()
 
 
@@ -770,13 +777,16 @@ def _recitation_block(goal: str, todos, max_items: int = 10, max_task_chars: int
 
 
 
-def _compact_span(dropped: list, model: str, max_tokens: int, config: dict = None) -> str:
+def _compact_span(dropped: list, model: str, max_tokens: int, config: dict = None,
+                  context_mode: str = None, prior_note: str = None) -> str:
     """Summarize the dropped span into a structured compaction note through bob_core.complete (input
     fitted to the model's window, thinking off). A failure is logged and returns "", so the caller falls
     back to plain truncation instead of failing the run."""
     from bob_core import complete, load_config
 
     convo = []
+    if prior_note:
+        convo.append({"role": "assistant", "content": f"[previous compaction note]\n{prior_note}"})
     for m in dropped:
         content = m.get("content")
         if content is None or m.get("role") == "system":
@@ -789,11 +799,29 @@ def _compact_span(dropped: list, model: str, max_tokens: int, config: dict = Non
         cfg = config if config is not None else load_config()
         text, _finish = complete(cfg, model, [{"role": "system", "content": _COMPACT_SYSTEM},
                                               {"role": "user", "content": json.dumps(convo)}],
-                                 max_tokens, timeout=int(cfg.get("agent", {}).get("requestTimeout", 600)))
+                                 max_tokens, timeout=int(cfg.get("agent", {}).get("requestTimeout", 600)),
+                                 context_mode=context_mode)
     except Exception as e:  # noqa: BLE001 (compaction is best-effort by design)
         logging.getLogger("bob.agent").warning("compaction summary failed (model=%s): %s", model, e)
         return ""
     return (text or "").strip()
+
+
+def _call_compact(dropped: list, model: str, max_tokens: int, config: dict = None,
+                  context_mode: str = None, prior_note: str = None) -> str:
+    """Compatibility wrapper around _compact_span.
+
+    Tests monkeypatch _compact_span with the historical three-argument signature.  Only pass the
+    newer optional keywords when they are actually in use, so the default path stays call-compatible.
+    """
+    kwargs = {}
+    if context_mode:
+        kwargs["context_mode"] = context_mode
+    if prior_note:
+        kwargs["prior_note"] = prior_note
+    if config is None:
+        return _compact_span(dropped, model, max_tokens, **kwargs)
+    return _compact_span(dropped, model, max_tokens, config=config, **kwargs)
 
 
 def _suffix_that_fits(msgs: list, budget, limit: int) -> int:
@@ -821,7 +849,8 @@ def _summarize_keep(original: list, tail: list, keep_last: int, budget) -> list:
 
 def _truncate_stable_prefix(messages: list, max_msgs: int, max_tokens: int, *,
                             keep_last: int, summary_max_tokens: int, summary_model: str,
-                            pin_goal: dict, summarize: bool, config: dict = None) -> list:
+                            pin_goal: dict, summarize: bool, config: dict = None,
+                            context_mode: str = None) -> list:
     """Prefix-cache-aware variant of truncate_history (stablePrefix=on).
 
     Keeps a FROZEN head — base system message(s) + the single compaction summary block + the pinned
@@ -880,12 +909,18 @@ def _truncate_stable_prefix(messages: list, max_msgs: int, max_tokens: int, *,
         while tail and tail[0].get("role") == "tool":
             dropped.append(tail.pop(0))
         if dropped:
-            note = (_compact_span(dropped, summary_model, summary_max_tokens) if config is None
-                    else _compact_span(dropped, summary_model, summary_max_tokens, config=config))
+            prior_note = prior_summary["content"] if prior_summary is not None else None
+            # Keep the append-only prefix-cache path while the rolling note is small. Once the note
+            # itself exceeds its per-event budget, fold it into the new note instead of growing forever.
+            replace_summary = bool(prior_summary is not None and
+                                   _message_tokens(prior_summary) > max(1, int(summary_max_tokens)))
+            note = _call_compact(dropped, summary_model, summary_max_tokens, config=config,
+                                 context_mode=context_mode,
+                                 prior_note=(prior_note if replace_summary else None))
             if note:
-                # APPEND to the frozen block (prior bytes unchanged) — or create it after base system.
-                content = (prior_summary["content"] + "\n" + note if prior_summary is not None
-                           else f"{_COMPACT_FRAME}\n{note}")
+                # APPEND to the frozen block while it is small; replace it once it grows past budget.
+                content = (f"{_COMPACT_FRAME}\n{note}" if prior_summary is None or replace_summary
+                           else prior_summary["content"] + "\n" + note)
                 summary_msg = {"role": "system", "content": content}
                 out = list(base_sys) + [summary_msg]
                 if goal_msg is not None:
@@ -955,7 +990,8 @@ def _clear_old_tool_results(messages: list, registry, keep_last: int, hermes: bo
 def truncate_history(messages: list, max_msgs: int, max_tokens: int = 0, *,
                      compaction: str = "truncate", keep_last: int = 6,
                      summary_max_tokens: int = 512, summary_model: str = "chat",
-                     stable_prefix: bool = False, pin_goal: dict = None, config: dict = None) -> list:
+                     stable_prefix: bool = False, pin_goal: dict = None, config: dict = None,
+                     context_mode: str = None) -> list:
     """Sliding window that keeps the system message(s), the pinned goal, and the most recent turns.
 
     Trims by message count first (max_msgs), then by an optional token budget (max_tokens): drop oldest
@@ -980,8 +1016,12 @@ def truncate_history(messages: list, max_msgs: int, max_tokens: int = 0, *,
         return _truncate_stable_prefix(
             messages, max_msgs, max_tokens, keep_last=keep_last,
             summary_max_tokens=summary_max_tokens, summary_model=summary_model,
-            pin_goal=pin_goal, summarize=(compaction == "summarize"), config=config)
-    system = [m for m in messages if m.get("role") == "system"]
+            pin_goal=pin_goal, summarize=(compaction == "summarize"), config=config,
+            context_mode=context_mode)
+    system_all = [m for m in messages if m.get("role") == "system"]
+    prior_notes = [str(m.get("content") or "") for m in system_all
+                   if str(m.get("content") or "").startswith(_COMPACT_FRAME)]
+    system = [m for m in system_all if not str(m.get("content") or "").startswith(_COMPACT_FRAME)]
     rest = [m for m in messages if m.get("role") != "system"]
     goal, n_after = None, 0
     if pin_goal is not None:
@@ -1038,8 +1078,9 @@ def truncate_history(messages: list, max_msgs: int, max_tokens: int = 0, *,
         while rest and rest[0].get("role") == "tool":
             dropped.append(rest.pop(0))
         if dropped:
-            note = (_compact_span(dropped, summary_model, summary_max_tokens) if config is None
-                    else _compact_span(dropped, summary_model, summary_max_tokens, config=config))
+            prior_note = "\n".join(prior_notes) if prior_notes else None
+            note = _call_compact(dropped, summary_model, summary_max_tokens, config=config,
+                                 context_mode=context_mode, prior_note=prior_note)
             if note:
                 summary_msg = {"role": "system", "content": f"{_COMPACT_FRAME}\n{note}"}
                 return system + [summary_msg] + _assemble(rest)
@@ -1357,6 +1398,7 @@ def run_agent_events(
     session_id: str = None,
     allowed_roles=None,
     unattended_allow=None,
+    context_mode: str = None,
 ):
     """Generator core of the agent loop. Yields event dicts:
         {"type": "token",             "text": str}                          # final-answer deltas (stream=True)
@@ -1384,7 +1426,7 @@ def run_agent_events(
     tool_call↔approval_required↔tool_result (forward-compat for parallel tools)."""
     from bob_core import (MEMORY_CONTEXT_FRAME, _mem, _port, budget_injection, check_litellm,
                           core_blocks_block, get_llm_client, get_role, image_refusal, memory_profile_block,
-                          memory_recall, project_memory_block, role_output_tokens, served_role)
+                          memory_recall, project_memory_block, served_role)
 
     agent_cfg = config.get("agent", {})
     effective_role = role or config.get("routing", {}).get("agentRole", "chat")
@@ -1402,6 +1444,15 @@ def run_agent_events(
             return
     for _n in notices:
         yield {"type": "notice", "message": _n}
+    # Resolve the mode only after fallback/vision routing so Quick/Deep is applied to the model that
+    # will actually serve this request. Local and API policies are selected by is_local_role().
+    try:
+        from bob_context import ContextModeError, resolve as resolve_context_policy
+        context_policy = resolve_context_policy(config, effective_role, context_mode)
+        context_mode = context_policy.mode
+    except ContextModeError as e:
+        yield {"type": "error", "message": str(e), "kind": "invalid_context_mode"}
+        return
     # Reasoning ("think") is a MODE on whichever model is active, not a model swap: forward the
     # `enable_thinking` chat-template kwarg to llama-server via extra_body. `think=None` -> the config
     # default (agent.think). llama-server is pinned to --reasoning-format deepseek, so any reasoning
@@ -1420,21 +1471,18 @@ def run_agent_events(
     # forever (e.g. memory_recall over and over) without ever answering. Allow a signature to run this
     # many times, then BLOCK further identical calls; 0 disables the guard.
     dup_limit = int(agent_cfg.get("maxDuplicateToolCalls", 2))
-    max_hist = int(agent_cfg.get("maxHistoryMsgs", 40))
-    # Context compaction. Default 'truncate' == drop-oldest (identical to running with summarize
-    # compaction off); 'summarize' replaces the dropped span with one compact note via summarize_turns
-    # (opt-in — it calls the LLM).
-    compaction_mode = agent_cfg.get("compaction", "truncate")
-    compact_keep_last = int(agent_cfg.get("compactKeepLastTurns", 6))
-    compact_summary_max = int(agent_cfg.get("compactSummaryMaxTokens", 512))
-    # Prefix-cache-aware context. Default False == the standard assembly (byte-identical to it). When on,
-    # truncate_history freezes the head (system + append-only summary + pinned goal) so llama.cpp's
-    # KV prefix cache is reused across turns; co-designed with the summarize compaction path.
-    stable_prefix = bool(agent_cfg.get("stablePrefix", False))
+    max_hist = int(context_policy.max_history_msgs)
+    # Context compaction. The mode chooses truncate (Quick) or summarize (Deep); the underlying
+    # implementation is unchanged.
+    compaction_mode = context_policy.compaction
+    compact_keep_last = int(context_policy.compact_keep_last_turns)
+    compact_summary_max = int(context_policy.compact_summary_max_tokens)
+    # Prefix-cache-aware context. Modes can switch it on, especially when summarize is active.
+    stable_prefix = bool(context_policy.stable_prefix)
     # Context editing: once the transcript passes clearToolResultsAfterTokens, replace OLD bulky
-    # tool-result messages with compact stubs re-fetchable via read_result. Default off == disabled.
-    clear_tool_results = bool(agent_cfg.get("clearToolResults", False))
-    clear_after_tokens = int(agent_cfg.get("clearToolResultsAfterTokens", 4000))
+    # tool-result messages with compact stubs re-fetchable via read_result.
+    clear_tool_results = bool(context_policy.clear_tool_results)
+    clear_after_tokens = int(context_policy.clear_tool_results_after_tokens)
     # Grammar-constrained tool calls: attach the structured `tools` payload + tool_choice='auto'
     # so a grammar-capable backend (llama.cpp) can only emit a well-formed tool call, killing the
     # malformed-JSON (__parse_error__) class, while still allowing free-text answers. Default off ==
@@ -1462,14 +1510,13 @@ def run_agent_events(
     # per step = llmRetries + 1, with an escalating backoff so a restarting backend has time to come up.
     llm_attempts = max(1, int(agent_cfg.get("llmRetries", 2)) + 1)
     llm_backoff = float(agent_cfg.get("llmRetryBackoffSec", 2.0))
-    # Token-aware context: the history budget is the serving model's per-request window (0/'auto') or
-    # an explicit agent.maxContextTokens capped at that window; the injected tool schemas shrink once
-    # the tool count crosses compactSchemasAfter.
-    max_context_cfg = agent_cfg.get("maxContextTokens", 0)
+    # Token-aware context: the mode supplies a per-backend cap; request_window still lowers it to the
+    # served role's real window. The injected tool schemas shrink at the mode's threshold.
+    max_context_cfg = context_policy.max_context_tokens
     # llama.cpp charges prompt + n_predict against the same ctx, so the generation the step is about
     # to ask for comes out of the history budget too, and is sent as max_tokens so the reservation
     # holds (_budget_for). --max wins when the caller set it.
-    compact_after = int(agent_cfg.get("compactSchemasAfter", 12))
+    compact_after = int(context_policy.compact_schemas_after)
     # Max concurrent side-effect-free tools per step. Default 1 = sequential.
     max_parallel_tools = int(agent_cfg.get("maxParallelTools", 1))
     # Client-side timeout must be >= the proxy's request_timeout (600s): thinking models
@@ -1514,7 +1561,23 @@ def run_agent_events(
         goal = resumed["goal"]
         step_start = resumed["step"]
         checkpoint_run = True
-        log.info(f"[{rid}] resuming from step {step_start}")
+        restored_mode = (resumed.get("metrics") or {}).get("context_mode")
+        if context_mode is None and restored_mode:
+            try:
+                context_policy = resolve_context_policy(config, effective_role, restored_mode)
+                context_mode = context_policy.mode
+                max_hist = int(context_policy.max_history_msgs)
+                compaction_mode = context_policy.compaction
+                compact_keep_last = int(context_policy.compact_keep_last_turns)
+                compact_summary_max = int(context_policy.compact_summary_max_tokens)
+                stable_prefix = bool(context_policy.stable_prefix)
+                clear_tool_results = bool(context_policy.clear_tool_results)
+                clear_after_tokens = int(context_policy.clear_tool_results_after_tokens)
+                max_context_cfg = context_policy.max_context_tokens
+                compact_after = int(context_policy.compact_schemas_after)
+            except ContextModeError:
+                pass
+        log.info(f"[{rid}] resuming from step {step_start} mode={context_mode}")
 
     # Build the registry if the caller didn't supply one (server passes its prebuilt, warm
     # registry). Timed for the metrics line / cold-start visibility.
@@ -1572,7 +1635,7 @@ def run_agent_events(
     # concatenating into the one system message truncate_history always keeps (so injected memory can't
     # overflow the context window). Priority (kept longest): coreBlocks > BOB.md > profile > autoRecall.
     inject_blocks: list = []   # (label, text, priority)
-    inject_budget = int(_mem(mem_cfg, "maxInjectedTokens"))
+    inject_budget = int(context_policy.memory_max_injected_tokens)
 
     # autoRecall is a ROOT-run behavior only: a sub-agent runs an isolated
     # transcript by design and must not pull the owner's saved notes every turn (mirrors the
@@ -1583,7 +1646,8 @@ def run_agent_events(
             recalled = memory_recall(goal, k=int(_mem(mem_cfg, "recallK")), config=config,
                                      owner=owner, scope=scope)
             if recalled and recalled.strip() and recalled != "(no results)":
-                recalled = recalled[: tokens_to_chars(inject_budget)]   # hard-cap autoRecall length
+                recalled = clip_text_to_tokens(recalled, inject_budget,
+                                               marker="\n[...recall truncated to fit the mode budget...]\n")
                 inject_blocks.append(("autoRecall", MEMORY_CONTEXT_FRAME + "\n" + recalled, 1))
         except Exception as e:
             log.warning(f"[{rid}] memory recall skipped: {e}")
@@ -1635,7 +1699,7 @@ def run_agent_events(
     hermes_mode = tool_fmt == "hermes"
     # Fit the tool set to a small window before it is baked into the prompt: compact every schema, then
     # leave out the least essential tools, so the head never crowds out the reply (see _fit_tools_to_window).
-    output_request = max_tokens or role_output_tokens(config, effective_role)
+    output_request = max_tokens or context_policy.output_tokens(config, effective_role)
     if tool_schemas and resumed is None:
         fit_window = _context_budget(config, effective_role, max_context_cfg, output_request, 0)[0]
         tool_schemas, compact_after, dropped_tools = _fit_tools_to_window(
@@ -1742,8 +1806,9 @@ def run_agent_events(
         maxOutputTokens, else agent.outputReserveTokens) shrinks to what the window leaves after the system
         head, the schemas and the minimal history, so prompt + max_tokens never exceeds the window; `shrunk`
         says it did, and `fits` is False when not even a _MIN_OUTPUT_TOKENS reply is left."""
-        total, out, send = _context_budget(config, for_role, max_context_cfg,
-                                           max_tokens or role_output_tokens(config, for_role),
+        pol = context_policy if for_role == effective_role else resolve_context_policy(config, for_role, context_mode)
+        total, out, send = _context_budget(config, for_role, pol.max_context_tokens,
+                                           max_tokens or pol.output_tokens(config, for_role),
                                            request_tools_tokens)
         head = sum(_message_tokens(m) for m in messages if m.get("role") == "system")
         room = total - request_tools_tokens - head - _tail_reserve(total)
@@ -1752,8 +1817,8 @@ def run_agent_events(
         if shrunk:
             out = max(1, room)
             send = max(0, total - request_tools_tokens - out)
-        log.info(f"[{rid}] context budget {send} (role={for_role} window={total} head={head} "
-                 f"schemas={request_tools_tokens} output={out})")
+        log.info(f"[{rid}] context budget {send} (role={for_role} mode={pol.mode}/{pol.backend} "
+                 f"window={total} head={head} schemas={request_tools_tokens} output={out})")
         return SimpleNamespace(out=out, send=send, fits=fits, total=total, head=head, shrunk=shrunk)
 
     budget = _budget_for(effective_role)
@@ -1793,7 +1858,8 @@ def run_agent_events(
                          approve=approve, owner=owner, agent_depth=agent_depth, scope=scope,
                          policy=policy, tracer=tracer, trace_span=run_span,
                          allowed_roles=allowed_roles, session_id=session_id,
-                         unattended_allow=unattended_allow)
+                         unattended_allow=unattended_allow, context_mode=context_mode,
+                         context_policy=context_policy)
     if resumed is not None and resumed.get("todos"):
         run_ctx.todos = resumed["todos"]   # restore the living TODO list so recitation/recall continue
     # Plan phase: one bounded ponder turn whose step list is injected as context before the loop.
@@ -1827,7 +1893,8 @@ def run_agent_events(
     run_persist = checkpoint_store is not None and checkpoint_run
 
     def _run_metrics():
-        return {"steps": steps_done, "tools": tools_run, "tokens_est": tokens_est}
+        return {"steps": steps_done, "tools": tools_run, "tokens_est": tokens_est,
+                "context_mode": context_mode}
 
     # Token usage over the run's LLM calls: what the backend reported (stream_options.include_usage),
     # or an estimate of the prompt sent + the reply when it reports none.
@@ -1898,7 +1965,8 @@ def run_agent_events(
             messages = truncate_history(messages, max_hist, send_budget,
                                         compaction=compaction_mode, keep_last=compact_keep_last,
                                         summary_max_tokens=compact_summary_max, summary_model=effective_role,
-                                        stable_prefix=stable_prefix, pin_goal=goal_msg, config=config)
+                                        stable_prefix=stable_prefix, pin_goal=goal_msg, config=config,
+                                        context_mode=context_mode)
             # The recitation rides only on THIS request (never persisted to `messages`, so it can't
             # accumulate or disturb truncate/the stable prefix); rebuilt each step from the live TODOs.
             send_messages = messages
@@ -2225,8 +2293,11 @@ def run_agent_events(
                         sys_idx = next((i for i, m in enumerate(messages) if m.get("role") == "system"
                                         and m.get("content") == base_system), None)
                         if tool_schemas and sys_idx is not None:
-                            v_output = max_tokens or role_output_tokens(config, effective_role)
-                            v_window = _context_budget(config, effective_role, max_context_cfg, v_output, 0)[0]
+                            v_policy = resolve_context_policy(config, effective_role, context_mode)
+                            run_ctx.context_policy = v_policy
+                            v_output = max_tokens or v_policy.output_tokens(config, effective_role)
+                            v_window = _context_budget(config, effective_role, v_policy.max_context_tokens,
+                                                       v_output, 0)[0]
                             fitted, v_compact, dropped_now = _fit_tools_to_window(
                                 system_prompt, tool_schemas, window=v_window, output=v_output,
                                 hermes=hermes_mode, compact_after=compact_after,
@@ -2396,6 +2467,7 @@ def run_agent(
     session_id: str = None,
     unattended_allow=None,
     allowed_roles=None,
+    context_mode: str = None,
 ) -> tuple[str | None, bool]:
     """Blocking wrapper over run_agent_events for the CLI: prints tool previews to stderr,
     streams/echoes the final answer to stdout, and returns (result, exit_requested).
@@ -2444,7 +2516,8 @@ def run_agent(
         exit_on_tools=exit_on_tools, registry=registry, stream=stream, history=history,
         cancel=cancel, run_id=run_id, approve=approve, owner=owner, agent_depth=agent_depth,
         scope=scope, no_tools=no_tools, max_tokens=max_tokens, images=images, resume=resume,
-        think=think, session_id=session_id, unattended_allow=unattended_allow, allowed_roles=allowed_roles,
+        think=think, session_id=session_id, unattended_allow=unattended_allow,
+        allowed_roles=allowed_roles, context_mode=context_mode,
     ), on_event=_echo)
     if out.error is not None:
         if raise_on_error:
@@ -2464,7 +2537,11 @@ def main():
         sys.exit(1)
 
     goal = " ".join(args.goal)
+    context_mode = getattr(args, "context_mode", None)
+    if getattr(args, "quick", False):
+        context_mode = "quick"
     # --deep turns on the plan/verify/self-repair phases for this CLI run (config default is off).
+    # Deep context mode is selected separately with --context-mode deep, so the two meanings stay clear.
     if getattr(args, "deep", False):
         ag = config.setdefault("agent", {})
         ag["plan"] = ag["verify"] = ag["selfRepair"] = True
@@ -2482,6 +2559,7 @@ def main():
             stream=args.stream,
             approve=approve,
             raise_on_error=True,
+            context_mode=context_mode,
         )
     except AgentRunError:
         # A failed run is a failed command: scripts and CI must see a non-zero exit, not an empty answer.

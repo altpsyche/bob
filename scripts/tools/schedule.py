@@ -128,7 +128,7 @@ def _log_file(config: dict) -> Path:
     return REPO / rel
 
 
-def _run_goal(goal: str, role: str, config: dict, ctx=None) -> str:
+def _run_goal(goal: str, role: str, config: dict, ctx=None, context_mode: str = None) -> str:
     """Run one agent goal in-process (silent) and return the trimmed final answer. In-process (not a
     subprocess) now that the loop is Python — bob_loop.run_agent returns (result, exit_requested).
     `ctx` is the RunContext of the agent run that called schedule_run: like spawn_agent, the scheduled
@@ -141,6 +141,9 @@ def _run_goal(goal: str, role: str, config: dict, ctx=None) -> str:
         kw = dict(approve=getattr(ctx, "approve", None), owner=getattr(ctx, "owner", None),
                   allowed_roles=getattr(ctx, "allowed_roles", None),
                   unattended_allow=getattr(ctx, "unattended_allow", None), quiet=True)
+    context_mode = context_mode or getattr(ctx, "context_mode", None)
+    if context_mode is not None:
+        kw["context_mode"] = context_mode
     result, _ = bob_loop.run_agent(goal, config, role=role, agency="silent", **kw)
     return (result or "").strip()
 
@@ -164,16 +167,20 @@ def schedule_list(config: dict) -> str:
 
 
 def schedule_add(config: dict, name: str, cron: str = "0 9 * * 1-5", goal: str = None,
-                 role: str = "agent", notify: bool = False, title: str = None) -> str:
+                 role: str = "agent", notify: bool = False, title: str = None,
+                 context_mode: str = None) -> str:
     """Add a schedule and auto-register the OS task if not already registered."""
     if not name:
         return "Usage: bob agent schedule add <name> --cron <expr> --goal <text>"
     s = _read_schedules(config)
     if any(e.get("name") == name for e in s):
         return f"Schedule '{name}' already exists."
+    action = {"type": "agent", "goal": goal or name, "role": role}
+    if context_mode:
+        action["contextMode"] = context_mode
     s.append({
         "name": name, "cron": cron,
-        "action": {"type": "agent", "goal": goal or name, "role": role},
+        "action": action,
         "notify": bool(notify), "notifyTitle": title or name, "enabled": True,
         "lastRun": None, "lastRunResult": None, "createdAt": _now().isoformat(),
     })
@@ -236,7 +243,8 @@ def schedule_run(config: dict, name: str) -> str:
         return f"Schedule not found: {name}"
     role = _role_for(entry, config)
     from tool_registry import get_run_context
-    result = _run_goal(entry.get("action", {}).get("goal", name), role, config, ctx=get_run_context())
+    result = _run_goal(entry.get("action", {}).get("goal", name), role, config, ctx=get_run_context(),
+                       context_mode=entry.get("action", {}).get("contextMode"))
     if entry.get("notify") and result:
         import osenv
         osenv.notify(entry.get("notifyTitle") or entry.get("name"), result)
@@ -276,7 +284,8 @@ def run_due_schedules(config: dict) -> str:
         role = _role_for(entry, config)
         _append_log(log, f"[{now.isoformat()}] Running: {name}")
         try:
-            result = _run_goal(entry.get("action", {}).get("goal", name), role, config)
+            result = _run_goal(entry.get("action", {}).get("goal", name), role, config,
+                               context_mode=entry.get("action", {}).get("contextMode"))
         except Exception as e:  # a single bad goal must not abort the whole tick
             result = f"Agent error: {e}"
             _append_log(log, f"ERROR: {result}")
@@ -359,8 +368,9 @@ def _schedule_list() -> str:
 
 
 def _schedule_add(name: str, cron: str = "0 9 * * 1-5", goal: str = None, role: str = "agent",
-                  notify: bool = False, title: str = None) -> str:
-    return schedule_add(_cfg, name, cron=cron, goal=goal, role=role, notify=notify, title=title)
+                  notify: bool = False, title: str = None, contextMode: str = None) -> str:
+    return schedule_add(_cfg, name, cron=cron, goal=goal, role=role, notify=notify, title=title,
+                        context_mode=contextMode)
 
 
 def _schedule_remove(name: str) -> str:
@@ -401,6 +411,7 @@ TOOL_DEFS = [
             "cron": {"type": "string", "description": "5-field UTC cron (default '0 9 * * 1-5')."},
             "goal": {"type": "string", "description": "The agent goal to run (defaults to the name)."},
             "role": {"type": "string", "description": "Model role (default 'agent')."},
+            "contextMode": {"type": "string", "description": "Context mode: quick or deep (optional)."},
             "notify": {"type": "boolean", "description": "Desktop-notify on completion."},
             "title": {"type": "string", "description": "Notification title (defaults to the name)."}},
             "required": ["name"]}}},

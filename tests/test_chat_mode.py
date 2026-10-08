@@ -109,9 +109,10 @@ class TestChatHandler(unittest.TestCase):
         self.captured = {}
 
         def fake_run_agent(goal, config, role=None, agency=None, stream=False,
-                           no_tools=False, max_tokens=None, think=None, **kw):
+                           no_tools=False, max_tokens=None, think=None, context_mode=None, **kw):
             self.captured = {"goal": goal, "role": role, "stream": stream,
-                             "no_tools": no_tools, "max_tokens": max_tokens, "think": think}
+                             "no_tools": no_tools, "max_tokens": max_tokens, "think": think,
+                             "context_mode": context_mode}
             return ("ok", False)
 
         bob_loop.run_agent = fake_run_agent
@@ -139,6 +140,12 @@ class TestChatHandler(unittest.TestCase):
     def test_pro_flag(self):
         self.cli._chat("chat", ["--pro", "x"])
         self.assertEqual(self.captured["role"], "chat-pro")
+
+    def test_context_mode_flags(self):
+        self.cli._chat("chat", ["--quick", "x"])
+        self.assertEqual(self.captured["context_mode"], "quick")
+        self.cli._chat("chat", ["--context-mode", "deep", "x"])
+        self.assertEqual(self.captured["context_mode"], "deep")
 
     def test_think_code_flags_override_task(self):
         # --code still routes to the coder model; --think toggles reasoning mode on the chat model.

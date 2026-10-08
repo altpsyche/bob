@@ -483,7 +483,9 @@ bob agent "summarise the last 10 commits" 2>nul
 
 Override for a single run with `--agency confirm`; set the default with `"agent": {"agency": "confirm"}` at the top level of `config/user.json`. `agent.maxSteps` (default 10) caps the tool iterations per goal.
 
-Every front door (this loop, the shell, skill steps, `bob --run`, and MCP clients) goes through one approval gate. A tool that needs approval asks on a terminal and is refused when there is no one to ask (piped, scheduled, served). The context budget is automatic: `agent.maxContextTokens = 0` uses the per-slot window of the model serving the role, and the reply is always capped by `agent.outputReserveTokens` (default 1024) sent as `max_tokens`. A reply that hits that cap is marked as truncated, and a tool call in a truncated reply is never run. On a profile that lacks the requested role (cpu has no `coder` or `ponder`), the run falls back to `chat` and says so.
+Every front door (this loop, the shell, skill steps, `bob --run`, and MCP clients) goes through one approval gate. A tool that needs approval asks on a terminal and is refused when there is no one to ask (piped, scheduled, served). The context budget is automatic: `agent.maxContextTokens = 0` uses the per-slot window of the model serving the role, and the reply is always capped by `agent.outputReserveTokens` (default 1024) sent as `max_tokens`. A reply that hits that cap is marked as truncated, and a tool call in a truncated reply is never run.
+
+Context mode adds a named budget bundle on top of that. `/mode quick` keeps prompts small for fast chat; `/mode deep` uses the full local window or a large API budget for longer work. `--quick` and `--context-mode deep` select the same modes for one-shot `bob chat` / `bob agent` runs. Local and API budgets are resolved separately, so a Quick local cap cannot clamp a 1M-token cloud peer, and a Deep API budget cannot make a local model exceed its loaded window. On a profile that lacks the requested role (cpu has no `coder` or `ponder`), the run falls back to `chat` and says so.
 
 ### Available tools
 

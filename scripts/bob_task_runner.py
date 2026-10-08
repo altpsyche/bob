@@ -17,7 +17,7 @@ sys.path.insert(0, str(_SCRIPTS / "tools"))
 
 
 def run_task(config: dict, run_id: str, owner: str, goal: str = None, resume: bool = False,
-             cancel=None, allow_computer: bool = False) -> int:
+             cancel=None, allow_computer: bool = False, context_mode: str = None) -> int:
     """Run one durable agent run to completion. `resume` continues a checkpointed run (goal is loaded
     from its row); otherwise `goal` starts a fresh run under `run_id`. Returns a process exit code:
     0 for an answer (or a cancelled run), 1 when the run failed (upstream down, backend error, a
@@ -30,7 +30,7 @@ def run_task(config: dict, run_id: str, owner: str, goal: str = None, resume: bo
         agent.setdefault("computerUse", {})["allowUnattended"] = True
     out = bob_loop.fold_events(bob_loop.run_agent_events(
         goal or "", config, agency="silent", run_id=run_id, owner=owner,
-        cancel=cancel, resume=(run_id if resume else None)))
+        cancel=cancel, resume=(run_id if resume else None), context_mode=context_mode))
     if out.error is not None:
         print(f"bob-task: run {run_id} failed ({out.error_kind}): {out.error}", file=sys.stderr)
         return 1
@@ -50,6 +50,7 @@ def main(argv=None) -> int:
     p.add_argument("--resume", action="store_true")
     p.add_argument("--allow-computer", action="store_true",
                    help="permit computer-use in this unattended task (off by default)")
+    p.add_argument("--context-mode", default=None, help="context budget mode: quick or deep")
     args = p.parse_args(argv)
 
     try:
@@ -71,7 +72,7 @@ def main(argv=None) -> int:
     signal.signal(signal.SIGTERM, lambda *_: cancel.cancel())   # `task cancel` stops us at a step boundary
 
     return run_task(config, args.run_id, args.owner, goal=args.goal, resume=args.resume, cancel=cancel,
-                    allow_computer=args.allow_computer)
+                    allow_computer=args.allow_computer, context_mode=args.context_mode)
 
 
 if __name__ == "__main__":

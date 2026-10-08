@@ -353,12 +353,22 @@ def _chat(task: str, rest: list) -> int:
 
     max_tokens = None
     sys_prompt = None
+    context_mode = None
     prompt: list = []
     i = 0
     while i < len(rest):
         tok = rest[i]
         if tok in ("--pro", "--think", "--code", "--write", "--raw"):
             i += 1
+        elif tok == "--quick":
+            context_mode = "quick"
+            i += 1
+        elif tok == "--deep":
+            context_mode = "deep"
+            i += 1
+        elif tok in ("--context-mode", "--mode") and i + 1 < len(rest):
+            context_mode = rest[i + 1]
+            i += 2
         elif tok == "--max" and i + 1 < len(rest):
             try:
                 max_tokens = int(rest[i + 1])
@@ -373,6 +383,13 @@ def _chat(task: str, rest: list) -> int:
             i += 1
 
     config = load_config()
+    if context_mode:
+        from bob_context import normalize_mode
+        try:
+            context_mode = normalize_mode(context_mode, config)
+        except Exception as e:  # noqa: BLE001
+            print(str(e), file=sys.stderr)
+            return 2
     # Legacy `bob chat <knownRole> <prompt...>` — first token is an explicit model/role.
     if len(prompt) >= 2 and prompt[0] in _chat_known_roles(config):
         role = prompt[0]
@@ -387,12 +404,16 @@ def _chat(task: str, rest: list) -> int:
         # Interactive: the shell in chat mode (preset role, tools off) — inherits persisted
         # sessions, autoRecall/consolidate, rich streaming, and approval.
         from bob.shell import run as shell_run
+        if context_mode:
+            return shell_run(config=config, role=role, no_tools=True, think=think,
+                             context_mode=context_mode)
         return shell_run(config=config, role=role, no_tools=True, think=think)
 
     # One-shot: run_agent prints the answer (streams + newline unless --raw, which prints bare text).
     import bob_loop
     result, _ = bob_loop.run_agent(" ".join(prompt), config, role=role, agency="silent",
-                                   stream=not raw, no_tools=True, max_tokens=max_tokens, think=think)
+                                   stream=not raw, no_tools=True, max_tokens=max_tokens, think=think,
+                                   context_mode=context_mode)
     return 0 if result is not None else 1   # an error was already printed to stderr
 
 
@@ -1307,7 +1328,7 @@ def _task_paths(run_id: str):
 
 
 def _launch_task(config, run_id: str, owner: str, goal: str, resume: bool,
-                 allow_computer: bool = False) -> int:
+                 allow_computer: bool = False, context_mode: str = None) -> int:
     """Launch the detached task worker for a durable run and record its pid + log path. Shared by
     `task start` and `task resume`. Returns the worker pid."""
     import osenv
@@ -1321,6 +1342,8 @@ def _launch_task(config, run_id: str, owner: str, goal: str, resume: bool,
         argv += ["--goal", goal or ""]
     if allow_computer:
         argv.append("--allow-computer")
+    if context_mode:
+        argv += ["--context-mode", context_mode]
     log_path, pidfile = _task_paths(run_id)
     pid = osenv.start_detached(argv, pidfile=str(pidfile), log_path=str(log_path), append=True)
     store, _ = _task_store(config)
@@ -1338,15 +1361,38 @@ def _handle_task_start(rest: list) -> int:
     allow_computer = "--allow-computer" in args
     if allow_computer:
         args.remove("--allow-computer")
+    context_mode = None
+    if "--quick" in args:
+        context_mode = "quick"
+        args.remove("--quick")
+    if "--context-mode" in args:
+        i = args.index("--context-mode")
+        if i + 1 < len(args):
+            context_mode = args[i + 1]
+            del args[i:i + 2]
+        else:
+            print("--context-mode needs a value (quick or deep)", file=sys.stderr)
+            return 1
     goal = " ".join(args).strip()
     if not goal:
-        print('usage: bob task start "<goal>" [--allow-computer]', file=sys.stderr)
+        print('usage: bob task start "<goal>" [--allow-computer] [--context-mode quick|deep]', file=sys.stderr)
         return 1
     config = load_config()
+    if context_mode:
+        from bob_context import normalize_mode
+        try:
+            context_mode = normalize_mode(context_mode, config)
+        except Exception as e:  # noqa: BLE001
+            print(str(e), file=sys.stderr)
+            return 1
     store, owner = _task_store(config)
     run_id = uuid.uuid4().hex[:8]
     store.save_run(run_id, owner, "queued", goal, [], step=0)
-    _launch_task(config, run_id, owner, goal, resume=False, allow_computer=allow_computer)
+    if context_mode:
+        _launch_task(config, run_id, owner, goal, resume=False, allow_computer=allow_computer,
+                     context_mode=context_mode)
+    else:
+        _launch_task(config, run_id, owner, goal, resume=False, allow_computer=allow_computer)
     print(run_id)
     return 0
 

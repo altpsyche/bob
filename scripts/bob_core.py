@@ -82,21 +82,129 @@ _SECTION_PORTS = {"agentPort": "agent", "mcpPort": "agent"}
 
 
 # --- token estimation ---------------------------------------------------------------------------
-# One estimator for every budget in the runtime (history, injected memory, tool results, repo map):
-# ~4 chars per token for English + JSON. No tokenizer dependency.
+# One estimator for every budget in the runtime (history, injected memory, tool results, repo map).
+# It uses tiktoken's o200k_base when available (already pinned in the LiteLLM venv) and applies a
+# conservative safety margin so code, JSON, CJK, emoji, UUID/hex and other dense content cannot
+# silently undercount.  The legacy 4-chars/token view remains the fallback when tiktoken is absent.
 _CHARS_PER_TOKEN = 4
+_TOKEN_SAFETY_PCT = 25   # 25% headroom over the tokenizer count
+_TIKTOKEN_ENC = None
+_TIKTOKEN_TRIED = False
+
+
+def _tiktoken_encoding():
+    """Lazy tiktoken o200k_base encoding, or None when tiktoken is unavailable."""
+    global _TIKTOKEN_ENC, _TIKTOKEN_TRIED
+    if not _TIKTOKEN_TRIED:
+        _TIKTOKEN_TRIED = True
+        try:
+            import tiktoken
+            _TIKTOKEN_ENC = tiktoken.get_encoding("o200k_base")
+        except Exception:
+            _TIKTOKEN_ENC = None
+    return _TIKTOKEN_ENC
 
 
 def est_tokens(text) -> int:
-    """Rough token estimate of `text` (~4 chars/token). Empty -> 0."""
+    """Conservative token estimate. Empty -> 0.
+
+    The estimator is intentionally biased high for real content: undercounting a
+    context budget can overflow the backend, while overcounting only leaves a
+    little headroom unused.
+    """
     if not text:
         return 0
-    return (len(text) + _CHARS_PER_TOKEN - 1) // _CHARS_PER_TOKEN
+    if not isinstance(text, str):
+        text = json.dumps(text, ensure_ascii=False)
+    enc = _tiktoken_encoding()
+    if enc is not None:
+        try:
+            n = len(enc.encode(text, disallowed_special=()))
+        except Exception:
+            n = 0
+        if n:
+            # Tiny strings are already exact enough; a safety multiplier there
+            # would only make unit-level checks and short prompts noisy.
+            if n <= 3:
+                return n
+            # Apply the safety margin only to token-dense content (code, JSON, CJK,
+            # emoji, UUID/hex).  English prose and prose-heavy schemas are already
+            # close to exact under o200k, and padding them wastes context.
+            if (n / max(1, len(text))) >= 0.25:
+                return max(n, (n * (100 + _TOKEN_SAFETY_PCT) + 99) // 100)
+            return n
+    # Fallback: keep the historical 4-chars/token for ASCII and charge non-ASCII
+    # at one token per codepoint, which is conservative for CJK and emoji.
+    non_ascii = sum(1 for ch in text if ord(ch) > 127)
+    ascii_len = len(text) - non_ascii
+    return max(1, (ascii_len + _CHARS_PER_TOKEN - 1) // _CHARS_PER_TOKEN + non_ascii)
 
 
 def tokens_to_chars(tokens) -> int:
-    """The character budget matching `tokens` under est_tokens' ratio (never negative)."""
+    """Legacy character budget matching the original 4-chars/token view.
+
+    Context trimming paths use the tokenizer-aware ``clip_text_to_tokens`` helper
+    instead.  This function remains for callers that need a quick character cap.
+    """
     return max(0, int(tokens) * _CHARS_PER_TOKEN)
+
+
+def _clip_prefix(text: str, max_tokens: int) -> str:
+    """Largest prefix of ``text`` whose estimate is at most ``max_tokens``."""
+    if max_tokens <= 0 or not text:
+        return ""
+    if est_tokens(text) <= max_tokens:
+        return text
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if est_tokens(text[:mid]) <= max_tokens:
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[:lo]
+
+
+def _clip_suffix(text: str, max_tokens: int) -> str:
+    """Largest suffix of ``text`` whose estimate is at most ``max_tokens``."""
+    if max_tokens <= 0 or not text:
+        return ""
+    if est_tokens(text) <= max_tokens:
+        return text
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if est_tokens(text[-mid:]) <= max_tokens:
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[-lo:] if lo else ""
+
+
+def clip_text_to_tokens(text: str, max_tokens: int, marker: str = "\n\n[...middle truncated to fit the token budget...]\n\n") -> str:
+    """Return ``text`` clipped to ``max_tokens``, keeping head and tail when a marker fits.
+
+    The marker itself is charged against the budget.  If the marker does not fit,
+    only a prefix is returned.
+    """
+    if not text or max_tokens <= 0:
+        return ""
+    if est_tokens(text) <= max_tokens:
+        return text
+    marker_tokens = est_tokens(marker)
+    if marker_tokens >= max_tokens:
+        return _clip_prefix(text, max_tokens)
+    body_budget = max_tokens - marker_tokens
+    head_budget = body_budget // 2
+    head = _clip_prefix(text, head_budget)
+    tail_budget = max(0, body_budget - est_tokens(head))
+    tail = _clip_suffix(text, tail_budget)
+    candidate = head + marker + tail
+    # Token counts are not perfectly additive across a concatenation boundary; verify the final
+    # candidate and fall back to a plain safe prefix if the marker/tail pushed it over.
+    if est_tokens(candidate) <= max_tokens:
+        return candidate
+    return _clip_prefix(text, max_tokens)
 
 
 def get_role(config: dict, task: str = "chat", pro: bool = False) -> str:
@@ -423,6 +531,7 @@ def memory_profile_block(owner: Optional[str] = None, config: Optional[dict] = N
         return None
     if not body:
         return None
+    body = clip_text_to_tokens(body, max_tokens, marker="\n[...profile truncated to fit...]\n")
     return MEMORY_CONTEXT_FRAME + "\n" + body
 
 
@@ -456,25 +565,34 @@ def project_memory_block(project_dir: Optional[str], config: Optional[dict] = No
             parts.append(txt)
     if not parts:
         return None
-    body = "\n\n".join(parts)[: tokens_to_chars(_mem(mem, "bobMdMaxTokens"))]
+    body = clip_text_to_tokens("\n\n".join(parts), int(_mem(mem, "bobMdMaxTokens")),
+                              marker="\n[...project instructions truncated to fit...]\n")
     return "Project instructions (from BOB.md — follow these for this project):\n" + body
 
 
-def budget_injection(blocks: list, max_tokens: int) -> tuple:
-    """Fit optional injected-memory blocks into ~max_tokens (≈4 chars/token) before they are
-    concatenated into the system prompt. `blocks` is a list of (label, text, priority); higher
-    priority is kept longer. Greedy by priority desc; the single highest-priority block is always kept
-    even if it alone exceeds the budget (so we never inject nothing when a large BOB.md is present).
-    Trim order therefore drops autoRecall before profile before BOB.md. Returns
-    (joined_text, kept_labels, dropped_labels)."""
-    max_chars = tokens_to_chars(max_tokens)
+def budget_injection(blocks: list, max_tokens: int, hard_cap: bool = True) -> tuple:
+    """Fit optional injected-memory blocks into ``max_tokens``.
+
+    ``blocks`` is a list of (label, text, priority); higher priority is kept
+    longer.  Greedy by priority desc.  The first kept block is hard-capped to
+    the budget when ``hard_cap`` is true, so a large BOB.md cannot overflow a
+    lean window just because it holds the top priority.  Returns
+    (joined_text, kept_labels, dropped_labels).
+    """
+    max_tokens = max(0, int(max_tokens or 0))
     ordered = sorted([b for b in blocks if b[1] and b[1].strip()], key=lambda b: -b[2])
     kept, dropped, used = [], [], 0
+    first = True
     for label, text, _prio in ordered:
-        need = len(text) + 2   # +2 for the blank-line separator
-        if not kept or used + need <= max_chars:
+        tokens = est_tokens(text)
+        if first:
+            body = clip_text_to_tokens(text, max_tokens) if (hard_cap and tokens > max_tokens) else text
+            kept.append((label, body))
+            used = est_tokens(body) + 2
+            first = False
+        elif used + tokens + 2 <= max_tokens:
             kept.append((label, text))
-            used += need
+            used += tokens + 2
         else:
             dropped.append(label)
     joined = "\n\n".join(text for _label, text in kept)
@@ -735,10 +853,9 @@ def fit_messages(messages: list, budget: int) -> list:
         if not kept:
             content = m.get("content")
             if isinstance(content, str):
-                chars = max(0, tokens_to_chars(max(room, 0) - 8))
-                head = chars // 2
                 marker = "\n\n[...middle truncated to fit the model's context window...]\n\n"
-                cut = content[:head] + marker + (content[-(chars - head):] if chars - head > 0 else "")
+                content_budget = max(0, room - 4)
+                cut = clip_text_to_tokens(content, content_budget, marker=marker)
                 kept.append({**m, "content": cut})
             else:
                 kept.append(m)
@@ -747,19 +864,24 @@ def fit_messages(messages: list, budget: int) -> list:
 
 
 def complete(config: dict, role: str, messages: list, max_out: int, *, timeout: int = None,
-             think: bool = False) -> tuple:
+             think: bool = False, context_mode: str = None) -> tuple:
     """One non-agent completion: the shared path for summaries, plan/verify turns and the plugins.
     Returns (text, finish_reason). The role falls back to one the active profile serves (served_role);
     the input is fitted to that model's per-request window minus `max_out` (fit_messages); thinking is
     switched off on local roles unless `think` (a reasoning model would otherwise spend max_out thinking
-    and return nothing). The window honours agent.maxContextTokens (request_window). Empty content is
-    logged with its finish_reason. Raises CompletionError on failure, never returns a silent ''."""
+    and return nothing). The window honours the active context mode and agent.maxContextTokens.
+    Empty content is logged with its finish_reason. Raises CompletionError on failure, never returns a
+    silent ''."""
     import logging
 
+    from bob_context import resolve as resolve_context_policy
+
     role = served_role(config, role)
-    window = request_window(config, role)
+    policy = resolve_context_policy(config, role, context_mode)
+    window = policy.window(config, role)
     max_out = cap_output(max_out, window)
     if window:
+        # Keep the same 64-token template margin, then leave the safety margin from est_tokens.
         messages = fit_messages(messages, window - max_out - _COMPLETE_MARGIN_TOKENS)
     kwargs = dict(model=role, messages=messages, max_tokens=max_out, stream=False,
                   timeout=int(timeout or (config or {}).get("agent", {}).get("requestTimeout", 600)))

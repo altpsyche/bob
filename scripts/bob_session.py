@@ -71,7 +71,8 @@ class SessionStore:
                 token_budget INTEGER NOT NULL DEFAULT 0,
                 tokens_spent INTEGER NOT NULL DEFAULT 0,
                 client       TEXT,
-                name         TEXT
+                name         TEXT,
+                context_mode TEXT
             )
             """
         )
@@ -86,6 +87,8 @@ class SessionStore:
             )
         if "name" not in cols:                         # human-readable session label (nullable)
             conn.execute("ALTER TABLE sessions ADD COLUMN name TEXT")
+        if "context_mode" not in cols:                  # quick/deep mode remembered per session
+            conn.execute("ALTER TABLE sessions ADD COLUMN context_mode TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_owner ON sessions(owner_id, updated_at DESC)")
 
@@ -102,21 +105,21 @@ class SessionStore:
 
     # -- CRUD -----------------------------------------------------------------
 
-    def create(self, token_budget: int = 0, owner_id: str = None) -> dict:
+    def create(self, token_budget: int = 0, owner_id: str = None, context_mode: str = None) -> dict:
         sid = uuid.uuid4().hex
         now = _now()
         owner = owner_id or self._default_owner
         self._conn().execute(
-            "INSERT INTO sessions (id, created_at, updated_at, history, token_budget, tokens_spent, client, owner_id)"
-            " VALUES (?,?,?,?,?,?,?,?)",
-            [sid, now, now, "[]", int(token_budget), 0, owner, owner],  # client mirrors owner (compat)
+            "INSERT INTO sessions (id, created_at, updated_at, history, token_budget, tokens_spent,"
+            " client, owner_id, context_mode) VALUES (?,?,?,?,?,?,?,?,?)",
+            [sid, now, now, "[]", int(token_budget), 0, owner, owner, context_mode],  # client mirrors owner (compat)
         )  # autocommit (isolation_level=None)
         return self.get(sid)
 
     def get(self, sid: str):
         row = self._conn().execute(
-            "SELECT id, created_at, updated_at, history, token_budget, tokens_spent, client, owner_id, name"
-            " FROM sessions WHERE id=?",
+            "SELECT id, created_at, updated_at, history, token_budget, tokens_spent, client, owner_id, name,"
+            " context_mode FROM sessions WHERE id=?",
             [sid],
         ).fetchone()
         if not row:
@@ -131,6 +134,7 @@ class SessionStore:
             "client": row[6],
             "owner_id": row[7],
             "name": row[8],
+            "context_mode": row[9] if len(row) > 9 else None,
         }
 
     def get_owned(self, sid: str, owner_id: str):
@@ -172,6 +176,13 @@ class SessionStore:
         renaming isn't activity, so it must not reorder the recency-sorted list. Returns True if set."""
         cur = self._conn().execute(
             "UPDATE sessions SET name=? WHERE id=? AND owner_id=?", [name, sid, owner_id])
+        return cur.rowcount > 0
+
+    def set_context_mode_owned(self, sid: str, owner_id: str, context_mode: str) -> bool:
+        """Remember the current context mode on a session, only if owner_id matches."""
+        cur = self._conn().execute(
+            "UPDATE sessions SET context_mode=? WHERE id=? AND owner_id=?",
+            [context_mode, sid, owner_id])
         return cur.rowcount > 0
 
     def over_budget(self, sid: str) -> bool:

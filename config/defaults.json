@@ -228,6 +228,73 @@
         "memoryMB": 2048,
         "allowRoots": [],
         "network": false
+      },
+      "contextMode": "quick",
+      "contextModes": {
+        "quick": {
+          "label": "Quick",
+          "description": "Low context, lower output reservation, cheaper and faster first token.",
+          "local": {
+            "maxContextTokens": 16384,
+            "maxHistoryMsgs": 40,
+            "outputReserveTokens": 512,
+            "memoryMaxInjectedTokens": 800,
+            "maxToolResultTokens": 600,
+            "compaction": "truncate",
+            "compactKeepLastTurns": 4,
+            "compactSummaryMaxTokens": 512,
+            "stablePrefix": false,
+            "clearToolResults": true,
+            "clearToolResultsAfterTokens": 2500,
+            "compactSchemasAfter": 8
+          },
+          "api": {
+            "maxContextTokens": 65536,
+            "maxHistoryMsgs": 80,
+            "outputReserveTokens": 4096,
+            "memoryMaxInjectedTokens": 2000,
+            "maxToolResultTokens": 2000,
+            "compaction": "truncate",
+            "compactKeepLastTurns": 4,
+            "compactSummaryMaxTokens": 512,
+            "stablePrefix": false,
+            "clearToolResults": true,
+            "clearToolResultsAfterTokens": 4000,
+            "compactSchemasAfter": 12
+          }
+        },
+        "deep": {
+          "label": "Deep",
+          "description": "High context, fuller history, summarized compaction and larger budgets.",
+          "local": {
+            "maxContextTokens": 0,
+            "maxHistoryMsgs": 200,
+            "outputReserveTokens": 2048,
+            "memoryMaxInjectedTokens": 4000,
+            "maxToolResultTokens": 4000,
+            "compaction": "summarize",
+            "compactKeepLastTurns": 10,
+            "compactSummaryMaxTokens": 1024,
+            "stablePrefix": true,
+            "clearToolResults": true,
+            "clearToolResultsAfterTokens": 6000,
+            "compactSchemasAfter": 24
+          },
+          "api": {
+            "maxContextTokens": 200000,
+            "maxHistoryMsgs": 500,
+            "outputReserveTokens": 0,
+            "memoryMaxInjectedTokens": 12000,
+            "maxToolResultTokens": 16000,
+            "compaction": "summarize",
+            "compactKeepLastTurns": 20,
+            "compactSummaryMaxTokens": 2048,
+            "stablePrefix": true,
+            "clearToolResults": true,
+            "clearToolResultsAfterTokens": 8000,
+            "compactSchemasAfter": 0
+          }
+        }
       }
     }
   }

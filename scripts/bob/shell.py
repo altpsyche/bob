@@ -92,6 +92,8 @@ _COMMANDS = [
     _Cmd("/model", "show or switch the model (chat, coder, ponder, …)", "_cmd_model", args="[model]"),
     _Cmd("/think", "reasoning mode on the current model: on | off", "_cmd_think",
          args="[on|off]", subs=("on", "off")),
+    _Cmd("/mode", "context budget mode: quick | deep", "_cmd_mode",
+         args="[quick|deep]", subs=("quick", "deep", "fast", "slow")),
     _Cmd("/agency", "tool-approval mode: show | confirm | silent", "_cmd_agency",
          args="[level]", subs=("show", "confirm", "silent")),
     _Cmd("/session", "persisted conversation history", "_cmd_session",
@@ -426,7 +428,7 @@ class _TurnRenderer:
 
 class BobShell:
     def __init__(self, config, tools, skills, console=None, sessions=None, role=None,
-                 no_tools=False, think=None):
+                 no_tools=False, think=None, context_mode=None):
         self.config = config
         self.tools = tools
         self.skills = skills
@@ -439,6 +441,11 @@ class BobShell:
         # launch it on. `enable_thinking` rides the request; the trace never enters the transcript.
         self.think = config.get("agent", {}).get("think", False) if think is None else bool(think)
         self.agency = config.get("agent", {}).get("agency", "show")
+        try:
+            from bob_context import normalize_mode
+            self.context_mode = normalize_mode(context_mode, config)
+        except Exception:
+            self.context_mode = context_mode or config.get("agent", {}).get("contextMode", "quick")
         # Owner-scoped persisted sessions. The row is created LAZILY on the first turn
         # (session_id stays None until then) so opening `bob` and leaving leaves no empty session.
         # `sessions` is a SessionStore (injected in build()); None in unit tests unless supplied.
@@ -478,7 +485,7 @@ class BobShell:
     # -- construction ---------------------------------------------------------
 
     @classmethod
-    def build(cls, config=None, role=None, no_tools=False, think=None):
+    def build(cls, config=None, role=None, no_tools=False, think=None, context_mode=None):
         """Build the shell with warm registries (one tool build, one skill build)."""
         from bob_core import load_config
         from bob_session import open_session_store
@@ -491,7 +498,8 @@ class BobShell:
         # Same SessionStore the agent server uses (bob_session.open_session_store), so a session
         # persists across restarts and is resumable from either surface.
         sessions = open_session_store(config)
-        return cls(config, tools, skills, sessions=sessions, role=role, no_tools=no_tools, think=think)
+        return cls(config, tools, skills, sessions=sessions, role=role, no_tools=no_tools,
+                   think=think, context_mode=context_mode)
 
     # -- splash ---------------------------------------------------------------
 
@@ -535,6 +543,8 @@ class BobShell:
         line1.append("ready" if reachable else "offline", style=(t.success if reachable else t.error))
         line1.append(sep, style=dim)
         line1.append(self.role, style=f"bold {t.accent}")
+        line1.append(sep, style=dim)
+        line1.append(self.context_mode, style=dim)
         line1.append(sep, style=dim)
         line1.append(self.agency, style=dim)
         line1.append(sep, style=dim)
@@ -608,7 +618,7 @@ class BobShell:
         def toolbar():
             ntools = len(getattr(self.tools, "_loaded_names", []) or [])
             nskills = len(self.skills.list()) if hasattr(self.skills, "list") else 0
-            parts = [f"<b>{self.role}</b>", self.agency, self._sid_label(),
+            parts = [f"<b>{self.role}</b>", self.context_mode, self.agency, self._sid_label(),
                      f"{ntools} tools", f"{nskills} skills"]
             ctx = self._context_label()
             if ctx:
@@ -1051,6 +1061,40 @@ class BobShell:
         self.console.print(f"[green]think → {state}[/]  "
                            f"[{self.theme.muted}](reasoning on the current model: {self.role})[/]")
 
+    def _cmd_mode(self, arg: str) -> None:
+        """Show or switch the context budget mode (quick | deep)."""
+        from bob_context import known_modes, mode_label, normalize_mode
+        modes = known_modes(self.config) or ["quick", "deep"]
+        val = (arg or "").strip().lower()
+        if not val:
+            try:
+                from bob_context import resolve
+                pol = resolve(self.config, self.role, self.context_mode)
+                s = pol.summary(self.config, self.role)
+                self.console.print(
+                    f"context mode: [{self.theme.accent}]{pol.label}[/] ({pol.mode})  "
+                    f"{pol.backend} window {s['window']} tokens, history {s['max_history_msgs']} msgs, "
+                    f"output {s['output_tokens']} tokens")
+            except Exception as e:  # noqa: BLE001
+                self.console.print(f"[{self.theme.warn}]{e}[/]")
+            return
+        try:
+            resolved = normalize_mode(val, self.config)
+            if resolved not in modes:
+                raise ValueError(f"unknown context mode '{val}'. Valid: {', '.join(modes)}")
+        except Exception as e:  # noqa: BLE001
+            self.console.print(f"[{self.theme.warn}]{e}[/]  valid: {', '.join(modes)}")
+            return
+        self.context_mode = resolved
+        label = mode_label(self.context_mode, self.config)
+        if self.sessions is not None and self.session_id:
+            try:
+                self.sessions.set_context_mode_owned(self.session_id, self.owner, self.context_mode)
+            except Exception:
+                pass
+        self.console.print(f"[green]context mode → {label}[/]  "
+                           f"[{self.theme.muted}]({self.context_mode})[/]")
+
     def _cmd_agency(self, arg: str) -> None:
         arg = arg.strip().lower()
         if not arg:
@@ -1067,17 +1111,35 @@ class BobShell:
         return self.session_id[:8] if self.session_id else "new"
 
     def _context_label(self) -> str:
-        """A compact context-window usage label for the toolbar: the estimated token count of the live
-        history, plus a percentage when a session token budget is configured — so how full the window
-        is stays visible. Empty string if the estimator is unavailable."""
+        """A compact mode/window usage label for the toolbar.
+
+        Prefer the backend-reported prompt tokens from the last turn; otherwise fall back to an
+        estimate of the live history.  The denominator is the active mode's effective window for the
+        current role, so the label reflects the budget the next request will actually use.
+        """
         try:
-            from bob_core import est_tokens
-            used = sum(est_tokens(m.get("content", "") or "") for m in self.history)
+            from bob_context import resolve
+            pol = resolve(self.config, self.role, self.context_mode)
+            window = pol.window(self.config, self.role)
         except Exception:
-            return ""
+            window = 0
+        used = None
+        last = self._last_usage or {}
+        if last.get("prompt_tokens"):
+            used = int(last.get("prompt_tokens"))
+        else:
+            try:
+                from bob_core import est_tokens
+                used = sum(est_tokens(m.get("content", "") or "") for m in self.history)
+            except Exception:
+                used = None
+        if used is None:
+            return f"{self.context_mode} ctx"
         if self._max_tokens:
-            return f"~{used}/{self._max_tokens} tok ({int(100 * used / self._max_tokens)}%)"
-        return f"~{used} tok"
+            return f"{self.context_mode} ~{used}/{self._max_tokens} tok ({int(100 * used / self._max_tokens)}%)"
+        if window:
+            return f"{self.context_mode} ~{used}/{window} tok ({int(100 * used / window)}%)"
+        return f"{self.context_mode} ~{used} tok"
 
     def _cmd_session(self, arg: str) -> None:
         """/session new | list | resume <ref> | name <text> | show [ref] — owner-scoped persisted
@@ -1220,8 +1282,15 @@ class BobShell:
         self._on_session_end(self.session_id)   # consolidate the one we're leaving (memory fills)
         self.session_id = s["id"]
         self.history = s["history"]
+        restored_mode = s.get("context_mode")
+        if restored_mode:
+            try:
+                from bob_context import normalize_mode
+                self.context_mode = normalize_mode(restored_mode, self.config)
+            except Exception:
+                pass
         turns = len([m for m in s["history"] if m.get("role") == "user"])
-        self.console.print(f"[green]resumed[/] {s['id'][:8]}  [dim]({turns} turns)[/]")
+        self.console.print(f"[green]resumed[/] {s['id'][:8]}  [dim]({turns} turns, {self.context_mode} mode)[/]")
 
     def _session_show(self, ref: str) -> None:
         if not ref and self.session_id is None:
@@ -1323,7 +1392,8 @@ class BobShell:
         def factory(cancel, approve):
             return self.skills.run_events(
                 name, self.tools, config=self.config, args=skill_args,
-                cancel=cancel, approve=approve, owner=self.owner, scope=self.scope)
+                cancel=cancel, approve=approve, owner=self.owner, scope=self.scope,
+                context_mode=self.context_mode)
 
         self._consume(factory)
 
@@ -1408,6 +1478,7 @@ class BobShell:
                 registry=self.tools, history=self.history, stream=True,
                 cancel=cancel, approve=approve, owner=self.owner, scope=self.scope,
                 no_tools=self.no_tools, run_id=rid, think=self.think, session_id=self.session_id,
+                context_mode=self.context_mode,
             )
 
         result = self._consume(factory)
@@ -1527,7 +1598,8 @@ class BobShell:
             return
         try:
             self.session_id = self.sessions.create(
-                token_budget=self._max_tokens, owner_id=self.owner)["id"]
+                token_budget=self._max_tokens, owner_id=self.owner,
+                context_mode=self.context_mode)["id"]
             name = self._pending_name or _derive_session_name(goal)
             if name:
                 self.sessions.set_name_owned(self.session_id, self.owner, name)
@@ -1780,7 +1852,7 @@ class BobShell:
         self._put(answers, False)
 
 
-def run(config=None, role=None, no_tools=False, think=None) -> int:
+def run(config=None, role=None, no_tools=False, think=None, context_mode=None) -> int:
     """Entry point for `python -m bob shell` (and the no-arg interactive front door). `role` +
     `no_tools` let `bob chat/code/think` launch the shell in chat mode (preset role, tools off);
     `think` presets reasoning mode on (`bob think` / `--think`)."""
@@ -1789,10 +1861,11 @@ def run(config=None, role=None, no_tools=False, think=None) -> int:
         _print_help()
         return 0
     _force_utf8()   # before build() creates the rich Console, so it inherits a UTF-8 stdout
-    return BobShell.build(config, role=role, no_tools=no_tools, think=think).run()
+    return BobShell.build(config, role=role, no_tools=no_tools, think=think,
+                          context_mode=context_mode).run()
 
 
-def run_voice(config=None, role=None, no_tools=False) -> int:
+def run_voice(config=None, role=None, no_tools=False, context_mode=None) -> int:
     """Entry point for `bob voice`: launch the shell straight into /voice mode (mic→STT→loop→TTS)
     instead of the text REPL, then run the session-end write-back on exit — voice sessions get the same
     memory consolidation as text ones. TTY-gated like run(): a non-TTY invocation prints help."""
@@ -1801,7 +1874,7 @@ def run_voice(config=None, role=None, no_tools=False) -> int:
         _print_help()
         return 0
     _force_utf8()
-    shell = BobShell.build(config, role=role, no_tools=no_tools)
+    shell = BobShell.build(config, role=role, no_tools=no_tools, context_mode=context_mode)
     try:
         shell._cmd_voice("")
     finally:
