@@ -2,6 +2,11 @@
 
 A roadmap for evolving `bob` into **Bob**: a personal, always-local AI assistant product.
 
+> Historical note: Open WebUI references in this document describe an earlier product path. Open WebUI
+> has been removed from the default product. DeepSeek Harness is the primary browser and terminal coding
+> client, with `bob dsh` managing the link and `bob-dsh-bridge` importing full DSH session surfaces into
+> Bob.
+
 ---
 
 ## What Bob Is
