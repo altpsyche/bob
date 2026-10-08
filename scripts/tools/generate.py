@@ -350,6 +350,14 @@ def _runtime(bobcfg: dict, key: str):
     return load_defaults().get("runtime", {}).get(key)
 
 
+
+
+def _wire_mode_models(role: str, role_window: int, backend: str) -> list:
+    """[(model_name, effective_window)] from the one alias grammar in bob_context."""
+    from bob_context import wire_model_variants
+    return wire_model_variants(role, role_window, backend, _bob_cfg())
+
+
 def gen_litellm(profile: str = None) -> str:
     """Generate config/litellm.yaml."""
     import bob_models
@@ -361,6 +369,7 @@ def gen_litellm(profile: str = None) -> str:
     bobcfg = _bob_cfg()
     port = _port(bobcfg, "port")
 
+    defaults = mcfg.get("defaults") or {}
     out = ["# GENERATED - DO NOT EDIT.  Source: config/models.json",
            "# Regenerate: bob gen  (also runs on `bob serve`)",
            "#",
@@ -373,11 +382,16 @@ def gen_litellm(profile: str = None) -> str:
         # provider, not openai/. The rerank call goes straight to llama-swap's native /v1/rerank instead.
         if m.get("reranking"):
             continue
-        out += [f"  - model_name: {m['role']}", "    litellm_params:",
-                f"      model: openai/{m['role']}", f"      api_base: http://127.0.0.1:{port}/v1",
-                f"      api_key: {_UPSTREAM_KEY}"]
-        if m.get("supportsVision"):
-            out.append("      supports_vision: true")
+        role = m["role"]
+        role_window = 0 if m.get("embedding") else _slot_ctx(m, defaults)
+        variants = (_wire_mode_models(role, role_window, "local")
+                    if bob_models.is_chat_role(role, m) else [(role, role_window)])
+        for model_name, _window in variants:
+            out += [f"  - model_name: {model_name}", "    litellm_params:",
+                    f"      model: openai/{role}", f"      api_base: http://127.0.0.1:{port}/v1",
+                    f"      api_key: {_UPSTREAM_KEY}"]
+            if m.get("supportsVision"):
+                out.append("      supports_vision: true")
 
     import osenv
     for peer in peers:
@@ -397,15 +411,22 @@ def gen_litellm(profile: str = None) -> str:
             rv = rv if isinstance(rv, dict) else {"model": rv}
             model_id = rv.get("model")
             max_toks = rv.get("maxOutputTokens") or peer.get("maxOutputTokens")
-            out += [f"  - model_name: {role}-pro", "    litellm_params:",
-                    f"      model: {prefix}/{model_id}"]
-            if proxy:
-                out.append(f"      api_base: {proxy}")
-            out.append(f"      api_key: os.environ/{key_env}")
-            if max_toks:
-                out.append(f"      max_tokens: {max_toks}")
+            base_role = f"{role}-pro"
+            role_window = int(rv.get("contextWindow") or peer.get("contextWindow") or 0)
+            variants = (_wire_mode_models(base_role, role_window, "api")
+                        if bob_models.is_chat_role(role) else [(base_role, role_window)])
+            for model_name, _window in variants:
+                out += [f"  - model_name: {model_name}", "    litellm_params:",
+                        f"      model: {prefix}/{model_id}"]
+                if proxy:
+                    out.append(f"      api_base: {proxy}")
+                out.append(f"      api_key: os.environ/{key_env}")
+                if max_toks:
+                    out.append(f"      max_tokens: {max_toks}")
 
-    out += ["", "litellm_settings:", "  num_retries: 3"]
+    out += ["", "litellm_settings:", "  num_retries: 3",
+            "  callbacks:",
+            "    - bob_context_callback.proxy_handler_instance"]
     req_timeout = bobcfg.get("agent", {}).get("requestTimeout", 600)
     out.append(f"  request_timeout: {req_timeout}")
 
@@ -546,11 +567,14 @@ def gen_continue(profile: str = None) -> str:
         # role is left out.
         if m["role"] not in _NAME_FOR and not bob_models.is_chat_role(m["role"], m):
             continue
-        name = _NAME_FOR.get(m["role"], m["role"])
+        base_name = _NAME_FOR.get(m["role"], m["role"])
         ctx = 0 if m.get("embedding") else _slot_ctx(m, defaults)
         roles = _ROLE_ASSIGN.get(m["role"], ["chat"])
-        add_model(name, m["role"], ctx, _role_prompt(prompts, m["role"]), roles)
-        out.append("")
+        variants = (_wire_mode_models(base_name, ctx, "local")
+                    if bob_models.is_chat_role(m["role"], m) else [(base_name, ctx)])
+        for name, model_window in variants:
+            add_model(name, name, model_window, _role_prompt(prompts, m["role"]), roles)
+            out.append("")
 
     for peer in peers:
         pro = peer.get("pro")
@@ -560,8 +584,13 @@ def gen_continue(profile: str = None) -> str:
             if not bob_models.is_chat_role(role):
                 continue
             roles = _PRO_ASSIGN.get(role, ["chat"])
-            add_model(f"{role}-pro", f"{role}-pro", 0, _role_prompt(prompts, role, pro[role]), roles)
-            out.append("")
+            rv = pro[role]
+            base_name = f"{role}-pro"
+            peer_window = int((rv or {}).get("contextWindow") or peer.get("contextWindow") or 0) if isinstance(rv, dict) else int(peer.get("contextWindow") or 0)
+            variants = _wire_mode_models(base_name, peer_window, "api")
+            for name, model_window in variants:
+                add_model(name, name, model_window, _role_prompt(prompts, role, pro[role]), roles)
+                out.append("")
 
     # The npx-launched servers need Node.js; without npx on PATH Continue would fail to spawn them, so they
     # are left out (and named in the returned notice) until Node is installed and `bob gen` runs again.
@@ -647,11 +676,13 @@ def _dsh_models(mcfg: dict, profile: str = None):
         if not bob_models.is_chat_role(m["role"], m):
             continue
         ctx = _slot_ctx(m, defaults)
-        if ctx < _DSH_MIN_CTX:
-            skipped.append(f"{m['role']} ({ctx} ctx < {_DSH_MIN_CTX})")
-            continue
-        out.append((m["role"], ctx, 0, bool(m.get("supportsVision"))))
-        seen.add(m["role"])
+        vision = bool(m.get("supportsVision"))
+        for name, window in _wire_mode_models(m["role"], ctx, "local"):
+            if window < _DSH_MIN_CTX:
+                skipped.append(f"{name} ({window} ctx < {_DSH_MIN_CTX})")
+                continue
+            out.append((name, window, 0, vision))
+            seen.add(name)
     for peer in enabled_peers(mcfg):
         for role in sorted(peer.get("pro") or {}):
             if not bob_models.is_chat_role(role):
@@ -666,8 +697,9 @@ def _dsh_models(mcfg: dict, profile: str = None):
                 continue
             ctx = int(rv.get("contextWindow") or peer.get("contextWindow") or 0)
             max_tokens = int(rv.get("maxOutputTokens") or peer.get("maxOutputTokens") or 0)
-            out.append((mid, ctx, max_tokens, vision))
-            seen.add(mid)
+            for name, window in _wire_mode_models(mid, ctx, "api"):
+                out.append((name, window, max_tokens, vision))
+                seen.add(name)
     return out, skipped
 
 
@@ -927,18 +959,26 @@ def gen_webui(profile: str = None) -> str:
     peers = enabled_peers(mcfg)
     prompts = mcfg.get("prompts", {})
 
+    defaults = mcfg.get("defaults") or {}
     entries = []
     for m in models:
         if not bob_models.is_chat_role(m["role"], m):
             continue
-        entries.append({"id": m["role"], "prompt": _role_prompt(prompts, m["role"])})
+        ctx = _slot_ctx(m, defaults)
+        for name, _window in _wire_mode_models(m["role"], ctx, "local"):
+            entries.append({"id": name, "prompt": _role_prompt(prompts, m["role"])})
     for peer in peers:
         pro = peer.get("pro")
         if not pro:
             continue
         for role in sorted(pro):
-            if bob_models.is_chat_role(role):
-                entries.append({"id": f"{role}-pro", "prompt": _role_prompt(prompts, role, pro[role])})
+            if not bob_models.is_chat_role(role):
+                continue
+            rv = pro[role]
+            base_name = f"{role}-pro"
+            peer_window = int((rv or {}).get("contextWindow") or peer.get("contextWindow") or 0) if isinstance(rv, dict) else int(peer.get("contextWindow") or 0)
+            for name, _window in _wire_mode_models(base_name, peer_window, "api"):
+                entries.append({"id": name, "prompt": _role_prompt(prompts, role, pro[role])})
 
     lines = [_webui_write(str(db_path), entries)]
     key_line = webui_sync_key(db_path)
@@ -1128,10 +1168,26 @@ def gen_aider(profile: str = None) -> str:
             "                    # sized to the smaller per-request window"]
     conf = _write(aider_dir / ".aider.conf.yml", "\n".join(out) + "\n")
 
-    meta = {f"openai/{r}": {"max_input_tokens": w, "max_tokens": w, "input_cost_per_token": 0,
-                            "output_cost_per_token": 0, "litellm_provider": "openai", "mode": "chat"}
-            for r, w in sorted(windows.items())}
-    meta_dest = _write(metadata_file, json.dumps(meta, indent=2) + "\n")
+    def _meta_entry(window):
+        return {"max_input_tokens": window, "max_tokens": window, "input_cost_per_token": 0,
+                "output_cost_per_token": 0, "litellm_provider": "openai", "mode": "chat"}
+
+    meta = {}
+    for m in models:
+        if not bob_models.is_chat_role(m["role"], m):
+            continue
+        for name, window in _wire_mode_models(m["role"], _slot_ctx(m, defaults), "local"):
+            meta[f"openai/{name}"] = _meta_entry(window)
+    for peer in enabled_peers(mcfg):
+        for role in sorted(peer.get("pro") or {}):
+            if not bob_models.is_chat_role(role):
+                continue
+            rv = peer["pro"][role]
+            window = int((rv or {}).get("contextWindow") or peer.get("contextWindow") or 0) if isinstance(rv, dict) else int(peer.get("contextWindow") or 0)
+            base_name = f"{role}-pro"
+            for name, effective in _wire_mode_models(base_name, window, "api"):
+                meta[f"openai/{name}"] = _meta_entry(effective)
+    meta_dest = _write(metadata_file, json.dumps(meta, indent=2, sort_keys=True) + "\n")
     return f"Generated {conf}\nGenerated {meta_dest}"
 
 

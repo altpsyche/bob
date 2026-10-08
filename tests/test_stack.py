@@ -4,6 +4,7 @@ The launch/stop primitives are validated end-to-end against a real service elsew
 pure logic hermetically — the ps table, the teardown bookkeeping, the bounded log read, per-service
 status/stop, the config-regen bridge, and the agent-tool surface — mocking osenv/subprocess so nothing
 touches real processes, ports, or Docker."""
+import os
 import shutil
 import sys
 import tempfile
@@ -498,6 +499,10 @@ class TestBindHost(_LogsMixin, unittest.TestCase):
     def test_litellm_binds_loopback_by_default(self):
         seen = self._litellm_argv(CFG)
         self.assertEqual(seen["argv"][seen["argv"].index("--host") + 1], "127.0.0.1")
+
+    def test_litellm_can_import_the_context_callback(self):
+        seen = self._litellm_argv(CFG)
+        self.assertEqual(seen["env"]["PYTHONPATH"].split(os.pathsep)[0], str(stack.SCRIPTS))
 
     def test_bind_host_opts_into_lan(self):
         seen = self._litellm_argv({**CFG, "bindHost": "0.0.0.0"})

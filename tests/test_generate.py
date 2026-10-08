@@ -230,11 +230,14 @@ class TestLitellm(unittest.TestCase):
     def test_local_and_pro_models(self):
         out = self._gen()
         self.assertIn("  - model_name: ponder\n    litellm_params:\n      model: openai/ponder", out)
+        self.assertIn("  - model_name: ponder-quick\n    litellm_params:\n      model: openai/ponder", out)
         self.assertIn("      supports_vision: true", out)   # vision
         # pro models: deepseek peer, roles sorted
         self.assertIn("  - model_name: chat-pro", out)
+        self.assertIn("  - model_name: chat-pro-deep", out)
         self.assertIn("      model: deepseek/deepseek-v4-flash", out)
         self.assertIn("      api_key: os.environ/DEEPSEEK_API_KEY", out)
+        self.assertIn("    - bob_context_callback.proxy_handler_instance", out)
 
     def test_pro_output_cap_is_the_peer_limit_with_role_overrides(self):
         """Every client that sends no max_tokens gets maxOutputTokens: long enough for a large tool
@@ -407,6 +410,7 @@ class TestDsh(unittest.TestCase):
     def test_models_skip_non_chat_roles(self):
         out = self._gen("16gb")
         self.assertIn("        - id: coder\n          contextWindow: 40960", out)
+        self.assertIn("        - id: coder-quick\n          contextWindow: 16384", out)
         for skipped in ("agent", "fim", "embed", "rerank"):
             self.assertNotIn(f"        - id: {skipped}\n", out)
 
@@ -453,7 +457,14 @@ class TestDsh(unittest.TestCase):
                                                         "chat": {"model": "m"}}}}}
         with m.patch.object(gen, "_ordered_models", return_value=("x", [])):
             entries, _ = gen._dsh_models(mcfg)
-        self.assertEqual(entries, [("chat-pro", 0, 0, False), ("vision-pro", 0, 0, True)])
+        self.assertEqual(entries, [
+            ("chat-pro", 0, 0, False),
+            ("chat-pro-quick", 65536, 0, False),
+            ("chat-pro-deep", 200000, 0, False),
+            ("vision-pro", 0, 0, True),
+            ("vision-pro-quick", 65536, 0, True),
+            ("vision-pro-deep", 200000, 0, True),
+        ])
 
     def test_install_removes_a_route_with_no_models(self):
         """pi-ai refuses a route resolving no models, so a profile with nothing that fits must drop a
@@ -793,6 +804,8 @@ class TestAider(unittest.TestCase):
         self.assertEqual(doc["openai-api-base"], f"http://127.0.0.1:{bob_core._port(CFG, 'litellmPort')}/v1")
         self.assertEqual(doc["openai-api-key"], bob_core._litellm_key(CFG))
         self.assertEqual(meta["openai/ponder"]["max_input_tokens"], 40960)
+        self.assertEqual(meta["openai/ponder-quick"]["max_input_tokens"], 16384)
+        self.assertEqual(meta["openai/ponder-deep"]["max_input_tokens"], 40960)
         self.assertEqual(doc["map-tokens"], gen._aider_map_tokens(40960))
         self.assertTrue(doc["model-metadata-file"].endswith("config/aider/model-metadata.json"))
 

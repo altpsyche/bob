@@ -88,7 +88,7 @@ Other options in Config:
 | Field | Default | Notes |
 |-------|---------|-------|
 | `max_items` | 8 | Max articles per run. Discord allows 10 embeds per message. |
-| `model` | `chat` | Local model alias. `chat` is fast; `ponder` gives deeper analysis. |
+| `model` | `chat` | Local model alias. `chat` is fast; `ponder` gives deeper analysis. Add `-quick` or `-deep` for an explicit context mode, for example `chat-quick` or `chat-deep`. |
 
 ### On-demand research via webhook
 

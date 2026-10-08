@@ -153,6 +153,8 @@ See [AGENT-SERVER.md](AGENT-SERVER.md) for the endpoint contract.
 - `deep` defaults to the full role window locally, a 200,000-token safety cap for API roles (set `contextModes.deep.api.maxContextTokens` to `0` for the full peer window), 2048 local output tokens (the peer maximum on API), summarize compaction, and larger memory/tool-result caps.
 - `/mode` shows the resolved local and API view; `bob chat --quick` and `bob agent --context-mode deep` choose a mode for one run. `bob agent --deep` still means plan/verify/self-repair, so Deep context mode is always explicit.
 
+Every chat-capable role also has two model aliases: `<role>-quick` and `<role>-deep` (for example `chat-quick`, `coder-deep`, `chat-pro-quick`). Any OpenAI-compatible client can select a mode by choosing one of those model names, with no protocol change and no client-side budget code. A LiteLLM pre-call callback (`bob_context_callback.proxy_handler_instance`) resolves the alias through the same `bob_context` policy and trims the request before it reaches the provider. The base role names keep their current behavior.
+
 The active mode is remembered on shell sessions and in checkpoint metrics, and sub-agents inherit their caller's mode.
 
 A mode changes request budgets, not the local `llama-server -c` allocation. Local decode speed is driven mainly by model size, quantization, offload, and hardware; Quick reduces prompt length, prefill work, and memory pressure. To change the actual local context allocation, switch profile or edit the role's `ctx` in `config/models.json` and restart.

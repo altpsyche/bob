@@ -11,6 +11,7 @@ plain ``getattr`` by callers that already hold a ContextPolicy.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Optional
 
@@ -65,6 +66,101 @@ def mode_label(mode: str, config: Optional[dict] = None) -> str:
     """Human label for a mode, falling back to title case."""
     spec = (((config or {}).get("agent", {}) or {}).get("contextModes") or {}).get(mode) or {}
     return str(spec.get("label") or mode.title())
+
+
+# Mode aliases exposed as model-name suffixes.  Every harness that can only choose an OpenAI model
+# name can still select a mode without a bespoke protocol.
+MODE_SUFFIXES = {"-quick": "quick", "-deep": "deep"}
+
+
+def parse_model_alias(name: str) -> tuple:
+    """(base_role, mode|None) for a mode-suffixed model name."""
+    value = str(name or "")
+    for suffix, mode in MODE_SUFFIXES.items():
+        if value.endswith(suffix):
+            return value[: -len(suffix)], mode
+    return value, None
+
+
+def wire_model_names(role: str) -> list:
+    """The base name plus its Quick/Deep model aliases, in stable order."""
+    return [role, f"{role}-quick", f"{role}-deep"]
+
+
+def mode_window(role_window: int, backend: str, mode: str, config: Optional[dict] = None) -> int:
+    """The effective window for a role when served under ``mode``.
+
+    This is the generator-side counterpart of ContextPolicy.window, used to advertise the same window
+    to external clients that Bob itself would enforce.
+    """
+    cfg = config or {}
+    agent = cfg.get("agent", {}) or {}
+    spec = (agent.get("contextModes") or {}).get(mode) or {}
+    block = spec.get(backend) or {}
+    cap = block.get("maxContextTokens", agent.get("maxContextTokens", 0))
+    try:
+        cap = int(cap or 0)
+    except (TypeError, ValueError):
+        cap = 0
+    base = int(role_window or 0)
+    if cap > 0:
+        return min(cap, base) if base else cap
+    return base
+
+
+def wire_model_variants(role: str, role_window: int, backend: str,
+                        config: Optional[dict] = None) -> list:
+    """[(model_name, effective_window)] for the base role and its Quick/Deep aliases."""
+    out = []
+    for name in wire_model_names(role):
+        _base, mode = parse_model_alias(name)
+        window = int(role_window or 0) if mode is None else mode_window(role_window, backend, mode, config)
+        out.append((name, window))
+    return out
+
+
+def apply_openai_request(config: dict, model_name: str, body: dict) -> dict:
+    """Apply the active context mode to one OpenAI chat-completions request body.
+
+    This is the single enforcement seam for every external harness.  A request whose model name has no
+    mode suffix is returned unchanged, so base ``chat`` and ``chat-pro`` keep their existing behavior.
+    """
+    if not isinstance(body, dict):
+        return body
+    base, mode = parse_model_alias(model_name)
+    if mode is None:
+        return body
+    try:
+        policy = resolve(config, base, mode)
+        window = policy.window(config, base)
+    except Exception:
+        return body
+    if not window:
+        return body
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return body
+
+    from bob_core import est_tokens, fit_messages
+
+    tools = body.get("tools")
+    tools_tokens = est_tokens(json.dumps(tools, ensure_ascii=False)) + 4 if tools else 0
+    requested = body.get("max_tokens")
+    if requested is None:
+        requested = body.get("max_completion_tokens")
+    try:
+        requested = int(requested or 0)
+    except (TypeError, ValueError):
+        requested = 0
+    policy_out = int(policy.output_tokens(config, base) or 0)
+    output = min(requested, policy_out) if requested > 0 else policy_out
+    output = max(1, output)
+    send_budget = max(0, int(window) - output - int(tools_tokens) - 64)
+    out = dict(body)
+    out["messages"] = fit_messages(messages, send_budget)
+    out["max_tokens"] = output
+    out.pop("max_completion_tokens", None)
+    return out
 
 
 def _int(value, default: int = 0) -> int:

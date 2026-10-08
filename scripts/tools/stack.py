@@ -440,10 +440,13 @@ def _start_litellm_bg(config: dict) -> str:
     if not key:
         return (f"LiteLLM proxy not started: no master key to pass as {LITELLM_KEY_ENV}, and without one it "
                 "would accept every request. Set litellmKey (config/user.json or the secret store).")
+    existing_pythonpath = os.environ.get("PYTHONPATH", "")
+    pythonpath = str(SCRIPTS) + (os.pathsep + existing_pythonpath if existing_pythonpath else "")
     new_pid = osenv.start_detached(
         [str(proxy), "--config", str(cfg), "--host", bind_host(config), "--port", str(port)],
         pidfile=_pidfile("litellm"), log_path=_logfile("litellm"),
-        env={"PYTHONUTF8": "1", LITELLM_KEY_ENV: key, **_langfuse_env(config), **_peer_key_env()})
+        env={"PYTHONUTF8": "1", "PYTHONPATH": pythonpath, LITELLM_KEY_ENV: key,
+             **_langfuse_env(config), **_peer_key_env()})
     return f"LiteLLM proxy: http://localhost:{port}/v1 (PID {new_pid})"
 
 

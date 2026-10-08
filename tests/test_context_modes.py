@@ -6,6 +6,7 @@ import _common  # noqa: F401  (adds scripts/tools to sys.path)
 import bob_context
 import bob_core
 import bob_loop
+import bob_context_callback
 
 
 def _config(**agent):
@@ -122,6 +123,57 @@ class TestResolve(unittest.TestCase):
             bob_context.normalize_mode("turbo", _config())
 
 
+class TestAliasGrammar(unittest.TestCase):
+    def setUp(self):
+        self._view = mock.patch.object(bob_core, "_models_view", return_value=_VIEW)
+        self._view.start()
+        self.addCleanup(self._view.stop)
+
+    def test_parse_alias(self):
+        self.assertEqual(bob_context.parse_model_alias("chat"), ("chat", None))
+        self.assertEqual(bob_context.parse_model_alias("chat-quick"), ("chat", "quick"))
+        self.assertEqual(bob_context.parse_model_alias("chat-pro-deep"), ("chat-pro", "deep"))
+
+    def test_wire_names_and_windows(self):
+        cfg = _config()
+        self.assertEqual(bob_context.wire_model_names("chat"),
+                         ["chat", "chat-quick", "chat-deep"])
+        local = dict(bob_context.wire_model_variants("chat", 40960, "local", cfg))
+        self.assertEqual(local, {"chat": 40960, "chat-quick": 16384, "chat-deep": 40960})
+        api = dict(bob_context.wire_model_variants("chat-pro", 1000000, "api", cfg))
+        self.assertEqual(api, {"chat-pro": 1000000, "chat-pro-quick": 65536,
+                               "chat-pro-deep": 200000})
+
+
+class TestApplyOpenAIRequest(unittest.TestCase):
+    def setUp(self):
+        self._view = mock.patch.object(bob_core, "_models_view", return_value=_VIEW)
+        self._view.start()
+        self.addCleanup(self._view.stop)
+
+    def test_base_model_is_unchanged(self):
+        body = {"model": "chat", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 99}
+        self.assertEqual(bob_context.apply_openai_request(_config(), "chat", body), body)
+
+    def test_quick_alias_trims_history_and_caps_output(self):
+        cfg = _config()
+        msgs = [{"role": "system", "content": "sys"}]
+        for i in range(40):
+            msgs.append({"role": "user" if i % 2 == 0 else "assistant", "content": "h" * 4000})
+        body = {"model": "chat-quick", "messages": msgs, "max_tokens": 9999}
+        out = bob_context.apply_openai_request(cfg, "chat-quick", body)
+        self.assertEqual(out["max_tokens"], 512)
+        self.assertLess(len(out["messages"]), len(msgs))
+        self.assertEqual(out["messages"][-1], msgs[-1])
+
+    def test_api_deep_alias_uses_peer_output_cap(self):
+        cfg = _config()
+        body = {"model": "chat-pro-deep", "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 999999}
+        out = bob_context.apply_openai_request(cfg, "chat-pro-deep", body)
+        self.assertEqual(out["max_tokens"], 32768)
+
+
 class TestDeepSummaryNormalization(unittest.TestCase):
     """Standard summarize compaction must fold prior notes, not accumulate system frames."""
 
@@ -224,3 +276,26 @@ class TestLoopModeBudgets(_common.LLMStubMixin, unittest.TestCase):
         evs, calls = self._run(_config(contextMode="deep"), role="chat-pro")
         self.assertEqual(evs[-1]["type"], "final")
         self.assertEqual(calls[0]["max_tokens"], 32768)
+
+
+class TestCallback(unittest.IsolatedAsyncioTestCase):
+    """The LiteLLM pre-call hook is the single external-harness enforcement seam."""
+
+    async def test_alias_body_is_transformed(self):
+        cfg = _config()
+        data = {"model": "chat-quick", "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 9999}
+        with mock.patch.object(bob_core, "_models_view", return_value=_VIEW), \
+             mock.patch.object(bob_core, "load_config", return_value=cfg):
+            out = await bob_context_callback.proxy_handler_instance.async_pre_call_hook(
+                None, None, data, "completion")
+        self.assertEqual(out["max_tokens"], 512)
+
+    async def test_base_model_is_untouched(self):
+        cfg = _config()
+        data = {"model": "chat", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 99}
+        with mock.patch.object(bob_core, "_models_view", return_value=_VIEW), \
+             mock.patch.object(bob_core, "load_config", return_value=cfg):
+            out = await bob_context_callback.proxy_handler_instance.async_pre_call_hook(
+                None, None, data, "completion")
+        self.assertEqual(out, data)

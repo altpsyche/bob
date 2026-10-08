@@ -27,7 +27,7 @@ Or run any capability directly, for quick questions, scripts, and pipes:
 
 **Agent tools** run inside the loop (`bob agent` or the shell), not as `bob <verb>` commands: memory, web, git, file, shell, fabric, plus the plugins summarise, draft, search, play. List them with `bob tools` / `bob plugins`, or call one directly with `bob --run <tool> '{json}'`.
 
-**Context modes:** `/mode quick` keeps the prompt small for fast chat; `/mode deep` opens the full local window or a large API budget (default 200k-token safety cap; set `contextModes.deep.api.maxContextTokens` to 0 for the full cloud window) for longer work. The local and API budgets are resolved separately, so a Quick local cap never clamps a 1M-token cloud peer.
+**Context modes:** `/mode quick` keeps the prompt small for fast chat; `/mode deep` opens the full local window or a large API budget (default 200k-token safety cap; set `contextModes.deep.api.maxContextTokens` to 0 for the full cloud window) for longer work. The local and API budgets are resolved separately, so a Quick local cap never clamps a 1M-token cloud peer. Every chat role also has `<role>-quick` and `<role>-deep` model aliases, so other OpenAI-compatible harnesses can select a mode by model name alone.
 
 ## Stack
 
