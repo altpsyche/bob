@@ -3,8 +3,8 @@
 Ownership map (no key is written to two layers):
   $DSH_HOME/settings.yaml                    llm-pi-ai.providers.bob
   $DSH_HOME/.credentials.yaml                BOB_LITELLM_KEY
-  $DSH_HOME/cordis.patch.yml                 Bob MCP and hook plugin entries
-  $DSH_HOME/profiles/<name>/cordis.patch.yml agent-default-model
+  $DSH_HOME/cordis.patch.yml                 Bob MCP plugin entry
+  $DSH_HOME/profiles/<name>/cordis.patch.yml agent-default-model and bob-dsh-bridge
 
 The module deliberately delegates model-route generation to scripts/tools/generate.py (the same
 fragments `bob gen` writes) instead of owning a second model registry or budget implementation.
@@ -25,8 +25,9 @@ DEFAULT_MODEL = "coder-deep"
 FALLBACK_MODEL = "chat-deep"
 PROVIDER = "bob"
 MCP_ID = "bob-tools"
-HOOK_ID = "bob-hooks"
-HOOK_PLUGIN = "@deepseek-ai/dsh-hooks-claude-code"
+HOOK_ID = "bob-hooks"   # legacy id removed by bridge_on
+BRIDGE_ID = "bob-dsh-bridge"
+BRIDGE_PACKAGE = REPO / "scripts" / "dsh_bridge"
 
 
 def home() -> Path:
@@ -129,38 +130,6 @@ def _remove_plugin(path: Path, plugin_id: str) -> bool:
     return False
 
 
-def _hook_config_path() -> Path:
-    return CONFIG_DSH / "hooks.json"
-
-
-def _write_hooks_config() -> str:
-    hooks = {
-        "hooks": {
-            "SessionStart": [{
-                "matcher": "startup|resume|clear|compact",
-                "hooks": [{"type": "command", "command": "bob dsh hook session-start"}],
-            }],
-            "UserPromptSubmit": [{
-                "hooks": [{"type": "command", "command": "bob dsh hook user-prompt"}],
-            }],
-            "PostToolUse": [{
-                "matcher": "*",
-                "hooks": [{"type": "command", "command": "bob dsh hook post-tool-use"}],
-            }],
-            "Stop": [{
-                "hooks": [{"type": "command", "command": "bob dsh hook stop"}],
-            }],
-        }
-    }
-    CONFIG_DSH.mkdir(parents=True, exist_ok=True)
-    _hook_config_path().write_text(json.dumps(hooks, indent=2) + "\n", encoding="utf-8")
-    return str(_hook_config_path())
-
-
-def _hook_entry_lines() -> list:
-    return _plugin_entry_lines(HOOK_ID, HOOK_PLUGIN, [f"configPath: {_hook_config_path()}"])
-
-
 def _default_model_entry(model: str) -> list:
     return _plugin_entry_lines(
         "agent-default-model", "@deepseek-ai/dsh-agent-default-model",
@@ -219,23 +188,96 @@ def tools_off(profile: str = None) -> str:
     return "removed " + ", ".join(removed) if removed else "bob MCP tools were not installed"
 
 
-def hooks_on() -> str:
+def _profile_package(profile: str, root: Path = None) -> Path:
+    return (root or home()) / "profiles" / profile / "package.json"
+
+
+def _load_json(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except Exception:
+        return {}
+
+
+def _write_json(path: Path, data: dict) -> None:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def bridge_status(profile: str = None) -> str:
+    root = home()
+    target = profile or default_profile(root)
+    patch = _profile_patch(target, root)
+    pkg = _load_json(_profile_package(target, root))
+    deps = pkg.get("dependencies") or {}
+    bundles = ((pkg.get("dsh") or {}).get("profile") or {}).get("bundles") or []
+    installed = _plugin_present(patch, BRIDGE_ID) and (BRIDGE_ID in deps or BRIDGE_ID in bundles)
+    return f"bob-dsh-bridge: {'on' if installed else 'off'} (profile {target})"
+
+
+def bridge_on(profile: str = None) -> str:
     root = home()
     if not root.is_dir():
         return _missing_home()
-    _write_hooks_config()
-    return _upsert_plugin(root / "cordis.patch.yml", HOOK_ID, _hook_entry_lines())
+    if not (BRIDGE_PACKAGE / "package.json").exists():
+        return f"bridge package missing at {BRIDGE_PACKAGE}"
+    target = profile or default_profile(root)
+    dsh = dsh_bin()
+    lines = []
+    if dsh:
+        try:
+            r = subprocess.run([dsh, "plugin", "--profile", target, "add", f"file:{BRIDGE_PACKAGE}"],
+                               capture_output=True, text=True, timeout=300)
+            lines.append("pnpm: " + (r.stdout or r.stderr or "").strip().splitlines()[-1]
+                         if (r.stdout or r.stderr).strip() else f"pnpm exit {r.returncode}")
+        except Exception as e:
+            lines.append(f"pnpm: {e}")
+    try:
+        pkg_path = _profile_package(target, root)
+        pkg = _load_json(pkg_path)
+        deps = pkg.setdefault("dependencies", {})
+        deps[BRIDGE_ID] = f"file:{BRIDGE_PACKAGE}"
+        prof = pkg.setdefault("dsh", {}).setdefault("profile", {})
+        bundles = prof.setdefault("bundles", [])
+        if BRIDGE_ID not in bundles:
+            bundles.append(BRIDGE_ID)
+        _write_json(pkg_path, pkg)
+        patch = _profile_patch(target, root)
+        _remove_plugin(patch, HOOK_ID)
+        _upsert_plugin(patch, BRIDGE_ID, _plugin_entry_lines(BRIDGE_ID, BRIDGE_ID, ["bobCommand: bob"]))
+        lines.append(f"profile {target}: installed {BRIDGE_ID}")
+    except Exception as e:
+        lines.append(f"profile {target}: could not write the bridge entry ({e})")
+    return "\n".join(f"  {ln}" for ln in lines)
 
 
-def hooks_off() -> str:
+def bridge_off(profile: str = None) -> str:
     root = home()
-    removed = []
-    if _remove_plugin(root / "cordis.patch.yml", HOOK_ID):
-        removed.append(str(root / "cordis.patch.yml"))
-    for name in profiles(root):
-        if _remove_plugin(_profile_patch(name, root), HOOK_ID):
-            removed.append(str(_profile_patch(name, root)))
-    return "removed " + ", ".join(removed) if removed else "bob DSH hooks were not installed"
+    target = profile or default_profile(root)
+    try:
+        patch = _profile_patch(target, root)
+        removed = _remove_plugin(patch, BRIDGE_ID)
+        pkg_path = _profile_package(target, root)
+        pkg = _load_json(pkg_path)
+        deps = pkg.get("dependencies") or {}
+        deps.pop(BRIDGE_ID, None)
+        prof = (pkg.get("dsh") or {}).get("profile") or {}
+        bundles = prof.get("bundles") or []
+        if BRIDGE_ID in bundles:
+            bundles.remove(BRIDGE_ID)
+        _write_json(pkg_path, pkg)
+        return f"profile {target}: removed {BRIDGE_ID}" if removed else f"profile {target}: bridge was not installed"
+    except Exception as e:
+        return f"profile {target}: could not update bridge state ({e})"
+
+
+def import_session(payload: dict, config: dict = None) -> dict:
+    """Import one native-bridge payload through the one Bob transcript pipeline."""
+    from bob_core import _get_db_path, load_config
+    import bob_memory
+    cfg = config or load_config()
+    owner = cfg.get("agent", {}).get("defaultOwner", "local")
+    return bob_memory.dsh_import_sessions(
+        payload.get("sessions") or [], _get_db_path(cfg), owner=owner)
 
 
 def _missing_home() -> str:
@@ -283,7 +325,7 @@ def ensure_dsh() -> str:
     return f"installed @deepseek-ai/dsh@{want} with {name}"
 
 
-def install(profile: str = None, tools: bool = False, hooks: bool = False,
+def install(profile: str = None, tools: bool = False, bridge: bool = True,
             use_default: bool = False, mode: str = None, harness: bool = True) -> str:
     import generate
     from bob_core import load_config
@@ -302,8 +344,8 @@ def install(profile: str = None, tools: bool = False, hooks: bool = False,
     target = profile or default_profile(root)
     if tools:
         lines.append(_install_mcp(root))
-    if hooks:
-        lines.append(hooks_on())
+    if bridge:
+        lines.append(bridge_on(target))
     if mode:
         lines.append(f"profile {target}: {set_mode(target, mode)}")
     elif use_default:
@@ -354,8 +396,8 @@ def doctor(profile: str = None) -> str:
         ("bob credential", _credential_ok(root), ".credentials.yaml"),
         ("bob MCP tools", _plugin_present(root / "cordis.patch.yml", MCP_ID),
          "home cordis.patch.yml"),
-        ("bob context hooks", _plugin_present(root / "cordis.patch.yml", HOOK_ID),
-         "home cordis.patch.yml"),
+        ("bob native bridge", _plugin_present(_profile_patch(target, root), BRIDGE_ID),
+         f"profile {target}"),
         ("default model", bool(_default_model(root, target)),
          f"profile {target}: {_default_model(root, target) or 'not set to bob'}"),
         ("profile patch", _profile_patch(target, root).exists(), str(_profile_patch(target, root))),
@@ -377,91 +419,17 @@ def status(profile: str = None) -> str:
         f"  profile:  {target}",
         f"  provider: {'bob' if _provider_route_ok(root) else 'not configured'}",
         f"  tools:    {'on' if _plugin_present(root / 'cordis.patch.yml', MCP_ID) else 'off'}",
-        f"  hooks:    {'on' if _plugin_present(root / 'cordis.patch.yml', HOOK_ID) else 'off'}",
+        f"  bridge:   {bridge_status(target).split(': ', 1)[-1]}",
         f"  model:    {_default_model(root, target) or 'not set to bob'}",
     ])
 
 
 def uninstall(profile: str = None) -> str:
     root = home()
-    lines = [tools_off(profile), hooks_off()]
+    lines = [tools_off(profile), bridge_off(profile)]
     if _provider_route_ok(root):
         lines.append("provider route left in settings.yaml; remove the bob provider by hand if desired")
     return "\n".join(lines)
-
-
-def _append_dsh_transcript(payload: dict, role: str, content: str, tool_name: str = None) -> None:
-    """Best-effort mirror one DSH turn into Bob's owner-scoped transcript store.
-
-    DSH session ids become `dsh:<id>` run ids, so `conversation_search` can page DSH history back
-    alongside native Bob session history.
-    """
-    sid = str(payload.get("session_id") or "").strip()
-    if not sid or not str(content or "").strip():
-        return
-    try:
-        from bob_core import _get_db_path, load_config
-        import bob_memory
-        cfg = load_config()
-        owner = cfg.get("agent", {}).get("defaultOwner", "local")
-        scope = payload.get("cwd") or os.getcwd()
-        bob_memory.transcript_append(
-            f"dsh:{sid}", role, str(content), _get_db_path(cfg),
-            owner=owner, scope=scope, tool_name=tool_name, session_id=sid)
-    except Exception:
-        pass
-
-
-def _hook_context() -> str:
-    try:
-        from bob_core import (core_blocks_block, load_config, memory_profile_block,
-                              project_memory_block)
-        cfg = load_config()
-        cwd = os.getcwd()
-        owner = cfg.get("agent", {}).get("defaultOwner", "local")
-        parts = []
-        for block in (memory_profile_block(owner=owner, config=cfg),
-                      project_memory_block(cwd, config=cfg),
-                      core_blocks_block(owner=owner, scope=cwd, config=cfg)):
-            if block:
-                parts.append(block)
-        return "\n\n".join(parts)
-    except Exception:
-        return ""
-
-
-def hook(event: str, stdin_text: str = None) -> int:
-    """Handle one DSH/Claude-Code hook event.
-
-    SessionStart emits Bob profile/project memory. UserPromptSubmit and PostToolUse mirror DSH turns
-    into Bob's transcript store so both harnesses share one searchable history.
-    """
-    event = (event or "").strip().lower()
-    raw = stdin_text if stdin_text is not None else sys.stdin.read()
-    try:
-        payload = json.loads(raw or "{}")
-    except Exception:
-        return 0
-    if event == "user-prompt":
-        _append_dsh_transcript(payload, "user", str(payload.get("prompt") or ""))
-        return 0
-    if event == "post-tool-use":
-        body = payload.get("tool_response")
-        if not isinstance(body, str):
-            body = json.dumps(body, ensure_ascii=False) if body is not None else ""
-        _append_dsh_transcript(payload, "tool", body, tool_name=str(payload.get("tool_name") or ""))
-        return 0
-    if event != "session-start":
-        return 0
-    context = _hook_context()
-    if context:
-        sys.stdout.write(json.dumps({
-            "hookSpecificOutput": {
-                "hookEventName": "SessionStart",
-                "additionalContext": context,
-            }
-        }))
-    return 0
 
 
 def main(argv: list) -> int:
@@ -478,14 +446,14 @@ def main(argv: list) -> int:
         print(doctor(profile)); return 0
     if cmd == "install":
         tools = "--tools" in args
-        hooks = "--hooks" in args
+        bridge = "--no-bridge" not in args
         use_default = "--no-use" not in args
         harness = "--no-harness" not in args
         mode = None
         if "--mode" in args:
             j = args.index("--mode")
             mode = args[j + 1] if j + 1 < len(args) else None
-        print(install(profile=profile, tools=tools, hooks=hooks, use_default=use_default, mode=mode,
+        print(install(profile=profile, tools=tools, bridge=bridge, use_default=use_default, mode=mode,
                       harness=harness))
         return 0
     if cmd == "use":
@@ -504,17 +472,27 @@ def main(argv: list) -> int:
         root = home()
         print("tools: " + ("on" if _plugin_present(root / "cordis.patch.yml", MCP_ID) else "off"))
         return 0
-    if cmd == "hooks":
+    if cmd == "bridge":
         sub = args[0] if args else "status"
         if sub == "on":
-            print(hooks_on()); return 0
+            print(bridge_on(profile)); return 0
         if sub == "off":
-            print(hooks_off()); return 0
-        root = home()
-        print("hooks: " + ("on" if _plugin_present(root / "cordis.patch.yml", HOOK_ID) else "off"))
+            print(bridge_off(profile)); return 0
+        print(bridge_status(profile)); return 0
+    if cmd == "import-session":
+        raw = sys.stdin.read()
+        try:
+            payload = json.loads(raw or "{}")
+        except Exception as e:
+            print(f"invalid import payload: {e}", file=sys.stderr)
+            return 2
+        try:
+            result = import_session(payload)
+        except Exception as e:
+            print(f"session import failed: {e}", file=sys.stderr)
+            return 1
+        print(f"imported {result['sessions']} session(s), {result['turns']} turn(s)")
         return 0
-    if cmd == "hook":
-        return hook(args[0] if args else "")
     if cmd == "logs":
         print(f"dsh home: {home()}")
         print("Start the web UI with: dsh web")
@@ -522,7 +500,7 @@ def main(argv: list) -> int:
     if cmd == "uninstall":
         print(uninstall(profile)); return 0
     if cmd in ("help", "-h", "--help"):
-        print("usage: bob dsh <status|doctor|install|use|mode|tools|hooks|logs|uninstall>")
+        print("usage: bob dsh <status|doctor|install|use|mode|tools|bridge|logs|uninstall>")
         return 0
     print(f"unknown dsh command: {cmd}", file=sys.stderr)
     return 2

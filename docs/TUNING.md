@@ -158,7 +158,7 @@ The active mode is remembered on shell sessions and in checkpoint metrics, and s
 
 A mode changes request budgets, not the local `llama-server -c` allocation. Local decode speed is driven mainly by model size, quantization, offload, and hardware; Quick reduces prompt length, prefill work, and memory pressure. To change the actual local context allocation, switch profile or edit the role's `ctx` in `config/models.json` and restart.
 
-For the DeepSeek Harness, `bob dsh install` installs the DSH version pinned in `versions.lock` when a package manager is available, sets Bob as the default DSH model, and writes the provider route and credential. `bob dsh mode quick|deep` switches the profile default model alias. `bob dsh tools on|off` controls Bob's MCP tools, and `bob dsh hooks on|off` controls Bob context injection at session start plus DSH prompt and tool-result mirroring into Bob's transcript store. Each Bob-owned DSH key has one owner layer, so the same setting is never written twice.
+For the DeepSeek Harness, `bob dsh install` installs the DSH version pinned in `versions.lock` when a package manager is available, sets Bob as the default DSH model, and writes the provider route and credential. `bob dsh mode quick|deep` switches the profile default model alias. `bob dsh tools on|off` controls Bob's MCP tools, and `bob dsh bridge on|off` controls the native DSH bridge that imports complete session surfaces, assistant messages, tool results, and subagent transcripts into Bob. Each Bob-owned DSH key has one owner layer, so the same setting is never written twice.
 
 ### Memory (`memory.*`)
 

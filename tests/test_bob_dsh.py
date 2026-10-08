@@ -1,5 +1,4 @@
 """The Bob <-> DeepSeek Harness link: one owner per dsh key and one Python command surface."""
-import io
 import json
 import os
 import tempfile
@@ -68,70 +67,78 @@ class TestLayerWriter(_HomeMixin, unittest.TestCase):
         self.assertNotIn("bob-tools", text)
         self.assertIn("user-plugin", text)
 
-    def test_hooks_entry_uses_one_home_owner(self):
-        result = bob_dsh.hooks_on()
-        self.assertIn("installed", result)
-        patch = (self.home / "cordis.patch.yml").read_text(encoding="utf-8")
-        self.assertIn("bob-hooks", patch)
-        self.assertTrue((Path(bob_dsh.REPO) / "config" / "dsh" / "hooks.json").exists())
+class TestImportSession(unittest.TestCase):
+    def test_full_surface_import_is_idempotent_and_links_children(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory(prefix="bob-dsh-db-") as d:
+            db = Path(d) / "bob.db"
+            cfg = _common.fake_config()
+            payload = {
+                "root_session_id": "root",
+                "source": "dsh",
+                "sessions": [
+                    {
+                        "session_id": "root", "parent_session_id": None, "cwd": "/project",
+                        "events": [{"seq": 0, "type": "user/message", "data": {"role": "user"}}],
+                        "messages": [{"role": "user", "content": [{"type": "text", "text": "hello"}]}],
+                    },
+                    {
+                        "session_id": "child", "parent_session_id": "root", "cwd": "/project",
+                        "events": [{"seq": 0, "type": "assistant/message", "data": {"role": "assistant"}}],
+                        "messages": [
+                            {"role": "assistant", "content": [{"type": "text", "text": "working"}]},
+                            {"role": "user", "source": {"kind": "tool", "callId": "c1"},
+                             "content": [{"type": "tool-result", "toolCallId": "c1",
+                                          "content": [{"type": "text", "text": "tool output"}]}]},
+                        ],
+                    },
+                ],
+            }
+            with mock.patch.object(bob_core, "load_config", return_value=cfg), \
+                 mock.patch.object(bob_core, "_get_db_path", return_value=db), \
+                 mock.patch.object(bob_memory, "embed", return_value=None):
+                first = bob_dsh.import_session(payload)
+                second = bob_dsh.import_session(payload)
+            self.assertEqual(first, {"sessions": 2, "turns": 3})
+            self.assertEqual(second, {"sessions": 2, "turns": 3})
+            conn = sqlite3.connect(str(db))
+            try:
+                rows = conn.execute(
+                    "SELECT run_id, role, content, tool_name FROM transcript ORDER BY run_id, seq"
+                ).fetchall()
+                events = conn.execute("SELECT COUNT(*) FROM dsh_events").fetchone()[0]
+                sessions = conn.execute("SELECT COUNT(*) FROM dsh_sessions").fetchone()[0]
+            finally:
+                conn.close()
+            self.assertEqual(len(rows), 3)                       # no duplication on re-import
+            self.assertIn(("dsh:root", "user", "hello", None), rows)
+            self.assertIn(("dsh:child", "assistant", "working", None), rows)
+            self.assertIn(("dsh:child", "tool", "[tool-result c1] tool output", ""), rows)
+            self.assertEqual(events, 2)
+            self.assertEqual(sessions, 2)
 
 
-class TestHook(unittest.TestCase):
-    def test_session_start_emits_additional_context(self):
-        out = io.StringIO()
-        with mock.patch.object(bob_dsh, "_hook_context", return_value="PROFILE-CTX"), \
-             mock.patch.object(bob_dsh.sys, "stdout", out):
-            code = bob_dsh.hook("session-start", json.dumps({"session_id": "s1", "cwd": "/p"}))
-        self.assertEqual(code, 0)
-        payload = json.loads(out.getvalue())
-        self.assertEqual(payload["hookSpecificOutput"]["hookEventName"], "SessionStart")
-        self.assertEqual(payload["hookSpecificOutput"]["additionalContext"], "PROFILE-CTX")
-
-    def test_non_session_event_is_silent(self):
-        out = io.StringIO()
-        with mock.patch.object(bob_dsh.sys, "stdout", out):
-            code = bob_dsh.hook("pre-tool-use", "{}")
-        self.assertEqual(code, 0)
-        self.assertEqual(out.getvalue(), "")
-
-    def test_user_prompt_is_mirrored_to_bob_transcript(self):
-        payload = {"session_id": "s1", "cwd": "/project", "prompt": "hello dsh"}
-        with mock.patch.object(bob_core, "load_config", return_value=_common.fake_config()), \
-             mock.patch.object(bob_core, "_get_db_path", return_value=Path("/tmp/m.db")), \
-             mock.patch.object(bob_memory, "transcript_append") as append:
-            code = bob_dsh.hook("user-prompt", json.dumps(payload))
-        self.assertEqual(code, 0)
-        self.assertEqual(append.call_args.args[0], "dsh:s1")
-        self.assertEqual(append.call_args.args[1], "user")
-        self.assertEqual(append.call_args.args[2], "hello dsh")
-        self.assertEqual(append.call_args.kwargs["session_id"], "s1")
-
-    def test_post_tool_use_is_mirrored_with_tool_name(self):
-        payload = {"session_id": "s2", "cwd": "/project", "tool_name": "bash",
-                   "tool_response": "ok"}
-        with mock.patch.object(bob_core, "load_config", return_value=_common.fake_config()), \
-             mock.patch.object(bob_core, "_get_db_path", return_value=Path("/tmp/m.db")), \
-             mock.patch.object(bob_memory, "transcript_append") as append:
-            code = bob_dsh.hook("post-tool-use", json.dumps(payload))
-        self.assertEqual(code, 0)
-        self.assertEqual(append.call_args.args[2], "ok")
-        self.assertEqual(append.call_args.kwargs["tool_name"], "bash")
+class TestBridgeInstall(_HomeMixin, unittest.TestCase):
+    def test_bridge_status_uses_profile_package_and_patch(self):
+        pkg = self.home / "profiles" / "web" / "package.json"
+        pkg.write_text(json.dumps({"dependencies": {"bob-dsh-bridge": "file:/tmp"},
+                                   "dsh": {"profile": {"bundles": ["bob-dsh-bridge"]}}}),
+                       encoding="utf-8")
+        patch = self.home / "profiles" / "web" / "cordis.patch.yml"
+        patch.write_text("- insert:\n    - id: bob-dsh-bridge\n      name: bob-dsh-bridge\n",
+                         encoding="utf-8")
+        self.assertIn("on", bob_dsh.bridge_status("web"))
+        self.assertIn("removed", bob_dsh.bridge_off("web"))
+        self.assertIn("off", bob_dsh.bridge_status("web"))
 
 
-class TestStatus(_HomeMixin, unittest.TestCase):
-    def test_doctor_reports_the_link(self):
-        (self.home / "settings.yaml").write_text(
-            "llm-pi-ai:\n  providers:\n    bob:\n      models:\n        - id: chat\n",
-            encoding="utf-8")
-        (self.home / ".credentials.yaml").write_text(
-            "version: 1\n\nrefs:\n  BOB_LITELLM_KEY: 'sk-x'\n", encoding="utf-8")
-        with mock.patch.object(bob_dsh, "dsh_bin", return_value="/usr/bin/dsh"), \
-             mock.patch.object(bob_dsh, "dsh_version", return_value="0.1.5"):
-            out = bob_dsh.doctor("web")
-        self.assertIn("bob provider route", out)
-        self.assertIn("bob credential", out)
-        self.assertIn("default model", out)
-
-
-if __name__ == "__main__":
-    unittest.main()
+class TestBridgePackage(unittest.TestCase):
+    def test_native_bridge_reads_dsh_sessions_and_calls_bob(self):
+        base = Path(bob_dsh.REPO) / "scripts" / "dsh_bridge"
+        pkg = json.loads((base / "package.json").read_text(encoding="utf-8"))
+        src = (base / "index.js").read_text(encoding="utf-8")
+        self.assertEqual(pkg["name"], "bob-dsh-bridge")
+        self.assertIn("agent/turn-stopping", src)
+        self.assertIn("snapshotEvents", src)
+        self.assertIn("deriveMessages", src)
+        self.assertIn("import-session", src)

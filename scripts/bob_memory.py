@@ -1266,6 +1266,161 @@ def _transcript_bm25_ids(db, query, owner, scope, limit) -> list:
         return []
 
 
+def transcript_replace_run(run_id: str, turns: list, db_path: Path, owner: str = "local",
+                           scope: str = None, session_id: str = None,
+                           embed_optional: bool = True) -> int:
+    """Replace every transcript row for one run with `turns`.
+
+    `turns` is a list of {role, content, tool_name?}. Used by the DSH bridge so a completed session
+    surface can be re-imported idempotently instead of appended twice.
+    """
+    clean = [t for t in (turns or []) if str(t.get("content") or "").strip()]
+    with _open(db_path) as db:
+        _ensure_transcript(db)
+        if db.conn.in_transaction:
+            db.conn.commit()
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            db.execute("DELETE FROM transcript WHERE run_id=?", [run_id])
+            now = datetime.now(timezone.utc).isoformat()
+            for seq, turn in enumerate(clean):
+                content = str(turn.get("content") or "")
+                try:
+                    vec = embed(content)
+                except Exception:
+                    if not embed_optional:
+                        raise
+                    vec = None
+                db.execute(
+                    "INSERT INTO transcript (run_id, owner_id, scope, seq, role, content, tool_name,"
+                    " created_at, embedding, embed_model, session_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    [run_id, owner, scope, seq, str(turn.get("role") or "user"), content,
+                     turn.get("tool_name"), now, json.dumps(vec) if vec is not None else "",
+                     current_embed_model() if vec is not None else None, session_id])
+            db.execute("COMMIT")
+        except Exception:
+            db.execute("ROLLBACK")
+            raise
+    return len(clean)
+
+
+def _ensure_dsh_tables(db) -> None:
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS dsh_sessions ("
+        " session_id TEXT PRIMARY KEY, parent_session_id TEXT, cwd TEXT, origin TEXT,"
+        " created_at TEXT, updated_at TEXT, last_seq INTEGER DEFAULT -1, state TEXT)")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS dsh_events ("
+        " session_id TEXT NOT NULL, parent_session_id TEXT, seq INTEGER NOT NULL, type TEXT NOT NULL,"
+        " payload TEXT NOT NULL, created_at TEXT, PRIMARY KEY(session_id, seq))")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_dsh_events_session ON dsh_events(session_id, seq)")
+
+
+def _dsh_block_text(block: dict) -> str:
+    btype = block.get("type")
+    if btype == "text":
+        return str(block.get("text") or "")
+    if btype == "reasoning":
+        return "[reasoning] " + str(block.get("text") or "")
+    if btype == "tool-call":
+        return f"[tool-call {block.get('name') or ''} {block.get('id') or ''}] {block.get('arguments') or ''}"
+    if btype == "tool-result":
+        inner = block.get("content") or []
+        body = "\n".join(_dsh_block_text(b) for b in inner if isinstance(b, dict))
+        return f"[tool-result {block.get('toolCallId') or ''}] {body}"
+    if btype == "image":
+        return "[image attachment]"
+    if btype == "file":
+        return "[file attachment]"
+    return json.dumps(block, ensure_ascii=False)
+
+
+def _dsh_message_turn(message: dict) -> dict:
+    source = message.get("source") or {}
+    role = str(message.get("role") or "user")
+    tool_name = None
+    if source.get("kind") == "tool":
+        role = "tool"
+        tool_name = str(source.get("name") or "")
+    content = message.get("content")
+    if isinstance(content, list):
+        body = "\n".join(_dsh_block_text(b) for b in content if isinstance(b, dict))
+    else:
+        body = str(content or "")
+    return {"role": role, "content": body, "tool_name": tool_name}
+
+
+def dsh_import_sessions(sessions: list, db_path: Path, owner: str = "local",
+                        embed_optional: bool = True) -> dict:
+    """Persist raw DSH session events and replace each session's derived transcript rows.
+
+    One session descriptor: {session_id, parent_session_id, cwd, origin, events, messages}. Raw events
+    are stored as JSON; `messages` is the model-visible surface used to derive transcript turns.
+    """
+    imported = 0
+    turns_total = 0
+    with _open(db_path) as db:
+        _ensure_transcript(db)
+        _ensure_dsh_tables(db)
+        if db.conn.in_transaction:
+            db.conn.commit()
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+            for s in sessions or []:
+                sid = str(s.get("session_id") or "").strip()
+                if not sid:
+                    continue
+                parent = s.get("parent_session_id")
+                cwd = s.get("cwd")
+                events = s.get("events") or []
+                last_seq = -1
+                for ev in events:
+                    if not isinstance(ev, dict):
+                        continue
+                    seq = int(ev.get("seq") or 0)
+                    last_seq = max(last_seq, seq)
+                    db.execute(
+                        "INSERT OR REPLACE INTO dsh_events"
+                        " (session_id, parent_session_id, seq, type, payload, created_at)"
+                        " VALUES (?,?,?,?,?,?)",
+                        [sid, parent, seq, str(ev.get("type") or "unknown"),
+                         json.dumps(ev, ensure_ascii=False), now])
+                db.execute(
+                    "INSERT INTO dsh_sessions"
+                    " (session_id, parent_session_id, cwd, origin, created_at, updated_at, last_seq, state)"
+                    " VALUES (?,?,?,?,?,?,?,?)"
+                    " ON CONFLICT(session_id) DO UPDATE SET parent_session_id=excluded.parent_session_id,"
+                    " cwd=excluded.cwd, origin=excluded.origin, updated_at=excluded.updated_at,"
+                    " last_seq=MAX(dsh_sessions.last_seq, excluded.last_seq), state=excluded.state",
+                    [sid, parent, cwd, s.get("origin"), now, now, last_seq, s.get("state") or "imported"])
+                messages = s.get("messages") or []
+                turns = [_dsh_message_turn(m) for m in messages if isinstance(m, dict)]
+                turns = [t for t in turns if t["content"].strip()]
+                db.execute("DELETE FROM transcript WHERE run_id=?", [f"dsh:{sid}"])
+                for seq, turn in enumerate(turns):
+                    content = turn["content"]
+                    try:
+                        vec = embed(content)
+                    except Exception:
+                        if not embed_optional:
+                            raise
+                        vec = None
+                    db.execute(
+                        "INSERT INTO transcript (run_id, owner_id, scope, seq, role, content, tool_name,"
+                        " created_at, embedding, embed_model, session_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        [f"dsh:{sid}", owner, cwd, seq, turn["role"], content, turn["tool_name"],
+                         now, json.dumps(vec) if vec is not None else "",
+                         current_embed_model() if vec is not None else None, sid])
+                    turns_total += 1
+                imported += 1
+            db.execute("COMMIT")
+        except Exception:
+            db.execute("ROLLBACK")
+            raise
+    return {"sessions": imported, "turns": turns_total}
+
+
 def transcript_search(query: str, db_path: Path, owner: str = "local", scope: str = None,
                       k: int = 5, rrf_k: int = 60) -> list[dict]:
     """Hybrid (dense + BM25) search over the persisted transcript of every run for one owner/scope
