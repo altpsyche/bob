@@ -307,15 +307,22 @@ class TestInstallLink(unittest.TestCase):
 
 class TestEnsureDsh(unittest.TestCase):
     def test_pinned_version_already_installed_is_a_noop(self):
+        # dsh_bin is mocked: left to the real PATH, a machine without dsh would run a real global install.
         with mock.patch.object(bob_dsh, "pinned_dsh_version", return_value="0.1.5-rc.3"), \
-             mock.patch.object(bob_dsh, "dsh_version", return_value="0.1.5-rc.3"):
+             mock.patch.object(bob_dsh, "dsh_bin", return_value="/usr/bin/dsh"), \
+             mock.patch.object(bob_dsh, "dsh_version", return_value="0.1.5-rc.3"), \
+             mock.patch.object(bob_dsh.subprocess, "run") as run:
             self.assertIn("already installed", bob_dsh.ensure_dsh())
+        run.assert_not_called()
 
     def test_missing_package_manager_reports_the_pinned_install_command(self):
         with mock.patch.object(bob_dsh, "pinned_dsh_version", return_value="0.1.5-rc.3"), \
+             mock.patch.object(bob_dsh, "dsh_bin", return_value=""), \
              mock.patch.object(bob_dsh, "dsh_version", return_value=""), \
-             mock.patch.object(bob_dsh.shutil, "which", return_value=None):
+             mock.patch.object(bob_dsh.shutil, "which", return_value=None), \
+             mock.patch.object(bob_dsh.subprocess, "run") as run:
             out = bob_dsh.ensure_dsh()
+        run.assert_not_called()
         self.assertIn("@deepseek-ai/dsh@0.1.5-rc.3", out)
         self.assertIn("pnpm", out)
 
