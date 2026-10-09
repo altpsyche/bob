@@ -8,6 +8,13 @@ rebuilds only what changed, verifies, and rolls back on failure.
 
 ## [Unreleased]
 
+## [2.2.2] (2026-10-09)
+
+The first published 2.2 release: it carries everything in 2.2.0 and 2.2.1, whose tags never produced a release because CI failed on a test.
+
+### Fixed
+- **CI no longer depends on the runner's PATH.** A DSH install test read the real `dsh` location, so on a runner without dsh it ran a real global npm install and failed; it now mocks the binary and asserts that no install runs.
+
 ## [2.2.1] (2026-10-09)
 
 ### Fixed
