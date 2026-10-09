@@ -8,6 +8,42 @@ rebuilds only what changed, verifies, and rolls back on failure.
 
 ## [Unreleased]
 
+## [2.2.0] (2026-10-09)
+
+### Changed
+- **`bob update` respects the DSH link you set up.** Setup installs the link once; update refreshes only the parts that are present (route, credential, MCP entry, bridge) and keeps what you turned off: `bob dsh bridge off`, `bob dsh mode quick`, a default model that is not Bob's, `bob dsh tools off`. An older DSH is upgraded with the package manager that installed it, a newer one is never downgraded. `bob dsh uninstall` sets the new `agent.dshEnabled` to `false`, and setup, update and `bob gen` then leave DSH alone; `bob dsh install` turns it back on.
+- **`bob dsh tools off` persists, for dsh only.** It sets the new `agent.dshTools` to `false`, so the next `bob gen` or update does not put the entry back, and Bob's MCP server stays on for Continue and `bob agent mcp`. `bob dsh tools on` turns both back on.
+- **Your context budgets apply again.** The budget keys (`maxContextTokens`, `maxHistoryMsgs`, `outputReserveTokens`, `maxToolResultTokens`, `compaction`, `stablePrefix`, `clearToolResults` and the rest) now ship only in the `quick`/`deep` mode blocks. A value under `agent` in `config/user.json` applies to every mode, and a mode's own block in `config/user.json` wins over that. Quick's local output budget is 1024 tokens (was 512), so a reply with reasoning on no longer runs out before it answers.
+- **External harnesses keep their output budget.** On `<role>-quick` / `<role>-deep` aliases the LiteLLM hook no longer forces `max_tokens` down to the mode budget: a client's own value is lowered only when the window cannot fit it, and a request without one gets none added.
+- **`bob_core.complete()` follows the caller's context mode.** Plugin and summary calls with no mode use the model's window instead of Quick's, and an unknown mode is a `CompletionError`.
+- **Imported DSH sessions are scoped to the project root,** so `conversation_search` finds a session started in a subdirectory. Project trust tiers likewise apply anywhere inside the project, and the deepest matching project wins.
+
+### Fixed
+- **DSH starts after a fresh setup or update.** `dsh --dump-config` seeds a new profile patch file with an empty `[]`, and Bob appended its entries after it, which dsh rejected as invalid YAML. Bob now drops the seed before writing, and keeps the file an array when it removes its last entry.
+- **Bob's DSH default model no longer breaks the profile.** It is now written as a top-level override of the `agent-default-model` row DSH already ships, instead of an `insert:` that added a second row with the same id (`duplicate loader entry id`). Profiles holding the old form are rewritten in place on the next `bob dsh install` or `bob update`.
+- **DSH boots with the session bridge installed.** `bob dsh bridge on` listed the bridge as a profile bundle, which it is not, and dsh refused to start (`profile bundle "bob-dsh-bridge" declares no dsh.bundle`). It is now a plain plugin dependency loaded by the patch layer, and the stray bundle entry is removed on the next `bob update` or `bob dsh bridge on`.
+- **The session bridge can no longer crash the DSH host.** A Bob import that exits while the bridge is still writing to it (a timeout, an early failure) used to raise an uncaught `EPIPE` in DSH.
+- **`setup --launch` starts the stack** instead of ending in a `TypeError` after every step succeeded.
+- **Continue autocomplete and codebase indexing work again.** The generated Continue config requested `autocomplete` and `embeddings`, names LiteLLM does not serve; it now requests `fim` and `embed`.
+- **A resumed task keeps its context mode.** `bob task resume` restored a Deep run as Quick and re-trimmed its history; it now uses the mode saved with the checkpoint unless one is passed explicitly.
+- **Cleared tool results can be read back under the context modes.** Quick and Deep clear old tool results, but `read_result` (and the store that keeps them) was still gated on `agent.clearToolResults`, so the model was pointed at a tool it did not have.
+- **`bob update` names the right command to retry client wiring** (`python -m bob.kernel setup --skip-models --skip-build --skip-voice`).
+- **The context hook sends valid message lists.** Trimming drops whole turns oldest first, keeps the system prompt, the first user message and the latest ask, and never separates an assistant tool call from its results, so providers no longer reject an orphaned `tool` message. The token estimate counts `tool_calls` arguments, so large file writes no longer slip past the window, and the hook measures against the same window Bob advertises to the harness.
+- **The compaction note survives.** A summarize pass that drops nothing new, or whose summary fails, keeps the earlier note instead of losing it.
+- **Session import keeps up with long DSH sessions.** Only new turns are embedded, before the database write lock is taken; an unchanged session is a no-op. A malformed session is skipped instead of aborting the batch, events without a sequence number no longer overwrite each other, and `bob dsh sessions forget` sticks (children included) when DSH sends the session again.
+- **Old Open WebUI installs are cleaned up on update.** An Open WebUI left running by Bob 2.0.x is stopped, and `tools/venv-webui`, `tools/webui-data`, its pidfile, log and `webuiSecret` are deleted.
+- **A malformed `config/user.json` is never wiped.** Every Bob writer (DSH commands, `bob key set`, onboarding) refuses a file that does not parse and leaves it untouched; the DSH writers also honor `BOB_USER_CONFIG`.
+- **The DSH bridge works on Windows** (it calls the absolute `bob` shim, through `cmd.exe` for a `.cmd`), and `bob dsh bridge on` reports a failed `dsh plugin add` instead of claiming success.
+- Session context modes are validated and stored by their canonical name (an unknown mode is a 422), a user mode named like an alias wins over the alias, and an unknown `agent.contextMode` says how to fix it.
+
+### Security
+- **The DSH `write` tier no longer includes scheduling or `memory_block`.** A scheduled goal runs later outside the tier check, and a core memory block reaches every later session; any future `schedule_*` tool stays out automatically.
+- **Bob's own config and code are written only from an attended session.** A `file_write` or `file_edit` that touches `config/user.json`, `config/defaults.json`, `config/models.json`, `scripts/` or any `.py` under `plugins/` is refused for an unattended caller (MCP, DSH, scheduled, no approver), even when the tool is allow-listed, so a session cannot raise its own trust tier or plant code the next process imports. In an attended session the approval gate asks for every such write, whatever the agency setting, and no remembered "always" answer covers it.
+- `.credentials.yaml` in the DSH home is created with mode 0600 from the start.
+
+### Removed
+- `--no-open` is no longer listed for `bob up` (it has had no effect since the browser client was removed; it is still accepted).
+
 ## [2.1.2] (2026-10-09)
 
 ### Fixed
