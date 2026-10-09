@@ -815,3 +815,69 @@ class TestBridgeWindowsSpawn(unittest.TestCase):
         self.assertIn('"/d", "/s", "/c"', src)
         self.assertIn("windowsVerbatimArguments", src)
         self.assertIn('child.stdin.on("error"', src)
+
+
+class TestHealth(_HomeMixin, unittest.TestCase):
+    """`bob dsh doctor` and `bob doctor` share bob_dsh.health: broken states are 'bad' with a fix."""
+
+    def _rows(self, config, **kw):
+        with mock.patch.object(bob_dsh, "dsh_bin", return_value=kw.get("exe", "/usr/bin/dsh")), \
+             mock.patch.object(bob_dsh, "dsh_version", return_value=kw.get("have", "0.1.5-rc.3")), \
+             mock.patch.object(bob_dsh, "pinned_dsh_version", return_value="0.1.5-rc.3"):
+            return {label: (state, note) for label, state, note in bob_dsh.health(config, "web")}
+
+    def test_link_off_and_missing_dsh_are_informational(self):
+        rows = self._rows({"agent": {"dshEnabled": False}})
+        self.assertEqual([s for s, _ in rows.values()], ["info"])
+        rows = self._rows({"agent": {}}, exe="")
+        self.assertEqual([s for s, _ in rows.values()], ["info"])
+
+    def test_tools_wired_while_bob_mcp_is_off_is_broken(self):
+        (self.home / "cordis.patch.yml").write_text("- insert:\n    - id: bob-tools\n      name: x\n",
+                                                    encoding="utf-8")
+        state, note = self._rows({"agent": {"mcpEnabled": False}})["bob tools in dsh"]
+        self.assertEqual(state, "bad")
+        self.assertIn("bob dsh tools on", note)
+        self.assertEqual(self._rows({"agent": {"mcpEnabled": True}})["bob tools in dsh"][0], "ok")
+
+    def test_bridge_listed_as_a_bundle_is_broken(self):
+        (self.home / "profiles" / "web" / "package.json").write_text(
+            json.dumps({"dsh": {"profile": {"bundles": ["bob-dsh-bridge"]}}}), encoding="utf-8")
+        self.assertEqual(self._rows({"agent": {}})["session bridge"][0], "bad")
+
+    def test_unparseable_patch_and_old_dsh_are_broken(self):
+        (self.home / "profiles" / "web" / "cordis.patch.yml").write_text("[]\n- insert: x\n", encoding="utf-8")
+        rows = self._rows({"agent": {}}, have="0.1.4")
+        self.assertEqual(rows["profile web patch"][0], "bad")
+        self.assertEqual(rows["dsh installed"][0], "bad")
+
+    def test_doctor_renders_every_row(self):
+        with mock.patch.object(bob_dsh, "health", return_value=[("a", "ok", "fine"), ("bb", "bad", "fix it"),
+                                                                ("c", "info", "optional")]):
+            out = bob_dsh.doctor("web")
+        self.assertIn("OK   a ", out)
+        self.assertIn("FAIL bb  fix it", out)
+        self.assertIn("--   c ", out)
+
+
+class TestInstallToolsFlag(unittest.TestCase):
+    def test_install_tools_turns_on_the_switches_dsh_needs(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "user.json"
+            with mock.patch.dict(os.environ, {"BOB_USER_CONFIG": str(path)}), \
+                 mock.patch.object(bob_dsh, "link_enabled", return_value=True), \
+                 mock.patch.object(bob_dsh, "install", return_value="installed") as install:
+                self.assertEqual(bob_dsh.main(["install", "--tools"]), 0)
+            agent = json.loads(path.read_text(encoding="utf-8"))["agent"]
+        self.assertIs(agent["mcpEnabled"], True)
+        self.assertIs(agent["dshTools"], True)
+        self.assertTrue(install.call_args.kwargs["tools"])
+
+    def test_install_without_tools_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "user.json"
+            with mock.patch.dict(os.environ, {"BOB_USER_CONFIG": str(path)}), \
+                 mock.patch.object(bob_dsh, "link_enabled", return_value=True), \
+                 mock.patch.object(bob_dsh, "install", return_value="installed"):
+                bob_dsh.main(["install"])
+            self.assertFalse(path.exists())

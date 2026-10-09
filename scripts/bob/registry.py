@@ -130,8 +130,8 @@ COMMANDS = [
     {"name": "services", "group": "Run", "summary": "Opt-in add-ons: n8n (native) / SearXNG / Langfuse (Docker)",
      "args": "[<name>] <start|stop|status|logs>", "handler": "services"},
     {"name": "dsh", "group": "Run",
-     "summary": "Manage the DeepSeek Harness link (status, install, use, mode, tools, trust, bridge)",
-     "args": "<status|doctor|install|use|mode|tools|trust|bridge|sessions|logs|uninstall> ...",
+     "summary": "DeepSeek Harness link: install, tools, bridge, trust, doctor (bob dsh help)",
+     "args": "<command> ...",
      "handler": "dsh"},
 
     # --- Services: start/stop/status one inference or voice daemon ----------------------------

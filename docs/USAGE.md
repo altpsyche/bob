@@ -783,17 +783,24 @@ aider auto-commits each accepted edit to git; work on a branch so `/undo` can ro
 
 ### Coding client: DeepSeek Harness (dsh)
 
-Manage the link with `bob dsh`:
+Manage the link with `bob dsh` (`bob dsh help` lists every command). To set it up, stop `dsh web`, make sure Bob is running (`bob up`), then:
+
+```bash
+bob dsh install --tools   # route, key, session bridge, Bob as the default model, and Bob's tools
+bob dsh doctor            # every check, with the fix for anything broken
+dsh web
+```
+
 
 - `bob dsh status` shows the detected DSH install, active profile, Bob route, tools, bridge, and default model.
-- `bob dsh install` installs the pinned DeepSeek Harness when missing, then writes Bob's provider route, credential, and profile default model.
+- `bob dsh install` installs the pinned DeepSeek Harness when missing, then writes Bob's provider route, credential, session bridge, and profile default model. `--tools` also gives DSH Bob's tools (the same as `bob dsh tools on`), and `--no-use` keeps your current default model.
 - `bob dsh use` sets Bob as the default DSH model.
 - `bob dsh mode quick|deep` switches the default model alias.
 - `bob dsh tools on|off` mounts or removes Bob's MCP tool registry in DSH.
 - `bob dsh trust` shows the effective DSH trust tier; `bob dsh trust --tier read|write|execute|all` sets the global tier, and `bob dsh trust --tier all --project [path]` sets a per-project override. Tiers are resolved from the live tool registry, and a configured tier is enforced by a built-in PreToolUse policy on unattended DSH/MCP calls. Explicit tools still work: `bob dsh trust shell_run file_write`.
 - `bob dsh sessions list|show <id>|consolidate <id>|forget <id>` inspects or maintains the sessions imported by the native bridge. `consolidate` runs the same memory consolidation pipeline as a Bob session, and `forget` removes the raw events, derived transcript, and provenance-stamped memory rows.
 - `bob dsh bridge on|off` mounts or removes the native DSH bridge that imports complete session surfaces, assistant messages, tool results, and subagent transcripts into Bob.
-- `bob dsh doctor` reports layer conflicts, missing credentials, missing tools, and a default model that is not Bob.
+- `bob dsh doctor` checks the install, both patch files, the route, the credential, the tools, the bridge, and the default model, and names the fix for anything broken. `bob doctor` includes the same checks.
 
 Bob owns each DSH setting in exactly one layer: global provider and credential settings live under `$DSH_HOME`, profile-specific default models live under the active DSH profile, and plugin entries live in the home patch file.
 
@@ -837,7 +844,7 @@ Each Bob-owned DSH key has one owner layer:
 | `$DSH_HOME/cordis.patch.yml` | Bob MCP plugin entry |
 | `$DSH_HOME/profiles/<name>/cordis.patch.yml` | `agent-default-model`, `bob-dsh-bridge` |
 
-`bob dsh doctor` reports missing routes, credentials, MCP tools, the native bridge, and a default model that is not Bob.
+`bob dsh doctor` (and the DSH rows of `bob doctor`) reports a missing route or credential, unparseable patch files, Bob's tools wired into DSH while Bob's MCP server is off, a bridge listed as a profile bundle, and a default model that is not Bob, each with its fix.
 
 ## Shell AI Patterns: fabric
 

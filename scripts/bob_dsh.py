@@ -968,27 +968,83 @@ def _default_model(root: Path, profile: str) -> str:
     return ""
 
 
-def doctor(profile: str = None) -> str:
+def _patch_parses(path: Path) -> bool:
+    """Whether a dsh patch file is valid YAML (parsed, not constructed, so `!!js` tags need no
+    constructor). A missing file is valid: dsh treats it as an empty layer."""
+    import yaml
+    if not path.exists():
+        return True
+    try:
+        yaml.compose(path.read_text(encoding="utf-8"))
+        return True
+    except Exception:
+        return False
+
+
+def _bridge_bundle_listed(root: Path, profile: str) -> bool:
+    bundles = ((_load_json(_profile_package(profile, root)).get("dsh") or {}).get("profile") or {}).get("bundles")
+    return isinstance(bundles, list) and BRIDGE_ID in bundles
+
+
+def health(config: dict = None, profile: str = None) -> list:
+    """The DSH link checks, as (label, state, note) rows with state "ok", "bad" (broken: note says how to
+    fix it) or "info" (optional or off by choice). The one source for `bob dsh doctor` and `bob doctor`."""
+    import generate
+    if config is None:
+        from bob_core import load_config
+        config = load_config()
+    if not link_enabled(config):
+        return [("DeepSeek Harness link", "info", "off (agent.dshEnabled is false); bob dsh install")]
+    exe = dsh_bin()
+    if not exe:
+        return [("DeepSeek Harness", "info", f"not installed (optional); bob dsh install "
+                                             f"installs @deepseek-ai/dsh@{pinned_dsh_version()}")]
     root = home()
     target = profile or default_profile(root)
-    rows = [
-        ("dsh binary", bool(dsh_bin()), dsh_version() or dsh_bin() or "not found"),
-        ("dsh home", root.is_dir(), str(root)),
-        ("bob provider route", _provider_route_ok(root), "settings.yaml"),
-        ("bob credential", _credential_ok(root), ".credentials.yaml"),
-        ("bob MCP tools", _plugin_present(root / "cordis.patch.yml", MCP_ID),
-         "home cordis.patch.yml"),
-        ("bob native bridge", _plugin_present(_profile_patch(target, root), BRIDGE_ID),
-         f"profile {target}"),
-        ("default model", bool(_default_model(root, target)),
-         f"profile {target}: {_default_model(root, target) or 'not set to bob'}"),
-        ("profile patch", _profile_patch(target, root).exists(), str(_profile_patch(target, root))),
-    ]
-    width = max(len(name) for name, _ok, _detail in rows)
-    lines = []
-    for name, ok, detail in rows:
-        lines.append(f"  {'OK ' if ok else 'WARN'} {name:<{width}}  {detail}")
-    return "bob dsh doctor\n" + "\n".join(lines)
+    have, want = dsh_version(), pinned_dsh_version()
+    hk, wk = _version_key(have), _version_key(want)
+    rows = [("dsh installed", "bad" if (hk and wk and hk < wk) else "ok",
+             f"{have or exe}" + (f", older than the pinned {want}; bob update" if hk and wk and hk < wk else ""))]
+    if not root.is_dir():
+        return rows + [("dsh home", "bad", f"{root} missing; bob dsh install")]
+    for label, path in (("home patch", root / "cordis.patch.yml"),
+                        (f"profile {target} patch", _profile_patch(target, root))):
+        if not _patch_parses(path):
+            rows.append((label, "bad", f"{path} is not valid YAML, so dsh will not start; fix it by hand"))
+    rows.append(("bob provider route", "ok" if _provider_route_ok(root) else "bad",
+                 "settings.yaml" if _provider_route_ok(root) else "missing; bob dsh install"))
+    rows.append(("bob credential", "ok" if _credential_ok(root) else "bad",
+                 ".credentials.yaml" if _credential_ok(root) else "missing; bob dsh install"))
+    wired = _plugin_present(root / "cordis.patch.yml", MCP_ID)
+    wanted = generate.dsh_tools_enabled(config)
+    if wired and wanted:
+        rows.append(("bob tools in dsh", "ok", "on"))
+    elif wired:
+        rows.append(("bob tools in dsh", "bad", "wired into dsh but Bob's MCP server is off, so every tool "
+                                                "call fails; bob dsh tools on (or off)"))
+    elif wanted:
+        rows.append(("bob tools in dsh", "bad", "enabled but not wired into dsh; bob dsh tools on"))
+    else:
+        rows.append(("bob tools in dsh", "info", "off (optional); bob dsh tools on"))
+    if _bridge_bundle_listed(root, target):
+        rows.append(("session bridge", "bad", f"listed as a profile bundle, so dsh will not start; "
+                                              f"bob dsh bridge on --profile {target}"))
+    elif _bridge_installed(root, target):
+        rows.append(("session bridge", "ok", f"on (profile {target})"))
+    else:
+        rows.append(("session bridge", "info", f"off (profile {target}); bob dsh bridge on"))
+    model = _default_model(root, target)
+    rows.append(("dsh default model", "ok" if model else "info",
+                 f"{model} (profile {target})" if model else f"not Bob's (profile {target}); bob dsh use"))
+    return rows
+
+
+def doctor(profile: str = None) -> str:
+    rows = health(profile=profile)
+    width = max(len(label) for label, _state, _note in rows)
+    mark = {"ok": "OK  ", "bad": "FAIL", "info": "--  "}
+    return "bob dsh doctor\n" + "\n".join(f"  {mark[state]} {label:<{width}}  {note}"
+                                             for label, state, note in rows)
 
 
 def status(profile: str = None) -> str:
@@ -1022,6 +1078,32 @@ def uninstall(profile: str = None) -> str:
     return "\n".join(lines)
 
 
+_HELP = """usage: bob dsh <command> [--profile NAME]
+
+Set up (stop `dsh web` first, and have Bob running: bob up):
+  install [--tools] [--no-use] [--no-bridge] [--mode quick|deep]
+                      route + key + session bridge + Bob as the dsh default model;
+                      --tools also gives dsh Bob's tools, --no-use keeps your default model
+  tools on|off        Bob's tools in dsh (off leaves Bob's MCP server on for other clients)
+  bridge on|off       import dsh sessions into Bob's memory
+  use                 make Bob (coder-deep) the dsh default model
+  mode quick|deep     switch the default between Bob's -quick and -deep aliases
+  trust [--tier read|write|execute|all] [--project [PATH]] [--off] [TOOL ...]
+                      which Bob tools dsh may run unattended
+
+Check:
+  status              one-line view of the link
+  doctor              every check, with the fix for anything broken (also in `bob doctor`)
+
+Sessions:
+  sessions list | show ID | consolidate ID | forget ID
+
+Remove:
+  uninstall           remove Bob's entries and stop setup/update from re-adding them
+
+Then start dsh with: dsh web"""
+
+
 def main(argv: list) -> int:
     args = list(argv)
     cmd = (args.pop(0).lower() if args else "status")
@@ -1043,10 +1125,15 @@ def main(argv: list) -> int:
         if "--mode" in args:
             j = args.index("--mode")
             mode = args[j + 1] if j + 1 < len(args) else None
+        flags = {} if link_enabled() else {"dshEnabled": True}
+        if tools:
+            # The same switches `bob dsh tools on` sets: without mcpEnabled, the `bob agent mcp` that dsh
+            # starts refuses to serve, so the wired tools would fail on every call.
+            flags.update(mcpEnabled=True, dshTools=True)
         enable = ""
-        if not link_enabled():
+        if flags:
             try:
-                enable = _set_agent_flags(dshEnabled=True) + "\n"
+                enable = _set_agent_flags(**flags) + "\n"
             except ConfigWriteRefused as e:
                 print(f"dsh link not installed: {e}", file=sys.stderr)
                 return 1
@@ -1135,7 +1222,7 @@ def main(argv: list) -> int:
     if cmd == "uninstall":
         print(uninstall(profile)); return 0
     if cmd in ("help", "-h", "--help"):
-        print("usage: bob dsh <status|doctor|install|use|mode|tools|trust|bridge|sessions|logs|uninstall>")
+        print(_HELP)
         return 0
     print(f"unknown dsh command: {cmd}", file=sys.stderr)
     return 2

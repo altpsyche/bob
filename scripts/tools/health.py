@@ -201,6 +201,17 @@ def health_check(config: dict, doctor: bool = False) -> str:
     else:
         pending("BobAgent task not registered", "optional — bob agent install to enable scheduling")
 
+    # DeepSeek Harness link: the same rows `bob dsh doctor` prints (bob_dsh.health), so the two agree.
+    try:
+        import bob_dsh
+        for label, state, note in bob_dsh.health(config):
+            if state == "info":
+                pending(f"DSH: {label}", note)
+            else:
+                check(f"DSH: {label}" + (f" ({note})" if state == "ok" else ""), state == "ok", note)
+    except Exception as e:  # noqa: BLE001 (advisory: never fail the pre-flight over this)
+        pending("DSH link", f"check failed: {e}")
+
     # Agent model downloaded
     try:
         import bob_models
