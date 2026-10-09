@@ -1698,7 +1698,8 @@ class BobShell:
         tool for any arguments, an explicit, separately labeled choice."""
         tool = action.get("tool", "?")
         key = self._call_key(action)
-        if key in self._always or tool in self._always_tools:
+        protected = bool(action.get("protected"))   # Bob's own config or code: asked every time
+        if not protected and (key in self._always or tool in self._always_tools):
             return True
         args = _compact_args(action.get("arguments"))
         risk = action.get("risk", "confirm")
@@ -1706,17 +1707,22 @@ class BobShell:
         color = self.theme.error if risk == "high" else self.theme.warn
         self.console.print(Panel(
             f"[bold]{tool}[/]([{self.theme.muted}]{args}[/])",
-            title=f"approve tool · risk={risk}", title_align="left",
+            title=f"approve tool · risk={risk}" + (" · changes Bob's own config or code" if protected else ""),
+            title_align="left",
             border_style=color, expand=False,
         ))
         try:
             from prompt_toolkit import prompt as ptk_prompt
             from prompt_toolkit.formatted_text import HTML
-            ans = ptk_prompt(HTML("  <ansigreen>y</ansigreen>es / <b>N</b>o / "
-                                  "<ansicyan>a</ansicyan>lways (this exact call) / "
-                                  f"<ansicyan>t</ansicyan> always {tool} (any arguments) › ")).strip().lower()
+            choices = ("  <ansigreen>y</ansigreen>es / <b>N</b>o › " if protected else
+                       "  <ansigreen>y</ansigreen>es / <b>N</b>o / "
+                       "<ansicyan>a</ansicyan>lways (this exact call) / "
+                       f"<ansicyan>t</ansicyan> always {tool} (any arguments) › ")
+            ans = ptk_prompt(HTML(choices)).strip().lower()
         except (EOFError, KeyboardInterrupt):
             raise KeyboardInterrupt
+        if protected:
+            return ans in ("y", "yes")
         if ans in ("a", "always"):
             self._always.add(key)
             return True

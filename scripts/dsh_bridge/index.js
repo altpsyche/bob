@@ -33,10 +33,21 @@ async function collectSessions(ctx, rootId) {
   return out;
 }
 
+// A Windows .cmd/.bat shim is not an executable, and spawn without a shell cannot run it. It goes through
+// cmd.exe instead, with every argument quoted so a space or metacharacter in the path stays literal.
+function spawnArgs(command, args) {
+  if (!/\.(cmd|bat)$/i.test(command)) return [command, args, {}];
+  const quote = (s) => `"${String(s).replace(/"/g, '""')}"`;
+  const line = [command, ...args].map(quote).join(" ");
+  return [process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", `"${line}"`],
+    { windowsVerbatimArguments: true }];
+}
+
 function runBob(command, args, payload, timeoutMs) {
   return new Promise((resolve, reject) => {
     let settled = false;
-    const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
+    const [exe, argv, extra] = spawnArgs(command, args);
+    const child = spawn(exe, argv, { stdio: ["pipe", "pipe", "pipe"], ...extra });
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
@@ -58,6 +69,9 @@ function runBob(command, args, payload, timeoutMs) {
       if (code === 0) resolve();
       else reject(new Error(stderr.trim() || `bob import exited ${code}`));
     });
+    // A child that exits mid-write (timeout kill, early failure) raises EPIPE on stdin; without a
+    // listener that is an uncaught error in the dsh host. The exit itself is reported by "close".
+    child.stdin.on("error", () => {});
     child.stdin.end(JSON.stringify(payload));
   });
 }

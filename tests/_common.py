@@ -157,7 +157,6 @@ def fake_config(**over):
         "memory": {"enabled": False},
         "agent": {
             "toolFormat": "hermes", "maxSteps": 5,
-            "maxContextTokens": 0, "maxToolResultTokens": 1000,
         },
     }
     for k, v in over.items():

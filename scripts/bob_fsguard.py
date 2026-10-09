@@ -6,6 +6,12 @@ holds no config globals and is safe to import from any tool. The secrets denylis
 logs, .env files, the generated client configs that embed Bob's LiteLLM key, n8n's config (its credential
 encryption key), and the usual home credential dirs) even when they fall
 inside an allowed root, which by default is the repo root and would otherwise expose them.
+
+Writes are refused on a wider set (is_denied_write): Bob's own configuration and code, so an unattended
+caller with a write root over the checkout cannot change its own config or plant code the next process
+imports. An attended run may write them one approved call at a time (protected_write_allowed; the
+approval gate always asks for such a call). The human CLI paths that edit config/user.json write it
+directly, not here.
 """
 from pathlib import Path
 
@@ -25,6 +31,12 @@ KEY_BEARING = frozenset({
 DENY_BASENAMES = {"config.json", "secrets.json", ".credentials.yaml"}
 DENY_SUFFIXES = (".psd1", ".db")   # .psd1 config files; *.db session/memory stores
 _N8N_DATA = ("tools", "n8n-data")   # n8n's user folder; any `config` under it holds the encryption key
+
+# Repo-relative files and trees agent/MCP writes may not touch unattended: the config overlays and
+# registries Bob loads at startup, Bob's own code under scripts/, and any Python under plugins/ (the
+# loader imports tool.py, which imports its siblings). Any of them could raise a caller's own trust.
+WRITE_DENY_FILES = frozenset({"config/user.json", "config/defaults.json", "config/models.json"})
+WRITE_DENY_TREES = ("scripts",)
 
 
 def default_home() -> Path:
@@ -94,21 +106,66 @@ def is_denied_secret(target: Path, home: Path = None) -> bool:
 
 
 _KEY_BEARING_FOLDED = frozenset(k.casefold() for k in KEY_BEARING)
+_WRITE_DENY_FILES_FOLDED = frozenset(k.casefold() for k in WRITE_DENY_FILES)
+
+
+def _repo_rel(rp: Path):
+    """`rp` (resolved) as casefolded parts relative to the repo root, or None when it is outside.
+    Casefolded because on a case-insensitive filesystem (APFS, NTFS) `CONFIG/User.json` opens the same
+    file, so a case-sensitive match would let it past the guard."""
+    try:
+        repo = REPO.resolve()
+    except OSError:
+        return None
+    parts = tuple(seg.casefold() for seg in rp.parts)
+    root = tuple(seg.casefold() for seg in repo.parts)
+    if parts[:len(root)] != root:
+        return None
+    return parts[len(root):]
+
+
+def is_protected_code(target: Path) -> bool:
+    """True for Bob's own config and code (WRITE_DENY_*), which agent/MCP writes must not change."""
+    try:
+        rp = target.resolve()
+    except Exception:
+        return True
+    rel = _repo_rel(rp)
+    if not rel:
+        return False
+    if "/".join(rel) in _WRITE_DENY_FILES_FOLDED or rel[0] in WRITE_DENY_TREES:
+        return True
+    return rel[0] == "plugins" and rel[-1].endswith(".py")
+
+
+def protected_write_allowed() -> bool:
+    """Whether the tool call now running may write Bob's own config or code: only inside an attended
+    run, one with an approver and no unattended allow-set, where the approval gate has just asked for
+    this exact call (bob_permissions.touches_protected). A call dispatched outside a run is refused."""
+    try:
+        from tool_registry import get_run_context
+    except ImportError:
+        return False
+    ctx = get_run_context()
+    return (ctx is not None and getattr(ctx, "approve", None) is not None
+            and getattr(ctx, "unattended_allow", None) is None)
+
+
+def is_denied_write(target: Path, home: Path = None) -> bool:
+    """True when an agent/MCP write to `target` must be refused: every secret is_denied_secret refuses,
+    plus Bob's own config and code (is_protected_code) outside an attended, approved call."""
+    if is_denied_secret(target, home=home):
+        return True
+    return is_protected_code(target) and not protected_write_allowed()
 
 
 def _is_generated_secret(rp: Path) -> bool:
     """True for a key-bearing file Bob generates inside the repo (KEY_BEARING) and n8n's config files.
     Compared casefolded: on a case-insensitive filesystem (APFS, NTFS) `CONFIG/Continue/config.yaml`
     opens the same file, so a case-sensitive match would let it past the denylist."""
-    try:
-        repo = REPO.resolve()
-    except OSError:
+    rel = _repo_rel(rp)
+    if rel is None:
         return False
-    parts = tuple(seg.casefold() for seg in rp.parts)
-    root = tuple(seg.casefold() for seg in repo.parts)
-    if parts[:len(root)] != root:
-        return False
-    rel = parts[len(root):]
     if "/".join(rel) in _KEY_BEARING_FOLDED:
         return True
     return rel[:2] == _N8N_DATA and rp.name.casefold() == "config"

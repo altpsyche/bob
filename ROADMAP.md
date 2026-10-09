@@ -22,7 +22,7 @@ dependency locks, the minimum toolchain, and the model manifest (repo, revision,
 reports the running release. `bob update` moves between releases lockfile to lockfile, rebuilds only what
 changed, verifies, and rolls back on failure.
 
-> **2.0 is the current line.** Bob started as a Windows first, two language (PowerShell plus Python)
+> **2.1 is the current line.** Bob started as a Windows first, two language (PowerShell plus Python)
 > experiment. That whole plan is now complete: one command, one engine, cross platform, reproducible, and
 > test backed. 1.0 marked the point where Bob became a coherent product rather than a build out; 1.1 makes
 > it easy to install and get started, with one command per OS and a Docker-free default; 1.2 sharpens the
@@ -30,12 +30,13 @@ changed, verifies, and rolls back on failure.
 > patch line makes a release prove itself with driver-only prebuilt engines, one install lifecycle seam, and
 > a release cut that cannot drift; 1.3 moves the whole local registry a generation and adds a `writer` role
 > for long-form prose; 2.0 makes Bob private by default, closes every seam a repo-wide audit found, and runs
-> each GPU tier on one model. Everything up to and including 2.0 is shipped; everything above it is the plan.
+> each GPU tier on one model; 2.1 makes the DeepSeek Harness the default coding client and adds Quick and
+> Deep context modes. Everything up to and including 2.1 is shipped; everything above it is the plan.
 >
-> **Current default UI after 2.0.1:** DeepSeek Harness is the primary browser and terminal coding client.
-> Open WebUI is removed from the default product path, and the native `bob-dsh-bridge` imports complete
-> DSH session surfaces, assistant messages, tool results, and subagent transcripts into Bob. Context modes
-> are exposed as `<role>-quick` and `<role>-deep` model aliases through the LiteLLM pre-call callback.
+> **Default coding client since 2.1.0:** the DeepSeek Harness, opened in the browser with `dsh web`. The
+> native `bob-dsh-bridge` imports complete DSH session surfaces, assistant messages, tool results, and
+> subagent transcripts into Bob. Context modes are exposed as `<role>-quick` and `<role>-deep` model
+> aliases through the LiteLLM pre-call callback.
 
 ---
 
@@ -71,7 +72,7 @@ the cross OS CI acceptance gate runs on every PR.
   job objects), granular per tool and per owner permissions (`allow`, `ask`, `deny`, audited), owner scoped
   sessions, an auth token store with RBAC, and OpenTelemetry tracing into Langfuse.
 - Private by default: every service binds `bindHost` (loopback unless you change it), and every secret
-  (the LiteLLM key, the Open WebUI, n8n and SearXNG secrets, the Langfuse keys) is generated on first use
+  (the LiteLLM key, the n8n and SearXNG secrets, the Langfuse keys) is generated on first use
   and kept in `data/secrets.json` (mode 0600), never in a tracked file. A value already in the environment
   or the OS keychain wins. One approval gate covers the agent loop, skills, `bob --run` and MCP clients.
 - Speaks MCP both ways. It mounts external MCP servers' tools, and exposes its own over stdio or
@@ -107,8 +108,8 @@ the cross OS CI acceptance gate runs on every PR.
 - Context engineering: reranking, self editing memory blocks, and conversation paging.
 
 ### Fits your existing tools
-- Open WebUI, Continue.dev, Cline, aider, DeepSeek Harness, fabric (254 patterns), n8n, SearXNG and
-  Langfuse, all wired to the local endpoint (aider and fabric are opt-in at setup). The harness gets Bob's tools as well
+- DeepSeek Harness, Continue.dev, Cline, aider, fabric (254 patterns), n8n, SearXNG and Langfuse, all
+  wired to the local endpoint (aider and fabric are opt-in at setup). The harness gets Bob's tools as well
   as its models, over MCP.
 
 ### Runs where you run

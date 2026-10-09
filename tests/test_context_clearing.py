@@ -109,6 +109,9 @@ class TestReadResultTool(unittest.TestCase):
         self.assertFalse(read_result_tool.enabled({"agent": {"clearToolResults": False}}))
         self.assertTrue(read_result_tool.enabled({"agent": {"clearToolResults": True}}))
         self.assertFalse(read_result_tool.enabled({}))     # missing -> off
+        # a context mode that clears results needs the re-fetch tool even when the agent default is off
+        mode = {"contextModes": {"quick": {"local": {"clearToolResults": True}}}}
+        self.assertTrue(read_result_tool.enabled({"agent": mode}))
 
     def test_no_run_context_is_graceful(self):
         self.assertIn("unavailable", read_result_tool._read_result("r1"))
@@ -126,12 +129,21 @@ class TestReadResultTool(unittest.TestCase):
 
 class TestRegistryBuildGating(unittest.TestCase):
     """Building the real registry: the read_result tool + the retention-store bump appear ONLY when
-    clearToolResults is on, so the default toolset/behavior is unchanged."""
+    some policy clears tool results, so the toolset is unchanged with clearing off everywhere."""
 
     def _cfg(self, on):
         cfg = _common.fake_config()
-        cfg["agent"] = dict(cfg["agent"], clearToolResults=on, maxHistoryMsgs=40)
+        cfg["agent"] = dict(cfg["agent"], contextModes={})
+        if on:
+            cfg["agent"].update(clearToolResults=True, maxHistoryMsgs=40)
         return cfg
+
+    def test_store_covers_the_largest_clearing_mode_window(self):
+        cfg = self._cfg(False)
+        cfg["agent"]["contextModes"] = {"deep": {"api": {"clearToolResults": True, "maxHistoryMsgs": 777}}}
+        reg = ToolRegistry.build(cfg, quiet=True)
+        self.assertIn("read_result", reg.dispatch)
+        self.assertEqual(reg._result_store_max, 777)
 
     def test_tool_and_store_bump_only_when_enabled(self):
         on = ToolRegistry.build(self._cfg(True), quiet=True)

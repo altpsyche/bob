@@ -128,3 +128,79 @@ class TestGeneratedSecrets(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestWriteGuard(unittest.TestCase):
+    """Agent/MCP writes may not change Bob's own config or code; reads of them stay allowed."""
+
+    R = bob_fsguard.REPO
+
+    def test_bob_config_and_code_are_write_denied(self):
+        for rel in ("config/user.json", "config/defaults.json", "config/models.json",
+                    "scripts/bob_core.py", "scripts/tools/new_tool.py", "scripts/bob/kernel.py",
+                    "plugins/play/tool.py", "plugins/newplug/invoke.py", "plugins/play/sub/helper.py",
+                    "CONFIG/User.json"):
+            self.assertTrue(bob_fsguard.is_denied_write(self.R / rel), rel)
+            self.assertTrue(bob_fsguard.is_protected_code(self.R / rel), rel)
+
+    def test_other_repo_files_stay_writable_and_code_stays_readable(self):
+        for rel in ("docs/notes.md", "plugins/play/description.txt", "plugins/play/sub/notes.md",
+                    "tests/test_x.py", "config/other.json"):
+            self.assertFalse(bob_fsguard.is_denied_write(self.R / rel), rel)
+        self.assertFalse(bob_fsguard.is_denied_secret(self.R / "scripts" / "bob_core.py"))
+
+    def test_secrets_are_write_denied_too(self):
+        self.assertTrue(bob_fsguard.is_denied_write(self.R / "config" / "litellm.yaml"))
+
+    def test_file_write_and_file_edit_refuse_protected_paths(self):
+        import bob_edit
+        sys_path_tools = str(self.R / "scripts" / "tools")
+        import sys
+        if sys_path_tools not in sys.path:
+            sys.path.insert(0, sys_path_tools)
+        import file as file_tool
+        file_tool.configure({"agent": {"allowedReadPaths": [str(self.R)],
+                                       "allowedWritePaths": [str(self.R)]}})
+        target = self.R / "config" / "user.json"
+        before = target.read_bytes() if target.exists() else None
+        out = file_tool._file_write(str(target), "{}")
+        self.assertIn("attended, approved", out)
+        self.assertEqual(target.read_bytes() if target.exists() else None, before)
+        res = bob_edit.apply_edits({"path": "scripts/bob_core.py", "search": "x", "replace": "y"},
+                                   [self.R])
+        self.assertFalse(res.ok)
+        self.assertIn("attended, approved", res.rejections[0]["reason"])
+
+    def _in_run(self, approve, unattended_allow=None):
+        from types import SimpleNamespace
+        import tool_registry
+        ctx = SimpleNamespace(approve=approve, unattended_allow=unattended_allow)
+        tok = tool_registry._RUN_CONTEXT.set(ctx)
+        self.addCleanup(tool_registry._RUN_CONTEXT.reset, tok)
+
+    def test_only_an_attended_run_may_write_protected_paths(self):
+        target = self.R / "config" / "user.json"
+        self.assertTrue(bob_fsguard.is_denied_write(target))          # outside any run
+        self._in_run(approve=None)
+        self.assertTrue(bob_fsguard.is_denied_write(target))          # nobody to ask
+        self._in_run(approve=lambda a: True, unattended_allow=frozenset({"file_write"}))
+        self.assertTrue(bob_fsguard.is_denied_write(target))          # MCP / unattended
+        self._in_run(approve=lambda a: True)
+        self.assertFalse(bob_fsguard.is_denied_write(target))         # attended: the gate asked
+        self.assertTrue(bob_fsguard.is_denied_write(self.R / "config" / "litellm.yaml"))  # secrets never
+
+    def test_attended_file_write_reaches_a_protected_path(self):
+        import shutil
+        import sys
+        sys_path_tools = str(self.R / "scripts" / "tools")
+        if sys_path_tools not in sys.path:
+            sys.path.insert(0, sys_path_tools)
+        import file as file_tool
+        probe_dir = self.R / "plugins" / "_bob_guard_probe"
+        self.addCleanup(shutil.rmtree, probe_dir, True)
+        file_tool.configure({"agent": {"allowedReadPaths": [str(self.R)],
+                                       "allowedWritePaths": [str(self.R)]}})
+        self._in_run(approve=lambda a: True)
+        out = file_tool._file_write(str(probe_dir / "helper.py"), "x = 1\n")
+        self.assertNotIn("Access denied", out)
+        self.assertEqual((probe_dir / "helper.py").read_text(encoding="utf-8"), "x = 1\n")

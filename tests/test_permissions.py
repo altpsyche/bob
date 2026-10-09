@@ -137,6 +137,38 @@ class TestEnforcement(unittest.TestCase):
         self.assertTrue(any(e["type"] == "approval_required" for e in events))
         self.assertIn("echo", reg.dispatched)
 
+    def _protected_reg(self):
+        import bob_fsguard
+        reg = _common.FakeRegistry({"echo": "REAL RESULT"}, mutating_tools={"echo"})
+        reg.affects = {"echo": lambda args: [bob_fsguard.REPO / "config" / "user.json"]}
+        return reg
+
+    def test_protected_write_is_always_asked_and_never_remembered(self):
+        # silent agency + an allow policy would run a mutating tool unasked; Bob's own config is not.
+        reg = self._protected_reg()
+        seen = []
+        events = list(bob_loop.run_agent_events(
+            "go", _agent_cfg({}), agency="silent", registry=reg,
+            approve=lambda a: seen.append(a) or True))
+        self.assertIn("echo", reg.dispatched)
+        self.assertEqual(len(seen), 1)
+        self.assertTrue(seen[0].get("protected"))
+        self.assertEqual(seen[0]["risk"], "high")
+
+    def test_protected_write_fails_closed_without_approver(self):
+        reg = self._protected_reg()
+        events = list(bob_loop.run_agent_events("go", _agent_cfg({}), agency="silent", registry=reg))
+        self.assertNotIn("echo", reg.dispatched)
+        self.assertIn("denied by the user", self._tool_result(events))
+
+    def test_protected_write_is_refused_unattended_even_when_allowlisted(self):
+        import bob_permissions
+        reg = self._protected_reg()
+        out = bob_permissions.run_gated(reg, "echo", "{}", config=_agent_cfg({}),
+                                        allow_unattended={"echo"}, surface="mcp")
+        self.assertIn("only an attended session", out)
+        self.assertNotIn("echo", reg.dispatched)
+
     def test_audit_line_records_decision(self):
         with self.assertLogs("bob.agent", level="INFO") as cm:
             self._run({"tools": {"echo": DENY}})

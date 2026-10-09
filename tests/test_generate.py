@@ -340,6 +340,9 @@ class TestContinue(unittest.TestCase):
         out = self._gen()
         self.assertIn("  - name: autocomplete", out)   # fim -> autocomplete
         self.assertIn("  - name: embeddings", out)      # embed -> embeddings
+        # ...but each is still requested under the role LiteLLM serves
+        self.assertIn("  - name: autocomplete\n    provider: openai\n    model: fim\n", out)
+        self.assertIn("  - name: embeddings\n    provider: openai\n    model: embed\n", out)
         # 'agent' is Bob's own model, not a Continue client model
         self.assertNotIn("  - name: agent\n", out)
 
@@ -520,6 +523,18 @@ class TestDsh(unittest.TestCase):
         self.assertNotIn(_OLD_FIXED_KEY, lines)
         self.assertNotIn(bob_core._litellm_key(CFG), lines)     # the key is never written into the patch
 
+    def test_install_onto_a_dump_config_seed_stays_valid_yaml(self):
+        """`dsh --dump-config` seeds the patch file with `[]`; a block item after it is invalid YAML."""
+        import yaml
+        with tempfile.TemporaryDirectory() as d:
+            home = Path(d)
+            (home / "cordis.patch.yml").write_text("# Your patch layer\n[]\n", encoding="utf-8")
+            self.assertIn("appended", self._install(home))
+            # compose parses without constructing, so the entry's `!!js` tags need no constructor
+            node = yaml.compose((home / "cordis.patch.yml").read_text(encoding="utf-8"))
+            self.assertIsInstance(node, yaml.SequenceNode)
+            self.assertEqual(len(node.value), 1)
+
     def test_install_replaces_the_entry_when_the_transport_changes(self):
         """Append-once would leave a stdio entry in place after agent.mcpTransport switched to http."""
         with tempfile.TemporaryDirectory() as d:
@@ -633,7 +648,7 @@ class TestDsh(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             home = Path(d)
             msg = self._install(home, mcp=False)
-            self.assertIn("set agent.mcpEnabled", msg)
+            self.assertIn("bob dsh tools on", msg)
             self.assertFalse((home / "cordis.patch.yml").exists())
 
 
@@ -952,8 +967,10 @@ class TestDefaultsKeys(unittest.TestCase):
     def test_runtime_defaults(self):
         rt = bob_core.load_defaults()["runtime"]
         a = rt["agent"]
-        self.assertEqual(a["maxContextTokens"], 0)
-        self.assertEqual(a["outputReserveTokens"], 1024)
+        # Context budgets ship only in the mode blocks, so any agent.* value is a user override.
+        for key in ("maxContextTokens", "outputReserveTokens", "maxHistoryMsgs", "clearToolResults"):
+            self.assertNotIn(key, a)
+        self.assertEqual(a["contextModes"]["quick"]["local"]["outputReserveTokens"], 1024)
         self.assertEqual(a["mcpAllowTools"], [])
         self.assertIs(a["subAgentAllowPro"], False)
         self.assertIs(a["acceptLitellmKey"], True)

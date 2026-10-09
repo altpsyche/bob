@@ -42,7 +42,7 @@ Core inference (the `:8081` API and the `bob` CLI) works out of the box. Everyth
 | Continue.dev | client | VS Code autocomplete, chat, `@web`, `@codebase`, `@filesystem` |
 | Cline | client | VS Code agent: reads and writes files, runs commands |
 | aider | opt-in client (`--with-aider`, `bob aider-setup`) | terminal coding agent: review the plan before any file is touched |
-| DeepSeek Harness | client | browser and headless coding agent; Bob serves it models and, over MCP, its tools |
+| DeepSeek Harness | client (`dsh web`) | coding agent with a local web UI and a headless mode; Bob serves it models and, over MCP, its tools |
 | fabric | opt-in client (`--with-fabric`, `bob fabric-setup`) | 254 named LLM patterns, pipe any text through them |
 | n8n `:5678` | opt-in, native (`bob services n8n start`) | visual workflow automation |
 | SearXNG `:8888` | opt-in, Docker (`bob services searxng start`) | private self-hosted meta-search |
@@ -119,7 +119,7 @@ bob chat "hi"                   # one-shot
 bob agent "summarise README.md" # agentic task
 ```
 
-`bob up` optionally pre-warms the endpoint (`:8080`) and LiteLLM proxy (`:8081`). Any OpenAI client works by pointing its base URL at `http://localhost:8081/v1`; the DeepSeek Harness is the primary browser and terminal coding client. `bob setup` installs the pinned DSH package by default, and `bob update` runs the same client/DSH wiring after a release move; repair the link with `bob dsh install`, then mount tools explicitly with `bob dsh tools on`.
+`bob up` optionally pre-warms the endpoint (`:8080`) and LiteLLM proxy (`:8081`). Any OpenAI client works by pointing its base URL at `http://localhost:8081/v1`; the DeepSeek Harness is the primary coding client: start it with `dsh web` from the project directory it should work in (it serves its web UI on `http://127.0.0.1:3080` and opens your browser). `bob up` does not start DSH; DSH only needs the proxy running. `bob setup` installs the pinned DSH package by default, and `bob update` runs the same client/DSH wiring after a release move; repair the link with `bob dsh install`, then mount tools explicitly with `bob dsh tools on`.
 
 `setup` flags: `--profile 12gb`, `--skip-models`, `--skip-voice`, `--cpu`, `--from-source`, `--launch`, `--with-aider`, `--with-fabric`. Setup suggests a profile for your GPU but never overrides one you chose. The one-command installer defaults to the **stable** channel (the latest release, with prebuilt engines); pass `--dev` (or `--channel latest`) to the installer to track the latest `main`, which builds the engine from source whenever `main` pins a llama.cpp commit no release has shipped. `--dev` and `--channel` are installer flags, not setup flags; after install, `bob update --channel` switches channels. Run `bob agent install` once to register the background scheduler (Linux cron / Windows Scheduled Task).
 

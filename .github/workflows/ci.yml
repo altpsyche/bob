@@ -283,7 +283,7 @@ jobs:
 
       - name: Bring the stack up
         shell: bash
-        run: python -m bob up -NoOpen
+        run: python -m bob up
 
       # The shared cross-OS end-to-end gate. --up also starts the agent server and tears it down after.
       # A red smoke blocks the PR. smoke.py is stdlib-only, runs on any interpreter.

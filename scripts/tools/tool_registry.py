@@ -125,12 +125,11 @@ class ToolRegistry:
         # can't blow the context budget. maxToolResultTokens defaults to keep the prior 4000-char cap.
         from bob_core import tokens_to_chars
         registry.max_result_chars = tokens_to_chars(agent_cfg.get("maxToolResultTokens", 1000))
-        # When context-editing (clearToolResults) is on, a cleared message must stay re-fetchable,
-        # so retain enough handles to cover the whole history window (default 8 keeps memory flat but
-        # would evict the OLD results clearing targets). With it off the store stays at 8.
-        if agent_cfg.get("clearToolResults", False):
-            registry._result_store_max = max(registry._result_store_max,
-                                             int(agent_cfg.get("maxHistoryMsgs", 40)))
+        # When any context policy clears tool results, a cleared message must stay re-fetchable, so
+        # retain enough handles to cover the largest such history window (default 8 keeps memory flat
+        # but would evict the OLD results clearing targets). With clearing off the store stays at 8.
+        from bob_context import clearing_history_window
+        registry._result_store_max = max(registry._result_store_max, clearing_history_window(config))
 
         all_tools = list(cls.iter_all_tools())
 
@@ -382,7 +381,7 @@ class ToolRegistry:
     def read_result(self, handle: str, offset: int = 0, length: int = 4000) -> str:
         """Return a window of a previously-truncated-or-cleared result so the text can be
         re-read rather than lost. Exposed as the model-callable `read_result` tool (scripts/tools/
-        read_result.py) when agent.clearToolResults is on."""
+        read_result.py) when a context policy clears tool results."""
         full = self._result_store.get(handle)
         if full is None:
             return f"Unknown result handle: {handle}"

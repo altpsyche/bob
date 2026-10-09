@@ -356,6 +356,86 @@ class TestStop(unittest.TestCase):
             out = stack.stack_stop(CFG)
         self.assertEqual(out, "Nothing was running.")
 
+class TestRemoveLegacyWebui(unittest.TestCase):
+    """remove_legacy_webui against a temp repo tree, logs dir and secrets file, with the process seams
+    mocked: nothing here can reach a real process or the real tools/ dir."""
+
+    def setUp(self):
+        import json
+        self.root = Path(tempfile.mkdtemp(prefix="bob-webui-"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.logs = self.root / "logs"
+        self.logs.mkdir()
+        self.secrets = self.root / "data" / "secrets.json"
+        self.secrets.parent.mkdir()
+        self.secrets.write_text(json.dumps({"webuiSecret": "s", "litellmKey": "k"}), encoding="utf-8")
+        for p in (mock.patch.object(stack, "REPO", self.root),
+                  mock.patch.object(stack, "_logs_dir", return_value=self.logs),
+                  mock.patch.object(osenv, "secrets_file", return_value=self.secrets)):
+            p.start()
+        self.addCleanup(mock.patch.stopall)
+
+    def _leftovers(self, pid="4321"):
+        (self.root / "tools" / "venv-webui" / "bin").mkdir(parents=True)
+        (self.root / "tools" / "venv-webui" / "bin" / "open-webui").write_text("#!")
+        (self.root / "tools" / "webui-data").mkdir()
+        (self.root / "tools" / "webui-data" / "webui.db").write_text("db")
+        (self.logs / "open-webui.pid").write_text(pid)
+        (self.logs / "open-webui.log").write_text("log")
+
+    def _run(self, managed=(), stopped=True):
+        with mock.patch.object(osenv, "find_managed_processes",
+                               return_value=[(p, "open-webui") for p in managed]) as find, \
+             mock.patch.object(osenv, "stop_process_tree", return_value=stopped) as tree:
+            lines = stack.remove_legacy_webui()
+        return lines, find, tree
+
+    def test_stops_and_deletes_everything(self):
+        import json
+        self._leftovers()
+        lines, find, tree = self._run(managed=(4321,))
+        find.assert_called_once_with("open-webui")
+        tree.assert_called_once_with(4321)
+        for gone in ("tools/venv-webui", "tools/webui-data"):
+            self.assertFalse((self.root / gone).exists(), gone)
+        self.assertFalse((self.logs / "open-webui.pid").exists())
+        self.assertFalse((self.logs / "open-webui.log").exists())
+        self.assertEqual(json.loads(self.secrets.read_text(encoding="utf-8")), {"litellmKey": "k"})
+        self.assertEqual(len(lines), 6)   # stopped + venv + data + pidfile + log + secret
+        self.assertIn("PID 4321", lines[0])
+
+    def test_second_run_is_a_silent_noop(self):
+        self._leftovers()
+        self._run(managed=(4321,))
+        lines, _find, tree = self._run()
+        self.assertEqual(lines, [])
+        tree.assert_not_called()
+
+    def test_stale_pidfile_naming_another_process_is_not_killed(self):
+        # After a reboot logs/open-webui.pid can name an unrelated process: only Bob's own venv-webui
+        # executable (find_managed_processes) is ever stopped.
+        self._leftovers(pid="999")
+        lines, _find, tree = self._run(managed=())
+        tree.assert_not_called()
+        self.assertFalse(any("Stopped" in ln for ln in lines))
+        self.assertFalse((self.logs / "open-webui.pid").exists())
+
+    def test_server_without_a_pidfile_is_reaped_by_name(self):
+        lines, _find, tree = self._run(managed=(55,))
+        tree.assert_called_once_with(55)
+        self.assertEqual(lines[0], "Stopped the old Open WebUI server (PID 55).")
+
+    def test_failures_are_reported_not_raised(self):
+        self._leftovers()
+        with mock.patch.object(stack.shutil, "rmtree", side_effect=OSError("busy")), \
+             mock.patch.object(osenv, "delete_secret", side_effect=RuntimeError("bad json")):
+            lines, _find, _tree = self._run(managed=(4321,), stopped=False)
+        self.assertTrue(any("did not exit" in ln for ln in lines))
+        self.assertTrue(any("could not remove the old Open WebUI venv" in ln for ln in lines))
+        self.assertTrue(any("bad json" in ln for ln in lines))
+        self.assertFalse((self.logs / "open-webui.pid").exists())   # later steps still ran
+
+
 class TestLogs(unittest.TestCase):
     def setUp(self):
         self.logs = Path(tempfile.mkdtemp(prefix="bob-logs-"))

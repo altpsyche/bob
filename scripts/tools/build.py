@@ -476,8 +476,9 @@ def _reinstall_venv() -> None:
 
 def _wire_clients_after_update() -> None:
     """Run the same post-bootstrap client wiring as `bob setup`: regenerate every generated config
-    (`bob gen`) and re-run the setup client seam (Continue symlink, pinned DSH install, Bob's DSH
-    provider route/credential, default model, and native bridge). This is what makes `bob update` the
+    (`bob gen`) and re-run the setup client seam (Continue symlink, plus a refresh of the DSH link parts
+    already present: route, credential, MCP entry, bridge; agent.dshEnabled=false skips DSH). This is
+    what makes `bob update` the
     one command a user runs after a release move; future setup changes flow through both paths because
     update calls the shared functions rather than copying them.
 
@@ -491,14 +492,26 @@ def _wire_clients_after_update() -> None:
         from bob import kernel
         kernel.setup_clients()
     except Exception as e:  # noqa: BLE001 — advisory; the verified update still stands
-        print(f"  client/DSH wiring skipped ({e}); run `bob setup --skip-models --skip-build` "
-              "or `bob dsh install` to retry.", file=sys.stderr)
+        print(f"  client/DSH wiring skipped ({e}); run `python -m bob.kernel setup --skip-models "
+              "--skip-build --skip-voice` or `bob dsh install` to retry.", file=sys.stderr)
     try:
         import generate
         generate.configure(_cfg)
         generate.gen_all()
     except Exception as e:  # noqa: BLE001 — advisory; the verified update still stands
         print(f"  config regeneration skipped ({e}); run `bob gen` to retry.", file=sys.stderr)
+
+
+def _remove_legacy_webui() -> None:
+    """Stop and delete an Open WebUI left by a Bob 2.0.x `--with-webui` install (stack.remove_legacy_webui).
+    Silent when there is nothing to remove; best-effort, so a cleanup hiccup never fails the update."""
+    try:
+        import stack
+        stack.configure(_cfg)
+        for line in stack.remove_legacy_webui():
+            print(f"  {line}", file=sys.stderr)
+    except Exception as e:  # noqa: BLE001 — advisory; the verified update still stands
+        print(f"  Open WebUI cleanup skipped ({e}).", file=sys.stderr)
 
 
 def _restart_running_endpoint() -> None:
@@ -863,6 +876,7 @@ def update_stack(tag: str = None, from_source: bool = False, channel: str = None
     # One command should leave a usable client, not just a new engine: regenerate the generated configs and
     # re-run the SAME client/DSH wiring `bob setup` runs. Best-effort/advisory so a verified engine move is not
     # undone by a missing Node/package manager.
+    _remove_legacy_webui()
     print("Regenerating client configs and wiring DSH...", file=sys.stderr)
     _wire_clients_after_update()
 

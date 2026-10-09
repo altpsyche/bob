@@ -5,6 +5,10 @@ Ownership map (no key is written to two layers):
   $DSH_HOME/.credentials.yaml                BOB_LITELLM_KEY
   $DSH_HOME/cordis.patch.yml                 Bob MCP plugin entry
   $DSH_HOME/profiles/<name>/cordis.patch.yml agent-default-model and bob-dsh-bridge
+  config/user.json (the user overlay)        agent.mcpEnabled, agent.dshTools, agent.dshEnabled, agent.dshTrust
+
+`bob setup` installs the link (install); `bob update` refreshes only what is present (refresh), and
+agent.dshEnabled=false, set by `bob dsh uninstall`, keeps both away from dsh.
 
 The module deliberately delegates model-route generation to scripts/tools/generate.py (the same
 fragments `bob gen` writes) instead of owning a second model registry or budget implementation.
@@ -86,18 +90,6 @@ def _load_yaml(path: Path):
         return None
 
 
-def _top_level_items(lines: list) -> list:
-    """(start, end) line spans for top-level `- ` items in a YAML sequence."""
-    starts = [i for i, ln in enumerate(lines) if ln.startswith("- ")]
-    spans = []
-    for n, i in enumerate(starts):
-        end = starts[n + 1] if n + 1 < len(starts) else len(lines)
-        while end > i + 1 and (not lines[end - 1].strip() or lines[end - 1].lstrip().startswith("#")):
-            end -= 1
-        spans.append((i, end))
-    return spans
-
-
 def _plugin_entry_lines(plugin_id: str, name: str, config_lines: list) -> list:
     out = ["- insert:", f"    - id: {plugin_id}", f"      name: '{name}'", "      config:"]
     out += [f"        {ln}" for ln in config_lines]
@@ -106,7 +98,9 @@ def _plugin_entry_lines(plugin_id: str, name: str, config_lines: list) -> list:
 
 def _upsert_plugin(path: Path, plugin_id: str, entry: list) -> str:
     """Insert or replace one top-level insert item by id, preserving every other byte."""
-    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    from generate import _patch_lines, _top_level_items
+
+    lines = _patch_lines(path)
     id_line = re.compile(rf"\s*-\s+id:\s*['\"]?{re.escape(plugin_id)}['\"]?\s*(#.*)?$")
     for start, end in _top_level_items(lines):
         item = lines[start:end]
@@ -123,24 +117,29 @@ def _upsert_plugin(path: Path, plugin_id: str, entry: list) -> str:
 
 
 def _remove_plugin(path: Path, plugin_id: str) -> bool:
+    from generate import _patch_lines, _top_level_items
+
     if not path.exists():
         return False
-    lines = path.read_text(encoding="utf-8").splitlines()
+    lines = _patch_lines(path)
     id_line = re.compile(rf"\s*-\s+id:\s*['\"]?{re.escape(plugin_id)}['\"]?\s*(#.*)?$")
     for start, end in reversed(_top_level_items(lines)):
         if any(id_line.match(ln) for ln in lines[start:end]):
             del lines[start:end]
             while lines and not lines[-1].strip():
                 lines.pop()
+            if not _top_level_items(lines):
+                lines.append("[]")  # dsh needs the patch layer to stay an array
             path.write_text("\n".join(lines) + "\n", encoding="utf-8")
             return True
     return False
 
 
 def _default_model_entry(model: str) -> list:
-    return _plugin_entry_lines(
-        "agent-default-model", "@deepseek-ai/dsh-agent-default-model",
-        [f"provider: {PROVIDER}", f"model: {model}"])
+    """A top-level override of the `agent-default-model` row dsh-base already inserts: an `insert:`
+    would add a second row with that id, which dsh refuses to load."""
+    return ["- id: agent-default-model", "  name: '@deepseek-ai/dsh-agent-default-model'", "  config:",
+            f"    provider: {PROVIDER}", f"    model: {model}"]
 
 
 def _choose_model(mode: str, config: dict = None) -> str:
@@ -177,39 +176,86 @@ def _install_mcp(root: Path) -> str:
     return generate._install_dsh_mcp(root)
 
 
-def _set_mcp_enabled(enabled: bool) -> str:
-    """Set agent.mcpEnabled in the JSON user overlay. TOML overlays are left to the user."""
+class ConfigWriteRefused(RuntimeError):
+    """A user-overlay write Bob will not make (a TOML overlay, or a file that does not parse)."""
+
+
+def _user_config_path() -> Path:
+    """The overlay Bob's DSH commands write: the one bob_config resolves (BOB_USER_CONFIG, else
+    config/user.json, else config/user.toml), defaulting to config/user.json when none exists yet."""
     import bob_config
     path = bob_config.user_config_path()
-    if path is not None and path.suffix == ".toml":
-        return f"set agent.mcpEnabled = true in {path} by hand, then re-run"
-    json_path = REPO / "config" / "user.json"
+    return Path(path) if path is not None else (REPO / "config" / "user.json")
+
+
+def _update_user_config(mutate, keys: str) -> tuple:
+    """Read-modify-write the user overlay through kernel.update_user_config, the one strict writer, and
+    return (path, what `mutate` returned). Raises ConfigWriteRefused, leaving the file untouched, for a
+    TOML overlay (edited by hand) or a JSON file that does not parse. `keys` names what the caller
+    sets, for the refusal message."""
+    from bob import kernel
+    path = _user_config_path()
+    if path.suffix == ".toml":
+        raise ConfigWriteRefused(f"set {keys} in {path} by hand, then re-run")
     try:
-        data = json.loads(json_path.read_text(encoding="utf-8")) if json_path.exists() else {}
-    except Exception:
-        data = {}
-    agent = data.setdefault("agent", {})
-    agent["mcpEnabled"] = bool(enabled)
-    json_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    return f"config/user.json: agent.mcpEnabled={str(bool(enabled)).lower()}"
+        return path, kernel.update_user_config(mutate, path)
+    except kernel.UserConfigError as e:
+        raise ConfigWriteRefused(str(e)) from e
+
+
+def _set_agent_flags(**flags) -> str:
+    """Set boolean agent.<key> values in the user overlay. Raises ConfigWriteRefused."""
+    def mutate(data):
+        agent = data.get("agent")
+        if not isinstance(agent, dict):
+            agent = data["agent"] = {}
+        agent.update({k: bool(v) for k, v in flags.items()})
+    keys = ", ".join(f"agent.{k}={str(bool(v)).lower()}" for k, v in flags.items())
+    path, _ = _update_user_config(mutate, keys)
+    return f"{path}: {keys}"
+
+
+
+
+def link_enabled(config: dict = None) -> bool:
+    """Whether setup and update manage the DSH link: agent.dshEnabled, which `bob dsh uninstall` turns
+    off and `bob dsh install` turns back on."""
+    if config is None:
+        from bob_core import load_config
+        config = load_config()
+    return (config.get("agent", {}) or {}).get("dshEnabled", True) is not False
 
 
 def tools_on(profile: str = None) -> str:
     root = home()
     if not root.is_dir():
         return _missing_home()
-    return _set_mcp_enabled(True) + "\n" + _install_mcp(root)
+    try:
+        flag = _set_agent_flags(mcpEnabled=True, dshTools=True)
+    except ConfigWriteRefused as e:
+        return f"tools not enabled: {e}"
+    return flag + "\n" + _install_mcp(root)
 
 
-def tools_off(profile: str = None) -> str:
-    root = home()
+def _remove_mcp_entries(root: Path) -> list:
     removed = []
     if _remove_plugin(root / "cordis.patch.yml", MCP_ID):
         removed.append(str(root / "cordis.patch.yml"))
     for name in profiles(root):
         if _remove_plugin(_profile_patch(name, root), MCP_ID):
             removed.append(str(_profile_patch(name, root)))
-    return "removed " + ", ".join(removed) if removed else "bob MCP tools were not installed"
+    return removed
+
+
+def tools_off(profile: str = None) -> str:
+    """Remove Bob's MCP entry from dsh and persist agent.dshTools=false, so `bob gen`, setup and update
+    do not put it back. Bob's MCP server stays on for other clients (agent.mcpEnabled is untouched)."""
+    removed = _remove_mcp_entries(home())
+    line = "removed " + ", ".join(removed) if removed else "bob MCP tools were not installed"
+    try:
+        return line + "\n" + _set_agent_flags(dshTools=False)
+    except ConfigWriteRefused as e:
+        return line + f"\nagent.dshTools not persisted: {e}"
 
 
 def _profile_package(profile: str, root: Path = None) -> Path:
@@ -230,15 +276,24 @@ def _write_json(path: Path, data: dict) -> None:
 def bridge_status(profile: str = None) -> str:
     root = home()
     target = profile or default_profile(root)
-    patch = _profile_patch(target, root)
-    pkg = _load_json(_profile_package(target, root))
-    deps = pkg.get("dependencies") or {}
-    bundles = ((pkg.get("dsh") or {}).get("profile") or {}).get("bundles") or []
-    installed = _plugin_present(patch, BRIDGE_ID) and (BRIDGE_ID in deps or BRIDGE_ID in bundles)
-    return f"bob-dsh-bridge: {'on' if installed else 'off'} (profile {target})"
+    return f"bob-dsh-bridge: {'on' if _bridge_installed(root, target) else 'off'} (profile {target})"
+
+
+def _bridge_command() -> str:
+    """The absolute command the bridge spawns to reach Bob: the same shim the MCP entry uses, resolved on
+    PATH when it is a bare name (bob.cmd on Windows), since dsh does not run the bridge from a shell."""
+    import generate
+    shim = generate._bob_shim()
+    return shutil.which(shim) or shim
 
 
 def bridge_on(profile: str = None) -> str:
+    """Install the native session bridge into a dsh profile with `dsh plugin add`, then load it with an
+    insert in the profile's patch layer. The bridge is a plain plugin dependency, not a profile bundle
+    (it declares no `dsh.bundle`, and dsh refuses to boot a profile that lists one), so a bundles entry
+    left from an earlier install is removed. Nothing is recorded when the add fails or there is no dsh
+    binary to run it, so the profile never references a plugin it does not have."""
+    import generate
     root = home()
     if not root.is_dir():
         return _missing_home()
@@ -246,32 +301,47 @@ def bridge_on(profile: str = None) -> str:
         return f"bridge package missing at {BRIDGE_PACKAGE}"
     target = profile or default_profile(root)
     dsh = dsh_bin()
+    if not dsh:
+        return f"  profile {target}: bridge not installed (dsh binary not found on PATH)"
     lines = []
-    if dsh:
-        try:
-            r = subprocess.run([dsh, "plugin", "--profile", target, "add", f"file:{BRIDGE_PACKAGE}"],
-                               capture_output=True, text=True, timeout=300)
-            lines.append("pnpm: " + (r.stdout or r.stderr or "").strip().splitlines()[-1]
-                         if (r.stdout or r.stderr).strip() else f"pnpm exit {r.returncode}")
-        except Exception as e:
-            lines.append(f"pnpm: {e}")
+    try:
+        r = subprocess.run([dsh, "plugin", "--profile", target, "add", f"file:{BRIDGE_PACKAGE}"],
+                           capture_output=True, text=True, timeout=300)
+    except Exception as e:
+        return f"  profile {target}: bridge not installed (dsh plugin add: {e})"
+    output = (r.stdout or r.stderr or "").strip().splitlines()
+    if r.returncode != 0:
+        detail = output[-1] if output else f"exit {r.returncode}"
+        return f"  profile {target}: bridge not installed (dsh plugin add failed: {detail})"
+    if output:
+        lines.append("dsh plugin add: " + output[-1])
     try:
         pkg_path = _profile_package(target, root)
         pkg = _load_json(pkg_path)
         deps = pkg.setdefault("dependencies", {})
         deps[BRIDGE_ID] = f"file:{BRIDGE_PACKAGE}"
-        prof = pkg.setdefault("dsh", {}).setdefault("profile", {})
-        bundles = prof.setdefault("bundles", [])
-        if BRIDGE_ID not in bundles:
-            bundles.append(BRIDGE_ID)
+        _drop_bridge_bundle(pkg)
         _write_json(pkg_path, pkg)
         patch = _profile_patch(target, root)
         _remove_plugin(patch, HOOK_ID)
-        _upsert_plugin(patch, BRIDGE_ID, _plugin_entry_lines(BRIDGE_ID, BRIDGE_ID, ["bobCommand: bob"]))
+        _upsert_plugin(patch, BRIDGE_ID, _plugin_entry_lines(
+            BRIDGE_ID, BRIDGE_ID, [f"bobCommand: {generate._yaml_str(_bridge_command())}"]))
         lines.append(f"profile {target}: installed {BRIDGE_ID}")
     except Exception as e:
         lines.append(f"profile {target}: could not write the bridge entry ({e})")
     return "\n".join(f"  {ln}" for ln in lines)
+
+
+def _drop_bridge_bundle(pkg: dict) -> None:
+    """Remove the bridge from the profile's `dsh.profile.bundles` (see bridge_on)."""
+    bundles = ((pkg.get("dsh") or {}).get("profile") or {}).get("bundles")
+    if isinstance(bundles, list) and BRIDGE_ID in bundles:
+        bundles.remove(BRIDGE_ID)
+
+
+def _bridge_installed(root: Path, profile: str) -> bool:
+    deps = _load_json(_profile_package(profile, root)).get("dependencies") or {}
+    return _plugin_present(_profile_patch(profile, root), BRIDGE_ID) and BRIDGE_ID in deps
 
 
 def bridge_off(profile: str = None) -> str:
@@ -284,10 +354,7 @@ def bridge_off(profile: str = None) -> str:
         pkg = _load_json(pkg_path)
         deps = pkg.get("dependencies") or {}
         deps.pop(BRIDGE_ID, None)
-        prof = (pkg.get("dsh") or {}).get("profile") or {}
-        bundles = prof.get("bundles") or []
-        if BRIDGE_ID in bundles:
-            bundles.remove(BRIDGE_ID)
+        _drop_bridge_bundle(pkg)
         _write_json(pkg_path, pkg)
         return f"profile {target}: removed {BRIDGE_ID}" if removed else f"profile {target}: bridge was not installed"
     except Exception as e:
@@ -388,7 +455,8 @@ def sessions_consolidate(session_id: str) -> str:
 
 
 def sessions_forget(session_id: str) -> str:
-    """Forget one imported DSH session: raw events, derived transcript, and any memory it produced."""
+    """Forget one imported DSH session and its child sessions: raw events, derived transcript, and any
+    memory they produced. The ids are remembered, so the next bridge snapshot does not import them again."""
     import bob_memory
     from bob_core import _get_db_path, load_config
     cfg = load_config()
@@ -396,26 +464,21 @@ def sessions_forget(session_id: str) -> str:
     owner = cfg.get("agent", {}).get("defaultOwner", "local")
     facts = 0
     turns = 0
+    ids = [session_id]
     if db_path.exists():
-        # Provenance-based memory forget first, then the transcript (it is not audit-retained).
-        try:
-            facts = bob_memory.forget_by_session(session_id, db_path, owner=owner)
-        except Exception:
-            facts = 0
-        try:
-            turns = bob_memory.forget_transcript_session(session_id, db_path, owner=owner)
-        except Exception:
-            turns = 0
-    db, _cfg, _path = _dsh_db()
-    if db is not None:
-        try:
-            if _dsh_tables(db):
-                db.execute("DELETE FROM dsh_events WHERE session_id=?", [session_id])
-                db.execute("DELETE FROM dsh_sessions WHERE session_id=?", [session_id])
-                db.commit()
-        finally:
-            db.close()
-    return (f"forgot DSH session {session_id}: {turns} transcript turn(s), "
+        ids = bob_memory.dsh_forget_session(session_id, db_path)
+        for sid in ids:
+            # Provenance-based memory forget, then the transcript (it is not audit-retained).
+            try:
+                facts += bob_memory.forget_by_session(sid, db_path, owner=owner)
+            except Exception:
+                pass
+            try:
+                turns += bob_memory.forget_transcript_session(sid, db_path, owner=owner)
+            except Exception:
+                pass
+    children = f" and {len(ids) - 1} child session(s)" if len(ids) > 1 else ""
+    return (f"forgot DSH session {session_id}{children}: {turns} transcript turn(s), "
             f"{facts} consolidated memory row(s)")
 
 
@@ -437,21 +500,33 @@ def _gated_tools(registry) -> set:
     return gated
 
 
+# Tools kept out of the `write` tier even though they are plain mutations: anything that schedules
+# work to run later (every schedule_* tool, present or future) and memory_block, which rewrites the
+# always-injected core instructions. Both outlive the call, so they sit in `execute` and above.
+_WRITE_DENY_PREFIXES = ("schedule_",)
+_WRITE_DENY = frozenset({"memory_block"})
+
+
+def _write_denied(name: str) -> bool:
+    return name in _WRITE_DENY or name.startswith(_WRITE_DENY_PREFIXES)
+
+
 def trust_tiers(registry) -> dict:
     """The DSH trust tiers as concrete allow-sets, derived from the live registry.
 
     read    -- no state-changing tools
-    write   -- state-changing tools that are not command execution, delegation, scheduling or remote MCP
-    execute -- write + command-execution tools
-    all     -- every gated tool, including delegation and remote MCP
+    write   -- state-changing tools that are not command execution, delegation, scheduling, core
+               memory blocks or remote MCP (profile_switch and the file/edit tools are in)
+    execute -- write + command execution, scheduling and core memory blocks
+    all     -- every gated tool, including delegation, schedule_run and remote MCP
     """
     gated = _gated_tools(registry)
     dangerous = {"spawn_agent", "schedule_run"} | set(getattr(registry, "remote_tools", set()))
     execute = {n for n in gated if n not in dangerous}
     # `write` is the coding-loop subset: mutations, but not tools whose whole point is running commands
-    # or crossing an external boundary. Approval-required tools (shell_run, ...) are command execution.
-    write = {n for n in execute
-             if n not in getattr(registry, "approval_required_tools", set())}
+    # (approval-required tools such as shell_run), deferring work, or rewriting persistent instructions.
+    approval = set(getattr(registry, "approval_required_tools", set()))
+    write = {n for n in execute if n not in approval and not _write_denied(n)}
     return {"read": set(), "write": write, "execute": execute, "all": gated}
 
 
@@ -479,11 +554,32 @@ def resolve_dsh_allow(config: dict = None, cwd: str = None, registry=None) -> se
         registry = ToolRegistry.from_config(cfg, quiet=True)
     tiers = trust_tiers(registry)
     projects = trust.get("projects") or {}
-    project_spec = None
-    if cwd and isinstance(projects, dict):
-        project_spec = projects.get(str(Path(cwd).resolve()))
+    project_spec = _project_spec(projects, cwd) if isinstance(projects, dict) else None
     active = project_spec if project_spec is not None else trust.get("global")
     return base | _trust_spec_tools(active, tiers)
+
+
+def _norm_path(path: str) -> Path:
+    """A path in comparable form: resolved, and case-folded where the filesystem is case-insensitive
+    (os.path.normcase lower-cases on Windows and is the identity elsewhere)."""
+    return Path(os.path.normcase(str(Path(path).expanduser().resolve())))
+
+
+def _project_spec(projects: dict, cwd: str):
+    """The trust spec of the most specific configured project that contains `cwd` (the project itself
+    or any directory under it), or None when no project does."""
+    if not cwd:
+        return None
+    here = _norm_path(cwd)
+    best, best_depth = None, -1
+    for path, spec in projects.items():
+        try:
+            root = _norm_path(path)
+        except (OSError, ValueError, TypeError):
+            continue
+        if (here == root or here.is_relative_to(root)) and len(root.parts) > best_depth:
+            best, best_depth = spec, len(root.parts)
+    return best
 
 
 def make_trust_hook(config: dict, registry):
@@ -511,33 +607,6 @@ def make_trust_hook(config: dict, registry):
 
 def trust_tier_names() -> str:
     return ", ".join(_TRUST_TIERS)
-
-
-def _trust_config_path() -> Path:
-    import bob_config
-    path = bob_config.user_config_path()
-    return Path(path) if path is not None else (REPO / "config" / "user.json")
-
-
-def _load_json_dict(path: Path) -> dict:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
-
-
-def _write_json_dict(path: Path, data: dict) -> None:
-    import tempfile
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=".user-", suffix=".json.tmp", dir=str(path.parent))
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps(data, indent=2) + "\n")
-        os.replace(tmp, path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
 
 
 def _project_key(project: str = None) -> str:
@@ -579,59 +648,60 @@ def trust_tools(tools: list = None, all_tools: bool = False, off: bool = False, 
     scope=project writes agent.dshTrust.projects[<resolved project path>]. A tier is a symbolic name
     (read|write|execute|all) resolved from the live tool registry; an explicit tool list is a custom
     per-scope allow-set. `off` clears the selected scope (and the global manual list, for global)."""
-    path = _trust_config_path()
-    if path.suffix == ".toml":
-        return (f"edit agent.dshTrust and agent.mcpAllowTools in {path} by hand, then re-run "
-                f"(tiers: {trust_tier_names()})")
-    data = _load_json_dict(path)
-    agent = data.setdefault("agent", {})
-    trust = agent.setdefault("dshTrust", {})
-    if not isinstance(trust, dict):
-        trust = agent["dshTrust"] = {}
-    projects = trust.setdefault("projects", {})
-    if not isinstance(projects, dict):
-        projects = trust["projects"] = {}
-    key = _project_key(project)
-    if off:
-        if scope == "project":
-            projects.pop(key, None)
-            result = f"cleared trust tier for project {key}"
-        else:
-            trust.pop("global", None)
-            agent["mcpAllowTools"] = []
-            result = "cleared global trust tier and mcpAllowTools"
-    elif all_tools:
-        spec = "all"
-        if scope == "project":
-            projects[key] = spec
-        else:
-            trust["global"] = spec
-        result = f"trust tier {spec} set for {'project ' + key if scope == 'project' else 'all projects'}"
-    elif tier:
+    if not (off or all_tools or tier or tools):
+        return trust_status()
+    if tier and not all_tools and not off:
         normalized = _TRUST_TIER_ALIASES.get(str(tier).strip().lower())
         if normalized not in _TRUST_TIERS:
             return f"unknown trust tier '{tier}' (known: {trust_tier_names()})"
-        if scope == "project":
-            projects[key] = normalized
+    key = _project_key(project)
+    where = f"project {key}" if scope == "project" else "all projects"
+
+    def mutate(data):
+        agent = data.get("agent")
+        if not isinstance(agent, dict):
+            agent = data["agent"] = {}
+        trust = agent.setdefault("dshTrust", {})
+        if not isinstance(trust, dict):
+            trust = agent["dshTrust"] = {}
+        projects = trust.setdefault("projects", {})
+        if not isinstance(projects, dict):
+            projects = trust["projects"] = {}
+        if off:
+            if scope == "project":
+                projects.pop(key, None)
+                result = f"cleared trust tier for project {key}"
+            else:
+                trust.pop("global", None)
+                agent["mcpAllowTools"] = []
+                result = "cleared global trust tier and mcpAllowTools"
+        elif all_tools or tier:
+            spec = "all" if all_tools else _TRUST_TIER_ALIASES[str(tier).strip().lower()]
+            if scope == "project":
+                projects[key] = spec
+            else:
+                trust["global"] = spec
+            result = f"trust tier {spec} set for {where}"
         else:
-            trust["global"] = normalized
-        result = f"trust tier {normalized} set for {'project ' + key if scope == 'project' else 'all projects'}"
-    elif tools:
-        names = sorted({str(t) for t in tools if str(t).strip()})
-        if scope == "project":
-            current = projects.get(key)
-            current_names = set(current) if isinstance(current, (list, tuple, set)) else set()
-            projects[key] = sorted(current_names | set(names))
-        else:
-            current = {str(n) for n in (agent.get("mcpAllowTools") or []) if str(n).strip()}
-            agent["mcpAllowTools"] = sorted(current | set(names))
-        result = f"trusted {', '.join(names)} for {'project ' + key if scope == 'project' else 'all projects'}"
-    else:
-        return trust_status()
-    # Drop an empty trust block so an unconfigured install keeps the old mcpAllowTools-only behavior.
-    if not trust.get("global") and not projects:
-        agent.pop("dshTrust", None)
-    _write_json_dict(path, data)
+            names = sorted({str(t) for t in tools if str(t).strip()})
+            if scope == "project":
+                current = projects.get(key)
+                current_names = set(current) if isinstance(current, (list, tuple, set)) else set()
+                projects[key] = sorted(current_names | set(names))
+            else:
+                current = {str(n) for n in (agent.get("mcpAllowTools") or []) if str(n).strip()}
+                agent["mcpAllowTools"] = sorted(current | set(names))
+            result = f"trusted {', '.join(names)} for {where}"
+        # Drop an empty trust block so an unconfigured install keeps the mcpAllowTools-only behavior.
+        if not trust.get("global") and not projects:
+            agent.pop("dshTrust", None)
+        return result
+
+    try:
+        path, result = _update_user_config(
+            mutate, f"agent.dshTrust and agent.mcpAllowTools (tiers: {trust_tier_names()})")
+    except ConfigWriteRefused as e:
+        return f"trust not changed: {e}"
     return f"{path}: {result}"
 
 
@@ -639,10 +709,12 @@ def import_session(payload: dict, config: dict = None) -> dict:
     """Import one native-bridge payload through the one Bob transcript pipeline."""
     from bob_core import _get_db_path, load_config
     import bob_memory
+    from bob_core import project_key
     cfg = config or load_config()
     owner = cfg.get("agent", {}).get("defaultOwner", "local")
     return bob_memory.dsh_import_sessions(
-        payload.get("sessions") or [], _get_db_path(cfg), owner=owner)
+        payload.get("sessions") or [], _get_db_path(cfg), owner=owner,
+        scope_for=lambda cwd: project_key(cwd, cfg) if cwd else None)
 
 
 def _missing_home() -> str:
@@ -662,20 +734,65 @@ def pinned_dsh_version() -> str:
         return "0.1.5-rc.3"
 
 
-def ensure_dsh() -> str:
-    """Install or upgrade the pinned DeepSeek Harness when a package manager is available.
+_VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?")
+
+
+def _version_key(text: str):
+    """A sortable key for the first semver in `text` (a pre-release sorts below its release), or None
+    when there is no version in it."""
+    m = _VERSION_RE.search(text or "")
+    if not m:
+        return None
+    pre = m.group(4)
+    pre_key = (1,) if pre is None else (0,) + tuple(
+        (0, int(p), "") if p.isdigit() else (1, 0, p) for p in pre.split("."))
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3))) + (pre_key,)
+
+
+def _dsh_manager(exe: str) -> tuple:
+    """(name, path) of the package manager to install or upgrade dsh with. An installed dsh is upgraded
+    by the manager that owns it (a pnpm global lives under a `pnpm` directory), so an npm-installed
+    dsh never gains a second pnpm copy that shadows it on PATH. A fresh install prefers pnpm."""
+    pnpm, npm = shutil.which("pnpm"), shutil.which("npm")
+    if exe:
+        try:
+            owned_by_pnpm = "pnpm" in str(Path(exe).resolve()).lower()
+        except OSError:
+            owned_by_pnpm = "pnpm" in exe.lower()
+        if owned_by_pnpm:
+            return ("pnpm", pnpm) if pnpm else ("", "")
+        return ("npm", npm) if npm else ("", "")
+    if pnpm:
+        return "pnpm", pnpm
+    return ("npm", npm) if npm else ("", "")
+
+
+def ensure_dsh(install_missing: bool = True) -> str:
+    """Install the pinned DeepSeek Harness when it is missing, or upgrade it when the installed one is
+    older than the pin. A newer installed dsh is left alone (the pin is a floor, not a downgrade), and
+    an installed dsh whose version cannot be read is left alone too. `install_missing=False` (the
+    `bob update` refresh) only upgrades an existing install.
 
     Bob never guesses a floating version: the exact version comes from versions.lock.
     """
     want = pinned_dsh_version()
-    have = dsh_version()
-    if have and want in have:
-        return f"dsh {have} already installed"
-    manager = shutil.which("pnpm") or shutil.which("npm")
+    exe = dsh_bin()
+    have = dsh_version() if exe else ""
+    if exe:
+        have_key, want_key = _version_key(have), _version_key(want)
+        if have_key is None or want_key is None:
+            return f"dsh {have or exe} already installed (version not comparable to pin {want}; left as-is)"
+        if have_key >= want_key:
+            return f"dsh {have} already installed"
+    elif not install_missing:
+        return "dsh not installed; skipped (run `bob dsh install` to add it)"
+    name, manager = _dsh_manager(exe)
     if not manager:
+        if exe:
+            return (f"dsh {have} is older than the pinned {want}, and the package manager that installed "
+                    f"it was not found; upgrade it with that manager to @deepseek-ai/dsh@{want}")
         return ("dsh not installed and no pnpm/npm found. Install Node.js + pnpm, then run: "
                 f"pnpm add -g @deepseek-ai/dsh@{want}")
-    name = "pnpm" if Path(manager).name.lower().startswith("pnpm") else "npm"
     if name == "pnpm":
         argv = [manager, "add", "-g", f"@deepseek-ai/dsh@{want}"]
     else:
@@ -687,7 +804,7 @@ def ensure_dsh() -> str:
     if r.returncode != 0:
         detail = (r.stderr or r.stdout or "").strip().splitlines()
         return "dsh install failed: " + (detail[0] if detail else f"exit {r.returncode}")
-    return f"installed @deepseek-ai/dsh@{want} with {name}"
+    return f"{'upgraded' if exe else 'installed'} @deepseek-ai/dsh@{want} with {name}"
 
 
 def ensure_home(profile: str = None) -> str:
@@ -717,8 +834,35 @@ def ensure_home(profile: str = None) -> str:
     return f"initialized dsh home at {root} (profile {target})"
 
 
+def _guarded(label: str, fn) -> str:
+    """Run one link step; a failure (an unreadable profile patch, a locked file) becomes a report line
+    instead of aborting the rest of the link."""
+    try:
+        return fn()
+    except Exception as e:  # noqa: BLE001
+        return f"{label}: failed ({e})"
+
+
+def _route_models() -> set:
+    """The model ids in the generated dsh provider route (config/dsh/settings.yaml)."""
+    data = _load_yaml(CONFIG_DSH / "settings.yaml") or {}
+    route = ((data.get("llm-pi-ai") or {}).get("providers") or {}).get(PROVIDER) or {} \
+        if isinstance(data, dict) else {}
+    return {str(m.get("id")) for m in (route.get("models") or []) if isinstance(m, dict)}
+
+
+def _current_mode(root: Path, profile: str) -> str:
+    """The quick/deep mode of the profile's current Bob default model, or "" when it has none."""
+    model = _default_model(root, profile)
+    mode = model.rsplit("-", 1)[-1] if "-" in model else ""
+    return mode if mode in ("quick", "deep") else ""
+
+
 def install(profile: str = None, tools: bool = False, bridge: bool = True,
             use_default: bool = False, mode: str = None, harness: bool = True) -> str:
+    """Install the whole link: pinned package, profile home, provider route, credential, MCP tools
+    when asked, bridge, and the default model. `use_default` keeps the mode of a Bob default already
+    in place (quick stays quick); `mode` sets one explicitly."""
     import generate
     from bob_core import load_config
 
@@ -743,10 +887,52 @@ def install(profile: str = None, tools: bool = False, bridge: bool = True,
     if bridge:
         lines.append(bridge_on(target))
     if mode:
-        lines.append(f"profile {target}: {set_mode(target, mode)}")
+        lines.append(f"profile {target}: " + _guarded("default model", lambda: set_mode(target, mode)))
     elif use_default:
-        lines.append(f"profile {target}: {set_default_model(target, DEFAULT_MODEL)}")
+        kept = _current_mode(root, target)
+        model = _choose_model(kept) if kept else DEFAULT_MODEL
+        lines.append(f"profile {target}: "
+                     + _guarded("default model", lambda: set_default_model(target, model, root)))
     return "Installed bob dsh link\n" + "\n".join(f"  {ln}" for ln in lines)
+
+
+def refresh(profile: str = None, tools: bool = False) -> str:
+    """The `bob update` pass: bring every part of the link that is already present up to date, and add
+    nothing the user removed. Upgrades an installed dsh older than the pin (never installs one), and
+    refreshes the provider route and credential when the route is there, the MCP entry when `tools`
+    (generate.dsh_tools_enabled), the bridge code when the bridge is installed, and the default model only when it
+    is a Bob model, keeping its quick/deep mode."""
+    import generate
+    from bob_core import load_config
+
+    lines = [ensure_dsh(install_missing=False)]
+    root = home()
+    if not root.is_dir():
+        lines.append(f"no dsh home at {root}; nothing to refresh (`bob dsh install` sets it up)")
+        return "Refreshed bob dsh link\n" + "\n".join(f"  {ln}" for ln in lines)
+    cfg = load_config()
+    generate.configure(cfg)
+    generate.gen_dsh()
+    target = profile or default_profile(root)
+    settings = _load_yaml(root / "settings.yaml") or {}
+    providers = ((settings.get("llm-pi-ai") or {}).get("providers") or {}) if isinstance(settings, dict) else {}
+    if PROVIDER in providers or _credential_ok(root):
+        lines += [generate._install_dsh_settings(root), generate._install_dsh_credential(root)]
+    else:
+        lines.append("provider route not present; left off")
+    if tools:
+        lines.append(_install_mcp(root))
+    if _bridge_installed(root, target):
+        lines.append(bridge_on(target).strip())
+    current = _default_model(root, target)
+    kept = _current_mode(root, target)
+    if kept and current not in _route_models():
+        # The Bob model this profile defaults to left the route (the hardware profile changed): move it
+        # to the same mode on what the route serves now.
+        model = _choose_model(kept)
+        lines.append(f"profile {target}: "
+                     + _guarded("default model", lambda: set_default_model(target, model, root)))
+    return "Refreshed bob dsh link\n" + "\n".join(f"  {ln}" for ln in lines)
 
 
 def _provider_route_ok(root: Path) -> bool:
@@ -821,8 +1007,16 @@ def status(profile: str = None) -> str:
 
 
 def uninstall(profile: str = None) -> str:
+    """Remove Bob's MCP entry and bridge, and set agent.dshEnabled=false so setup, update and `bob gen`
+    leave dsh alone until `bob dsh install`."""
     root = home()
-    lines = [tools_off(profile), bridge_off(profile)]
+    removed = _remove_mcp_entries(root)
+    lines = ["removed " + ", ".join(removed) if removed else "bob MCP tools were not installed",
+             bridge_off(profile)]
+    try:
+        lines.append(_set_agent_flags(dshEnabled=False))
+    except ConfigWriteRefused as e:
+        lines.append(f"agent.dshEnabled not persisted, so setup/update will re-add the link: {e}")
     if _provider_route_ok(root):
         lines.append("provider route left in settings.yaml; remove the bob provider by hand if desired")
     return "\n".join(lines)
@@ -849,8 +1043,15 @@ def main(argv: list) -> int:
         if "--mode" in args:
             j = args.index("--mode")
             mode = args[j + 1] if j + 1 < len(args) else None
-        print(install(profile=profile, tools=tools, bridge=bridge, use_default=use_default, mode=mode,
-                      harness=harness))
+        enable = ""
+        if not link_enabled():
+            try:
+                enable = _set_agent_flags(dshEnabled=True) + "\n"
+            except ConfigWriteRefused as e:
+                print(f"dsh link not installed: {e}", file=sys.stderr)
+                return 1
+        print(enable + install(profile=profile, tools=tools, bridge=bridge, use_default=use_default,
+                               mode=mode, harness=harness))
         return 0
     if cmd == "use":
         root = home()
@@ -923,7 +1124,9 @@ def main(argv: list) -> int:
         except Exception as e:
             print(f"session import failed: {e}", file=sys.stderr)
             return 1
-        print(f"imported {result['sessions']} session(s), {result['turns']} turn(s)")
+        skipped = f", skipped {result['skipped']} malformed" if result.get("skipped") else ""
+        print(f"imported {result['sessions']} session(s), {result['new_turns']} new of "
+              f"{result['turns']} turn(s){skipped}")
         return 0
     if cmd == "logs":
         print(f"dsh home: {home()}")

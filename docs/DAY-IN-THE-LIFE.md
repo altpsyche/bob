@@ -10,7 +10,7 @@ A hands-on tour of every feature in the stack, structured as a working session. 
 
 - [Morning: Starting Up](#morning-starting-up)
 - [Feature 1: The bob shell + Chat](#feature-1-the-bob-shell--chat)
-- [Feature 2: DeepSeek Harness (Browser and Terminal Coding)](#feature-2-deepseek-harness-browser-and-terminal-coding)
+- [Feature 2: DeepSeek Harness (Coding in the Browser)](#feature-2-deepseek-harness-coding-in-the-browser)
 - [Feature 3: Continue.dev (VS Code Autocomplete and Chat)](#feature-3-continuedev-vs-code-autocomplete-and-chat)
 - [Feature 4: Cline (VS Code Agentic Edits)](#feature-4-cline-vs-code-agentic-edits)
 - [Feature 5: Aider (Terminal Plan-then-Edit)](#feature-5-aider-terminal-plan-then-edit)
@@ -75,7 +75,7 @@ This starts, silently in the background:
 - The **llama-swap engine** at `http://localhost:8080/v1`: the local model server (llama.cpp)
 - The **LiteLLM proxy** at `http://localhost:8081/v1`: the OpenAI-compatible endpoint all your AI tools point at (adds retry + pro-model routing)
 
-Add `--with-services` to also start the opt-in add-on services (Langfuse, SearXNG, n8n) on demand; they are off by default and never auto-start. DeepSeek Harness is the browser and terminal coding client; install or repair the link with `bob dsh install`.
+Add `--with-services` to also start the opt-in add-on services (Langfuse, SearXNG, n8n) on demand; they are off by default and never auto-start. DeepSeek Harness is the coding client and is not started by `bob up`: open it with `dsh web`, and install or repair the link with `bob dsh install`.
 
 Check what's running:
 
@@ -87,7 +87,7 @@ The active profile's models are listed (16gb: `chat`, `coder`, `ponder`, `writer
 
 > **Pro models:** Once you add a DeepSeek key (`bob key set deepseek`, or `/key set deepseek` in the shell), four additional models are available via the LiteLLM proxy at `:8081`: `chat-pro`, `ponder-pro`, `coder-pro`, `writer-pro`. These route directly to the DeepSeek API, no local GPU required, no platform fee. GLM-5.3 (z.ai) and Kimi K3 (Moonshot) are opt-in coding-peer alternatives. See [USAGE.md § Pro models](USAGE.md#pro-models-api-backed-no-platform-fee).
 
-> **Tip, start at login:** To bring the background stack up automatically every login, run `bob up --no-open` from a startup entry: on Linux a user systemd unit or a `@reboot` cron line; on Windows a Task Scheduler task set to "At log on".
+> **Tip, start at login:** To bring the background stack up automatically every login, run `bob up` from a startup entry: on Linux a user systemd unit or a `@reboot` cron line; on Windows a Task Scheduler task set to "At log on".
 
 ### Start the add-on services (opt-in, on demand)
 
@@ -177,9 +177,16 @@ Full reference: [MEMORY.md](MEMORY.md). Disable memory by adding `{"memory": {"e
 
 ---
 
-## Feature 2: DeepSeek Harness (Browser and Terminal Coding)
+## Feature 2: DeepSeek Harness (Coding in the Browser)
 
-**What it is:** The main coding harness. DSH runs the coding loop in the browser or terminal, while Bob provides the models, context modes, memory, and tools.
+**What it is:** The main coding harness. DSH runs the coding loop in its local web UI, while Bob provides the models, context modes, memory, and tools.
+
+Open it from the project you want to work in. `bob up` does not start DSH, it only brings up the proxy DSH talks to:
+
+```bash
+bob up
+dsh web            # serves http://127.0.0.1:3080 and opens your browser (--no-open, --port to change)
+```
 
 Install or repair the link:
 
@@ -848,7 +855,6 @@ The same `bob <verb>` commands work identically on Linux and Windows.
 | Task | Command |
 |---|---|
 | Pre-warm the stack (background) | `bob up` |
-| Pre-warm without opening browser | `bob up --no-open` |
 | Pre-warm + add-on services | `bob up --with-services` |
 | Start inference foreground (Ctrl-C to stop) | `bob serve` |
 | Check what's running | `bob status` |

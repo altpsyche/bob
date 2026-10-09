@@ -125,7 +125,6 @@ Inference gets served three ways; pick by how long you want it up:
 
 ```
 bob up                     # start endpoint + proxy in the background
-bob up --no-open           # don't open the browser
 bob up --with-services     # also start the opt-in services group (Langfuse / SearXNG / n8n); off by default
 ```
 
@@ -148,13 +147,13 @@ The endpoint logs go to `logs/llama-swap.log`; tail them live with `bob logs`. T
 Linux:
 ```bash
 # add to crontab -e
-@reboot cd /path/to/bob && ./bob up --no-open
+@reboot cd /path/to/bob && ./bob up
 ```
 
 Windows:
 ```bat
 :: create a Task Scheduler task "At log on" that runs:
-bob up --no-open
+bob up
 ```
 
 ## Available models (16gb profile)
@@ -482,7 +481,7 @@ bob agent "summarise the last 10 commits" 2>nul
 
 Override for a single run with `--agency confirm`; set the default with `"agent": {"agency": "confirm"}` at the top level of `config/user.json`. `agent.maxSteps` (default 10) caps the tool iterations per goal.
 
-Every front door (this loop, the shell, skill steps, `bob --run`, and MCP clients) goes through one approval gate. A tool that needs approval asks on a terminal and is refused when there is no one to ask (piped, scheduled, served). The context budget is automatic: `agent.maxContextTokens = 0` uses the per-slot window of the model serving the role, and the reply is always capped by `agent.outputReserveTokens` (default 1024) sent as `max_tokens`. A reply that hits that cap is marked as truncated, and a tool call in a truncated reply is never run.
+Every front door (this loop, the shell, skill steps, `bob --run`, and MCP clients) goes through one approval gate. A tool that needs approval asks on a terminal and is refused when there is no one to ask (piped, scheduled, served). The context budget is automatic: `agent.maxContextTokens = 0` uses the per-slot window of the model serving the role, and the reply is always capped by the active mode's `outputReserveTokens` (1024 local in Quick) sent as `max_tokens`. A reply that hits that cap is marked as truncated, and a tool call in a truncated reply is never run.
 
 Context mode adds a named budget bundle on top of that. `/mode quick` keeps prompts small for fast chat; `/mode deep` uses the full local window or a large API budget for longer work. `--quick` and `--context-mode deep` select the same modes for one-shot `bob chat` / `bob agent` runs. Local and API budgets are resolved separately, so a Quick local cap cannot clamp a 1M-token cloud peer, and a Deep API budget cannot make a local model exceed its loaded window. Every chat-capable role also has `<role>-quick` and `<role>-deep` model aliases for OpenAI-compatible clients, so the same policy applies through LiteLLM without per-harness code. On a profile that lacks the requested role (cpu has no `coder` or `ponder`), the run falls back to `chat` and says so.
 
@@ -782,7 +781,7 @@ Useful in-session commands:
 
 aider auto-commits each accepted edit to git; work on a branch so `/undo` can roll back cleanly. `model-metadata.json` tells aider each model's per-slot window on the active profile (40960 for both on 16gb), and the repo map is sized to the smaller one. On a profile without `coder` or `ponder` the config falls back to `chat`. The `openai/` prefix in the config (`openai/ponder`, `openai/coder`) is required to route through a local endpoint and is already set.
 
-### Browser and terminal: DeepSeek Harness (dsh)
+### Coding client: DeepSeek Harness (dsh)
 
 Manage the link with `bob dsh`:
 
@@ -818,7 +817,7 @@ bob dsh tools on
 bob dsh tools status
 ```
 
-`bob dsh tools on` sets `agent.mcpEnabled = true` and installs Bob's MCP entry into DSH. `bob dsh tools off` removes the DSH entry. State-changing tools remain gated by `agent.mcpAllowTools` and, when configured, the DSH trust tier described above.
+`bob dsh tools on` sets `agent.mcpEnabled = true` and installs Bob's MCP entry into DSH. `bob dsh tools off` removes the DSH entry and sets `agent.dshTools = false`, so `bob gen` and `bob update` do not put it back; Bob's MCP server stays on for other clients. State-changing tools remain gated by `agent.mcpAllowTools` and, when configured, the DSH trust tier described above.
 
 Context modes:
 
@@ -1033,9 +1032,9 @@ Results are saved as JSON under `results/eval-<role>-<task>-<timestamp>/`. The p
 
 Scores well below these ranges usually mean the chat template wasn't applied correctly. Run the same task before and after a quant change to measure the quality delta.
 
-## Browser and terminal coding: DeepSeek Harness
+## Coding in the browser: DeepSeek Harness
 
-Open WebUI is removed from the product path. The DeepSeek Harness is the browser and terminal coding client, with Bob as its model, context, memory, and tool backend. Manage the link with `bob dsh` as described above.
+The DeepSeek Harness is Bob's coding client, with Bob as its model, context, memory, and tool backend. Start it with `dsh web` from the project directory it should work in: it serves its web UI on `http://127.0.0.1:3080` and opens it in your browser (`dsh web --no-open` skips the browser, `--port` picks another port). `bob up` does not start DSH. DSH talks to the LiteLLM proxy on `:8081`, so bring the stack up first with `bob up`. Manage the link with `bob dsh` as described above.
 ## Customizing your setup: config/user.json
 
 Configuration is all JSON. Three files:

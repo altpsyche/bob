@@ -1314,6 +1314,9 @@ def _ensure_dsh_tables(db) -> None:
         " session_id TEXT NOT NULL, parent_session_id TEXT, seq INTEGER NOT NULL, type TEXT NOT NULL,"
         " payload TEXT NOT NULL, created_at TEXT, PRIMARY KEY(session_id, seq))")
     db.execute("CREATE INDEX IF NOT EXISTS idx_dsh_events_session ON dsh_events(session_id, seq)")
+    # Sessions the user forgot: a later bridge snapshot still carries them, and must not bring them back.
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS dsh_forgotten (session_id TEXT PRIMARY KEY, forgotten_at TEXT)")
 
 
 def _dsh_block_text(block: dict) -> str:
@@ -1353,7 +1356,11 @@ def _dsh_tool_names(messages: list) -> dict:
 
 
 def _dsh_message_turn(message: dict, tool_names: dict = None) -> dict:
-    source = message.get("source") or {}
+    source = message.get("source")
+    if source is None:
+        source = {}
+    if not isinstance(source, dict):
+        raise ValueError(f"message source is {type(source).__name__}, not an object")
     role = str(message.get("role") or "user")
     tool_name = None
     if source.get("kind") == "tool":
@@ -1368,76 +1375,231 @@ def _dsh_message_turn(message: dict, tool_names: dict = None) -> dict:
     return {"role": role, "content": body, "tool_name": tool_name}
 
 
+def _dsh_event_key(event: dict, index: int) -> int:
+    """The dsh_events key for one raw event: its own non-negative integer seq, else a negative key
+    derived from its position in the session's event list. The bridge sends the whole event snapshot
+    each time, so the position is stable across imports and never collides with a real seq."""
+    seq = event.get("seq")
+    if seq is None or seq == "":
+        return -(index + 1)
+    if isinstance(seq, bool):
+        raise ValueError(f"event seq {seq!r} is not a number")
+    if isinstance(seq, float) and seq.is_integer():
+        seq = int(seq)
+    if isinstance(seq, str) and re.fullmatch(r"\s*\d+\s*", seq):
+        seq = int(seq)
+    if not isinstance(seq, int) or seq < 0:
+        raise ValueError(f"event seq {seq!r} is not a non-negative integer")
+    return seq
+
+
+def _dsh_text(value) -> "str | None":
+    if value is None or isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return str(value)
+
+
+def _dsh_parse_session(s) -> dict:
+    """Validate and normalize one bridge session descriptor without touching the DB. Raises ValueError
+    for a malformed one, so the caller can skip it and import the rest of the payload."""
+    if not isinstance(s, dict):
+        raise ValueError(f"session is {type(s).__name__}, not an object")
+    sid = s.get("session_id")
+    if not isinstance(sid, str) or not sid.strip():
+        raise ValueError("session has no session_id")
+    events = s.get("events") or []
+    messages = s.get("messages") or []
+    if not isinstance(events, list) or not isinstance(messages, list):
+        raise ValueError(f"session {sid}: events and messages must be lists")
+    keyed = [(_dsh_event_key(ev, i), ev) for i, ev in enumerate(events) if isinstance(ev, dict)]
+    tool_names = _dsh_tool_names(messages)
+    turns = [_dsh_message_turn(m, tool_names) for m in messages if isinstance(m, dict)]
+    return {
+        "sid": sid.strip(), "parent": _dsh_text(s.get("parent_session_id")),
+        "cwd": _dsh_text(s.get("cwd")), "origin": _dsh_text(s.get("origin")),
+        "state": _dsh_text(s.get("state")) or "imported", "events": keyed,
+        "turns": [t for t in turns if t["content"].strip()],
+    }
+
+
+def _dsh_default_scope(cwd: "str | None") -> "str | None":
+    """The transcript scope for a DSH cwd: the same project key conversation_search filters on."""
+    if not cwd:
+        return None
+    from bob_core import project_key
+    return project_key(cwd)
+
+
+def _dsh_stored_turns(db, sid: str) -> list:
+    return [(role, content, tool_name) for role, content, tool_name in db.execute(
+        "SELECT role, content, tool_name FROM transcript WHERE run_id=? ORDER BY seq",
+        [f"dsh:{sid}"]).fetchall()]
+
+
+def _dsh_first_new_turn(stored: list, turns: list) -> int:
+    """Index of the first derived turn not already stored: the length of the common prefix. A DSH
+    snapshot normally only grows, so this is len(stored); a rewritten history (compaction) diverges
+    earlier and is re-imported from the divergence point."""
+    n = 0
+    for old, new in zip(stored, turns):
+        if old != (new["role"], new["content"], new["tool_name"]):
+            break
+        n += 1
+    return n
+
+
+def _dsh_forgotten_ids(db, parsed: list) -> set:
+    """Session ids to ignore in this payload: every forgotten id, plus any payload session whose
+    parent chain reaches one (a forgotten root's children stay forgotten)."""
+    forgotten = {row[0] for row in db.execute("SELECT session_id FROM dsh_forgotten").fetchall()}
+    changed = True
+    while changed:
+        changed = False
+        for p in parsed:
+            if p["sid"] not in forgotten and p["parent"] in forgotten:
+                forgotten.add(p["sid"])
+                changed = True
+    return forgotten
+
+
 def dsh_import_sessions(sessions: list, db_path: Path, owner: str = "local",
-                        embed_optional: bool = True) -> dict:
-    """Persist raw DSH session events and replace each session's derived transcript rows.
+                        embed_optional: bool = True, scope_for=None) -> dict:
+    """Import native-bridge DSH session snapshots incrementally.
 
     One session descriptor: {session_id, parent_session_id, cwd, origin, events, messages}. Raw events
-    are stored as JSON; `messages` is the model-visible surface used to derive transcript turns.
-    """
-    imported = 0
-    turns_total = 0
+    are stored once as JSON; `messages` is the model-visible surface used to derive transcript turns.
+    Each snapshot repeats the whole session, so only events and turns past what is already stored are
+    written, and only those new turns are embedded. Embedding happens before the write transaction,
+    which then only inserts rows. Importing the same payload twice changes nothing.
+
+    A malformed descriptor is logged and skipped. Forgotten sessions (and their children) are ignored.
+    `scope_for(cwd)` gives the transcript scope; the default is bob_core.project_key, the key
+    conversation_search filters on. Returns {sessions, turns, new_turns, skipped}: `turns` is the
+    stored transcript size of the imported sessions."""
+    scope_for = scope_for or _dsh_default_scope
+    parsed, skipped = [], 0
+    for i, s in enumerate(sessions if isinstance(sessions, list) else []):
+        try:
+            parsed.append(_dsh_parse_session(s))
+        except (ValueError, TypeError, AttributeError) as e:
+            skipped += 1
+            log.warning("dsh import: skipped malformed session #%d (%s)", i, e)
+
     with _open(db_path) as db:
         _ensure_transcript(db)
         _ensure_dsh_tables(db)
+        forgotten = _dsh_forgotten_ids(db, parsed)
+        live = [p for p in parsed if p["sid"] not in forgotten]
+        newly_forgotten = [p["sid"] for p in parsed if p["sid"] in forgotten]
+        # Plan outside the write lock: embed only the turns past each stored prefix.
+        vectors = {}
+        for p in live:
+            start = _dsh_first_new_turn(_dsh_stored_turns(db, p["sid"]), p["turns"])
+            for turn in p["turns"][start:]:
+                content = turn["content"]
+                if content in vectors:
+                    continue
+                try:
+                    vectors[content] = embed(content)
+                except Exception:
+                    if not embed_optional:
+                        raise
+                    vectors[content] = None
         if db.conn.in_transaction:
             db.conn.commit()
+
+        new_turns = 0
+        turns_total = 0
         db.execute("BEGIN IMMEDIATE")
         try:
             now = datetime.now(timezone.utc).isoformat()
-            for s in sessions or []:
-                sid = str(s.get("session_id") or "").strip()
-                if not sid:
-                    continue
-                parent = s.get("parent_session_id")
-                cwd = s.get("cwd")
-                events = s.get("events") or []
-                last_seq = -1
-                for ev in events:
-                    if not isinstance(ev, dict):
+            if newly_forgotten:
+                db.conn.executemany("INSERT OR IGNORE INTO dsh_forgotten (session_id, forgotten_at) VALUES (?,?)",
+                                    [(sid, now) for sid in newly_forgotten])
+            for p in live:
+                sid, run_id = p["sid"], f"dsh:{p['sid']}"
+                row = db.execute(
+                    "SELECT parent_session_id, cwd, origin, last_seq, state FROM dsh_sessions"
+                    " WHERE session_id=?", [sid]).fetchone()
+                stored_last = row[3] if row is not None and row[3] is not None else -1
+                changed = False
+                for key, ev in p["events"]:
+                    if 0 <= key <= stored_last:
                         continue
-                    seq = int(ev.get("seq") or 0)
-                    last_seq = max(last_seq, seq)
-                    db.execute(
-                        "INSERT OR REPLACE INTO dsh_events"
+                    cur = db.execute(
+                        "INSERT OR IGNORE INTO dsh_events"
                         " (session_id, parent_session_id, seq, type, payload, created_at)"
                         " VALUES (?,?,?,?,?,?)",
-                        [sid, parent, seq, str(ev.get("type") or "unknown"),
+                        [sid, p["parent"], key, str(ev.get("type") or "unknown"),
                          json.dumps(ev, ensure_ascii=False), now])
-                db.execute(
-                    "INSERT INTO dsh_sessions"
-                    " (session_id, parent_session_id, cwd, origin, created_at, updated_at, last_seq, state)"
-                    " VALUES (?,?,?,?,?,?,?,?)"
-                    " ON CONFLICT(session_id) DO UPDATE SET parent_session_id=excluded.parent_session_id,"
-                    " cwd=excluded.cwd, origin=excluded.origin, updated_at=excluded.updated_at,"
-                    " last_seq=MAX(dsh_sessions.last_seq, excluded.last_seq), state=excluded.state",
-                    [sid, parent, cwd, s.get("origin"), now, now, last_seq, s.get("state") or "imported"])
-                messages = s.get("messages") or []
-                tool_names = _dsh_tool_names(messages)
-                turns = [_dsh_message_turn(m, tool_names) for m in messages if isinstance(m, dict)]
-                turns = [t for t in turns if t["content"].strip()]
-                db.execute("DELETE FROM transcript WHERE run_id=?", [f"dsh:{sid}"])
-                for seq, turn in enumerate(turns):
-                    content = turn["content"]
-                    try:
-                        vec = embed(content)
-                    except Exception:
-                        if not embed_optional:
-                            raise
-                        vec = None
+                    changed |= cur.rowcount > 0
+                last_seq = max([stored_last] + [k for k, _ev in p["events"] if k >= 0])
+
+                # Re-derive the divergence point under the lock (another import may have landed since
+                # the plan); a turn the plan did not embed is stored lexical-only.
+                stored = _dsh_stored_turns(db, sid)
+                start = _dsh_first_new_turn(stored, p["turns"])
+                scope = scope_for(p["cwd"])
+                if start < len(stored):
+                    db.execute("DELETE FROM transcript WHERE run_id=? AND seq>=?", [run_id, start])
+                    changed = True
+                if db.execute("UPDATE transcript SET scope=? WHERE run_id=? AND scope IS NOT ?",
+                              [scope, run_id, scope]).rowcount:
+                    changed = True
+                for seq in range(start, len(p["turns"])):
+                    turn = p["turns"][seq]
+                    vec = vectors.get(turn["content"])
                     db.execute(
                         "INSERT INTO transcript (run_id, owner_id, scope, seq, role, content, tool_name,"
                         " created_at, embedding, embed_model, session_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                        [f"dsh:{sid}", owner, cwd, seq, turn["role"], content, turn["tool_name"],
+                        [run_id, owner, scope, seq, turn["role"], turn["content"], turn["tool_name"],
                          now, json.dumps(vec) if vec is not None else "",
                          current_embed_model() if vec is not None else None, sid])
-                    turns_total += 1
-                imported += 1
+                    new_turns += 1
+                    changed = True
+                turns_total += len(p["turns"])
+
+                meta = (p["parent"], p["cwd"], p["origin"], last_seq, p["state"])
+                if row is None or changed or tuple(row) != meta:
+                    db.execute(
+                        "INSERT INTO dsh_sessions"
+                        " (session_id, parent_session_id, cwd, origin, created_at, updated_at, last_seq,"
+                        " state) VALUES (?,?,?,?,?,?,?,?)"
+                        " ON CONFLICT(session_id) DO UPDATE SET parent_session_id=excluded.parent_session_id,"
+                        " cwd=excluded.cwd, origin=excluded.origin, updated_at=excluded.updated_at,"
+                        " last_seq=MAX(dsh_sessions.last_seq, excluded.last_seq), state=excluded.state",
+                        [sid, p["parent"], p["cwd"], p["origin"], now, now, last_seq, p["state"]])
             db.execute("COMMIT")
         except Exception:
             db.execute("ROLLBACK")
             raise
-    return {"sessions": imported, "turns": turns_total}
+    return {"sessions": len(live), "turns": turns_total, "new_turns": new_turns, "skipped": skipped}
+
+
+def dsh_forget_session(session_id: str, db_path: Path) -> list:
+    """Drop one imported DSH session and every descendant session from the raw DSH tables, and record
+    them as forgotten so a re-sent bridge snapshot does not import them again. Returns the ids
+    forgotten, root first. Transcript rows and memories are removed by the callers' own forget paths."""
+    with _open(db_path) as db:
+        _ensure_dsh_tables(db)
+        ids = [session_id]
+        frontier = [session_id]
+        while frontier:
+            marks = ",".join("?" * len(frontier))
+            children = [r[0] for r in db.execute(
+                f"SELECT session_id FROM dsh_sessions WHERE parent_session_id IN ({marks})",
+                frontier).fetchall() if r[0] not in ids]
+            ids += children
+            frontier = children
+        now = datetime.now(timezone.utc).isoformat()
+        for sid in ids:
+            db.execute("DELETE FROM dsh_events WHERE session_id=?", [sid])
+            db.execute("DELETE FROM dsh_sessions WHERE session_id=?", [sid])
+            db.execute("INSERT OR IGNORE INTO dsh_forgotten (session_id, forgotten_at) VALUES (?,?)",
+                       [sid, now])
+        return ids
 
 
 def transcript_search(query: str, db_path: Path, owner: str = "local", scope: str = None,

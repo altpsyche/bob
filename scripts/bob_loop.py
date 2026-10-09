@@ -33,39 +33,9 @@ from bob_tracing import Tracer, make_tracer   # import-light span seam (stdlib-o
 _NOOP_TRACER = Tracer(enabled=False)
 
 
-# The one token estimator lives in bob_core; the loop keeps its historical name for it.
-from bob_core import est_tokens as _estimate_tokens, clip_text_to_tokens  # noqa: E402
-
-# Flat token cost of one image content block. An image's prompt cost depends on its pixels (the vision
-# encoder's patch count), not on the length of its base64 text, so it is charged at a fixed estimate
-# sized for bob_vision.resize_image's 1024px output.
-_IMAGE_BLOCK_TOKENS = 1024
-
-
-def _content_tokens(content) -> int:
-    """Estimated tokens of a message's content: a string by length; an OpenAI content-block list by its
-    text parts plus _IMAGE_BLOCK_TOKENS per image block."""
-    if isinstance(content, str):
-        return _estimate_tokens(content)
-    if isinstance(content, list):
-        total = 0
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "image_url":
-                total += _IMAGE_BLOCK_TOKENS
-            elif isinstance(block, dict) and isinstance(block.get("text"), str):
-                total += _estimate_tokens(block["text"])
-            else:
-                total += _estimate_tokens(json.dumps(block))
-        return total
-    return _estimate_tokens(json.dumps(content)) if content else 0
-
-
-def _message_tokens(m: dict) -> int:
-    """Estimated token cost of a single chat message, including tool-call payloads."""
-    total = _content_tokens(m.get("content") or "") + 4  # per-message role/format overhead
-    for tc in (m.get("tool_calls") or []):
-        total += _estimate_tokens(json.dumps(tc))
-    return total
+# The one token estimator lives in bob_core; the loop keeps its historical names for it.
+from bob_core import clip_text_to_tokens, est_tokens as _estimate_tokens  # noqa: E402
+from bob_core import message_tokens as _message_tokens  # noqa: E402
 
 
 # Floor the history budget never drops below, even when the system prompt alone eats it: sending zero
@@ -694,7 +664,8 @@ def parse_args():
     p.add_argument("--stream", action="store_true",
                    help="Stream the final answer token-by-token to stdout")
     p.add_argument("--deep", action="store_true",
-                   help="Enable plan + verify + self-repair for this run")
+                   help="Enable plan + verify + self-repair for this run (this is not Deep context "
+                        "mode: use --context-mode deep for that)")
     p.add_argument("--context-mode", default=None,
                    help="Context budget mode: quick or deep (aliases fast/slow)")
     p.add_argument("--quick", action="store_true",
@@ -987,6 +958,19 @@ def _clear_old_tool_results(messages: list, registry, keep_last: int, hermes: bo
     return out
 
 
+def _prior_note(notes: list, max_tokens: int) -> list:
+    """The earlier compaction note(s) as at most one system message: a single note unchanged when it
+    fits `max_tokens`, several folded under one frame, clamped to `max_tokens` either way."""
+    if not notes:
+        return []
+    if len(notes) == 1:
+        note = notes[0]
+    else:
+        bodies = [str(m.get("content") or "")[len(_COMPACT_FRAME):].strip() for m in notes]
+        note = {"role": "system", "content": _COMPACT_FRAME + "\n" + "\n".join(b for b in bodies if b)}
+    return [_clamp_message(note, max(1, int(max_tokens)))]
+
+
 def truncate_history(messages: list, max_msgs: int, max_tokens: int = 0, *,
                      compaction: str = "truncate", keep_last: int = 6,
                      summary_max_tokens: int = 512, summary_model: str = "chat",
@@ -1018,10 +1002,13 @@ def truncate_history(messages: list, max_msgs: int, max_tokens: int = 0, *,
             summary_max_tokens=summary_max_tokens, summary_model=summary_model,
             pin_goal=pin_goal, summarize=(compaction == "summarize"), config=config,
             context_mode=context_mode)
+    summarize = compaction == "summarize"
     system_all = [m for m in messages if m.get("role") == "system"]
-    prior_notes = [str(m.get("content") or "") for m in system_all
-                   if str(m.get("content") or "").startswith(_COMPACT_FRAME)]
-    system = [m for m in system_all if not str(m.get("content") or "").startswith(_COMPACT_FRAME)]
+    # Summarize mode folds earlier compaction notes into the next one, so they leave the system head
+    # here and come back as one note; truncate mode keeps them where they are, as part of the head.
+    notes = [m for m in system_all if summarize and str(m.get("content") or "").startswith(_COMPACT_FRAME)]
+    prior_notes = [str(m.get("content") or "") for m in notes]
+    system = [m for m in system_all if not any(m is n for n in notes)]
     rest = [m for m in messages if m.get("role") != "system"]
     goal, n_after = None, 0
     if pin_goal is not None:
@@ -1031,7 +1018,6 @@ def truncate_history(messages: list, max_msgs: int, max_tokens: int = 0, *,
                 n_after = len(rest) - i          # messages that came after the goal
                 break
     original_rest = list(rest)
-    summarize = compaction == "summarize"
     pinned = [goal] if goal is not None else []
 
     # 1. Message-count window.
@@ -1084,8 +1070,9 @@ def truncate_history(messages: list, max_msgs: int, max_tokens: int = 0, *,
             if note:
                 summary_msg = {"role": "system", "content": f"{_COMPACT_FRAME}\n{note}"}
                 return system + [summary_msg] + _assemble(rest)
-        # empty note (no LLM / failure) -> fall through to plain truncation semantics.
-        return system + _assemble(rest)
+        # Nothing new dropped, or no note (no LLM / failure): the earlier note still stands, as one
+        # message within the room reserved for it, so what it summarized is not lost.
+        return system + _prior_note(notes, summary_max_tokens) + _assemble(rest)
 
     # 3. Don't leave an orphaned tool response at the front (truncate mode).
     while rest and rest[0].get("role") == "tool":
@@ -1446,6 +1433,7 @@ def run_agent_events(
         yield {"type": "notice", "message": _n}
     # Resolve the mode only after fallback/vision routing so Quick/Deep is applied to the model that
     # will actually serve this request. Local and API policies are selected by is_local_role().
+    requested_mode = context_mode   # None = the caller left it to config (a resume restores its own)
     try:
         from bob_context import ContextModeError, resolve as resolve_context_policy
         context_policy = resolve_context_policy(config, effective_role, context_mode)
@@ -1562,7 +1550,7 @@ def run_agent_events(
         step_start = resumed["step"]
         checkpoint_run = True
         restored_mode = (resumed.get("metrics") or {}).get("context_mode")
-        if context_mode is None and restored_mode:
+        if requested_mode is None and restored_mode:
             try:
                 context_policy = resolve_context_policy(config, effective_role, restored_mode)
                 context_mode = context_policy.mode
@@ -1826,12 +1814,18 @@ def run_agent_events(
 
     def _raise_output_hint():
         """How to get a longer reply. When the window, not the setting, capped the output, raising
-        outputReserveTokens would change nothing: the fixed head is what has to shrink."""
+        outputReserveTokens would change nothing: the fixed head is what has to shrink. Otherwise it
+        names the setting the resolved mode reads (bob_context._layered: a user's agent.* value wins
+        over the shipped mode block), and for a pro role the peer limit that caps it."""
         if budget.shrunk:
             return (f"free room in the {budget.total}-token window, which the system prompt and tools "
                     f"fill ({budget.head + request_tools_tokens} tokens): list tools you don't need in "
                     "agent.disabledTools (config/user.json) or use a profile with a larger window")
-        return "raise agent.outputReserveTokens (or pass --max)"
+        where = (f"agent.contextModes.{context_policy.mode}.{context_policy.backend}.outputReserveTokens "
+                 "or agent.outputReserveTokens in config/user.json")
+        if context_policy.backend == "api":
+            return f"raise {where} (up to the peer's maxOutputTokens in config/models.json), or pass --max"
+        return f"raise {where}, or pass --max"
     if not budget.fits:
         yield {"type": "error", "kind": "context_overflow", "message": (
             f"The {effective_role} model's context window ({budget.total} tokens) is too small for the system "

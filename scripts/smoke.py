@@ -202,7 +202,7 @@ def main(argv=None) -> int:
     # --- 1. inference endpoint --------------------------------------------
     if up:
         print("[up] starting the stack (bob up)...")
-        subprocess.run(_bob_argv(["up", "-NoOpen"]), env=_bob_env(),
+        subprocess.run(_bob_argv(["up"]), env=_bob_env(),
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if not _wait_url(f"{inf_base}/models", timeout if up else 5):
         if up:

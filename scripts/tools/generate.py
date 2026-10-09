@@ -360,7 +360,7 @@ def _wire_mode_models(role: str, role_window: int, backend: str) -> list:
 def gen_litellm(profile: str = None) -> str:
     """Generate config/litellm.yaml."""
     import bob_models
-    from bob_core import LITELLM_KEY_ENV, _port
+    from bob_core import LITELLM_KEY_ENV, _port, peer_role_value
 
     mcfg = bob_models.load_models_config()
     _, models = _ordered_models(mcfg, profile)
@@ -409,9 +409,9 @@ def gen_litellm(profile: str = None) -> str:
             # none; unset leaves the provider's own default, which is often far shorter.
             rv = rv if isinstance(rv, dict) else {"model": rv}
             model_id = rv.get("model")
-            max_toks = rv.get("maxOutputTokens") or peer.get("maxOutputTokens")
+            max_toks = peer_role_value(peer, rv, "maxOutputTokens")
             base_role = f"{role}-pro"
-            role_window = int(rv.get("contextWindow") or peer.get("contextWindow") or 0)
+            role_window = peer_role_value(peer, rv, "contextWindow")
             variants = (_wire_mode_models(base_role, role_window, "api")
                         if bob_models.is_chat_role(role) else [(base_role, role_window)])
             for model_name, _window in variants:
@@ -528,7 +528,7 @@ def _have_npx() -> bool:
 def gen_continue(profile: str = None) -> str:
     """Generate config/continue/config.yaml."""
     import bob_models
-    from bob_core import _litellm_key, _port
+    from bob_core import _litellm_key, _port, peer_role_value
 
     mcfg = bob_models.load_models_config()
     _, models = _ordered_models(mcfg, profile)
@@ -569,10 +569,13 @@ def gen_continue(profile: str = None) -> str:
         base_name = _NAME_FOR.get(m["role"], m["role"])
         ctx = 0 if m.get("embedding") else _slot_ctx(m, defaults)
         roles = _ROLE_ASSIGN.get(m["role"], ["chat"])
-        variants = (_wire_mode_models(base_name, ctx, "local")
-                    if bob_models.is_chat_role(m["role"], m) else [(base_name, ctx)])
+        is_chat = bob_models.is_chat_role(m["role"], m)
+        variants = _wire_mode_models(base_name, ctx, "local") if is_chat else [(base_name, ctx)]
         for name, model_window in variants:
-            add_model(name, name, model_window, _role_prompt(prompts, m["role"]), roles)
+            # A chat variant's name is its LiteLLM alias; fim and embed keep Continue's display name
+            # but are served under their role.
+            model = name if is_chat else m["role"]
+            add_model(name, model, model_window, _role_prompt(prompts, m["role"]), roles)
             out.append("")
 
     for peer in peers:
@@ -585,7 +588,7 @@ def gen_continue(profile: str = None) -> str:
             roles = _PRO_ASSIGN.get(role, ["chat"])
             rv = pro[role]
             base_name = f"{role}-pro"
-            peer_window = int((rv or {}).get("contextWindow") or peer.get("contextWindow") or 0) if isinstance(rv, dict) else int(peer.get("contextWindow") or 0)
+            peer_window = peer_role_value(peer, rv, "contextWindow")
             variants = _wire_mode_models(base_name, peer_window, "api")
             for name, model_window in variants:
                 add_model(name, name, model_window, _role_prompt(prompts, role, pro[role]), roles)
@@ -667,6 +670,7 @@ def _dsh_models(mcfg: dict, profile: str = None):
     the peer; left unset, pi-ai's defaults stand. A pro role is image
     capable only when it says supportsVision, and a 'vision' pro role that is not is left out."""
     import bob_models
+    from bob_core import peer_role_value
 
     _, models = _ordered_models(mcfg, profile)
     defaults = mcfg.get("defaults") or {}
@@ -694,8 +698,8 @@ def _dsh_models(mcfg: dict, profile: str = None):
             if role == "vision" and not vision:
                 skipped.append(f"{mid} ({rv.get('model')} takes no images)")
                 continue
-            ctx = int(rv.get("contextWindow") or peer.get("contextWindow") or 0)
-            max_tokens = int(rv.get("maxOutputTokens") or peer.get("maxOutputTokens") or 0)
+            ctx = peer_role_value(peer, rv, "contextWindow")
+            max_tokens = peer_role_value(peer, rv, "maxOutputTokens")
             for name, window in _wire_mode_models(mid, ctx, "api"):
                 out.append((name, window, max_tokens, vision))
                 seen.add(name)
@@ -790,6 +794,13 @@ def gen_dsh(profile: str = None) -> str:
     return f"Generated {settings}\nGenerated {patch_file}{note}"
 
 
+def dsh_tools_enabled(config: dict) -> bool:
+    """Whether dsh gets Bob's MCP tools: Bob's MCP server is on (agent.mcpEnabled) and the user has not
+    switched it off for dsh alone (agent.dshTools, which `bob dsh tools off` sets)."""
+    agent = (config or {}).get("agent", {}) or {}
+    return bool(agent.get("mcpEnabled")) and agent.get("dshTools", True) is not False
+
+
 def install_dsh() -> str:
     """Merge the generated drop-ins into $DSH_HOME. Skips gracefully when dsh is not installed, the
     same way client drop-ins are skipped when the client is absent, so `bob gen` is safe on a machine without it.
@@ -797,17 +808,21 @@ def install_dsh() -> str:
     settings.yaml is merged key-wise (dsh's Settings UI owns the rest of that document, so only the
     'bob' provider route is touched); cordis.patch.yml is appended to textually, because it may carry
     `!!js` tags a safe YAML load would reject."""
+    import bob_dsh
+
+    if not bob_dsh.link_enabled(_bob_cfg()):
+        return "install-dsh: skipped, the DSH link is off (agent.dshEnabled false; `bob dsh install` turns it on)"
     home = _dsh_home()
     if not home.is_dir():
         return (f"install-dsh: no DeepSeek Harness home at {home} — skipping "
                 "(run `npx @deepseek-ai/dsh web` once, then `bob gen`)")
 
     lines = [_install_dsh_settings(home), _install_dsh_credential(home)]
-    if (_bob_cfg().get("agent", {}) or {}).get("mcpEnabled"):
+    if dsh_tools_enabled(_bob_cfg()):
         lines.append(_install_dsh_mcp(home))
     else:
-        lines.append("  mcp: skipped — set agent.mcpEnabled true in config/user.json, then `bob gen`, "
-                     "to give dsh Bob's tools")
+        lines.append("  mcp: skipped (agent.mcpEnabled or agent.dshTools is off); `bob dsh tools on` "
+                     "gives dsh Bob's tools")
     return "Installed dsh drop-ins\n" + "\n".join(lines)
 
 
@@ -864,8 +879,12 @@ def _install_dsh_credential(home: Path) -> str:
     dest = home / ".credentials.yaml"
     key = _litellm_key(_bob_cfg())
     if not dest.exists():
-        dest.write_text(f"version: 1\n\nrefs:\n  {_DSH_KEY_REF}: {_yaml_str(key)}\n", encoding="utf-8")
-        os.chmod(dest, 0o600)   # dsh refuses a credential file other users can read
+        # Created 0600 (dsh refuses a credential file other users can read), so the key is never
+        # readable by others, not even between the write and a chmod.
+        fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(f"version: 1\n\nrefs:\n  {_DSH_KEY_REF}: {_yaml_str(key)}\n")
+        os.chmod(dest, 0o600)   # the umask may have narrowed the create mode; this is the exact mode
         return f"  key: stored {_DSH_KEY_REF} in {dest}"
 
     lines = dest.read_text(encoding="utf-8").splitlines()
@@ -908,6 +927,16 @@ def _top_level_items(lines: list) -> list:
     return spans
 
 
+def _patch_lines(path: Path) -> list:
+    """A dsh patch file's lines, ready for block-item edits. `dsh --dump-config` seeds a new patch file
+    with an empty flow sequence (`[]`), and block items appended after it would make invalid YAML, so a
+    top-level `[]` line is dropped."""
+    if not path.exists():
+        return []
+    return [ln for ln in path.read_text(encoding="utf-8").splitlines()
+            if ln[:1].isspace() or ln.split("#", 1)[0].strip() != "[]"]
+
+
 def _install_dsh_mcp(home: Path) -> str:
     """Put Bob's MCP entry into $DSH_HOME/cordis.patch.yml: written when the file is new, replaced in
     place when a `bob-tools` entry is already there (so a changed agent.mcpTransport reaches dsh), else
@@ -922,7 +951,7 @@ def _install_dsh_mcp(home: Path) -> str:
         dest.write_text(block, encoding="utf-8")
         return f"  mcp: wrote {dest}"
     entry = block[block.index("- insert:"):].rstrip("\n").split("\n")
-    lines = dest.read_text(encoding="utf-8").split("\n")
+    lines = _patch_lines(dest)
     id_line = re.compile(rf"\s*-\s+id:\s*['\"]?{re.escape(_DSH_MCP_ID)}['\"]?\s*(#.*)?$")
     for start, end in _top_level_items(lines):
         item = lines[start:end]
@@ -934,11 +963,11 @@ def _install_dsh_mcp(home: Path) -> str:
         if item == entry:
             return f"  mcp: {dest} already carries the current '{_DSH_MCP_ID}' entry"
         lines[start:end] = entry
-        dest.write_text("\n".join(lines), encoding="utf-8")
+        dest.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return f"  mcp: replaced the '{_DSH_MCP_ID}' entry in {dest}"
-    current = "\n".join(lines)
-    sep = "" if current.endswith("\n") else "\n"
-    dest.write_text(current + sep + "\n" + "\n".join(entry) + "\n", encoding="utf-8")
+    while lines and not lines[-1].strip():
+        lines.pop()
+    dest.write_text("\n".join(lines + ([""] if lines else []) + entry) + "\n", encoding="utf-8")
     return f"  mcp: appended the '{_DSH_MCP_ID}' entry to {dest}"
 
 
@@ -955,7 +984,7 @@ def gen_aider(profile: str = None) -> str:
     import json
 
     import bob_models
-    from bob_core import _litellm_key, _port
+    from bob_core import _litellm_key, _port, peer_role_value
 
     mcfg = bob_models.load_models_config()
     name, models = _ordered_models(mcfg, profile)
@@ -1002,7 +1031,7 @@ def gen_aider(profile: str = None) -> str:
             if not bob_models.is_chat_role(role):
                 continue
             rv = peer["pro"][role]
-            window = int((rv or {}).get("contextWindow") or peer.get("contextWindow") or 0) if isinstance(rv, dict) else int(peer.get("contextWindow") or 0)
+            window = peer_role_value(peer, rv, "contextWindow")
             base_name = f"{role}-pro"
             for name, effective in _wire_mode_models(base_name, window, "api"):
                 meta[f"openai/{name}"] = _meta_entry(effective)

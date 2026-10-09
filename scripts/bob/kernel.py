@@ -92,6 +92,30 @@ def _write_user_config(cfg: dict, path=None) -> None:
         raise
 
 
+class UserConfigError(ValueError):
+    """The overlay exists but is not a JSON object, so a read-modify-write would lose the user's keys."""
+
+
+def update_user_config(mutate, path=None):
+    """Read-modify-write the overlay: load it strictly, call `mutate(data)` to change it in place, write
+    it atomically, and return what `mutate` returned. A missing file starts as {}. A file that does not
+    parse as a JSON object raises UserConfigError and is left untouched, never rewritten from {}."""
+    import json
+    p = Path(path) if path else _user_config_path()
+    data = {}
+    if p.exists():
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            raise UserConfigError(f"{p} could not be read as JSON ({e}); fix it by hand, it was left "
+                                  "untouched") from e
+        if not isinstance(data, dict):
+            raise UserConfigError(f"{p} is not a JSON object; fix it by hand, it was left untouched")
+    result = mutate(data)
+    _write_user_config(data, p)
+    return result
+
+
 # --- the Bob venvs (one table: bootstrap, `venv <name>`, and aider-setup all read it) --------------
 
 VENVS = {
@@ -299,14 +323,26 @@ def _remove_legacy_aider_link(home: Path = None) -> None:
               file=sys.stderr)
 
 
-def setup_clients() -> None:
-    """Point VS Code Continue at the repo's generated config (symlink, copy fallback) and merge the
-    DeepSeek Harness drop-ins. Generates the configs first so the link targets exist. Only Bob-owned
-    entries are written, an existing user file is never clobbered, and every write is printed. dsh owns
-    its own settings document, so that one is merged rather than linked, and skips when dsh is not
-    installed. aider is opt-in (bob aider-setup) and runs with an explicit --config, so nothing is wired
-    into the home dir for it."""
+def setup_clients(install_dsh: bool = False) -> None:
+    """Point VS Code Continue at the repo's generated config (symlink, copy fallback) and wire the
+    DeepSeek Harness link. Generates the configs first so the link targets exist. Only Bob-owned
+    entries are written, an existing user file is never clobbered, and every write is printed. aider is
+    opt-in (bob aider-setup) and runs with an explicit --config, so nothing is wired into the home dir
+    for it.
+
+    `install_dsh` is the `bob setup` path: it installs the whole DSH link (package, profile home, route,
+    credential, MCP tools when enabled, bridge, default model). Without it (`bob update`) only the parts
+    already present are refreshed, so a bridge, MCP entry, mode or default model the user turned off
+    stays off. agent.dshEnabled false (`bob dsh uninstall`) skips DSH on both paths."""
     _tools_on_path()
+    # Runs here as well as in build.py: `bob update` executes the build.py loaded before the checkout,
+    # while kernel and stack are imported after it, so new cleanup code takes effect on that update.
+    try:
+        import stack
+        for line in stack.remove_legacy_webui():
+            print(f"  {line}", file=sys.stderr)
+    except Exception as e:  # noqa: BLE001 (cleanup is best-effort; setup continues)
+        print(f"  legacy Open WebUI cleanup skipped ({e})", file=sys.stderr)
     import bob_dsh
     import generate
     cfg = _load_config()
@@ -316,12 +352,24 @@ def setup_clients() -> None:
     _wire(REPO / "config" / "continue" / "config.yaml", home / ".continue" / "config.yaml")
     _remove_legacy_aider_link(home)
 
-    # One DSH call does the whole link: pinned package install, non-interactive profile-home creation,
-    # provider route + credential, MCP tools when the user has enabled them, native bridge, and the
-    # default DSH model. `bob dsh install` is the same function, so setup and repair cannot drift.
-    tools = bool((cfg.get("agent", {}) or {}).get("mcpEnabled"))
-    print("  " + bob_dsh.install(tools=tools, bridge=True, use_default=True).replace("\n", "\n  "),
-          file=sys.stderr)
+    # Setup runs the same install `bob dsh install` does, so setup and repair cannot drift; update runs
+    # the refresh, which never re-adds what the user removed.
+    agent = cfg.get("agent", {}) or {}
+    import generate
+    tools = generate.dsh_tools_enabled(cfg)
+    if not bob_dsh.link_enabled(cfg):
+        out = "DSH link disabled (agent.dshEnabled is false); `bob dsh install` turns it back on"
+    elif install_dsh:
+        try:
+            out = bob_dsh.install(tools=tools, bridge=True, use_default=True)
+        except Exception as e:  # noqa: BLE001 (DSH is one client; never sink the rest of setup)
+            out = f"DSH link install failed (non-fatal): {e}; retry with `bob dsh install`"
+    else:
+        try:
+            out = bob_dsh.refresh(tools=tools)
+        except Exception as e:  # noqa: BLE001
+            out = f"DSH link refresh failed (non-fatal): {e}; retry with `bob dsh install`"
+    print("  " + out.replace("\n", "\n  "), file=sys.stderr)
 
     if not _have("node"):
         print("  Node.js not found: Continue's npx-based MCP servers and n8n need it. Install Node.js "
@@ -542,11 +590,14 @@ def _onboard_declined() -> bool:
 
 
 def _record_onboard_declined() -> None:
-    cfg = _read_user_config()
-    if not isinstance(cfg.get("bob"), dict):
-        cfg["bob"] = {}
-    cfg["bob"]["onboardDeclined"] = True
-    _write_user_config(cfg)
+    def mark(cfg):
+        if not isinstance(cfg.get("bob"), dict):
+            cfg["bob"] = {}
+        cfg["bob"]["onboardDeclined"] = True
+    try:
+        update_user_config(mark)
+    except UserConfigError as e:
+        print(f"  (couldn't record that: {e})", file=sys.stderr)
 
 
 def offer_onboard() -> None:
@@ -611,10 +662,13 @@ def onboard() -> None:
     else:
         print("  (venv-litellm not built yet — run `bob memory init-profile` after setup.)", file=sys.stderr)
 
-    cfg = _read_user_config()
-    if not isinstance(cfg.get("bob"), dict):
-        cfg["bob"] = {}
-    _write_user_config(cfg)
+    def ensure_bob_section(cfg):
+        if not isinstance(cfg.get("bob"), dict):
+            cfg["bob"] = {}
+    try:
+        update_user_config(ensure_bob_section)
+    except UserConfigError as e:
+        print(f"  ({e})", file=sys.stderr)
 
     if api_key:
         try:
@@ -755,7 +809,7 @@ def setup(skip_models: bool = False, skip_build: bool = False, skip_voice: bool 
 
     _step(7, total, "Wire clients (Continue + dsh; aider when opted in)")
     try:
-        setup_clients()
+        setup_clients(install_dsh=True)
         if with_aider:
             print(setup_aider(), file=sys.stderr)
     except Exception as e:  # noqa: BLE001
@@ -813,7 +867,7 @@ def setup(skip_models: bool = False, skip_build: bool = False, skip_voice: bool 
         _tools_on_path()
         import stack
         stack.configure(config)
-        print(stack.stack_up(config, open_browser=True), file=sys.stderr)
+        print(stack.stack_up(config), file=sys.stderr)
     return 0
 
 

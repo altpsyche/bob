@@ -257,13 +257,26 @@ def health():
     return {"status": "ok", "tools_loaded": loaded, "tools_failed": errors}
 
 
+def _normalized_mode(mode: Optional[str]) -> Optional[str]:
+    """`mode` as its canonical context-mode name (an alias like 'fast' becomes 'quick'), None when it is
+    unset; an unknown mode is a 422 before anything is created or run."""
+    if mode is None or not str(mode).strip():
+        return None
+    from bob_context import ContextModeError, normalize_mode
+    try:
+        return normalize_mode(mode, _config)
+    except ContextModeError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
 @app.post("/v1/sessions")
 def create_session(req: SessionCreate = SessionCreate(), authorization: str = Header(default="")):
     owner = _authed_owner(authorization)
     if _sessions is None:
         raise HTTPException(status_code=503, detail="Server not yet initialized")
     budget = req.token_budget or _session_max_tokens()
-    session = _sessions.create(token_budget=budget, owner_id=owner, context_mode=req.context_mode)
+    session = _sessions.create(token_budget=budget, owner_id=owner,
+                               context_mode=_normalized_mode(req.context_mode))
     return {"session_id": session["id"], "token_budget": session["token_budget"],
             "context_mode": session.get("context_mode")}
 
@@ -301,6 +314,7 @@ def agent_completions(req: AgentRequest, authorization: str = Header(default="")
     _check_rate(identity)              # per-owner rate limit (429)
     _check_role_scope(identity, req.role)   # RBAC role gate (403)
     owner = identity.owner
+    req.context_mode = _normalized_mode(req.context_mode)
 
     session, history = _load_session_or_404(req.session_id, owner)
     mode = req.context_mode or (session or {}).get("context_mode")
@@ -344,6 +358,7 @@ async def agent_completions_stream(
     _check_role_scope(identity, req.role)   # RBAC role gate (403)
     owner = identity.owner
     scoped = _scoped_registry(identity)     # tool-scope restricted view
+    req.context_mode = _normalized_mode(req.context_mode)
 
     session, history = _load_session_or_404(req.session_id, owner)
     mode = req.context_mode or (session or {}).get("context_mode")
@@ -439,12 +454,7 @@ def create_task(req: TaskCreate, authorization: str = Header(default="")):
     identity = _authenticate(authorization)
     _check_rate(identity)
     owner = identity.owner
-    if req.context_mode:
-        from bob_context import normalize_mode
-        try:
-            req.context_mode = normalize_mode(req.context_mode, _config)
-        except Exception as e:  # noqa: BLE001
-            raise HTTPException(status_code=422, detail=str(e))
+    req.context_mode = _normalized_mode(req.context_mode)
     store = _task_store()
     rid = uuid.uuid4().hex[:8]
     store.save_run(rid, owner, "queued", req.goal, [], step=0)

@@ -1,17 +1,18 @@
 """Bob tool: read_result — page back a tool result that was truncated-and-retained or
 cleared from the transcript.
 
-Gated on agent.clearToolResults (default off) so with the flag off the default tool set is unchanged.
-When on, the loop may replace an old bulky tool-result message with a compact stub pointing at a
+Offered only when some context policy clears tool results (agent.clearToolResults or a context mode's
+clearToolResults), so with clearing off everywhere the default tool set is unchanged. When on, the loop may replace an old bulky tool-result message with a compact stub pointing at a
 retained handle (rN); this tool lets the model re-fetch the full text on demand instead of losing it.
 Reaches the run's ToolRegistry (which owns the retention store) via the RunContext seam, so its
 fn signature stays plain."""
 
 
 def enabled(config: dict) -> bool:
-    """Feature gate (read by ToolRegistry): only offered when context-editing is on, so with
-    clearToolResults=false the model never sees this tool and the default toolset is unchanged."""
-    return bool(config.get("agent", {}).get("clearToolResults", False))
+    """Feature gate (read by ToolRegistry): only offered when a policy a run can resolve to clears
+    tool results, since a cleared stub points the model at this tool."""
+    from bob_context import clearing_history_window
+    return clearing_history_window(config) > 0
 
 
 def configure(config: dict) -> None:

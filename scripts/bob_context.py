@@ -36,22 +36,32 @@ class ContextModeError(ValueError):
 def normalize_mode(value=None, config: Optional[dict] = None) -> str:
     """Return the canonical mode name for ``value``.
 
-    Precedence: explicit value, then agent.contextMode, then quick.  Raises
-    ContextModeError when the value is unknown.
+    Precedence: explicit value, then agent.contextMode, then quick.  A mode defined
+    in agent.contextModes is matched by its own name before the aliases, so a user
+    mode called ``fast`` is that mode, not Quick.  Raises ContextModeError when the
+    value is unknown, naming agent.contextMode when that is where it came from.
     """
-    raw = value
-    if raw is None:
-        raw = ((config or {}).get("agent", {}) or {}).get("contextMode")
+    agent = (config or {}).get("agent", {}) or {}
+    from_config = value is None or not str(value).strip()
+    raw = agent.get("contextMode") if from_config else value
     if raw is None or not str(raw).strip():
         raw = DEFAULT_CONTEXT_MODE
     key = str(raw).strip().lower()
+    modes = agent.get("contextModes")
+    if not isinstance(modes, dict) or not modes:
+        return MODE_ALIASES.get(key, key)
+    if key in modes:
+        return key
     mode = MODE_ALIASES.get(key, key)
-    modes = ((config or {}).get("agent", {}) or {}).get("contextModes")
-    if isinstance(modes, dict) and mode not in modes:
+    if mode in modes:
+        return mode
+    valid = ", ".join(known_modes(config))
+    if from_config:
         raise ContextModeError(
-            f"unknown context mode '{value}'. Valid: {', '.join(sorted(modes))}"
+            f"agent.contextMode is '{raw}', which is not a context mode. "
+            f"Set it to one of: {valid} (config/user.json)"
         )
-    return mode
+    raise ContextModeError(f"unknown context mode '{raw}'. Valid: {valid}")
 
 
 def known_modes(config: Optional[dict] = None) -> list:
@@ -93,19 +103,9 @@ def mode_window(role_window: int, backend: str, mode: str, config: Optional[dict
     This is the generator-side counterpart of ContextPolicy.window, used to advertise the same window
     to external clients that Bob itself would enforce.
     """
-    cfg = config or {}
-    agent = cfg.get("agent", {}) or {}
-    spec = (agent.get("contextModes") or {}).get(mode) or {}
-    block = spec.get(backend) or {}
-    cap = block.get("maxContextTokens", agent.get("maxContextTokens", 0))
-    try:
-        cap = int(cap or 0)
-    except (TypeError, ValueError):
-        cap = 0
-    base = int(role_window or 0)
-    if cap > 0:
-        return min(cap, base) if base else cap
-    return base
+    from bob_core import cap_window
+
+    return cap_window(role_window, _resolve_block(config or {}, mode, backend).max_context_tokens)
 
 
 def wire_model_variants(role: str, role_window: int, backend: str,
@@ -124,6 +124,14 @@ def apply_openai_request(config: dict, model_name: str, body: dict) -> dict:
 
     This is the single enforcement seam for every external harness.  A request whose model name has no
     mode suffix is returned unchanged, so base ``chat`` and ``chat-pro`` keep their existing behavior.
+
+    The window is the mode's, the same one the generated client configs advertise (mode_window), and
+    the prompt is measured with the plain tokenizer count (no safety padding): the harness was told
+    that window and manages its own prompt against it, so this seam only steps in when a request would
+    really exceed it.  Messages are trimmed by whole turns (bob_core.fit_messages), reserving the mode's
+    output or the client's smaller ask.  A max_tokens / max_completion_tokens the client sent is kept in
+    the field it used and lowered only when it asks for more than the window leaves after the prompt
+    or than the model can produce; a request that sent neither stays without one.
     """
     if not isinstance(body, dict):
         return body
@@ -135,31 +143,30 @@ def apply_openai_request(config: dict, model_name: str, body: dict) -> dict:
         window = policy.window(config, base)
     except Exception:
         return body
-    if not window:
-        return body
     messages = body.get("messages")
-    if not isinstance(messages, list) or not messages:
+    if not window or not isinstance(messages, list) or not messages:
         return body
 
-    from bob_core import est_tokens, fit_messages
+    from bob_core import _COMPLETE_MARGIN_TOKENS, est_tokens, fit_messages, message_tokens, role_max_output
 
-    tools = body.get("tools")
-    tools_tokens = est_tokens(json.dumps(tools, ensure_ascii=False)) + 4 if tools else 0
-    requested = body.get("max_tokens")
-    if requested is None:
-        requested = body.get("max_completion_tokens")
-    try:
-        requested = int(requested or 0)
-    except (TypeError, ValueError):
-        requested = 0
-    policy_out = int(policy.output_tokens(config, base) or 0)
-    output = min(requested, policy_out) if requested > 0 else policy_out
-    output = max(1, output)
-    send_budget = max(0, int(window) - output - int(tools_tokens) - 64)
+    tools = body.get("tools") or body.get("functions")
+    tools_tokens = est_tokens(json.dumps(tools, ensure_ascii=False), pad=False) + 4 if tools else 0
+    fields = [f for f in ("max_tokens", "max_completion_tokens") if body.get(f) is not None]
+    requested = max((_int(body[f], 0) for f in fields), default=0)
+    policy_out = max(1, int(policy.output_tokens(config, base) or 0))
+    reserve = min(requested, policy_out) if requested > 0 else policy_out
+    fixed = int(tools_tokens) + _COMPLETE_MARGIN_TOKENS
     out = dict(body)
-    out["messages"] = fit_messages(messages, send_budget)
-    out["max_tokens"] = output
-    out.pop("max_completion_tokens", None)
+    out["messages"] = fit_messages(messages, max(1, int(window) - reserve - fixed), pad=False)
+    if fields:
+        prompt = sum(message_tokens(m, pad=False) for m in out["messages"]) + fixed
+        limit = max(1, int(window) - prompt)
+        model_max = role_max_output(config, base)
+        if model_max > 0:
+            limit = min(limit, model_max)
+        for f in fields:
+            if _int(out[f], 0) > limit:
+                out[f] = limit
     return out
 
 
@@ -201,13 +208,9 @@ class ContextPolicy:
         ``-c`` slot or an API peer's advertised ``contextWindow``.  A positive
         mode cap only lowers it; zero means use the full role window.
         """
-        from bob_core import role_window
+        from bob_core import cap_window, role_window
 
-        base = int(role_window(config, role) or 0)
-        cap = int(self.max_context_tokens or 0)
-        if cap > 0:
-            return min(cap, base) if base else cap
-        return base
+        return cap_window(role_window(config, role), self.max_context_tokens)
 
     def output_tokens(self, config: dict, role: str) -> int:
         """Requested output reservation/max_tokens for ``role`` under this mode."""
@@ -247,54 +250,117 @@ class ContextPolicy:
         }
 
 
+def clearing_history_window(config: dict) -> int:
+    """The largest history window of any policy that clears tool results, 0 when none does.
+
+    The tool registry is built once per process, before a run picks its mode and role, so the
+    re-fetch tool and the result store are sized for every policy a run could resolve to.
+    """
+    cfg = config or {}
+    modes = ((cfg.get("agent", {}) or {}).get("contextModes") or {})
+    policies = [_resolve_block(cfg, None, "local")]
+    policies += [_resolve_block(cfg, name, backend) for name, spec in modes.items()
+                 if isinstance(spec, dict) for backend in ("local", "api")]
+    return max((p.max_history_msgs for p in policies if p.clear_tool_results), default=0)
+
+
+# ContextPolicy field -> (config key, fallback when no layer sets it).
+_POLICY_KEYS = {
+    "max_context_tokens": ("maxContextTokens", 0),
+    "max_history_msgs": ("maxHistoryMsgs", 40),
+    "output_reserve_tokens": ("outputReserveTokens", 0),
+    "max_tool_result_tokens": ("maxToolResultTokens", 1000),
+    "compaction": ("compaction", "truncate"),
+    "compact_keep_last_turns": ("compactKeepLastTurns", 6),
+    "compact_summary_max_tokens": ("compactSummaryMaxTokens", 512),
+    "stable_prefix": ("stablePrefix", False),
+    "clear_tool_results": ("clearToolResults", False),
+    "clear_tool_results_after_tokens": ("clearToolResultsAfterTokens", 4000),
+    "compact_schemas_after": ("compactSchemasAfter", 12),
+}
+_MISSING = object()
+
+
+def _shipped(*path):
+    """The value at ``path`` under config/defaults.json runtime, or {} when absent."""
+    from bob_core import load_defaults
+
+    node = load_defaults().get("runtime", {}) or {}
+    for key in path:
+        node = node.get(key) if isinstance(node, dict) else None
+    return node if isinstance(node, dict) else {}
+
+
+def _layered(key, block: dict, shipped_block: dict, user: dict, shipped_user: dict, default):
+    """One policy value by layer: the user's mode block, the user's global setting, the shipped mode
+    block, the shipped global setting.
+
+    The runtime config is one deep merge of config/defaults.json and config/user.json, so a layer
+    counts as the user's when its value differs from the shipped one (or the shipped file has no such
+    key, as for a mode the user defined).  Setting a key to its shipped value is therefore the same
+    as leaving it unset.
+    """
+    own = block.get(key, _MISSING)
+    if own is not _MISSING and shipped_block.get(key, _MISSING) != own:
+        return own
+    glob = user.get(key, _MISSING)
+    if glob is not _MISSING and shipped_user.get(key, _MISSING) != glob:
+        return glob
+    if own is not _MISSING:
+        return own
+    return default if glob is _MISSING else glob
+
+
+def _resolve_block(cfg: dict, name: Optional[str], backend: str) -> ContextPolicy:
+    """The policy of mode ``name`` (None = no mode block) on ``backend``, without validating the name."""
+    agent = cfg.get("agent", {}) or {}
+    spec = ((agent.get("contextModes") or {}).get(name) or {}) if name else {}
+    block = (spec.get(backend) if isinstance(spec, dict) else None) or {}
+    if not isinstance(block, dict):
+        block = {}
+    shipped_block = _shipped("agent", "contextModes", name, backend) if name else {}
+    shipped_agent = _shipped("agent")
+    values = {field: _layered(key, block, shipped_block, agent, shipped_agent, default)
+              for field, (key, default) in _POLICY_KEYS.items()}
+    # The memory budget's global setting is memory.maxInjectedTokens, under the mode blocks' key name.
+    mem_cfg = cfg.get("memory", {}) or {}
+    shipped_mem = _shipped("memory").get("maxInjectedTokens", _MISSING)
+    memory_tokens = _layered(
+        "memoryMaxInjectedTokens", block, shipped_block,
+        {"memoryMaxInjectedTokens": mem_cfg["maxInjectedTokens"]} if "maxInjectedTokens" in mem_cfg else {},
+        {"memoryMaxInjectedTokens": shipped_mem}, 1200 if shipped_mem is _MISSING else shipped_mem)
+    return ContextPolicy(
+        mode=name or DEFAULT_CONTEXT_MODE,
+        backend=backend,
+        label=str((spec.get("label") if isinstance(spec, dict) else None) or (name or "").title()),
+        max_context_tokens=_int(values["max_context_tokens"], 0),
+        max_history_msgs=_int(values["max_history_msgs"], 40),
+        output_reserve_tokens=_int(values["output_reserve_tokens"], 0),
+        memory_max_injected_tokens=_int(memory_tokens, 1200),
+        max_tool_result_tokens=_int(values["max_tool_result_tokens"], 1000),
+        compaction=str(values["compaction"] or "truncate"),
+        compact_keep_last_turns=_int(values["compact_keep_last_turns"], 6),
+        compact_summary_max_tokens=_int(values["compact_summary_max_tokens"], 512),
+        stable_prefix=bool(values["stable_prefix"]),
+        clear_tool_results=bool(values["clear_tool_results"]),
+        clear_tool_results_after_tokens=_int(values["clear_tool_results_after_tokens"], 4000),
+        compact_schemas_after=_int(values["compact_schemas_after"], 12),
+    )
+
+
 def resolve(config: dict, role: str, mode: Optional[str] = None) -> ContextPolicy:
     """Resolve the active context policy for ``role``.
 
     ``role`` must already be the effective served role (after fallback and
     image routing).  Local and API blocks are selected with the same
-    ``is_local_role`` seam the loop uses for reasoning kwargs.
+    ``is_local_role`` seam the loop uses for reasoning kwargs.  Each value comes
+    from the first layer that sets it (_layered): the user's mode block, the
+    user's agent.* (memory.maxInjectedTokens for the memory budget), the shipped
+    mode block, the shipped agent.* default.
     """
-    from bob_core import _mem, is_local_role
+    from bob_core import is_local_role
 
     cfg = config or {}
     name = normalize_mode(mode, cfg)
-    modes = (cfg.get("agent", {}) or {}).get("contextModes") or {}
-    spec = modes.get(name) or {}
     backend = "local" if is_local_role(role, cfg) else "api"
-    block = spec.get(backend) or {}
-    base_agent = cfg.get("agent", {}) or {}
-    mem_cfg = cfg.get("memory", {}) or {}
-
-    def pick(key, default):
-        if key in block:
-            return block[key]
-        return base_agent.get(key, default)
-
-    try:
-        memory_default = _mem(mem_cfg, "maxInjectedTokens") or 1200
-    except Exception:
-        memory_default = 1200
-
-    # Memory and tool-result budgets are mode-specific when present.  A mode
-    # can still fall back to the existing agent/memory values.
-    memory_tokens = block.get("memoryMaxInjectedTokens")
-    if memory_tokens is None:
-        memory_tokens = base_agent.get("memoryMaxInjectedTokens", memory_default)
-
-    return ContextPolicy(
-        mode=name,
-        backend=backend,
-        label=str(spec.get("label") or name.title()),
-        max_context_tokens=_int(pick("maxContextTokens", 0), 0),
-        max_history_msgs=_int(pick("maxHistoryMsgs", 40), 40),
-        output_reserve_tokens=_int(pick("outputReserveTokens", 0), 0),
-        memory_max_injected_tokens=_int(memory_tokens, 1200),
-        max_tool_result_tokens=_int(pick("maxToolResultTokens", 1000), 1000),
-        compaction=str(pick("compaction", "truncate") or "truncate"),
-        compact_keep_last_turns=_int(pick("compactKeepLastTurns", 6), 6),
-        compact_summary_max_tokens=_int(pick("compactSummaryMaxTokens", 512), 512),
-        stable_prefix=bool(pick("stablePrefix", False)),
-        clear_tool_results=bool(pick("clearToolResults", False)),
-        clear_tool_results_after_tokens=_int(pick("clearToolResultsAfterTokens", 4000), 4000),
-        compact_schemas_after=_int(pick("compactSchemasAfter", 12), 12),
-    )
+    return _resolve_block(cfg, name, backend)

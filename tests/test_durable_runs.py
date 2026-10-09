@@ -180,7 +180,7 @@ class TestResume(unittest.TestCase):
     def _store(self):
         return bob_checkpoint.CheckpointStore(db_path=self.db, shadow_dir=self.dir / "blobs")
 
-    def _seed_interrupted_run(self, run_id="r1", owner="alice"):
+    def _seed_interrupted_run(self, run_id="r1", owner="alice", metrics=None):
         """Persist a run as if it had completed step 0 (a tool ran, its result recorded) and was then
         killed before step 1 -- exactly the state resume must continue from."""
         messages = [
@@ -190,7 +190,8 @@ class TestResume(unittest.TestCase):
             {"role": "user", "content": "<tool_response>{\"name\": \"already_ran\", \"content\": \"done\"}</tool_response>"},
         ]
         self._store().save_run(run_id, owner, "running", "do the task", messages, step=1,
-                               scope="proj", agent_depth=0, todos=[{"text": "finish", "done": False}])
+                               scope="proj", agent_depth=0, todos=[{"text": "finish", "done": False}],
+                               metrics=metrics)
 
     def test_resume_reenters_at_next_step_and_finishes(self):
         self._seed_interrupted_run()
@@ -232,6 +233,21 @@ class TestResume(unittest.TestCase):
         self.assertEqual(captured["scope"], "proj")
         self.assertEqual(captured["agent_depth"], 0)
         self.assertEqual(captured["todos"], [{"text": "finish", "done": False}])
+
+    def test_resume_restores_the_checkpointed_context_mode(self):
+        self._seed_interrupted_run(metrics={"context_mode": "deep"})
+        captured = {}
+
+        class _Reg(_common.FakeRegistry):
+            def dispatch_call(self, name, arguments_json, context=None):
+                captured["mode"] = context.context_mode
+                return super().dispatch_call(name, arguments_json, context)
+
+        turns = ['<tool_call>{"name": "probe", "arguments": {}}</tool_call>', "ok"]
+        bob_core.get_llm_client = lambda config=None: _common.scripted_client(turns)
+        list(bob_loop.run_agent_events(
+            "", self.cfg, agency="silent", registry=_Reg({"probe": "x"}), owner="alice", resume="r1"))
+        self.assertEqual(captured["mode"], "deep")
 
     def test_resume_unknown_or_wrong_owner_errors(self):
         self._seed_interrupted_run(owner="alice")

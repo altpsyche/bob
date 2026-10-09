@@ -234,6 +234,12 @@ def _compute(args: dict, allowed_write: list, *, home=None) -> EditResult:
             res.rejections.append({"path": path, "hunk_index": None, "reason": "sensitive file refused",
                                    "closest": ""})
             continue
+        if bob_fsguard.is_protected_code(p) and not bob_fsguard.protected_write_allowed():
+            res.ok = False
+            res.rejections.append({"path": path, "hunk_index": None,
+                                   "reason": "Bob's own config or code is writable only from an attended, "
+                                             "approved call", "closest": ""})
+            continue
 
         exists = p.exists()
         old = p.read_text(encoding="utf-8", errors="replace") if exists else ""

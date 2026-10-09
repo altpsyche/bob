@@ -6,6 +6,7 @@ or calling bob_memory.py via subprocess.
 Usage:
     from bob_core import load_config, get_llm_client, memory_recall, memory_store
 """
+import functools
 import json
 import sys
 from pathlib import Path
@@ -105,17 +106,26 @@ def _tiktoken_encoding():
     return _TIKTOKEN_ENC
 
 
-def est_tokens(text) -> int:
+def est_tokens(text, pad: bool = True) -> int:
     """Conservative token estimate. Empty -> 0.
 
     The estimator is intentionally biased high for real content: undercounting a
     context budget can overflow the backend, while overcounting only leaves a
-    little headroom unused.
+    little headroom unused.  ``pad=False`` drops the dense-content safety margin
+    and returns the plain tokenizer count, for checking a prompt against a window
+    a client was told about and counts against itself.
     """
     if not text:
         return 0
     if not isinstance(text, str):
         text = json.dumps(text, ensure_ascii=False)
+    return _est_text(text, bool(pad))
+
+
+# The loop re-measures its whole history every step and most of it is unchanged, so counts are
+# memoized per string (a str caches its own hash, so a hit costs no re-hash of a large result).
+@functools.lru_cache(maxsize=2048)
+def _est_text(text: str, pad: bool) -> int:
     enc = _tiktoken_encoding()
     if enc is not None:
         try:
@@ -123,21 +133,26 @@ def est_tokens(text) -> int:
         except Exception:
             n = 0
         if n:
-            # Tiny strings are already exact enough; a safety multiplier there
-            # would only make unit-level checks and short prompts noisy.
-            if n <= 3:
-                return n
-            # Apply the safety margin only to token-dense content (code, JSON, CJK,
-            # emoji, UUID/hex).  English prose and prose-heavy schemas are already
-            # close to exact under o200k, and padding them wastes context.
-            if (n / max(1, len(text))) >= 0.25:
-                return max(n, (n * (100 + _TOKEN_SAFETY_PCT) + 99) // 100)
-            return n
+            return _padded(n, len(text), pad)
     # Fallback: keep the historical 4-chars/token for ASCII and charge non-ASCII
     # at one token per codepoint, which is conservative for CJK and emoji.
     non_ascii = sum(1 for ch in text if ord(ch) > 127)
     ascii_len = len(text) - non_ascii
     return max(1, (ascii_len + _CHARS_PER_TOKEN - 1) // _CHARS_PER_TOKEN + non_ascii)
+
+
+def _padded(n: int, chars: int, pad: bool = True) -> int:
+    """A tokenizer count ``n`` for ``chars`` characters with the dense-content safety margin applied."""
+    # Tiny strings are already exact enough; a safety multiplier there
+    # would only make unit-level checks and short prompts noisy.
+    if n <= 3:
+        return n
+    # Apply the safety margin only to token-dense content (code, JSON, CJK,
+    # emoji, UUID/hex).  English prose and prose-heavy schemas are already
+    # close to exact under o200k, and padding them wastes context.
+    if pad and (n / max(1, chars)) >= 0.25:
+        return max(n, (n * (100 + _TOKEN_SAFETY_PCT) + 99) // 100)
+    return n
 
 
 def tokens_to_chars(tokens) -> int:
@@ -149,36 +164,58 @@ def tokens_to_chars(tokens) -> int:
     return max(0, int(tokens) * _CHARS_PER_TOKEN)
 
 
-def _clip_prefix(text: str, max_tokens: int) -> str:
-    """Largest prefix of ``text`` whose estimate is at most ``max_tokens``."""
+def _clip_end(text: str, max_tokens: int, keep_head: bool) -> str:
+    """The largest prefix (``keep_head``) or suffix of ``text`` whose estimate is at most ``max_tokens``.
+
+    With tiktoken the text is encoded once and cut on token boundaries, shrinking the token count
+    until the padded estimate fits; a binary search over characters is the fallback and the final
+    refinement, bounded to the text that is left."""
     if max_tokens <= 0 or not text:
         return ""
     if est_tokens(text) <= max_tokens:
         return text
-    lo, hi = 0, len(text)
+
+    def cut(n_chars):
+        return text[:n_chars] if keep_head else (text[-n_chars:] if n_chars else "")
+
+    hi = len(text)
+    enc = _tiktoken_encoding()
+    if enc is not None:
+        try:
+            toks = enc.encode(text, disallowed_special=())
+        except Exception:
+            toks = []
+        k = min(len(toks), max_tokens)
+        for _ in range(8):
+            if k <= 0:
+                break
+            part = toks[:k] if keep_head else toks[-k:]
+            # A cut through a multi-byte character drops its partial bytes, so the result stays an
+            # exact prefix (or suffix) of the text.
+            cand = enc.decode_bytes(part).decode("utf-8", errors="ignore")
+            n = est_tokens(cand)
+            if n <= max_tokens:
+                return cand
+            hi = min(hi, len(cand))
+            k = min(k - 1, k * max_tokens // max(1, n))
+    lo = 0
     while lo < hi:
         mid = (lo + hi + 1) // 2
-        if est_tokens(text[:mid]) <= max_tokens:
+        if est_tokens(cut(mid)) <= max_tokens:
             lo = mid
         else:
             hi = mid - 1
-    return text[:lo]
+    return cut(lo)
+
+
+def _clip_prefix(text: str, max_tokens: int) -> str:
+    """Largest prefix of ``text`` whose estimate is at most ``max_tokens``."""
+    return _clip_end(text, max_tokens, keep_head=True)
 
 
 def _clip_suffix(text: str, max_tokens: int) -> str:
     """Largest suffix of ``text`` whose estimate is at most ``max_tokens``."""
-    if max_tokens <= 0 or not text:
-        return ""
-    if est_tokens(text) <= max_tokens:
-        return text
-    lo, hi = 0, len(text)
-    while lo < hi:
-        mid = (lo + hi + 1) // 2
-        if est_tokens(text[-mid:]) <= max_tokens:
-            lo = mid
-        else:
-            hi = mid - 1
-    return text[-lo:] if lo else ""
+    return _clip_end(text, max_tokens, keep_head=False)
 
 
 def clip_text_to_tokens(text: str, max_tokens: int, marker: str = "\n\n[...middle truncated to fit the token budget...]\n\n") -> str:
@@ -198,12 +235,17 @@ def clip_text_to_tokens(text: str, max_tokens: int, marker: str = "\n\n[...middl
     head_budget = body_budget // 2
     head = _clip_prefix(text, head_budget)
     tail_budget = max(0, body_budget - est_tokens(head))
-    tail = _clip_suffix(text, tail_budget)
-    candidate = head + marker + tail
-    # Token counts are not perfectly additive across a concatenation boundary; verify the final
-    # candidate and fall back to a plain safe prefix if the marker/tail pushed it over.
-    if est_tokens(candidate) <= max_tokens:
-        return candidate
+    # Token counts are not perfectly additive across a concatenation boundary (nor is the padded
+    # estimate's rounding): verify the candidate, give the tail back what it overshot, and fall back
+    # to a plain safe prefix only if that still does not fit.
+    for _ in range(3):
+        candidate = head + marker + _clip_suffix(text, tail_budget)
+        over = est_tokens(candidate) - max_tokens
+        if over <= 0:
+            return candidate
+        tail_budget -= over
+        if tail_budget <= 0:
+            break
     return _clip_prefix(text, max_tokens)
 
 
@@ -686,6 +728,17 @@ def _pro_spec(mcfg: dict, role: str):
     return None, None
 
 
+def peer_role_value(peer: dict, rv, key: str) -> int:
+    """A pro role's integer `key` (contextWindow, maxOutputTokens): the role's own value, else the
+    peer's, else 0. `rv` is the role's entry under the peer's `pro` map, a dict or a bare model string.
+    The one lookup the runtime and every generated client config use."""
+    own = rv.get(key) if isinstance(rv, dict) else None
+    try:
+        return int(own or (peer or {}).get(key) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def role_window(config: dict, role: str) -> int:
     """The per-request context window (tokens) of the model serving `role`: a local role's ctx on the
     active profile divided across its slots (slot_ctx), or a pro role's contextWindow from the peer that
@@ -698,24 +751,31 @@ def role_window(config: dict, role: str) -> int:
         return slot_ctx(spec, mcfg.get("defaults") or {})
     peer, rv = _pro_spec(mcfg, role)
     if peer is not None:
-        return int(rv.get("contextWindow") or peer.get("contextWindow") or 0)
+        return peer_role_value(peer, rv, "contextWindow")
     return 0
+
+
+def cap_window(window, cap) -> int:
+    """`window` lowered to `cap` when `cap` is a positive number; 0 / 'auto' / junk leaves it alone. With
+    the window unknown (0) a positive cap stands in for it. The one cap rule behind request_window, the
+    context-mode windows and the windows generated client configs advertise."""
+    try:
+        cap = int(cap or 0)
+    except (TypeError, ValueError):
+        cap = 0
+    window = int(window or 0)
+    if cap > 0:
+        return min(cap, window) if window else cap
+    return window
 
 
 def request_window(config: dict, role: str, explicit=None) -> int:
     """The context one request on `role` may fill: the model's per-request window (role_window), capped by
     agent.maxContextTokens when that is a positive number (0 / 'auto' means the model's own window).
     `explicit` stands in for the config value. 0 when neither is known."""
-    window = role_window(config, role)
     if explicit is None:
         explicit = ((config or {}).get("agent", {}) or {}).get("maxContextTokens", 0)
-    try:
-        explicit = int(explicit or 0)
-    except (TypeError, ValueError):
-        explicit = 0                      # 'auto' (or junk) -> the model's own window
-    if explicit > 0:
-        return min(explicit, window) if window else explicit
-    return window
+    return cap_window(role_window(config, role), explicit)
 
 
 def cap_output(max_out: int, window: int) -> int:
@@ -737,7 +797,18 @@ def role_output_tokens(config: dict, role: str) -> int:
     peer, rv = _pro_spec(mcfg, role)
     if peer is None:
         return reserve
-    return int(rv.get("maxOutputTokens") or peer.get("maxOutputTokens") or reserve)
+    return peer_role_value(peer, rv, "maxOutputTokens") or reserve
+
+
+def role_max_output(config: dict, role: str) -> int:
+    """The most a request on `role` may generate by the model's own limit: a pro role's maxOutputTokens
+    (the role's, else the peer's), 0 when no limit is known (a local role, whose only bound is its
+    window)."""
+    if not role or not role.endswith("-pro"):
+        return 0
+    mcfg, _name, _roles = _models_view()
+    peer, rv = _pro_spec(mcfg, role)
+    return peer_role_value(peer, rv, "maxOutputTokens") if peer is not None else 0
 
 
 def is_local_role(model: str, config: dict = None) -> bool:
@@ -826,41 +897,126 @@ class CompletionError(RuntimeError):
 # Headroom kept between the fitted prompt and the window so template tokens never tip it over.
 _COMPLETE_MARGIN_TOKENS = 64
 
+# Flat token cost of one image content block. An image's prompt cost depends on its pixels (the vision
+# encoder's patch count), not on the length of its base64 text, so it is charged at a fixed estimate
+# sized for bob_vision.resize_image's 1024px output.
+IMAGE_BLOCK_TOKENS = 1024
 
-def _message_tokens_est(m: dict) -> int:
-    content = m.get("content") or ""
-    if not isinstance(content, str):
-        content = json.dumps(content)
-    return est_tokens(content) + 4
+# Message fields other than `content` that the chat template renders into the prompt.
+_TEXT_FIELDS = ("reasoning_content", "refusal")
+_CALL_FIELDS = ("tool_calls", "function_call")
+# Roles whose messages are always kept by fit_messages.
+_SYSTEM_ROLES = ("system", "developer")
+# Smallest share a clipped message keeps, so a shrunk tool result still says what it was.
+_MIN_CLIP_TOKENS = 64
+_CLIP_MARKER = "\n\n[...middle truncated to fit the model's context window...]\n\n"
 
 
-def fit_messages(messages: list, budget: int) -> list:
-    """Fit a chat message list into `budget` tokens: the system message(s) and the newest message are
-    always kept; older messages are dropped oldest-first, and a newest message that alone overflows is
-    cut in the middle (head and tail survive). Returns a new list; `budget` <= 0 returns it unchanged."""
-    if budget <= 0:
-        return list(messages)
-    system = [m for m in messages if m.get("role") == "system"]
-    rest = [m for m in messages if m.get("role") != "system"]
-    room = budget - sum(_message_tokens_est(m) for m in system)
-    kept: list = []
-    for m in reversed(rest):
-        t = _message_tokens_est(m)
-        if room - t >= 0:
-            kept.append(m)
-            room -= t
-            continue
-        if not kept:
-            content = m.get("content")
-            if isinstance(content, str):
-                marker = "\n\n[...middle truncated to fit the model's context window...]\n\n"
-                content_budget = max(0, room - 4)
-                cut = clip_text_to_tokens(content, content_budget, marker=marker)
-                kept.append({**m, "content": cut})
+def content_tokens(content, pad: bool = True) -> int:
+    """Estimated tokens of a message's content: a string by length; an OpenAI content-block list by its
+    text parts plus IMAGE_BLOCK_TOKENS per image block."""
+    if isinstance(content, str):
+        return est_tokens(content, pad)
+    if isinstance(content, list):
+        total = 0
+        for block in content:
+            if isinstance(block, dict) and block.get("type") in ("image_url", "input_image"):
+                total += IMAGE_BLOCK_TOKENS
+            elif isinstance(block, dict) and isinstance(block.get("text"), str):
+                total += est_tokens(block["text"], pad)
             else:
-                kept.append(m)
-        break
-    return system + list(reversed(kept))
+                total += est_tokens(json.dumps(block, ensure_ascii=False), pad)
+        return total
+    return est_tokens(json.dumps(content, ensure_ascii=False), pad) if content else 0
+
+
+def message_tokens(m: dict, pad: bool = True) -> int:
+    """Estimated token cost of one chat message: its content, the tool calls it makes (function names
+    and arguments), any other rendered text field, and a per-message role/format overhead."""
+    total = content_tokens(m.get("content") or "", pad) + 4
+    for key in _TEXT_FIELDS:
+        if isinstance(m.get(key), str):
+            total += est_tokens(m[key], pad)
+    for key in _CALL_FIELDS:
+        calls = m.get(key)
+        if not calls:
+            continue
+        for tc in (calls if isinstance(calls, list) else [calls]):
+            total += est_tokens(json.dumps(tc, ensure_ascii=False, default=str), pad) + 4
+    return total
+
+
+def _message_units(messages: list, pinned: set) -> list:
+    """The droppable messages of `messages` (indices not in `pinned`) grouped into units that must stay
+    or go together: an assistant message carrying tool calls with every tool result that follows it.
+    A tool result is never separated from the call it answers, so trimming can't leave an orphan
+    `tool` message or a tool call without its result."""
+    units: list = []
+    for i, m in enumerate(messages):
+        if i in pinned:
+            continue
+        role = m.get("role")
+        if role in ("tool", "function") and units:
+            prev = messages[units[-1][-1]]
+            if units[-1][-1] == i - 1 and (prev.get("role") in ("tool", "function")
+                                            or any(prev.get(k) for k in _CALL_FIELDS)):
+                units[-1].append(i)
+                continue
+        units.append([i])
+    return units
+
+
+def fit_messages(messages: list, budget: int, *, pad: bool = True) -> list:
+    """Fit a chat message list into `budget` tokens by dropping whole turns, oldest first.
+
+    Always kept: every system (and developer) message, the first user message (the goal) and the last
+    user message (the current ask). The rest is grouped into units (_message_units: an assistant tool
+    call travels with its results) and the oldest units are dropped until the list fits; the newest unit
+    is kept too, since it is what the model answers. If the kept messages still overflow, the largest
+    user and tool-result texts are cut in the middle (head and tail survive), largest first. System
+    messages and tool-call arguments are never cut, so a list whose kept part cannot fit is returned
+    over budget but structurally valid, and the backend reports the overflow. Returns a new list;
+    `budget` <= 0 returns it unchanged. `pad` is passed to the estimator (est_tokens)."""
+    msgs = list(messages)
+    if budget <= 0 or not msgs:
+        return msgs
+    cost = [message_tokens(m, pad) for m in msgs]
+    total = sum(cost)
+    if total <= budget:
+        return msgs
+    users = [i for i, m in enumerate(msgs) if m.get("role") == "user"]
+    pinned = {i for i, m in enumerate(msgs) if m.get("role") in _SYSTEM_ROLES}
+    pinned |= set(users[:1] + users[-1:])
+    units = _message_units(msgs, pinned)
+    # The newest unit is what the model answers, unless the last user message comes after it.
+    if units and (not users or units[-1][0] > users[-1]):
+        units = units[:-1]
+    dropped: set = set()
+    for unit in units:
+        if total <= budget:
+            break
+        dropped.update(unit)
+        total -= sum(cost[i] for i in unit)
+    kept = [i for i in range(len(msgs)) if i not in dropped]
+    out = {i: msgs[i] for i in kept}
+    if total > budget:
+        # Shrink the largest clippable texts until the list fits or nothing is left to cut.
+        clippable = sorted((i for i in kept if msgs[i].get("role") not in _SYSTEM_ROLES
+                            and isinstance(msgs[i].get("content"), str)), key=lambda i: -cost[i])
+        for i in clippable:
+            over = total - budget
+            if over <= 0:
+                break
+            m = out[i]
+            text_tokens = est_tokens(m["content"], pad)
+            room = max(_MIN_CLIP_TOKENS, text_tokens - over)
+            if room >= text_tokens:
+                continue
+            clipped = {**m, "content": clip_text_to_tokens(m["content"], room, marker=_CLIP_MARKER)}
+            new_cost = message_tokens(clipped, pad)
+            total -= cost[i] - new_cost
+            out[i] = clipped
+    return [out[i] for i in kept]
 
 
 def complete(config: dict, role: str, messages: list, max_out: int, *, timeout: int = None,
@@ -869,16 +1025,22 @@ def complete(config: dict, role: str, messages: list, max_out: int, *, timeout: 
     Returns (text, finish_reason). The role falls back to one the active profile serves (served_role);
     the input is fitted to that model's per-request window minus `max_out` (fit_messages); thinking is
     switched off on local roles unless `think` (a reasoning model would otherwise spend max_out thinking
-    and return nothing). The window honours the active context mode and agent.maxContextTokens.
-    Empty content is logged with its finish_reason. Raises CompletionError on failure, never returns a
-    silent ''."""
+    and return nothing). With `context_mode` the window is that mode's (a summary inside a run passes
+    the run's mode); without one it is the model's own window capped by agent.maxContextTokens
+    (request_window), so a plugin call is never held to a mode it did not ask for. Empty content is
+    logged with its finish_reason. Raises CompletionError on failure (an unknown mode included), never
+    returns a silent ''."""
     import logging
 
-    from bob_context import resolve as resolve_context_policy
-
     role = served_role(config, role)
-    policy = resolve_context_policy(config, role, context_mode)
-    window = policy.window(config, role)
+    if context_mode is None:
+        window = request_window(config, role)
+    else:
+        from bob_context import ContextModeError, resolve as resolve_context_policy
+        try:
+            window = resolve_context_policy(config, role, context_mode).window(config, role)
+        except ContextModeError as e:
+            raise CompletionError(f"completion on '{role}' failed: {e}") from e
     max_out = cap_output(max_out, window)
     if window:
         # Keep the same 64-token template margin, then leave the safety margin from est_tokens.

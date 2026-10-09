@@ -379,6 +379,59 @@ def stack_stop(config: dict) -> str:
     return "Nothing was running."
 
 
+# Open WebUI is not part of Bob. Installs from Bob 2.0.x can still carry one (the old `--with-webui`
+# opt-in): a server on its port tracked by logs/open-webui.pid, its venv and data dir under tools/, and a
+# generated session secret. remove_legacy_webui reaps and deletes all of it.
+_WEBUI = "open-webui"
+_WEBUI_SECRET = "webuiSecret"
+
+
+def _webui_paths() -> list:
+    """(label, path) for every on-disk Open WebUI leftover, in removal order."""
+    tools = REPO / "tools"
+    return [("venv", tools / "venv-webui"), ("data", tools / "webui-data"),
+            ("pidfile", _pidfile(_WEBUI)), ("log", _logfile(_WEBUI))]
+
+
+def remove_legacy_webui() -> list:
+    """Stop a leftover Open WebUI server and delete its venv, data dir, pidfile, log and secret. Returns
+    one line per thing removed (and one per failure); [] when there was nothing to clean, so a re-run is
+    silent. Process matching is the repo-scoped find_managed_processes: the pidfile's PID is trusted only
+    when it names Bob's own tools/venv-webui executable (a stale pidfile after a reboot can name an
+    unrelated process), and the same match reaps a server whose pidfile is gone. Best-effort: every step
+    runs and reports its own failure; nothing raises."""
+    osenv = _osenv()
+    lines = []
+    try:
+        managed = [pid for pid, _name in osenv.find_managed_processes(_WEBUI)]
+        pid = _read_pid(_WEBUI)
+        pids = ([pid] if pid in managed else []) + [p for p in managed if p != pid]
+        for p in pids:
+            if osenv.stop_process_tree(p):
+                lines.append(f"Stopped the old Open WebUI server (PID {p}).")
+            else:
+                lines.append(f"warning: the old Open WebUI server (PID {p}) did not exit; stop it by hand.")
+    except Exception as e:  # noqa: BLE001: best-effort; the files below are still removed
+        lines.append(f"warning: could not check for a running Open WebUI ({e}).")
+    for label, path in _webui_paths():
+        if not (path.exists() or path.is_symlink()):
+            continue
+        try:
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+            lines.append(f"Removed the old Open WebUI {label}: {path}")
+        except OSError as e:
+            lines.append(f"warning: could not remove the old Open WebUI {label} at {path} ({e}).")
+    try:
+        if osenv.delete_secret(_WEBUI_SECRET):
+            lines.append(f"Removed the old Open WebUI secret ({_WEBUI_SECRET}) from {osenv.secrets_file()}")
+    except Exception as e:  # noqa: BLE001: an unreadable secrets.json is reported, never fatal
+        lines.append(f"warning: could not remove {_WEBUI_SECRET} from the secret store ({e}).")
+    return lines
+
+
 # --- launching the endpoint + services ------------------------------------------------------------
 
 def _ensure_configs(config: dict = None) -> str:

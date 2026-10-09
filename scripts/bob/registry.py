@@ -26,7 +26,8 @@ GROUP_ORDER = ["Talk", "Act", "Make", "Know", "Run", "Services", "Models", "Diag
 COMMANDS = [
     # --- Talk: converse + senses --------------------------------------------------------------
     {"name": "chat", "group": "Talk", "summary": "Chat with Bob — one-shot or REPL, routed role (on the agent loop)",
-     "args": "[--pro|--think|--code|--write] [--raw] [--max N] [--sys <text>] [prompt]", "handler": "chat"},
+     "args": "[--pro|--think|--code|--write] [--quick|--deep|--context-mode M] [--raw] [--max N] [--sys <text>] [prompt]",
+     "handler": "chat"},
     {"name": "code", "group": "Talk", "summary": "Code-focused chat (coder / coder-pro)",
      "args": "[--pro] [--raw] [--max N] [prompt]", "handler": "code"},
     {"name": "write", "group": "Talk", "summary": "Long-form writing (writer / writer-pro)",
@@ -113,7 +114,7 @@ COMMANDS = [
 
     # --- Run: run the stack day-to-day (also available live in the shell as /up, /stop, …) -----
     {"name": "up", "group": "Run", "summary": "Start the endpoint + proxy in the background",
-     "args": "[--no-open] [--with-services]", "handler": "up"},
+     "args": "[--with-services]", "handler": "up"},
     {"name": "serve", "group": "Run", "summary": "Start the inference stack (llama-swap + LiteLLM), interactive",
      "args": "", "handler": "serve"},
     {"name": "restart", "group": "Run", "summary": "Stop then start the endpoint",

@@ -88,9 +88,9 @@ def peer_key_env(mcfg: dict = None) -> dict:
 def _enable_peer(name: str) -> None:
     """Set peers.<name>.enabled = true in config/user.json, the per-machine overlay models.json merges."""
     from bob import kernel
-    cfg = kernel._read_user_config()
-    cfg.setdefault("peers", {}).setdefault(name, {})["enabled"] = True
-    kernel._write_user_config(cfg)
+    def enable(cfg):
+        cfg.setdefault("peers", {}).setdefault(name, {})["enabled"] = True
+    kernel.update_user_config(enable)
 
 
 def _restart_litellm(config: dict) -> str:

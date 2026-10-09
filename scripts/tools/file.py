@@ -29,6 +29,11 @@ def _is_denied_secret(target: Path) -> bool:
     return bob_fsguard.is_denied_secret(target, home=_home())
 
 
+def _is_denied_write(target: Path) -> bool:
+    """True for files file_write must refuse: every secret, plus Bob's own config and code."""
+    return bob_fsguard.is_denied_write(target, home=_home())
+
+
 def configure(config: dict) -> None:
     global _allowed_read, _allowed_write
     agent = config.get("agent", {})
@@ -121,6 +126,9 @@ def _file_write(path: str, content: str) -> str:
         return f"Access denied: {path}\nAllowed write paths: {allowed_str}"
     if _is_denied_secret(p):
         return f"Access denied (sensitive file): {path}"
+    if _is_denied_write(p):
+        return (f"Access denied (Bob's own config or code is writable only from an attended, approved "
+                f"call): {path}")
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")

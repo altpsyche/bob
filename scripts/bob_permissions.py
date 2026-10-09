@@ -201,6 +201,15 @@ def dispatch_with_approval(tc, call_id, *, registry, context, agency, approve, l
             audit(log, rid, name, args, "deny(unattended)", owner)
             yield {"type": "tool_result", "call_id": call_id, "name": name, "result": refusal}
             return refusal
+    # Bob's own config and code: never written without a person approving that exact call, so an
+    # unattended caller cannot raise its own trust or plant code the next process imports.
+    protected = touches_protected(registry, name, args)
+    if protected and unattended is not None:
+        audit(log, rid, name, args, "deny(protected)", owner)
+        refusal = (f"Tool call to '{name}' was refused: it changes Bob's own config or code, which only an "
+                   "attended session can do, one approved call at a time.")
+        yield {"type": "tool_result", "call_id": call_id, "name": name, "result": refusal}
+        return refusal
     mutating = name in getattr(registry, "mutating_tools", set())
     # A remote MCP tool (mcp:<server>:<tool>) defaults to 'ask': reaching an external server is a
     # side effect worth a prompt. A local tool keeps the 'allow' default. Either way an explicit
@@ -231,12 +240,15 @@ def dispatch_with_approval(tc, call_id, *, registry, context, agency, approve, l
 
     # ask: policy 'ask' OR the approval floor (whole run in confirm mode, or the tool self-declares
     # REQUIRES_APPROVAL). The floor is a lower bound the config can tighten but never loosen.
-    if decision == ASK or approval_required(name, agency, registry):
-        risk = "high" if name in getattr(registry, "approval_required_tools", set()) else "confirm"
+    if decision == ASK or protected or approval_required(name, agency, registry):
+        risk = ("high" if protected or name in getattr(registry, "approval_required_tools", set())
+                else "confirm")
         # A preview renderer (e.g. file_edit's diff) lets the operator approve the actual change, not raw
         # args. Fail-safe: a preview that raises falls back to no preview. Raw args are always kept.
         preview = render_preview(registry, name, args)
         action = {"call_id": call_id, "tool": name, "arguments": args, "risk": risk}
+        if protected:
+            action["protected"] = True   # an approver must not answer this from a remembered "always"
         if preview is not None:
             action["preview"] = preview
         yield {"type": "approval_required", **action}
@@ -278,6 +290,23 @@ def dispatch_with_approval(tc, call_id, *, registry, context, agency, approve, l
 # agent loop (other tools) on the caller's behalf: a sub-agent, and a schedule fired now. Delegating is
 # only allowed when listed.
 UNATTENDED_GATED = frozenset({"spawn_agent", "schedule_run"})
+
+
+def touches_protected(registry, name: str, args) -> bool:
+    """True when a call's declared targets (the tool's AFFECTS) include Bob's own config or code
+    (bob_fsguard.is_protected_code). Such a write is refused unattended and always asked attended."""
+    affects = getattr(registry, "affects", {}).get(name)
+    if not affects:
+        return False
+    import json
+    from pathlib import Path
+
+    import bob_fsguard
+    try:
+        targets = affects(json.loads(args or "{}"))
+    except Exception:
+        return False
+    return any(bob_fsguard.is_protected_code(Path(t)) for t in targets)
 
 
 def unattended_refusal(registry, name: str, allow) -> "str | None":

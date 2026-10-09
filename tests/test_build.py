@@ -495,6 +495,8 @@ class TestUpdateStack(unittest.TestCase):
                                          side_effect=gen_all_effect),
             "setup_clients": mock.patch.object(kernel_mod, "setup_clients", return_value=None,
                                                side_effect=setup_clients_effect),
+            # The Open WebUI cleanup reaps processes and deletes tools/ dirs: never run it for real here.
+            "remove_webui": mock.patch.object(build_mod, "_remove_legacy_webui"),
         }
         build_mod.configure(cfg or CFG)
         with contextlib.ExitStack() as es:
@@ -530,6 +532,11 @@ class TestUpdateStack(unittest.TestCase):
         self.assertEqual(rc, 0)
         mocks["gen_all"].assert_called_once()
         mocks["setup_clients"].assert_called_once()
+
+    def test_update_removes_legacy_webui_even_when_nothing_moved(self):
+        rc, mocks, _ = self._run("abc", "abc")
+        self.assertEqual(rc, 0)
+        mocks["remove_webui"].assert_called_once()
 
     def test_changed_rebuilds_and_discards_backup(self):
         rc, mocks, _ = self._run("aaa", "bbb", verify=True)
@@ -754,6 +761,34 @@ class TestRestartAfterUpdate(unittest.TestCase):
         fake.stack_restart.side_effect = RuntimeError("port busy")
         with mock.patch.dict(sys.modules, {"stack": fake}):
             build_mod._restart_running_endpoint()   # must not raise — the update is already verified
+
+
+class TestRemoveLegacyWebuiOnUpdate(unittest.TestCase):
+    """The update's Open WebUI cleanup wrapper: prints stack.remove_legacy_webui's lines, never raises."""
+
+    def _call(self, fake):
+        with mock.patch.dict(sys.modules, {"stack": fake}), \
+             mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            build_mod._remove_legacy_webui()
+        return err.getvalue()
+
+    def test_prints_each_removed_item(self):
+        fake = mock.Mock()
+        fake.remove_legacy_webui.return_value = ["Stopped the old Open WebUI server (PID 7).",
+                                                 "Removed the old Open WebUI venv: /x/venv-webui"]
+        out = self._call(fake)
+        self.assertIn("PID 7", out)
+        self.assertIn("venv-webui", out)
+
+    def test_nothing_to_remove_is_silent(self):
+        fake = mock.Mock()
+        fake.remove_legacy_webui.return_value = []
+        self.assertEqual(self._call(fake), "")
+
+    def test_failure_is_advisory(self):
+        fake = mock.Mock()
+        fake.remove_legacy_webui.side_effect = RuntimeError("boom")
+        self.assertIn("cleanup skipped (boom)", self._call(fake))
 
 
 class TestCliArgParsing(unittest.TestCase):

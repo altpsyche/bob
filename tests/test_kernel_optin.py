@@ -10,6 +10,7 @@
   * the shell installers' newest-ready-tag probe matches lifecycle.latest_ready_release_tag.
 Every home/config path is a temp dir; nothing touches the real machine."""
 import contextlib
+import io
 import json
 import os
 import re
@@ -325,13 +326,16 @@ class TestWire(unittest.TestCase):
     def test_setup_clients_installs_dsh_and_wires_no_aider(self):
         import bob_dsh
         import generate
+        import stack
         home = _tmp(self)
         with mock.patch.object(Path, "home", return_value=home), \
              mock.patch.object(generate, "configure"), \
              mock.patch.object(generate, "gen_continue"), \
+             mock.patch.object(stack, "remove_legacy_webui", return_value=[]) as webui, \
              mock.patch.object(bob_dsh, "install", return_value="Installed bob dsh link") as install, \
              mock.patch.object(kernel, "_wire") as wire:
-            kernel.setup_clients()
+            kernel.setup_clients(install_dsh=True)
+        webui.assert_called_once_with()
         install.assert_called_once_with(tools=False, bridge=True, use_default=True)
         linked = [c.args[1] for c in wire.call_args_list]
         self.assertEqual(linked, [home / ".continue" / "config.yaml"])
@@ -339,15 +343,79 @@ class TestWire(unittest.TestCase):
     def test_setup_clients_preserves_enabled_mcp_tools(self):
         import bob_dsh
         import generate
+        import stack
         home = _tmp(self)
         with mock.patch.object(Path, "home", return_value=home), \
              mock.patch.object(kernel, "_load_config", return_value={"agent": {"mcpEnabled": True}}), \
              mock.patch.object(generate, "configure"), \
              mock.patch.object(generate, "gen_continue"), \
+             mock.patch.object(stack, "remove_legacy_webui", return_value=[]), \
              mock.patch.object(bob_dsh, "install", return_value="Installed bob dsh link") as install, \
              mock.patch.object(kernel, "_wire"):
-            kernel.setup_clients()
+            kernel.setup_clients(install_dsh=True)
         install.assert_called_once_with(tools=True, bridge=True, use_default=True)
+
+
+class TestSetupClientsDsh(unittest.TestCase):
+    """setup installs the DSH link, update (the default) only refreshes it, agent.dshEnabled=false
+    skips it, and the legacy Open WebUI cleanup runs first without ever sinking the wiring."""
+
+    def _run(self, cfg, install_dsh=False, webui=None):
+        import bob_dsh
+        import generate
+        import stack
+        home = _tmp(self)
+        err = io.StringIO()
+        with mock.patch.object(Path, "home", return_value=home), \
+             mock.patch.object(kernel, "_load_config", return_value=cfg), \
+             mock.patch.object(generate, "configure"), \
+             mock.patch.object(generate, "gen_continue"), \
+             mock.patch.object(stack, "remove_legacy_webui",
+                               **(webui or {"return_value": ["removed tools/venv-webui"]})), \
+             mock.patch.object(bob_dsh, "install", return_value="Installed") as install, \
+             mock.patch.object(bob_dsh, "refresh", return_value="Refreshed") as refresh, \
+             mock.patch.object(kernel, "_wire"), \
+             contextlib.redirect_stderr(err):
+            kernel.setup_clients(install_dsh=install_dsh)
+        return install, refresh, err.getvalue()
+
+    def test_update_path_refreshes_and_never_installs(self):
+        install, refresh, err = self._run({"agent": {"mcpEnabled": True}})
+        install.assert_not_called()
+        refresh.assert_called_once_with(tools=True)
+        self.assertIn("removed tools/venv-webui", err)
+
+    def test_disabled_link_is_skipped_on_both_paths(self):
+        for flag in (True, False):
+            install, refresh, err = self._run({"agent": {"dshEnabled": False}}, install_dsh=flag)
+            install.assert_not_called()
+            refresh.assert_not_called()
+            self.assertIn("DSH link disabled", err)
+
+    def test_webui_cleanup_failure_does_not_stop_setup(self):
+        install, _refresh, err = self._run({"agent": {}}, install_dsh=True,
+                                           webui={"side_effect": OSError("busy")})
+        self.assertIn("legacy Open WebUI cleanup skipped (busy)", err)
+        install.assert_called_once()
+
+    def test_setup_step_passes_the_install_flag(self):
+        import inspect
+        self.assertIn("setup_clients(install_dsh=True)", inspect.getsource(kernel.setup))
+
+
+class TestUpdateUserConfig(unittest.TestCase):
+    def test_refuses_an_unparseable_overlay_and_leaves_it(self):
+        path = _tmp(self) / "user.json"
+        path.write_text("{ broken", encoding="utf-8")
+        with self.assertRaises(kernel.UserConfigError):
+            kernel.update_user_config(lambda d: d.update(x=1), path)
+        self.assertEqual(path.read_text(encoding="utf-8"), "{ broken")
+
+    def test_mutates_and_returns_the_result(self):
+        path = _tmp(self) / "user.json"
+        path.write_text('{"a": 1}', encoding="utf-8")
+        self.assertEqual(kernel.update_user_config(lambda d: d.setdefault("b", 2), path), 2)
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {"a": 1, "b": 2})
 
 
 @unittest.skipIf(sys.platform == "win32", "POSIX symlink install")
