@@ -8,6 +8,12 @@ rebuilds only what changed, verifies, and rolls back on failure.
 
 ## [Unreleased]
 
+## [2.2.6] (2026-10-09)
+
+### Fixed
+- **Deep mode works on the agent role, which is the shell's default.** 2.2.5 sent Deep-mode agent requests as `agent-deep`, which LiteLLM did not route (HTTP 400), so `/mode deep` in the `bob` shell failed. Internal roles with a Deep server now get their `-deep` route.
+- **Memory keeps working while the Deep server is loaded.** When the Deep server loaded before the embedding and reranking models, llama.cpp's fit used nearly all of VRAM and they could not start. A Deep server can now set `fitTarget` (the VRAM it leaves free); the 16gb profile reserves 3500 MiB, measured to fit embed and rerank beside it.
+
 ## [2.2.5] (2026-10-09)
 
 ### Added
