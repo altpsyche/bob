@@ -576,10 +576,10 @@ for a memory lookup would unload the chat model. Bob emits a named `resident` gr
 A local role can carry a `deep` block in `config/models.json`: the settings of a second server for the same model that serves Deep mode. On the `16gb` profile the chat model (which also serves coder, ponder, writer and agent) has one:
 
 ```json
-"chat": { "ctx": 40960, "deep": { "ctx": 262144, "ngl": "auto" } }
+"chat": { "ctx": 40960, "deep": { "ctx": 262144, "ngl": "auto", "fitTarget": 3500 } }
 ```
 
-`bob gen` then writes a `chat-deep` llama-swap server with the role's settings and the `deep` block on top, aliased as `coder-deep`, `ponder-deep` and the rest, in the same swap group as `chat`, so the two never share VRAM. `ngl: "auto"` drops `-ngl` so llama.cpp keeps on the card what fits (with a 1 GB margin) and puts the remaining layers in system RAM. LiteLLM routes every `<role>-deep` alias to it, Bob's own Deep runs request it, and the Deep window Bob enforces and advertises to DSH, Continue and aider is its `ctx`. Quick and plain requests keep the fast all-GPU server; switching costs a model swap (a few seconds back to the fast server, longer into a large Deep window).
+`bob gen` then writes a `chat-deep` llama-swap server with the role's settings and the `deep` block on top, aliased as `coder-deep`, `ponder-deep` and the rest, in the same swap group as `chat`, so the two never share VRAM. `ngl: "auto"` drops `-ngl` so llama.cpp keeps on the card what fits and puts the remaining layers in system RAM; `fitTarget` is the VRAM (MiB) it leaves free (llama.cpp's default is 1024). The 16gb profile sets 3500, so the resident `embed` and `rerank` models still fit when the Deep server loads before them. LiteLLM routes every `<role>-deep` alias to it, Bob's own Deep runs request it, and the Deep window Bob enforces and advertises to DSH, Continue and aider is its `ctx`. Quick and plain requests keep the fast all-GPU server; switching costs a model swap (a few seconds back to the fast server, longer into a large Deep window).
 
 Measured on an RTX 5080 (16 GB) with the 16gb profile: the 40960 server generates about 51 tokens/s; the 262144 Deep server reads a prompt at 600 to 860 tokens/s and generates about 10 tokens/s on a short prompt and 3 tokens/s with the window nearly full. A 127,000-token prompt took about 3 minutes, swap included. Set a smaller `deep.ctx` for more speed, or remove the block to make Deep use the normal server.
 

@@ -95,6 +95,8 @@ class TestLlamaSwap(unittest.TestCase):
         self.assertIn("-c 262144", block)
         self.assertNotIn("-ngl", block)                     # ngl auto: llama.cpp fits layers into RAM
         self.assertNotIn("${srv}", block)                   # the srv macro carries -ngl 99
+        # room for embed/rerank when Deep loads first: they must stay fully on the card
+        self.assertIn("--fit-target 3500", block)
         self.assertIn("--cache-type-k q4_0 --cache-type-v q4_0 --jinja", block)
         self.assertIn("    aliases: [ponder-deep, coder-deep, writer-deep, agent-deep]", block)
         self.assertIn("        writer-deep: { temperature: 0.6, top_p: 0.95 }", block)
@@ -259,6 +261,9 @@ class TestLitellm(unittest.TestCase):
         self.assertIn("  - model_name: coder-quick\n    litellm_params:\n      model: openai/coder\n", out)
         self.assertIn("  - model_name: coder\n    litellm_params:\n      model: openai/coder\n", out)
         self.assertIn("  - model_name: vision-deep\n    litellm_params:\n      model: openai/vision\n", out)
+        # agent is internal (no client aliases), but Bob's Deep runs on it request agent-deep
+        self.assertIn("  - model_name: agent-deep\n    litellm_params:\n      model: openai/agent-deep", out)
+        self.assertNotIn("model_name: agent-quick", out)
 
     def test_pro_output_cap_is_the_peer_limit_with_role_overrides(self):
         """Every client that sends no max_tokens gets maxOutputTokens: long enough for a large tool

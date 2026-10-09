@@ -189,6 +189,10 @@ def gen_llama_swap(profile: str = None) -> str:
             # expansion. This is how a DENSE model larger than the card runs: --n-cpu-moe only helps a
             # MoE, and a hand-tuned layer count is wrong on every card but the one it was measured on.
             srv_ref = " ".join(p for p in [srv_bin, "--port ${PORT}", fa, reason, batch, ub, numa, par, thr] if p)
+            if m.get("fitTarget"):
+                # The VRAM (MiB) fit leaves free. The default 1024 is too little when this server can load
+                # before the resident models (embed, rerank), which must stay fully on the card.
+                srv_ref += f" --fit-target {int(m['fitTarget'])}"
         else:
             srv_ref = "${srv}"
         parts = [srv_ref, f"-m ${{env.LLAMA_LOCAL_ROOT}}/models/{m['gguf']}"]
@@ -415,9 +419,13 @@ def gen_litellm(profile: str = None) -> str:
             continue
         role = m["role"]
         role_window = 0 if m.get("embedding") else _slot_ctx(m, defaults)
-        variants = (_wire_mode_models(role, role_window, "local", m)
-                    if bob_models.is_chat_role(role, m) else [(role, role_window)])
         has_deep = deep_server_spec(m) is not None
+        if bob_models.is_chat_role(role, m):
+            variants = _wire_mode_models(role, role_window, "local", m)
+        else:
+            # An internal role (agent) has no Quick/Deep aliases for clients, but Bob's own Deep runs on
+            # it request `<role>-deep` (bob_core.wire_model), so its Deep server needs the route too.
+            variants = [(role, role_window)] + ([(f"{role}-deep", 0)] if has_deep else [])
         for model_name, _window in variants:
             # `<role>-deep` goes to the role's Deep server when it has one (gen_llama_swap serves it).
             upstream = f"{role}-deep" if has_deep and model_name == f"{role}-deep" else role
