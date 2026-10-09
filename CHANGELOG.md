@@ -8,9 +8,14 @@ rebuilds only what changed, verifies, and rolls back on failure.
 
 ## [Unreleased]
 
-## [2.2.2] (2026-10-09)
+## [2.2.3] (2026-10-09)
 
-The first published 2.2 release: it carries everything in 2.2.0 and 2.2.1, whose tags never produced a release because CI failed on a test.
+The first published 2.2 release: it carries everything in 2.2.0, 2.2.1 and 2.2.2, whose tags never produced a release because the CI gate failed.
+
+### Fixed
+- **The CI gate accepts the LiteLLM callback-shim test skipping where LiteLLM is not installed** (the core job), instead of failing the release on it.
+
+## [2.2.2] (2026-10-09)
 
 ### Fixed
 - **CI no longer depends on the runner's PATH.** A DSH install test read the real `dsh` location, so on a runner without dsh it ran a real global npm install and failed; it now mocks the binary and asserts that no install runs.
