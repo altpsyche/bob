@@ -8,6 +8,15 @@ rebuilds only what changed, verifies, and rolls back on failure.
 
 ## [Unreleased]
 
+## [2.2.4] (2026-10-09)
+
+### Fixed
+- **`bob dsh install --tools` gives DSH working tools.** It wired Bob's MCP entry into DSH but left `agent.mcpEnabled` off, so the `bob agent mcp` DSH starts refused every call. It now sets the same switches as `bob dsh tools on`.
+
+### Added
+- **`bob doctor` checks the DSH link.** `bob dsh doctor` and `bob doctor` share one set of checks: the dsh version against the pin, both patch files parsing, the provider route and credential, Bob's tools wired while Bob's MCP server is off, the bridge listed as a profile bundle, and the default model, each broken one with its fix.
+- **`bob dsh help` lists every command with a short setup guide,** and the `dsh` line in `bob help` is short enough to read.
+
 ## [2.2.3] (2026-10-09)
 
 The first published 2.2 release: it carries everything in 2.2.0, 2.2.1 and 2.2.2, whose tags never produced a release because the CI gate failed.
