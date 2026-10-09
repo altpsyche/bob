@@ -8,6 +8,11 @@ rebuilds only what changed, verifies, and rolls back on failure.
 
 ## [Unreleased]
 
+## [2.2.1] (2026-10-09)
+
+### Fixed
+- **Deep mode answers the new message instead of repeating its first reply.** Deep mode keeps a stable request prefix for the local KV cache, and that layout moved the current message ahead of the whole conversation, so the request ended on an old reply and the model answered it again on every turn. The message now stays after the earlier turns and is never trimmed; a single agent run keeps the cache-friendly layout.
+
 ## [2.2.0] (2026-10-09)
 
 ### Changed
