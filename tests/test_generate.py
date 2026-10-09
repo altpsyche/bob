@@ -83,10 +83,22 @@ class TestLlamaSwap(unittest.TestCase):
                       f'--reasoning-format deepseek -np 1"', out)
         self.assertIn('kv: "--cache-type-k q8_0 --cache-type-v q8_0"', out)
         # Aliased roles are names, not loadable models — only the concrete ones can be group members.
-        self.assertIn("members: [chat, vision, fim]", out)
+        # chat-deep is chat's Deep server: same weights, so it swaps with chat rather than sitting beside it.
+        self.assertIn("members: [chat, vision, fim, chat-deep]", out)
         # embed/rerank would otherwise fall into llama-swap's implicit exclusive default
         # group, where one memory lookup evicts the chat model.
         self.assertIn("  resident:\n    swap: false\n    exclusive: false\n    persistent: true\n    members: [embed, rerank]", out)
+
+    def test_deep_server_swaps_with_its_role_and_fits_to_ram(self):
+        out = self._gen("16gb")
+        block = out.split("  chat-deep:\n", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("-c 262144", block)
+        self.assertNotIn("-ngl", block)                     # ngl auto: llama.cpp fits layers into RAM
+        self.assertNotIn("${srv}", block)                   # the srv macro carries -ngl 99
+        self.assertIn("--cache-type-k q4_0 --cache-type-v q4_0 --jinja", block)
+        self.assertIn("    aliases: [ponder-deep, coder-deep, writer-deep, agent-deep]", block)
+        self.assertIn("        writer-deep: { temperature: 0.6, top_p: 0.95 }", block)
+        self.assertNotIn("chat-deep", self._gen("8gb"))    # profiles without a deep block are unchanged
 
     def test_setparams_and_ttl(self):
         out = self._gen("8gb")
@@ -101,7 +113,8 @@ class TestLlamaSwap(unittest.TestCase):
         # per-role sampling rides setParamsByID, which llama-swap applies by requested model id.
         out = self._gen("16gb")
         self.assertIn("    aliases: [ponder, coder, writer, agent]", out)
-        self.assertEqual(out.count("qwen3.8-27b-gsq-rco-iq3_xxs.gguf"), 1)
+        # Two servers of the one model: the normal one and its Deep server (a swap pair, never co-resident).
+        self.assertEqual(out.count("qwen3.8-27b-gsq-rco-iq3_xxs.gguf"), 2)
         for role in ("ponder", "coder", "writer", "agent"):
             self.assertNotIn(f"  {role}:\n    cmd:", out)
         self.assertIn("      setParamsByID:", out)
@@ -238,6 +251,14 @@ class TestLitellm(unittest.TestCase):
         self.assertIn("      model: deepseek/deepseek-v4-flash", out)
         self.assertIn("      api_key: os.environ/DEEPSEEK_API_KEY", out)
         self.assertIn("    - bob_context_callback.proxy_handler_instance", out)
+
+    def test_deep_aliases_route_to_the_deep_server(self):
+        gen.gen_litellm("16gb")
+        out = (gen.REPO / "config" / "litellm.yaml").read_text(encoding="utf-8")
+        self.assertIn("  - model_name: coder-deep\n    litellm_params:\n      model: openai/coder-deep", out)
+        self.assertIn("  - model_name: coder-quick\n    litellm_params:\n      model: openai/coder\n", out)
+        self.assertIn("  - model_name: coder\n    litellm_params:\n      model: openai/coder\n", out)
+        self.assertIn("  - model_name: vision-deep\n    litellm_params:\n      model: openai/vision\n", out)
 
     def test_pro_output_cap_is_the_peer_limit_with_role_overrides(self):
         """Every client that sends no max_tokens gets maxOutputTokens: long enough for a large tool
@@ -769,7 +790,7 @@ class TestAider(unittest.TestCase):
         self.assertEqual(doc["openai-api-key"], bob_core._litellm_key(CFG))
         self.assertEqual(meta["openai/ponder"]["max_input_tokens"], 40960)
         self.assertEqual(meta["openai/ponder-quick"]["max_input_tokens"], 16384)
-        self.assertEqual(meta["openai/ponder-deep"]["max_input_tokens"], 40960)
+        self.assertEqual(meta["openai/ponder-deep"]["max_input_tokens"], 262144)   # the Deep server
         self.assertEqual(doc["map-tokens"], gen._aider_map_tokens(40960))
         self.assertTrue(doc["model-metadata-file"].endswith("config/aider/model-metadata.json"))
 

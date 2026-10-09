@@ -36,6 +36,7 @@ _NOOP_TRACER = Tracer(enabled=False)
 # The one token estimator lives in bob_core; the loop keeps its historical names for it.
 from bob_core import clip_text_to_tokens, est_tokens as _estimate_tokens  # noqa: E402
 from bob_core import message_tokens as _message_tokens  # noqa: E402
+from bob_core import wire_model  # noqa: E402
 
 
 # Floor the history budget never drops below, even when the system prompt alone eats it: sending zero
@@ -1872,7 +1873,7 @@ def run_agent_events(
         run_ctx.todos = resumed["todos"]   # restore the living TODO list so recitation/recall continue
     # Plan phase: one bounded ponder turn whose step list is injected as context before the loop.
     if plan_enabled and resumed is None:
-        plan_text, plan_err = _single_turn(client, effective_role,
+        plan_text, plan_err = _single_turn(client, wire_model(config, effective_role, context_mode),
                                            [{"role": "system", "content": _PLAN_SYSTEM},
                                             {"role": "user", "content": goal}],
                                            cancel, request_timeout, hermes_mode, extra_body=reasoning_extra_body)
@@ -1996,7 +1997,9 @@ def run_agent_events(
                     # We never pass cache_prompt, so llama.cpp's default (prompt/KV caching ON)
                     # applies; the stable-prefix assembly above is what makes that reuse pay off. Adding
                     # that kwarg would change request bytes and break OpenAI-compat, so we don't.
-                    base_kwargs = dict(model=effective_role, messages=send_messages, tools=tools,
+                    # Deep mode on a role with a Deep server goes to that server (bob_core.wire_model).
+                    base_kwargs = dict(model=wire_model(config, effective_role, context_mode),
+                                       messages=send_messages, tools=tools,
                                        stream=True, timeout=request_timeout,
                                        # the output reservation the history budget was computed with
                                        max_tokens=output_tokens,
@@ -2160,7 +2163,7 @@ def run_agent_events(
                 # silently failed. On "not done" (and steps remain) inject the critique and continue.
                 if verify_enabled and not verified and step + 1 < max_steps:
                     verified = True
-                    critique, verify_err = _single_turn(client, effective_role,
+                    critique, verify_err = _single_turn(client, wire_model(config, effective_role, context_mode),
                         [{"role": "system", "content": _VERIFY_SYSTEM},
                          {"role": "user", "content": f"Goal:\n{goal}\n\nProposed final answer:\n{final}"}],
                         cancel, request_timeout, hermes_mode, extra_body=reasoning_extra_body)

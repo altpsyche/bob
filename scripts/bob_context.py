@@ -97,24 +97,29 @@ def wire_model_names(role: str) -> list:
     return [role, f"{role}-quick", f"{role}-deep"]
 
 
-def mode_window(role_window: int, backend: str, mode: str, config: Optional[dict] = None) -> int:
+def mode_window(role_window: int, backend: str, mode: str, config: Optional[dict] = None,
+                deep_window: int = 0) -> int:
     """The effective window for a role when served under ``mode``.
 
     This is the generator-side counterpart of ContextPolicy.window, used to advertise the same window
-    to external clients that Bob itself would enforce.
+    to external clients that Bob itself would enforce.  ``deep_window`` is the role's Deep server window
+    (bob_core.deep_window), which replaces the role window in Deep mode on a local role.
     """
     from bob_core import cap_window
 
+    if mode == "deep" and backend == "local" and deep_window:
+        role_window = deep_window
     return cap_window(role_window, _resolve_block(config or {}, mode, backend).max_context_tokens)
 
 
 def wire_model_variants(role: str, role_window: int, backend: str,
-                        config: Optional[dict] = None) -> list:
+                        config: Optional[dict] = None, deep_window: int = 0) -> list:
     """[(model_name, effective_window)] for the base role and its Quick/Deep aliases."""
     out = []
     for name in wire_model_names(role):
         _base, mode = parse_model_alias(name)
-        window = int(role_window or 0) if mode is None else mode_window(role_window, backend, mode, config)
+        window = (int(role_window or 0) if mode is None
+                  else mode_window(role_window, backend, mode, config, deep_window))
         out.append((name, window))
     return out
 
@@ -208,9 +213,13 @@ class ContextPolicy:
         ``-c`` slot or an API peer's advertised ``contextWindow``.  A positive
         mode cap only lowers it; zero means use the full role window.
         """
-        from bob_core import cap_window, role_window
+        from bob_core import cap_window, deep_window, role_window
 
-        return cap_window(role_window(config, role), self.max_context_tokens)
+        base = role_window(config, role)
+        if self.mode == "deep" and self.is_local:
+            # A role with a Deep server (a longer -c) is served there in Deep mode (bob_core.wire_model).
+            base = deep_window(config, role) or base
+        return cap_window(base, self.max_context_tokens)
 
     def output_tokens(self, config: dict, role: str) -> int:
         """Requested output reservation/max_tokens for ``role`` under this mode."""

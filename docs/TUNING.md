@@ -152,7 +152,7 @@ See [AGENT-SERVER.md](AGENT-SERVER.md) for the endpoint contract.
 `quick` and `deep` are named budget bundles, not model swaps. The resolver picks the `local` or `api` block from the effective served role, then lowers that block's cap to the role's real window. A Quick local cap can never clamp a 1M-token cloud peer, and a Deep API budget can never make a local `llama-server` exceed its loaded `-c`.
 
 - `quick` defaults to a 16384-token local cap, 1024 output tokens, truncate compaction, 800 injected-memory tokens, and a 600-token tool-result cap.
-- `deep` defaults to the full role window locally, a 200,000-token safety cap for API roles (set `contextModes.deep.api.maxContextTokens` to `0` for the full peer window), 2048 local output tokens (the peer maximum on API), summarize compaction, and larger memory/tool-result caps.
+- `deep` defaults to the full role window locally (the role's Deep server when it has one, below), a 200,000-token safety cap for API roles (set `contextModes.deep.api.maxContextTokens` to `0` for the full peer window), 2048 local output tokens (the peer maximum on API), summarize compaction, and larger memory/tool-result caps.
 - `/mode` shows the resolved local and API view; `bob chat --quick` and `bob agent --context-mode deep` choose a mode for one run. `bob agent --deep` still means plan/verify/self-repair, so Deep context mode is always explicit.
 
 Every chat-capable role also has two model aliases: `<role>-quick` and `<role>-deep` (for example `chat-quick`, `coder-deep`, `chat-pro-quick`). Any OpenAI-compatible client can select a mode by choosing one of those model names, with no protocol change and no client-side budget code. A LiteLLM pre-call callback (`bob_context_callback.proxy_handler_instance`) resolves the alias through the same `bob_context` policy and trims the request before it reaches the provider. It drops whole turns, oldest first: system messages, the first user message and the latest ask are always kept, and an assistant tool call is never separated from its results. A `max_tokens` the client sent is lowered only when the window cannot fit it; a client that sends none gets none added. The base role names are not trimmed.
@@ -570,6 +570,18 @@ The other trap is llama-swap's grouping. Any model Bob does not list as a swap m
 llama-swap's implicit default group, which defaults to `exclusive: true` — so a single embedding call
 for a memory lookup would unload the chat model. Bob emits a named `resident` group
 (`swap: false, exclusive: false, persistent: true`) for `embed` and `rerank` so they coexist instead.
+
+## Deep server (`deep`)
+
+A local role can carry a `deep` block in `config/models.json`: the settings of a second server for the same model that serves Deep mode. On the `16gb` profile the chat model (which also serves coder, ponder, writer and agent) has one:
+
+```json
+"chat": { "ctx": 40960, "deep": { "ctx": 262144, "ngl": "auto" } }
+```
+
+`bob gen` then writes a `chat-deep` llama-swap server with the role's settings and the `deep` block on top, aliased as `coder-deep`, `ponder-deep` and the rest, in the same swap group as `chat`, so the two never share VRAM. `ngl: "auto"` drops `-ngl` so llama.cpp keeps on the card what fits (with a 1 GB margin) and puts the remaining layers in system RAM. LiteLLM routes every `<role>-deep` alias to it, Bob's own Deep runs request it, and the Deep window Bob enforces and advertises to DSH, Continue and aider is its `ctx`. Quick and plain requests keep the fast all-GPU server; switching costs a model swap (a few seconds back to the fast server, longer into a large Deep window).
+
+Measured on an RTX 5080 (16 GB) with the 16gb profile: the 40960 server generates about 51 tokens/s; the 262144 Deep server reads a prompt at 600 to 860 tokens/s and generates about 10 tokens/s on a short prompt and 3 tokens/s with the window nearly full. A 127,000-token prompt took about 3 minutes, swap included. Set a smaller `deep.ctx` for more speed, or remove the block to make Deep use the normal server.
 
 ## MoE expert offloading (`nCpuMoe`)
 

@@ -136,6 +136,7 @@ def gen_llama_swap(profile: str = None) -> str:
     """Generate config/llama-swap.yaml from the registry."""
     import bob_models
     import osenv
+    from bob_core import deep_server_spec
 
     mcfg = bob_models.load_models_config()
     name, models = _ordered_models(mcfg, profile)
@@ -179,15 +180,8 @@ def gen_llama_swap(profile: str = None) -> str:
     for w in sampling_flag_warnings(models):
         print(w, file=sys.stderr)
 
-    for m in models:
-        _assert_no_quote(m.get("gguf", ""), f"model '{m['role']}' gguf")
-        if "gemma" in m.get("gguf", "") and m.get("kv") is True:
-            print(f"[{m['role']}] Gemma model with kv=true — KV quant causes quality regression.",
-                  file=sys.stderr)
-        if m.get("_aliasOf"):
-            # Not a model of its own: it rides the target's server under llama-swap `aliases:`.
-            aliases.setdefault(m["_aliasOf"], []).append(m["role"])
-            continue
+    def _cmd_for(m: dict) -> str:
+        """The llama-server command line for one registry entry (a role, or its Deep server spec)."""
         if str(m.get("ngl", "")).lower() == "auto" and not is_cpu:
             # ngl="auto": omit -ngl entirely so llama.cpp sizes the offload to whatever VRAM is actually
             # free (common_fit_params). ANY explicit -ngl aborts that fit ("n_gpu_layers already set by
@@ -246,7 +240,21 @@ def gen_llama_swap(profile: str = None) -> str:
         if m.get("mmproj"):
             _assert_no_quote(m["mmproj"], f"model '{m['role']}' mmproj")
             parts.append(f"--mmproj ${{env.LLAMA_LOCAL_ROOT}}/models/{m['mmproj']}")
-        m["_cmd"] = " ".join(parts)
+        return " ".join(parts)
+
+    for m in models:
+        _assert_no_quote(m.get("gguf", ""), f"model '{m['role']}' gguf")
+        if "gemma" in m.get("gguf", "") and m.get("kv") is True:
+            print(f"[{m['role']}] Gemma model with kv=true — KV quant causes quality regression.",
+                  file=sys.stderr)
+        if m.get("_aliasOf"):
+            # Not a model of its own: it rides the target's server under llama-swap `aliases:`.
+            aliases.setdefault(m["_aliasOf"], []).append(m["role"])
+            continue
+        m["_cmd"] = _cmd_for(m)
+        deep = deep_server_spec(m)
+        if deep and not is_cpu:
+            m["_deepCmd"] = _cmd_for(deep)
 
     # group assertions
     active_members = []
@@ -267,6 +275,15 @@ def gen_llama_swap(profile: str = None) -> str:
             if m.get("pinned"):
                 raise RuntimeError(f"model '{m['role']}' sets both pinned and swap")
             active_members.append(m["role"])
+    # A Deep server holds the same weights as its role's server, so the two never share VRAM: both sit in
+    # the swap group, and llama-swap unloads one to load the other.
+    for m in models:
+        if m.get("_deepCmd"):
+            if m.get("pinned"):
+                raise RuntimeError(f"model '{m['role']}' has a deep server but is pinned; it must swap")
+            if m["role"] not in active_members:
+                active_members.append(m["role"])
+            active_members.append(f"{m['role']}-deep")
 
     nl = "\n"
     out = []
@@ -286,18 +303,16 @@ def gen_llama_swap(profile: str = None) -> str:
         out.append(f'  {k}: "{val}"')
     out.append("")
     out.append("models:")
-    for m in models:
-        if m.get("_aliasOf"):
-            continue
+    def _entry(m: dict, server: str, cmd: str, suffix: str = "") -> None:
         role_aliases = aliases.get(m["role"], [])
-        out.append(f"  {m['role']}:")
-        out.append(f'    cmd: "{m["_cmd"]}"')
+        out.append(f"  {server}:")
+        out.append(f'    cmd: "{cmd}"')
         if role_aliases:
-            out.append(f"    aliases: [{', '.join(role_aliases)}]")
+            out.append(f"    aliases: [{', '.join(r + suffix for r in role_aliases)}]")
         # Per-alias sampling: one loaded server, but a request that came in under `writer` still gets
         # the writer's temperature. setParamsByID is applied after setParams, so the target's own
         # defaults stay the baseline.
-        by_id = {r: by_role[r]["setParams"] for r in role_aliases
+        by_id = {r + suffix: by_role[r]["setParams"] for r in role_aliases
                  if by_role[r].get("setParams") and by_role[r]["setParams"] != m.get("setParams")}
         if m.get("setParams") or by_id:
             out.append("    filters:")
@@ -312,6 +327,13 @@ def gen_llama_swap(profile: str = None) -> str:
         if m.get("ttl") is not None:
             out.append(f"    ttl: {_fmt(m['ttl'])}")
         out.append("")
+
+    for m in models:
+        if m.get("_aliasOf"):
+            continue
+        _entry(m, m["role"], m["_cmd"])
+        if m.get("_deepCmd"):
+            _entry(m, f"{m['role']}-deep", m["_deepCmd"], "-deep")
     out.append("groups:")
     out.append(f"  {mcfg['group']['name']}:")
     out.append(f"    swap: {_fmt(mcfg['group']['swap'])}")
@@ -351,16 +373,26 @@ def _runtime(bobcfg: dict, key: str):
 
 
 
-def _wire_mode_models(role: str, role_window: int, backend: str) -> list:
-    """[(model_name, effective_window)] from the one alias grammar in bob_context."""
+def _wire_mode_models(role: str, role_window: int, backend: str, spec: dict = None) -> list:
+    """[(model_name, effective_window)] from the one alias grammar in bob_context. `spec` is a local
+    role's registry entry: its Deep server (bob_core.deep_server_spec) sets the `-deep` window."""
     from bob_context import wire_model_variants
-    return wire_model_variants(role, role_window, backend, _bob_cfg())
+    from bob_core import deep_server_spec, slot_ctx
+
+    deep = deep_server_spec(spec or {})
+    deep_window = slot_ctx(deep, _registry_defaults()) if deep else 0
+    return wire_model_variants(role, role_window, backend, _bob_cfg(), deep_window)
+
+
+def _registry_defaults() -> dict:
+    import bob_models
+    return bob_models.load_models_config().get("defaults") or {}
 
 
 def gen_litellm(profile: str = None) -> str:
     """Generate config/litellm.yaml."""
     import bob_models
-    from bob_core import LITELLM_KEY_ENV, _port, peer_role_value
+    from bob_core import LITELLM_KEY_ENV, _port, deep_server_spec, peer_role_value
 
     mcfg = bob_models.load_models_config()
     _, models = _ordered_models(mcfg, profile)
@@ -383,11 +415,14 @@ def gen_litellm(profile: str = None) -> str:
             continue
         role = m["role"]
         role_window = 0 if m.get("embedding") else _slot_ctx(m, defaults)
-        variants = (_wire_mode_models(role, role_window, "local")
+        variants = (_wire_mode_models(role, role_window, "local", m)
                     if bob_models.is_chat_role(role, m) else [(role, role_window)])
+        has_deep = deep_server_spec(m) is not None
         for model_name, _window in variants:
+            # `<role>-deep` goes to the role's Deep server when it has one (gen_llama_swap serves it).
+            upstream = f"{role}-deep" if has_deep and model_name == f"{role}-deep" else role
             out += [f"  - model_name: {model_name}", "    litellm_params:",
-                    f"      model: openai/{role}", f"      api_base: http://127.0.0.1:{port}/v1",
+                    f"      model: openai/{upstream}", f"      api_base: http://127.0.0.1:{port}/v1",
                     f"      api_key: {_UPSTREAM_KEY}"]
             if m.get("supportsVision"):
                 out.append("      supports_vision: true")
@@ -570,7 +605,7 @@ def gen_continue(profile: str = None) -> str:
         ctx = 0 if m.get("embedding") else _slot_ctx(m, defaults)
         roles = _ROLE_ASSIGN.get(m["role"], ["chat"])
         is_chat = bob_models.is_chat_role(m["role"], m)
-        variants = _wire_mode_models(base_name, ctx, "local") if is_chat else [(base_name, ctx)]
+        variants = _wire_mode_models(base_name, ctx, "local", m) if is_chat else [(base_name, ctx)]
         for name, model_window in variants:
             # A chat variant's name is its LiteLLM alias; fim and embed keep Continue's display name
             # but are served under their role.
@@ -680,7 +715,7 @@ def _dsh_models(mcfg: dict, profile: str = None):
             continue
         ctx = _slot_ctx(m, defaults)
         vision = bool(m.get("supportsVision"))
-        for name, window in _wire_mode_models(m["role"], ctx, "local"):
+        for name, window in _wire_mode_models(m["role"], ctx, "local", m):
             if window < _DSH_MIN_CTX:
                 skipped.append(f"{name} ({window} ctx < {_DSH_MIN_CTX})")
                 continue
@@ -1024,7 +1059,7 @@ def gen_aider(profile: str = None) -> str:
     for m in models:
         if not bob_models.is_chat_role(m["role"], m):
             continue
-        for name, window in _wire_mode_models(m["role"], _slot_ctx(m, defaults), "local"):
+        for name, window in _wire_mode_models(m["role"], _slot_ctx(m, defaults), "local", m):
             meta[f"openai/{name}"] = _meta_entry(window)
     for peer in enabled_peers(mcfg):
         for role in sorted(peer.get("pro") or {}):

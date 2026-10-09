@@ -666,3 +666,54 @@ class TestCallback(unittest.IsolatedAsyncioTestCase):
             out = await bob_context_callback.proxy_handler_instance.async_pre_call_hook(
                 None, None, data, "completion")
         self.assertEqual(out, data)
+
+
+class TestDeepServer(unittest.TestCase):
+    """A local role with a `deep` block is served by its own Deep server in Deep mode: Bob requests
+    `<role>-deep` and the window is that server's."""
+
+    def _view(self, deep=True):
+        chat = {"gguf": "m.gguf", "ctx": 40960}
+        if deep:
+            chat["deep"] = {"ctx": 262144, "ngl": "auto"}
+        return ({"defaults": {"parallel": 1}}, "16gb", {"chat": chat, "coder": dict(chat, _aliasOf="chat"),
+                                                       "vision": {"gguf": "v.gguf", "ctx": 4096}})
+
+    def test_deep_server_spec_layers_the_deep_block(self):
+        spec = bob_core.deep_server_spec({"ctx": 40960, "flags": ["--jinja"], "deep": {"ctx": 262144, "ngl": "auto"}})
+        self.assertEqual(spec, {"ctx": 262144, "flags": ["--jinja"], "ngl": "auto"})
+        self.assertIsNone(bob_core.deep_server_spec({"ctx": 40960}))
+
+    def test_deep_mode_requests_the_deep_server_with_its_window(self):
+        cfg = bob_core.load_defaults()["runtime"]
+        with mock.patch.object(bob_core, "_models_view", return_value=self._view()):
+            self.assertEqual(bob_core.wire_model(cfg, "coder", "deep"), "coder-deep")
+            self.assertEqual(bob_core.wire_model(cfg, "coder", "quick"), "coder")
+            self.assertEqual(bob_core.wire_model(cfg, "vision", "deep"), "vision")
+            self.assertEqual(bob_context.resolve(cfg, "coder", "deep").window(cfg, "coder"), 262144)
+            self.assertEqual(bob_context.resolve(cfg, "coder", "quick").window(cfg, "coder"), 16384)
+
+    def test_without_a_deep_block_deep_uses_the_role_server(self):
+        cfg = bob_core.load_defaults()["runtime"]
+        with mock.patch.object(bob_core, "_models_view", return_value=self._view(deep=False)):
+            self.assertEqual(bob_core.wire_model(cfg, "coder", "deep"), "coder")
+            self.assertEqual(bob_context.resolve(cfg, "coder", "deep").window(cfg, "coder"), 40960)
+
+    def test_complete_sends_deep_runs_to_the_deep_server(self):
+        cfg = bob_core.load_defaults()["runtime"]
+        sent = {}
+
+        class _Client:
+            def __init__(self):
+                self.chat = self
+                self.completions = self
+
+            def create(self, **kw):
+                sent.update(kw)
+                msg = mock.Mock(content="ok")
+                return mock.Mock(choices=[mock.Mock(message=msg, finish_reason="stop")])
+
+        with mock.patch.object(bob_core, "_models_view", return_value=self._view()), \
+             mock.patch.object(bob_core, "get_llm_client", return_value=_Client()):
+            bob_core.complete(cfg, "coder", [{"role": "user", "content": "hi"}], 64, context_mode="deep")
+        self.assertEqual(sent["model"], "coder-deep")

@@ -755,6 +755,35 @@ def role_window(config: dict, role: str) -> int:
     return 0
 
 
+def deep_server_spec(spec: dict):
+    """The spec of a local role's Deep server: the role's own spec with its `deep` block layered on top
+    (typically a longer `ctx` and `ngl: "auto"`, so llama.cpp fits the layers that no longer fit in
+    VRAM into system RAM). None when the role has no `deep` block, in which case Deep mode uses the
+    role's one server. One server per model: llama-swap swaps it with the role's normal server, so the
+    fast server keeps serving every other request and the long window costs speed only in Deep mode."""
+    deep = (spec or {}).get("deep")
+    if not isinstance(deep, dict) or not deep:
+        return None
+    merged = {k: v for k, v in spec.items() if k != "deep"}
+    merged.update(deep)
+    return merged
+
+
+def deep_window(config: dict, role: str) -> int:
+    """The per-request window of `role`'s Deep server (deep_server_spec), 0 when it has none."""
+    mcfg, _name, roles = _models_view()
+    spec = deep_server_spec((roles or {}).get(role) or {})
+    return slot_ctx(spec, (mcfg or {}).get("defaults") or {}) if spec else 0
+
+
+def wire_model(config: dict, role: str, mode=None) -> str:
+    """The model name a request on `role` goes out under: `<role>-deep` for a Deep-mode request on a local
+    role that has a Deep server (the LiteLLM route to that server), else `role` itself."""
+    if mode == "deep" and deep_window(config, role):
+        return f"{role}-deep"
+    return role
+
+
 def cap_window(window, cap) -> int:
     """`window` lowered to `cap` when `cap` is a positive number; 0 / 'auto' / junk leaves it alone. With
     the window unknown (0) a positive cap stands in for it. The one cap rule behind request_window, the
@@ -1045,7 +1074,8 @@ def complete(config: dict, role: str, messages: list, max_out: int, *, timeout: 
     if window:
         # Keep the same 64-token template margin, then leave the safety margin from est_tokens.
         messages = fit_messages(messages, window - max_out - _COMPLETE_MARGIN_TOKENS)
-    kwargs = dict(model=role, messages=messages, max_tokens=max_out, stream=False,
+    kwargs = dict(model=wire_model(config, role, context_mode), messages=messages, max_tokens=max_out,
+                  stream=False,
                   timeout=int(timeout or (config or {}).get("agent", {}).get("requestTimeout", 600)))
     if is_local_role(role, config):
         kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": bool(think)}}
