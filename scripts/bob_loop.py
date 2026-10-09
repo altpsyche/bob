@@ -838,12 +838,24 @@ def _truncate_stable_prefix(messages: list, max_msgs: int, max_tokens: int, *,
         else:
             base_sys.append(m)
     rest = [m for m in messages if m.get("role") != "system"]
-    goal_msg = None
-    if pin_goal is not None:
-        for i, m in enumerate(rest):
-            if m is pin_goal:           # identity match — the goal never falls out of the prefix
-                goal_msg = rest.pop(i)
-                break
+    # The goal joins the frozen head only when nothing precedes it (a single run: goal, then its tool
+    # steps), where that is also its place in the conversation. After earlier turns (a chat session)
+    # it stays after them, since moving it ahead of the history would leave the request ending on an
+    # old reply; it is still never trimmed (_keep_goal).
+    goal_msg = None           # the goal held in the head
+    tail_goal = None          # the goal kept in place in the tail
+    for i, m in enumerate(rest):
+        if pin_goal is not None and m is pin_goal:   # identity match
+            if i == 0:
+                goal_msg = rest.pop(0)
+            else:
+                tail_goal = m
+            break
+
+    def _keep_goal(kept: list) -> list:
+        if tail_goal is None or any(m is tail_goal for m in kept):
+            return kept
+        return [tail_goal] + kept   # kept is a suffix of the tail, so the goal still precedes it
 
     # Frozen head: systems (incl. the summary block) grouped first, then the pinned goal.
     head = list(base_sys) + ([prior_summary] if prior_summary is not None else [])
@@ -879,6 +891,8 @@ def _truncate_stable_prefix(messages: list, max_msgs: int, max_tokens: int, *,
         dropped = original_tail[: len(original_tail) - len(tail)]
         while tail and tail[0].get("role") == "tool":
             dropped.append(tail.pop(0))
+        tail = _keep_goal(tail)
+        dropped = [m for m in dropped if m is not tail_goal]
         if dropped:
             prior_note = prior_summary["content"] if prior_summary is not None else None
             # Keep the append-only prefix-cache path while the rolling note is small. Once the note
@@ -903,7 +917,7 @@ def _truncate_stable_prefix(messages: list, max_msgs: int, max_tokens: int, *,
     # Truncate mode with a stable prefix: goal + system pinned, tail slid, no summary.
     while tail and tail[0].get("role") == "tool":
         tail.pop(0)
-    return head + tail
+    return head + _keep_goal(tail)
 
 
 def _clear_hermes_responses(content: str, registry) -> tuple:

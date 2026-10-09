@@ -156,6 +156,47 @@ class TestDefaultPathPinsGoal(unittest.TestCase):
         self.assertIn(goal, out)
 
 
+class TestGoalAfterEarlierTurns(unittest.TestCase):
+    """In a chat session the goal follows earlier turns. It must stay last (after them), or the request
+    ends on an old reply and the model repeats it; it is still never trimmed."""
+
+    def _session(self, turns=3, big=10):
+        msgs = [{"role": "system", "content": "SYS"}]
+        for i in range(turns):
+            msgs += [{"role": "user", "content": f"q{i} " + "x" * big},
+                     {"role": "assistant", "content": f"a{i} " + "x" * big}]
+        goal = {"role": "user", "content": "the new question"}
+        return msgs + [goal], goal
+
+    def test_goal_stays_after_the_history(self):
+        for compaction in ("summarize", "truncate"):
+            with self.subTest(compaction=compaction):
+                msgs, goal = self._session()
+                out = truncate_history(msgs, max_msgs=40, max_tokens=0, compaction=compaction,
+                                       keep_last=6, stable_prefix=True, pin_goal=goal)
+                self.assertIs(out[-1], goal)
+                self.assertEqual([m["content"][:2] for m in out[1:-1]], ["q0", "a0", "q1", "a1", "q2", "a2"])
+
+    def test_goal_survives_when_the_history_is_trimmed(self):
+        msgs, goal = self._session(turns=10, big=400)
+        out = truncate_history(msgs, max_msgs=4, max_tokens=0, compaction="truncate",
+                               keep_last=2, stable_prefix=True, pin_goal=goal)
+        self.assertIs(out[-1], goal)
+        self.assertEqual(out[0]["role"], "system")
+
+    def test_goal_and_steps_survive_a_tight_window_in_order(self):
+        msgs, goal = self._session(turns=4, big=400)
+        msgs += [{"role": "assistant", "content": "step " + "y" * 400},
+                 {"role": "user", "content": "<tool_response>r</tool_response>"}]
+        out = truncate_history(msgs, max_msgs=3, max_tokens=0, compaction="truncate",
+                               keep_last=2, stable_prefix=True, pin_goal=goal)
+        idx = [i for i, m in enumerate(out) if m is goal]
+        self.assertEqual(len(idx), 1)
+        self.assertTrue(out[-1]["content"].startswith("<tool_response>"))   # newest step still last
+        self.assertTrue(all(m.get("role") != "user" or m is goal or "tool_response" in m["content"]
+                            for m in out[idx[0]:]))
+
+
 class TestCachePromptNotDisabled(unittest.TestCase):
     """The loop must never send cache_prompt=False — llama.cpp's default (caching on) must stand."""
 
