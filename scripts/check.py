@@ -50,6 +50,8 @@ _ALLOWED_SKIPS = (
     ("test_release_manifest.TestPublishedManifestLive", None),   # opt-in network test (its own CI job)
     ("test_agent_parallel.", None),                               # wall-clock test needs >= 4 host cores
     ("test_vision.", None),                                       # no-PIL passthrough skips when Pillow is in
+    ("test_context_modes.TestCallbackShim", None),                # loads the LiteLLM proxy package, which
+                                                                  # the core CI job does not install
     ("test_sandbox.TestLinuxConfinement", {"win32", "darwin"}),   # bubblewrap is Linux-only
     ("test_osenv.TestProcessLifecyclePosix", {"win32"}),
     ("test_pack_engine.", {"win32"}),                             # symlinks need privilege on Windows
