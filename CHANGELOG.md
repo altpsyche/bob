@@ -8,6 +8,11 @@ rebuilds only what changed, verifies, and rolls back on failure.
 
 ## [Unreleased]
 
+## [2.2.5] (2026-10-09)
+
+### Added
+- **Deep mode gets the model's full context on the 16gb profile.** A role can declare a `deep` server in `config/models.json`; the 16gb chat model now has one at 262144 tokens (up from 40960), with `ngl: "auto"` so llama.cpp puts the layers that do not fit on the card in system RAM. llama-swap swaps it with the normal server, so Quick and plain requests stay fully on the GPU at full speed, and only Deep pays for the long window (measured on an RTX 5080: about 10 tokens/s, 3 tokens/s with the window nearly full, against 51 on the normal server). LiteLLM routes every `<role>-deep` alias to it, Bob's own Deep runs request it, and DSH, Continue and aider are told the 262144 window.
+
 ## [2.2.4] (2026-10-09)
 
 ### Fixed
